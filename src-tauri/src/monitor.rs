@@ -200,7 +200,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             }
 
             // ---- 桌面 HUD 显隐 ----
-            let show_hud = (!active.is_empty() || lock.locked) && cfg.settings.hud.enabled;
+            // 遮罩开着时把 HUD 收起来：HUD 自己是置顶小窗，留在上面会变成
+            // 遮罩上的一块"挖不掉的横条"，而且它每秒刷新会跟遮罩抢置顶
+            let mask_on = shared.mask.on.load(std::sync::atomic::Ordering::Relaxed);
+            let show_hud =
+                (!active.is_empty() || lock.locked) && cfg.settings.hud.enabled && !mask_on;
             if let Some(w) = app.get_webview_window("hud") {
                 let vis = w.is_visible().unwrap_or(false);
                 if show_hud && !vis {

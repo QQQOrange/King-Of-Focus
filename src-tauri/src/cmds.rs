@@ -209,6 +209,8 @@ pub fn mask_start(
     let m = &*shared.mask;
     m.target.store(hwnd as isize, Ordering::Relaxed);
     m.target_pid.store(pid, Ordering::Relaxed);
+    // 手动选中了这个窗口 → 立刻锁定它，不再被"跟随前台"抢走
+    m.manual_hwnd.store(hwnd as isize, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
 
@@ -229,6 +231,7 @@ pub fn mask_start(
 #[tauri::command]
 pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
     shared.mask.on.store(false, Ordering::Relaxed);
+    shared.mask.manual_hwnd.store(0, Ordering::Relaxed);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_always_on_top(false);
     }
@@ -388,6 +391,7 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
     m.target.store(hwnd, Ordering::Relaxed);
     m.target_pid.store(self_pid, Ordering::Relaxed);
     m.test_lock.store(true, Ordering::Relaxed);
+    m.manual_hwnd.store(0, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
     let _ = app.get_webview_window("main").map(|w| w.set_always_on_top(false));

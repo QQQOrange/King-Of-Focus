@@ -46,6 +46,8 @@ const VK_K: u32 = 0x4B;
 
 const GWL_EXSTYLE: i32 = -20;
 const HWND_TOPMOST: isize = -1;
+/// GetWindow 的 GW_HWNDPREV：取 z 序排在自己前面的那个窗口
+const GW_HWNDPREV: u32 = 3;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
@@ -180,6 +182,7 @@ extern "system" {
     ) -> i32;
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
     fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    fn GetWindow(h: Hwnd, cmd: u32) -> Hwnd;
     fn SetLayeredWindowAttributes(h: Hwnd, key: u32, alpha: u8, flags: u32) -> i32;
     fn SetWindowRgn(h: Hwnd, rgn: Handle, redraw: i32) -> i32;
     fn InvalidateRect(h: Hwnd, r: *const Rect, erase: i32) -> i32;
@@ -287,6 +290,8 @@ pub struct MaskCtl {
     pub follow: AtomicBool,
     /// 测试态：临时不跟随，固定高亮本程序窗口
     pub test_lock: AtomicBool,
+    /// 手动选定的目标窗口句柄；非 0 时优先于"跟随前台"（0 = 没有手动锁定）
+    pub manual_hwnd: AtomicIsize,
     /// true = 逐像素圆角（抗锯齿）；false = 区域挖洞（兼容性最好，默认）
     pub smooth: AtomicBool,
     pub painted: AtomicBool,
@@ -350,6 +355,7 @@ impl Default for MaskCtl {
             auto_apps: Mutex::new(Vec::new()),
             follow: AtomicBool::new(false),
             test_lock: AtomicBool::new(false),
+            manual_hwnd: AtomicIsize::new(0),
             smooth: AtomicBool::new(false),
             painted: AtomicBool::new(false),
             notice: Mutex::new(None),
@@ -669,6 +675,26 @@ impl Overlay {
         }
     }
 
+    /// 是否有"外部"窗口压在遮罩上面。
+    /// 桌面挂件（时钟、歌词条、下载悬浮窗）大多会周期性把自己重新置顶，
+    /// 它们每秒抢一次，而我们每 500ms 才压一次 → 用户看到的就是"间断地被遮住"。
+    unsafe fn covered_by_others(&self) -> bool {
+        if !self.shown {
+            return false;
+        }
+        let prev = GetWindow(self.hwnd, GW_HWNDPREV);
+        if prev.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(prev, &mut pid);
+        // 自己家的窗口（通知卡片）本来就该压在上面，不算被盖
+        if pid == std::process::id() {
+            return false;
+        }
+        IsWindowVisible(prev) != 0
+    }
+
     /// 把遮罩重新顶到最上层。
     /// 任务栏、后打开的全屏视频都是置顶窗口，不周期性重压就会被盖住。
     unsafe fn reassert(&mut self) {
@@ -951,6 +977,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                             if ctl.target_pid.load(Ordering::Relaxed) != pid || !ctl.on.load(Ordering::Relaxed) {
                                 ctl.target.store(h as isize, Ordering::Relaxed);
                                 ctl.target_pid.store(pid, Ordering::Relaxed);
+                                ctl.manual_hwnd.store(0, Ordering::Relaxed);
                                 ctl.on.store(true, Ordering::Relaxed);
                                 auto_owned = true;
                             }
@@ -982,9 +1009,24 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
 
             // ---- 目标窗口 ----
-            // 跟随模式：永远盯住当前最上层窗口；否则用用户指定的那个
-            let follow = ctl.follow.load(Ordering::Relaxed) && !ctl.test_lock.load(Ordering::Relaxed);
-            let follow_now = if follow { follow_rect() } else { None };
+            // 优先级：手动选定的窗口 > 跟随前台 > 用户配置的固定目标。
+            // 之前这里只认 follow，导致"在界面里选中某个窗口"完全无效——
+            // 因为点按钮的那一刻前台是本程序，follow_rect() 拿不到目标。
+            let mut manual = ctl.manual_hwnd.load(Ordering::Relaxed);
+            let follow_base = ctl.follow.load(Ordering::Relaxed) && !ctl.test_lock.load(Ordering::Relaxed);
+            let fg_now = if follow_base { follow_rect() } else { None };
+            // 手动锁定的窗口只在"用户还停在这个窗口上"时有效：
+            // 一旦切到别的应用，自动交还给跟随逻辑（满足"切走要跟着换"）
+            if manual != 0 {
+                if let Some((_, h)) = fg_now {
+                    if h != manual {
+                        manual = 0;
+                        ctl.manual_hwnd.store(0, Ordering::Relaxed);
+                    }
+                }
+            }
+            let follow = follow_base && manual == 0;
+            let follow_now = if follow { fg_now } else { None };
             if follow {
                 let key = follow_now.map(|(_, h)| h).unwrap_or(0);
                 followed_key = key;
@@ -1072,11 +1114,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if last_diag.elapsed().as_millis() >= 500 {
                     last_diag = Instant::now();
                     let report = format!(
-                        "on={} painted=false 模式={}{} 跟随窗口={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
+                        "on={} painted=false 模式={}{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
                         on,
                         if smooth { "逐像素圆角" } else { "区域挖洞" },
                         if follow_flag { " 跟随前台" } else { "" },
                         followed_key,
+                        ctl.manual_hwnd.load(Ordering::Relaxed),
                         FOLLOW_OVERRIDE.load(Ordering::Relaxed),
                         mons.len()
                     );
@@ -1167,10 +1210,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_paint = Some(key);
             }
 
-            // 每 500ms 把遮罩重新压到最上层：别的置顶窗口抢不过就重压
-            if last_top.elapsed().as_millis() >= 500 {
+            // 置顶维持：每一帧都检查有没有别的置顶窗口插到我们前面，
+            // 有就立刻重压（桌面时钟/歌词条这类每秒刷新的浮窗会周期性抢顶层）。
+            // 另加 250ms 兜底重压，防止 GetWindow 在某些情况下判断不准。
+            let force = last_top.elapsed().as_millis() >= 250;
+            if force {
                 last_top = Instant::now();
-                for o in overlays.iter_mut() {
+            }
+            for o in overlays.iter_mut() {
+                if force || o.covered_by_others() {
                     o.reassert();
                 }
             }
@@ -1194,12 +1242,13 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={} 模式={}{} 跟随窗口={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={} 模式={}{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
                     if smooth { "逐像素圆角" } else { "区域挖洞" },
                     if follow { " 跟随前台" } else { "" },
                     followed_key,
+                    ctl.manual_hwnd.load(Ordering::Relaxed),
                     FOLLOW_OVERRIDE.load(Ordering::Relaxed),
                     progress,
                     alpha,

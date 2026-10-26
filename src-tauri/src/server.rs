@@ -76,6 +76,31 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/start" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let pid = url
+                    .split("pid=")
+                    .nth(1)
+                    .and_then(|v| v.split('&').next())
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0);
+                match crate::proc::find_window_by_pid(pid) {
+                    Some(h) => {
+                        let m = &*shared.mask;
+                        m.test_lock.store(false, std::sync::atomic::Ordering::Relaxed);
+                        m.target.store(h as isize, std::sync::atomic::Ordering::Relaxed);
+                        m.target_pid.store(pid, std::sync::atomic::Ordering::Relaxed);
+                        m.manual_hwnd.store(h as isize, std::sync::atomic::Ordering::Relaxed);
+                        m.painted.store(false, std::sync::atomic::Ordering::Relaxed);
+                        m.on.store(true, std::sync::atomic::Ordering::Relaxed);
+                        reply(req, 200, json!({"ok": true, "hwnd": h as isize, "pid": pid}).to_string())
+                    }
+                    None => reply(req, 404, json!({"error": "找不到该进程的窗口"}).to_string()),
+                }
+            }
+        }
         "/api/debug/maskon" | "/api/debug/maskoff" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())
