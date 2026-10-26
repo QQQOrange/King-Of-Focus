@@ -184,6 +184,7 @@ fn main() {
             cmds::points_unlock,
             cmds::hud_state,
             cmds::hud_save,
+            cmds::notify_save,
             cmds::stats_range,
             cmds::stats_flush,
             cmds::stats_dir_path,

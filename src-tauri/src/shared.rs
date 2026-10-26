@@ -26,8 +26,6 @@ pub struct Runtime {
     pub last_blocked: String,
     /// 上次把主窗口拉到前台的时间（毫秒），用于防抖
     pub last_focus: i64,
-    /// 积分累加器（毫秒）
-    pub points_acc: u64,
     /// 是否有规则正处于番茄休息段
     pub on_break: bool,
     pub in_break: bool,
@@ -64,7 +62,6 @@ impl Default for Runtime {
             next_change: 0,
             last_blocked: String::new(),
             last_focus: 0,
-            points_acc: 0,
             on_break: false,
             in_break: false,
             break_left: 0,

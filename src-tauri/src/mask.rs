@@ -437,6 +437,10 @@ impl Overlay {
                     if b < w as usize {
                         line[b..].fill(px);
                     }
+                    // 洞内必须清成全透明：位图是复用的，不清会留下上一帧的"鬼影"
+                    if b > a {
+                        line[a..b].fill(0);
+                    }
                 }
             }
         }
@@ -615,7 +619,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 hotkey_ok = RegisterHotKey(std::ptr::null_mut(), 0xA1, MOD_CONTROL | MOD_ALT, VK_K) != 0;
             }
 
-            // ---- 显示器变化就重建覆盖层 ----
+            // ---- 分辨率/显示器变化才销毁重建（位图按需创建，不占用平时内存）----
             let mons = monitors();
             if mons.len() != monitor_sig.len() || mons.iter().zip(monitor_sig.iter()).any(|(a, b)| {
                 a.left != b.left || a.top != b.top || a.right != b.right || a.bottom != b.bottom
@@ -624,11 +628,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     o.destroy();
                 }
                 overlays.clear();
-                for m in &mons {
-                    if let Some(o) = Overlay::new(&class, *m) {
-                        overlays.push(o);
-                    }
-                }
                 monitor_sig = mons.clone();
                 last_paint = None;
             }
@@ -697,6 +696,19 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
 
             let key = (hole_end, alpha, radius as i32, progress.to_bits() as i32);
             let need = animating || last_paint != Some(key);
+
+            // 真正要画的时候才分配位图
+            if need && overlays.len() != mons.len() {
+                for o in overlays.iter_mut() {
+                    o.destroy();
+                }
+                overlays.clear();
+                for m in &mons {
+                    if let Some(o) = Overlay::new(&class, *m) {
+                        overlays.push(o);
+                    }
+                }
+            }
 
             for (i, o) in overlays.iter_mut().enumerate() {
                 o.set_clickthrough(!block_click);

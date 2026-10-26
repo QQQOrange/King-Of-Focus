@@ -73,12 +73,17 @@ pub fn lock_info(cfg: &Config) -> LockInfo {
         if !l.enabled || !l.hard {
             continue;
         }
-        if sched::is_active(&l.schedule, &nd) {
-            names.push(l.name.clone());
-            if let Some(left) = sched::slot_left_secs(&l.schedule, &nd) {
-                until = until.max(ts + left);
-            }
+        if !sched::is_active(&l.schedule, &nd) {
+            continue;
         }
+        // 安全闸：没有明确结束时间的规则（全天生效）不参与固化，
+        // 否则会把自己永久锁死，只有等到明天才有解。
+        let left = match sched::slot_left_secs(&l.schedule, &nd) {
+            Some(v) if v > 0 => v,
+            _ => continue,
+        };
+        names.push(l.name.clone());
+        until = until.max(ts + left);
     }
     let until_text = chrono::DateTime::from_timestamp(until, 0)
         .map(|x| x.with_timezone(&Local))

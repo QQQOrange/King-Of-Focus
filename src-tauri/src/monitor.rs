@@ -42,6 +42,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
         let self_pid = std::process::id();
         let mut acc_ms: u64 = 0;
         let mut guard_running = false;
+        let mut notified_phase = false;
+        let mut last_break_left: i64 = 0;
 
         loop {
             let cfg: Config = shared.config();
@@ -148,6 +150,52 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.unminimize();
                     let _ = w.show();
+                }
+            }
+
+            // ---- 阶段提醒：学习 / 休息结束前若干分钟各提醒一次 ----
+            {
+                let n = &cfg.settings.notify;
+                // 没配番茄时，"本轮专注"就是整段时间，用时段剩余时间兜底
+                let phase_left = if break_left > 0 {
+                    break_left
+                } else if !active.is_empty() {
+                    active
+                        .iter()
+                        .filter_map(|l| sched::slot_left_secs(&l.schedule, &now))
+                        .min()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if n.enabled && phase_left > 0 {
+                    let threshold = if break_now {
+                        if n.break_notify { n.break_before.min(120) * 60 } else { 0 }
+                    } else {
+                        n.work_before.min(120) * 60
+                    };
+                    if threshold > 0 {
+                        // 换阶段时剩余时间会跳大，用它来重置"已提醒"标记
+                        if phase_left as i64 > last_break_left + 5 {
+                            notified_phase = false;
+                        }
+                        if !notified_phase && (phase_left as i64) <= threshold as i64 {
+                            notified_phase = true;
+                            let mins = ((phase_left + 59) / 60).max(1);
+                            let msg = if break_now {
+                                format!("休息还剩 {mins} 分钟，准备回到专注")
+                            } else {
+                                format!("本轮专注还剩 {mins} 分钟，坚持一下")
+                            };
+                            shared.say(msg);
+                            if n.focus_window {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    let _ = w.show();
+                                }
+                            }
+                        }
+                        last_break_left = phase_left;
+                    }
                 }
             }
 

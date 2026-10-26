@@ -353,6 +353,8 @@ function openEditor(id, isNew) {
       lock: { kind: 'none', until: 0, password: '', chars: 20 },
       color: PALETTE[Math.floor(Math.random() * 4)],
       extraProtected: [],
+      brk: { kind: 'none', workMin: 25, breakMin: 5 },
+      hard: true,
     };
   } else {
     rule = JSON.parse(JSON.stringify(d.config.lists.find((x) => x.id === id)));
@@ -1199,6 +1201,38 @@ function viewSettings() {
   </div>
 
   <div class="card">
+    <div class="card-title">提醒</div>
+    <div class="card-sub">
+      每个「自律周期」和每段「休息」结束前各提醒一次：主界面弹提示，HUD 上对应的倒计时会变金色闪烁。
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+      <div><div style="font-size:12.5px">启用提醒</div><div class="hint" style="margin-top:3px">总开关，关掉后两种提醒都不发</div></div>
+      <div class="switch"><input type="checkbox" id="ntEnabled" ${(d.config.settings.notify || {}).enabled ? 'checked' : ''}><i></i></div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+      <div><div style="font-size:12.5px">学习结束前提醒</div><div class="hint" style="margin-top:3px">0 = 不提醒；范围 0~120 分钟</div></div>
+      <div class="row" style="align-items:center;gap:8px">
+        <input type="number" id="ntWork" min="0" max="120" value="${(d.config.settings.notify || {}).workBefore ?? 5}" style="width:88px" />
+        <span class="hint">分钟</span>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+      <div><div style="font-size:12.5px">休息结束前提醒</div><div class="hint" style="margin-top:3px">范围 0~120 分钟</div></div>
+      <div class="row" style="align-items:center;gap:8px">
+        <input type="number" id="ntBreak" min="0" max="120" value="${(d.config.settings.notify || {}).breakBefore ?? 2}" style="width:88px" />
+        <span class="hint">分钟</span>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
+      <div><div style="font-size:12.5px">休息也提醒</div><div class="hint" style="margin-top:3px">关掉后只提醒学习结束，休息结束不打扰</div></div>
+      <div class="row" style="align-items:center;gap:10px">
+        <div class="switch"><input type="checkbox" id="ntBreakOn" ${(d.config.settings.notify || {}).breakNotify ? 'checked' : ''}><i></i></div>
+        <button class="btn btn-sm" data-act="save-notify">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">桌面 HUD</div>
     <div class="card-sub">
       自律期间在屏幕右上角浮一个小窗：已经专注多久、还有多久结束，下面一句励志短语。
@@ -1604,8 +1638,25 @@ const Act = window.Act = {
     renderReportModal();
   },
 
-  async saveQuoteMins() {
-    const v = +(($('#quoteMins') || {}).value || 60);
+  async saveNotify() {
+    const enabled = !!($('#ntEnabled') || {}).checked;
+    const work = +(($('#ntWork') || {}).value || 0);
+    const brk = +(($('#ntBreak') || {}).value || 0);
+    const brkOn = !!($('#ntBreakOn') || {}).checked;
+    try {
+      await invoke('notify_save', {
+        enabled,
+        workBefore: Math.max(0, Math.min(120, work)),
+        breakBefore: Math.max(0, Math.min(120, brk)),
+        breakNotify: brkOn,
+      });
+      await pull();
+      render();
+      toast('提醒设置已保存', 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+
+  async saveQuoteMins() {    const v = +(($('#quoteMins') || {}).value || 60);
     await invoke('hud_save', {
       enabled: !!(S.data.config.settings.hud || {}).enabled,
       quoteMinutes: v,
@@ -1791,7 +1842,11 @@ const Act = window.Act = {
 };
 
 async function saveConfig() {
-  await invoke('save_config', { config: S.data.config });
+  try {
+    await invoke('save_config', { config: S.data.config });
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
   await pull();
 }
 
@@ -2055,6 +2110,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'cfg-switch') { await Act.cfgSwitch(el.dataset.k); return; }
   if (act === 'save-num') { await Act.saveNum(el.dataset.k); return; }
   if (act === 'save-quote-mins') { await Act.saveQuoteMins(); return; }
+  if (act === 'save-notify') { await Act.saveNotify(); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
   if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
   if (act === 'cycle-theme') { await Act.cycleTheme(); return; }

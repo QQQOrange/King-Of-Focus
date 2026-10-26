@@ -163,7 +163,7 @@ impl Default for RuleList {
             color: "#ff9f43".into(),
             extra_protected: vec![],
             brk: BreakCfg::default(),
-            hard: false,
+            hard: true,
         }
     }
 }
@@ -203,6 +203,33 @@ impl Default for MaskCfg {
             target_title: String::new(),
             hotkey: true,
             hotkey_label: "Ctrl+Alt+K".into(),
+        }
+    }
+}
+
+/// 提醒设置
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotifyCfg {
+    pub enabled: bool,
+    /// 学习结束前多少分钟提醒（0 = 不提醒，上限 120）
+    pub work_before: u32,
+    /// 休息结束前多少分钟提醒
+    pub break_before: u32,
+    /// 休息提醒可以单独关掉
+    pub break_notify: bool,
+    /// 提醒时是否把主窗口拉到前台
+    pub focus_window: bool,
+}
+
+impl Default for NotifyCfg {
+    fn default() -> Self {
+        NotifyCfg {
+            enabled: true,
+            work_before: 5,
+            break_before: 2,
+            break_notify: true,
+            focus_window: false,
         }
     }
 }
@@ -359,6 +386,8 @@ pub struct Settings {
     pub update: UpdateCfg,
     /// 桌面 HUD
     pub hud: HudCfg,
+    /// 提醒
+    pub notify: NotifyCfg,
 }
 
 impl Default for Settings {
@@ -379,6 +408,7 @@ impl Default for Settings {
             sync: SyncCfg::default(),
             update: UpdateCfg::default(),
             hud: HudCfg::default(),
+            notify: NotifyCfg::default(),
         }
     }
 }

@@ -78,6 +78,12 @@ html, body {
   font-variant-numeric: tabular-nums;
   margin-top: 1px;
 }
+.remain.warn {
+  color: var(--hud-gold);
+  font-weight: 600;
+  animation: blink 1.6s ease-in-out infinite;
+}
+@keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
 .divider {
   height: 1px;
   background: var(--hud-line);

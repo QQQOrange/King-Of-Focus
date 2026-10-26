@@ -366,6 +366,15 @@ pub fn show_main(app: AppHandle) {
 pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Value, String> {
     let minutes = minutes.clamp(1, 120);
     let mut c = shared.config();
+    // 没有在进行中的自律时段时不允许兑换，避免白花积分
+    let info = crate::guard::lock_info(&c);
+    if !info.locked {
+        let now = crate::sched::now_local();
+        let running = c.lists.iter().any(|l| l.enabled && crate::sched::is_active(&l.schedule, &now));
+        if !running {
+            return Err("当前没有正在进行的自律时段，不需要解锁".into());
+        }
+    }
     let price = unlock_price(&c) * minutes as i64;
     if c.points.balance < price {
         return Err(format!(
@@ -410,6 +419,14 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         }
     };
     let cfg = shared.config();
+    let warn = if !cfg.settings.notify.enabled {
+        false
+    } else if break_on {
+        cfg.settings.notify.break_notify && break_left > 0
+            && break_left as i64 <= cfg.settings.notify.break_before.min(120) as i64 * 60
+    } else {
+        break_left > 0 && break_left as i64 <= cfg.settings.notify.work_before.min(120) as i64 * 60
+    };
     json!({
         "on": on,
         "locked": locked,
@@ -418,11 +435,32 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "untilText": until_text,
         "breakOn": break_on,
         "breakLeft": break_left,
+        "warn": warn,
         "quote": quote,
         "quoteFrom": quote_from,
         "theme": cfg.settings.theme,
         "hudEnabled": cfg.settings.hud.enabled,
     })
+}
+
+#[tauri::command]
+pub fn notify_save(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+    work_before: u32,
+    break_before: u32,
+    break_notify: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.notify.enabled = enabled;
+    c.settings.notify.work_before = work_before.min(120);
+    c.settings.notify.break_before = break_before.min(120);
+    c.settings.notify.break_notify = break_notify;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
 }
 
 #[tauri::command]

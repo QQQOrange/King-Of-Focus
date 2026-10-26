@@ -51,8 +51,11 @@ async function tick() {
   until.textContent = s.untilText ? `至 ${s.untilText}` : '';
 
   const remain = document.getElementById('remain');
+  remain.classList.toggle('warn', !!s.warn);
   if (s.breakOn) {
     remain.textContent = `休息还剩 ${hm(s.breakLeft)}，之后自动锁回`;
+  } else if (s.warn && s.breakLeft > 0) {
+    remain.textContent = `本轮还剩 ${hm(s.breakLeft)} · 快结束了`;
   } else if (s.remaining > 0) {
     remain.textContent = `距结束 ${hm(s.remaining)}`;
   } else {
