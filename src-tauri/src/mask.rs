@@ -53,6 +53,9 @@ const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_NOOWNERZORDER: u32 = 0x0200;
 
+/// 覆盖层窗口句柄（遮罩线程写，置顶守护线程读）
+static OVERLAY_HWNDS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
 /// 诊断快照（遮罩线程写，UI 读）——用于界面上的「自查」
 pub static DIAG: Mutex<String> = Mutex::new(String::new());
 
@@ -682,17 +685,21 @@ impl Overlay {
         if !self.shown {
             return false;
         }
-        let prev = GetWindow(self.hwnd, GW_HWNDPREV);
-        if prev.is_null() {
-            return false;
+        // 沿 z 序一路往上找：只要上面还有"别人家的可见窗口"，就算被盖。
+        // 之前只看紧邻的那一个，一旦中间夹着自己的通知卡片就会误判成"没被盖"，
+        // 于是重压被跳过，退化成 250ms 才压一次 —— 那就是间歇性漏遮的真凶。
+        let mut h = GetWindow(self.hwnd, GW_HWNDPREV);
+        let mut guard = 0;
+        while !h.is_null() && guard < 64 {
+            guard += 1;
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, &mut pid);
+            if pid != std::process::id() && IsWindowVisible(h) != 0 {
+                return true;
+            }
+            h = GetWindow(h, GW_HWNDPREV);
         }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(prev, &mut pid);
-        // 自己家的窗口（通知卡片）本来就该压在上面，不算被盖
-        if pid == std::process::id() {
-            return false;
-        }
-        IsWindowVisible(prev) != 0
+        false
     }
 
     /// 把遮罩重新顶到最上层。
@@ -721,6 +728,13 @@ impl Overlay {
             self.shown = false;
             self.last_key = None;
         }
+    }
+}
+
+/// 把当前覆盖层句柄发布给置顶守护线程
+fn publish_overlays(list: &[Overlay]) {
+    if let Ok(mut g) = OVERLAY_HWNDS.lock() {
+        *g = list.iter().map(|o| o.hwnd as isize).collect();
     }
 }
 
@@ -841,7 +855,39 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     window_bounds(h)
 }
 
+/// 置顶守护：独立线程以 ~250Hz 把覆盖层压到最上层。
+/// 有些浮窗（lazytyper、歌词条）每次动画都重新置顶，主循环 60Hz 压不过它的节奏，
+/// 这里用更高的频率专门做这一件事，把"漏遮"压到肉眼不可见。
+fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
+    thread::spawn(move || unsafe {
+        loop {
+            thread::sleep(Duration::from_millis(4));
+            if !ctl.on.load(Ordering::Relaxed) {
+                continue;
+            }
+            let hs: Vec<isize> = match OVERLAY_HWNDS.try_lock() {
+                Ok(v) => v.clone(),
+                Err(_) => continue,
+            };
+            for h in hs {
+                if h != 0 {
+                    SetWindowPos(
+                        h as Hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                    );
+                }
+            }
+        }
+    });
+}
+
 pub fn start(ctl: std::sync::Arc<MaskCtl>) {
+    spawn_topmost_keeper(ctl.clone());
     thread::spawn(move || unsafe {
         // 混合 DPI 下必须拿物理像素，否则洞和遮罩对不齐
         SetThreadDpiAwarenessContext(-4);
@@ -983,10 +1029,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                             }
                         }
                         None => {
-                            // 切到别的应用 / 退出该应用 → 收掉自己开的遮罩
-                            if auto_owned && ctl.on.load(Ordering::Relaxed) {
-                                ctl.on.store(false, Ordering::Relaxed);
-                            }
+                            // 切到别的应用时**不再收掉遮罩**。
+                            // 自动触发只是"点火"：一旦在列表应用里打开过遮罩，
+                            // 之后就一直跟着当前最上层窗口走（用户切到别的软件也要遮）。
                             auto_owned = false;
                         }
                     }
@@ -1004,6 +1049,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     o.destroy();
                 }
                 overlays.clear();
+                publish_overlays(&overlays);
                 monitor_sig = mons.clone();
                 last_paint = None;
             }
@@ -1012,11 +1058,18 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 优先级：手动选定的窗口 > 跟随前台 > 用户配置的固定目标。
             // 之前这里只认 follow，导致"在界面里选中某个窗口"完全无效——
             // 因为点按钮的那一刻前台是本程序，follow_rect() 拿不到目标。
+            let follow_cfg = ctl.follow.load(Ordering::Relaxed);
+            let fg_now = if follow_cfg { follow_rect() } else { None };
+
+            // 只要出现过"别的程序"的前台窗口，就认为用户已经切走了：
+            // 1) 测试态自动结束（否则洞口会一直卡在测试窗口上，就是用户说的"残留"）
+            // 2) 手动锁定的目标自动释放，交还给跟随
+            if fg_now.is_some() {
+                if ctl.test_lock.load(Ordering::Relaxed) {
+                    ctl.test_lock.store(false, Ordering::Relaxed);
+                }
+            }
             let mut manual = ctl.manual_hwnd.load(Ordering::Relaxed);
-            let follow_base = ctl.follow.load(Ordering::Relaxed) && !ctl.test_lock.load(Ordering::Relaxed);
-            let fg_now = if follow_base { follow_rect() } else { None };
-            // 手动锁定的窗口只在"用户还停在这个窗口上"时有效：
-            // 一旦切到别的应用，自动交还给跟随逻辑（满足"切走要跟着换"）
             if manual != 0 {
                 if let Some((_, h)) = fg_now {
                     if h != manual {
@@ -1025,7 +1078,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     }
                 }
             }
-            let follow = follow_base && manual == 0;
+            let test_lock = ctl.test_lock.load(Ordering::Relaxed);
+            let follow = follow_cfg && !test_lock && manual == 0;
             let follow_now = if follow { fg_now } else { None };
             if follow {
                 let key = follow_now.map(|(_, h)| h).unwrap_or(0);
@@ -1183,6 +1237,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         overlays.push(o);
                     }
                 }
+                publish_overlays(&overlays);
             }
 
             for (i, o) in overlays.iter_mut().enumerate() {
@@ -1210,15 +1265,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_paint = Some(key);
             }
 
-            // 置顶维持：每一帧都检查有没有别的置顶窗口插到我们前面，
-            // 有就立刻重压（桌面时钟/歌词条这类每秒刷新的浮窗会周期性抢顶层）。
-            // 另加 250ms 兜底重压，防止 GetWindow 在某些情况下判断不准。
-            let force = last_top.elapsed().as_millis() >= 250;
-            if force {
-                last_top = Instant::now();
-            }
+            // 置顶维持：**每一帧无条件重压**。
+            // 桌面浮窗（lazytyper / 时钟 / 歌词条）会周期性把自己重新置顶，
+            // SetWindowPos 是"后调用者赢"，所以只有每帧都压才能把它按下去；
+            // 被抢的瞬间再补两次，确保从它抢到到我们压回之间不超过一帧。
+            let _ = last_top.elapsed(); // 保留计时器，避免未使用告警
             for o in overlays.iter_mut() {
-                if force || o.covered_by_others() {
+                o.reassert();
+                if o.covered_by_others() {
+                    o.reassert();
                     o.reassert();
                 }
             }
