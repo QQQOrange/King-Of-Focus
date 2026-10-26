@@ -1,0 +1,35 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%;
+  background: #08090d;
+  color: #e8ecf4;
+  font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+  display: grid; place-items: center;
+}
+.wrap {
+  width: 480px; max-width: 90vw; text-align: center;
+  padding: 40px 30px;
+}
+.mark {
+  width: 62px; height: 62px; margin: 0 auto 22px;
+  border-radius: 16px; display: grid; place-items: center;
+  background: linear-gradient(160deg, #2a3145, #12151d);
+  border: 1px solid #39415a; color: #ffb020; font-size: 30px; font-weight: 700;
+  box-shadow: 0 10px 40px rgba(255, 176, 32, .12);
+}
+h1 { font-size: 22px; margin: 0 0 10px; letter-spacing: .5px; }
+.sub { color: #8b95a8; font-size: 13px; margin: 0 0 26px; line-height: 1.8; }
+.box {
+  background: #101319; border: 1px solid #1e2532; border-radius: 12px;
+  padding: 6px 16px; text-align: left;
+}
+.row {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 11px 0; border-bottom: 1px solid #191f2b; font-size: 12.5px;
+}
+.row:last-child { border-bottom: 0; }
+.row span { color: #6b7488; flex: 0 0 auto; }
+.row b { font-weight: 600; color: #dfe5f0; }
+.url { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.tip { margin-top: 24px; font-size: 12px; color: #5c6478; line-height: 2; }
+.foot { margin-top: 34px; font-size: 11px; color: #3b4252; letter-spacing: 1px; }

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<style>
+  body {
+    margin: 0; width: 268px; padding: 14px 16px 16px;
+    background: #0c0f15; color: #e8ecf4;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 12.5px;
+  }
+  .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+  .mark {
+    width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+    background: #1c2230; border: 1px solid #2f384b; color: #ffb020; font-weight: 700; font-size: 13px;
+  }
+  .ttl { font-weight: 600; font-size: 13px; }
+  .st { font-size: 11px; color: #6b7488; margin-top: 1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #555; display: inline-block; margin-right: 5px; }
+  .dot.ok { background: #35d07f; box-shadow: 0 0 7px #35d07f; }
+  .dot.bad { background: #ff5c5c; }
+  .box { background: #12161f; border: 1px solid #1e2532; border-radius: 9px; padding: 9px 11px; margin-bottom: 9px; }
+  .r { display: flex; justify-content: space-between; padding: 3px 0; color: #8b95a8; }
+  .r b { color: #dfe5f0; font-weight: 600; }
+  ul { margin: 6px 0 0; padding-left: 16px; color: #9aa4b8; line-height: 1.7; }
+  button {
+    width: 100%; padding: 7px; border-radius: 8px; cursor: pointer; font-size: 12px;
+    background: #1a2030; color: #dfe5f0; border: 1px solid #2e3a52;
+  }
+  button:hover { background: #223049; }
+</style>
+</head>
+<body>
+  <div class="hd">
+    <div class="mark">王</div>
+    <div>
+      <div class="ttl">King of Focus</div>
+      <div class="st"><span class="dot" id="dot"></span><span id="stText">检测中…</span></div>
+    </div>
+  </div>
+  <div class="box">
+    <div class="r"><span>主程序端口</span><b id="port">—</b></div>
+    <div class="r"><span>当前模式</span><b id="mode">—</b></div>
+    <div class="r"><span>生效规则</span><b id="cnt">0</b></div>
+  </div>
+  <ul id="list"></ul>
+  <div style="margin-top:10px"><button id="refresh">立即刷新规则</button></div>
+  <script src="popup.js"></script>
+</body>
+</html>
