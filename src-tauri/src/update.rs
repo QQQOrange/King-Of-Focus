@@ -39,8 +39,7 @@ pub fn cmp_ver(a: &str, b: &str) -> i32 {
 }
 
 pub fn update_dir() -> PathBuf {
-    let base = std::env::var("TEMP").unwrap_or_else(|_| ".".into());
-    let p = PathBuf::from(base).join("KingOfFocus").join("updates");
+    let p = crate::cfg::data_dir().join("updates");
     let _ = fs::create_dir_all(&p);
     p
 }

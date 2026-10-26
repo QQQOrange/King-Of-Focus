@@ -20,8 +20,28 @@ pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
+/// 积分解锁的每分钟单价（每天第 n 次解锁 ×1.4 递增）
+pub fn unlock_price(cfg: &Config) -> i64 {
+    let base = 15f64;
+    let mult = 1.4f64.powi(cfg.points.unlock_count_today.min(12) as i32);
+    (base * mult).round() as i64
+}
+
 #[tauri::command]
 pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
+    // 跨天重置解锁次数
+    let today = crate::sched::now_local().format("%Y-%m-%d").to_string();
+    {
+        let mut c = shared.config();
+        if c.points.day != today {
+            c.points.day = today.clone();
+            c.points.unlock_count_today = 0;
+            let _ = cfg::save(&c);
+            if let Ok(mut w) = shared.cfg.write() {
+                *w = c;
+            }
+        }
+    }
     let config = shared.config();
     let now = crate::sched::now_local();
     let (runtime, notice) = {
@@ -33,6 +53,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             .lock()
             .ok()
             .and_then(|mut g| g.take());
+        let app_notice = shared.notice.lock().ok().and_then(|mut g| g.take());
         (
             json!({
                 "active": rt.active.iter().map(|(n, m)| json!({"name": n, "mode": m})).collect::<Vec<_>>(),
@@ -45,6 +66,14 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "hbBrowser": rt.hb_browser,
                 "siteUrl": rt.site_url,
                 "siteTitle": rt.site_title,
+                "locked": rt.locked,
+                "lockUntil": rt.lock_until,
+                "lockUntilText": rt.lock_until_text,
+                "lockNames": rt.lock_names,
+                "breakOn": rt.in_break,
+                "breakAny": rt.on_break,
+                "breakLeft": rt.break_left,
+                "notice": app_notice,
             }),
             m,
         )
@@ -59,11 +88,20 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "targetPid": mask.target_pid.load(Ordering::Relaxed),
             "opacity": mask.opacity.load(Ordering::Relaxed),
             "margin": mask.margin.load(Ordering::Relaxed),
+            "radius": mask.radius.load(Ordering::Relaxed),
+            "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
             "hotkey": mask.hotkey.load(Ordering::Relaxed),
             "notice": notice,
         },
         "admin": is_admin(),
+        "points": {
+            "balance": config.points.balance,
+            "earned": config.points.total_earned,
+            "unlockUntil": config.points.unlock_until,
+            "count": config.points.unlock_count_today,
+            "price": unlock_price(&config),
+        },
         "version": crate::version::VERSION,
         "buildDate": crate::version::BUILD_DATE,
         "developer": crate::version::DEVELOPER,
@@ -72,6 +110,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
         "appName": crate::version::APP_NAME,
         "maskedToken": mask_secret(&config.settings.update.token),
         "configPath": cfg::config_path().to_string_lossy(),
+        "dataPath": cfg::data_dir().to_string_lossy(),
         "now": now.format("%Y-%m-%d %H:%M").to_string(),
         "weekday": now.format("%u").to_string(),
     })
@@ -79,6 +118,13 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
 
 #[tauri::command]
 pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(), String> {
+    if crate::guard::is_locked(&shared) {
+        let info = crate::guard::lock_info(&shared.config());
+        return Err(format!(
+            "自律固化中（{} 结束），现在改不了设置",
+            if info.until_text.is_empty() { "本时段".to_string() } else { info.until_text }
+        ));
+    }
     let mut c = config;
     cfg::sanitize(&mut c);
     c.updated_at = chrono::Local::now().timestamp();
@@ -182,6 +228,8 @@ pub fn mask_set(
     shared: State<'_, Arc<Shared>>,
     opacity: Option<u8>,
     margin: Option<i32>,
+    radius: Option<i32>,
+    duration_ms: Option<u32>,
     block_click: Option<bool>,
 ) {
     let m = &*shared.mask;
@@ -190,6 +238,12 @@ pub fn mask_set(
     }
     if let Some(v) = margin {
         m.margin.store(v.clamp(0, 200), Ordering::Relaxed);
+    }
+    if let Some(v) = radius {
+        m.radius.store(v.clamp(0, 120), Ordering::Relaxed);
+    }
+    if let Some(v) = duration_ms {
+        m.duration.store(v.min(2000) as i32, Ordering::Relaxed);
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
@@ -284,8 +338,98 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
+pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    if crate::guard::is_locked(&shared) {
+        return Err("自律固化中，结束前无法退出".into());
+    }
+    crate::guard::stop_guard();
     app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_main(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 用积分强行解锁
+#[tauri::command]
+pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Value, String> {
+    let minutes = minutes.clamp(1, 120);
+    let mut c = shared.config();
+    let price = unlock_price(&c) * minutes as i64;
+    if c.points.balance < price {
+        return Err(format!(
+            "积分不够：需要 {price} 分，你现在有 {} 分",
+            c.points.balance
+        ));
+    }
+    c.points.balance -= price;
+    c.points.unlock_count_today += 1;
+    c.points.unlock_until = chrono::Local::now().timestamp() + (minutes as i64) * 60;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    crate::guard::stop_guard();
+    Ok(json!({
+        "ok": true,
+        "spent": price,
+        "balance": c.points.balance,
+        "until": c.points.unlock_until,
+    }))
+}
+
+/// 桌面 HUD 的数据源（1 秒轮询）
+#[tauri::command]
+pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
+    let now = chrono::Local::now().timestamp();
+    let (on, locked, elapsed, remaining, until_text, break_on, break_left, quote, quote_from) = {
+        match shared.rt.lock() {
+            Ok(rt) => (
+                !rt.active.is_empty() || rt.locked,
+                rt.locked,
+                if rt.since > 0 { (now - rt.since).max(0) } else { 0 },
+                if rt.lock_until > 0 { (rt.lock_until - now).max(0) } else { 0 },
+                rt.lock_until_text.clone(),
+                rt.in_break,
+                rt.break_left,
+                rt.quote.clone(),
+                rt.quote_from.clone(),
+            ),
+            Err(_) => (false, false, 0, 0, String::new(), false, 0, String::new(), String::new()),
+        }
+    };
+    let cfg = shared.config();
+    json!({
+        "on": on,
+        "locked": locked,
+        "elapsed": elapsed,
+        "remaining": remaining,
+        "untilText": until_text,
+        "breakOn": break_on,
+        "breakLeft": break_left,
+        "quote": quote,
+        "quoteFrom": quote_from,
+        "theme": cfg.settings.theme,
+        "hudEnabled": cfg.settings.hud.enabled,
+    })
+}
+
+#[tauri::command]
+pub fn hud_save(shared: State<'_, Arc<Shared>>, enabled: bool, quote_minutes: u32) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.hud.enabled = enabled;
+    c.settings.hud.quote_minutes = quote_minutes.clamp(5, 1440);
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
 }
 
 #[tauri::command]

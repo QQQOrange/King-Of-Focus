@@ -79,6 +79,50 @@ impl Default for Lock {
     }
 }
 
+/// 休息（番茄）配置
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BreakCfg {
+    /// none | pomodoro
+    pub kind: String,
+    pub work_min: u32,
+    pub break_min: u32,
+}
+
+impl Default for BreakCfg {
+    fn default() -> Self {
+        BreakCfg {
+            kind: "none".into(),
+            work_min: 25,
+            break_min: 5,
+        }
+    }
+}
+
+/// 积分账户
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Points {
+    pub balance: i64,
+    pub total_earned: i64,
+    /// 用积分强行解锁的截止时间
+    pub unlock_until: i64,
+    pub unlock_count_today: u32,
+    pub day: String,
+}
+
+impl Default for Points {
+    fn default() -> Self {
+        Points {
+            balance: 0,
+            total_earned: 0,
+            unlock_until: 0,
+            unlock_count_today: 0,
+            day: String::new(),
+        }
+    }
+}
+
 /// 一条规则（一个黑名单 / 白名单组）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
@@ -98,6 +142,10 @@ pub struct RuleList {
     pub color: String,
     /// 仅强制模式生效：白名单里也不会被拦截的进程（用户自定义保护）
     pub extra_protected: Vec<String>,
+    /// 休息（番茄）设置
+    pub brk: BreakCfg,
+    /// 硬核锁定：生效期间不能退出程序、不能改设置、任务管理器会被关掉
+    pub hard: bool,
 }
 
 impl Default for RuleList {
@@ -114,6 +162,8 @@ impl Default for RuleList {
             lock: Lock::default(),
             color: "#ff9f43".into(),
             extra_protected: vec![],
+            brk: BreakCfg::default(),
+            hard: false,
         }
     }
 }
@@ -126,6 +176,10 @@ pub struct MaskCfg {
     pub opacity: u8,
     /// 目标窗口四周留出的可见边距（像素）
     pub margin: i32,
+    /// 遮罩圆角半径（像素）
+    pub radius: i32,
+    /// 扩散 / 收起动画时长（毫秒，0 = 瞬间）
+    pub duration_ms: u32,
     /// 是否屏蔽鼠标点击（遮罩吃掉点击，防止手滑去点别的窗口）
     pub block_click: bool,
     /// 上次使用的目标窗口
@@ -142,11 +196,36 @@ impl Default for MaskCfg {
         MaskCfg {
             opacity: 88,
             margin: 6,
+            radius: 28,
+            duration_ms: 420,
             block_click: false,
             target_pid: 0,
             target_title: String::new(),
             hotkey: true,
             hotkey_label: "Ctrl+Alt+K".into(),
+        }
+    }
+}
+
+/// 桌面悬浮 HUD
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HudCfg {
+    pub enabled: bool,
+    /// 励志短语多久换一次（分钟）
+    pub quote_minutes: u32,
+    /// 距屏幕右边缘的距离
+    pub offset_x: i32,
+    pub offset_y: i32,
+}
+
+impl Default for HudCfg {
+    fn default() -> Self {
+        HudCfg {
+            enabled: true,
+            quote_minutes: 60,
+            offset_x: 20,
+            offset_y: 20,
         }
     }
 }
@@ -268,6 +347,8 @@ pub struct Settings {
     pub soft_close: bool,
     /// 全局保护进程名（强制模式不拦截）
     pub protected: Vec<String>,
+    /// 外观：system | dark | light
+    pub theme: String,
     /// 专注遮罩
     pub mask: MaskCfg,
     /// 时长统计
@@ -276,6 +357,8 @@ pub struct Settings {
     pub sync: SyncCfg,
     /// 自动更新
     pub update: UpdateCfg,
+    /// 桌面 HUD
+    pub hud: HudCfg,
 }
 
 impl Default for Settings {
@@ -290,10 +373,12 @@ impl Default for Settings {
             close_to_tray: true,
             soft_close: true,
             protected: default_protected(),
+            theme: "system".into(),
             mask: MaskCfg::default(),
             stats: StatsCfg::default(),
             sync: SyncCfg::default(),
             update: UpdateCfg::default(),
+            hud: HudCfg::default(),
         }
     }
 }
@@ -321,6 +406,8 @@ pub struct Config {
     pub settings: Settings,
     /// 最后修改时间（云同步冲突判定用）
     pub updated_at: i64,
+    /// 积分账户
+    pub points: Points,
 }
 
 impl Default for Config {
@@ -346,6 +433,12 @@ impl Default for Config {
             lock: Lock::default(),
             color: "#ff9f43".into(),
             extra_protected: vec![],
+            brk: BreakCfg {
+                kind: "pomodoro".into(),
+                work_min: 50,
+                break_min: 10,
+            },
+            hard: true,
         };
         l.id = "seed-study".into();
         Config {
@@ -353,6 +446,7 @@ impl Default for Config {
             lists: vec![l],
             settings: Settings::default(),
             updated_at: chrono::Local::now().timestamp(),
+            points: Points::default(),
         }
     }
 }

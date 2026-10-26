@@ -80,10 +80,45 @@ function toast(msg, kind) {
   setTimeout(() => el.remove(), 3200);
 }
 
+/* ---------------- 主题 ---------------- */
+const themeMedia = window.matchMedia('(prefers-color-scheme: light)');
+
+function cssVar(n) {
+  return getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+}
+
+function resolveTheme(pref) {
+  if (pref === 'light' || pref === 'dark') return pref;
+  return themeMedia.matches ? 'light' : 'dark';
+}
+
+function applyTheme() {
+  const pref = (S.data && S.data.config && S.data.config.settings.theme) || 'system';
+  const t = resolveTheme(pref);
+  if (document.documentElement.dataset.theme !== t) {
+    document.documentElement.dataset.theme = t;
+    // 主题切换后重绘饼图（canvas 颜色是算出来的）
+    if (S.view === 'stats') {
+      const cur = currentSlices();
+      drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
+    }
+    if ($('#pieOn')) renderReportModal();
+  }
+}
+
+themeMedia.addEventListener('change', () => {
+  const pref = (S.data && S.data.config && S.data.config.settings.theme) || 'system';
+  if (pref === 'system') {
+    applyTheme();
+    if (S.view === 'settings') render();
+  }
+});
+
 /* ---------------- 状态拉取 ---------------- */
 async function pull() {
   try {
     S.data = await invoke('get_state');
+    applyTheme();
     renderChrome();
     if (S.view === 'overview' && !S.editing) render();
     if (S.data && S.data.mask && S.data.mask.notice) {
@@ -112,6 +147,14 @@ function renderChrome() {
   parts.push(ext ? '浏览器插件：已连接' : '<span class="warn">浏览器插件：未连接</span>');
   if (!d.admin) parts.push('<span class="warn">未以管理员身份运行</span>');
   $('#sideStatus').innerHTML = parts.join('<br>');
+
+  const tb = $('#themeBtn');
+  if (tb) {
+    const pref = (d.config && d.config.settings.theme) || 'system';
+    const cur = resolveTheme(pref);
+    const label = pref === 'system' ? `◐ 跟随系统（${cur === 'light' ? '浅' : '深'}）` : cur === 'light' ? '☀ 浅色' : '☾ 深色';
+    tb.textContent = label;
+  }
 }
 
 /* ---------------- 视图：总览 ---------------- */
@@ -121,6 +164,25 @@ function viewOverview() {
   const rt = d.runtime;
   const on = rt.disciplineOn;
   const next = rt.nextChange;
+  const locked = !!rt.locked;
+  const pts = d.points || { balance: 0, price: 15, count: 0, unlockUntil: 0 };
+
+  const phase = rt.breakOn ? '休息中' : on ? '专注中' : '自由时间';
+  const phaseLeft = rt.breakLeft || 0;
+  const mmss = (s) => `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+
+  const lockBanner = locked ? `
+    <div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
+      <b style="color:var(--red)">🔒 自律固化中</b>
+      ${esc(rt.lockNames.join('、'))} 正在生效，<b>${esc(rt.lockUntilText || '时段结束')}</b> 之前：
+      无法退出程序、无法修改任何设置，任务管理器 / 进程管理器会被自动关闭。
+      <div style="margin-top:6px;color:var(--text-3)">想提前结束，只能用积分解锁。</div>
+    </div>` : '';
+
+  const unlockBanner = pts.unlockUntil && pts.unlockUntil * 1000 > Date.now() ? `
+    <div class="note" style="margin-bottom:16px">
+      <b>已用积分解锁</b> · 到 ${new Date(pts.unlockUntil * 1000).toLocaleTimeString()} 之前所有拦截暂停。
+    </div>` : '';
 
   const chips = rt.active.length
     ? rt.active.map((a) => `<span class="rule-chip"><span class="dot"></span>${esc(a.name)}
@@ -140,13 +202,16 @@ function viewOverview() {
   const maskOn = d.mask.on;
 
   return `
+  ${lockBanner}${unlockBanner}
   <div class="hero">
     <div class="hero-main">
       <div class="hero-label">当前状态</div>
-      <div class="hero-state ${on ? 'on' : ''}">${on ? '专注进行中' : '自由时间'}</div>
-      <div class="hero-desc">${on
-        ? `黑名单里的软件与网页已被拦住：${esc(rt.active.map((a) => a.name).join('、'))}`
-        : '所有规则都在等待它自己的生效时段。'}</div>
+      <div class="hero-state ${on || rt.breakOn ? 'on' : ''}">${phase}</div>
+      <div class="hero-desc">${rt.breakOn
+        ? `休息 ${mmss(phaseLeft)}，这段时间黑名单是放开的，时间到自动锁回去。`
+        : on
+          ? `黑名单里的软件与网页已被拦住：${esc(rt.active.map((a) => a.name).join('、'))}`
+          : '所有规则都在等待它自己的生效时段。'}</div>
       <div class="hero-count">
         <div><div class="n">${rt.blockedApps}</div><div class="l">今日拦截软件</div></div>
         <div><div class="n">${rt.blockedSites}</div><div class="l">今日拦截网页</div></div>
@@ -155,15 +220,27 @@ function viewOverview() {
     </div>
     <div class="stat-mini">
       <div class="mini">
+        <div class="l">自律积分</div>
+        <div class="v" style="color:var(--gold)">${pts.balance}</div>
+        <div class="l" style="margin-top:6px">每分钟 +1 分 · 今日已解锁 ${pts.count} 次</div>
+      </div>
+      <div class="mini">
         <div class="l">专注遮罩</div>
         <div class="v" style="color:${maskOn ? 'var(--gold)' : 'var(--text-2)'}">${maskOn ? '已开启' : '未开启'}</div>
         <div class="l" style="margin-top:6px">${maskOn ? esc(d.config.settings.mask.targetTitle || '目标窗口') : '选一个窗口，把其他都盖住'}</div>
       </div>
-      <div class="mini">
-        <div class="l">当前前台网页</div>
-        <div class="v" style="font-size:13px;font-weight:600">${rt.siteUrl ? esc(rt.siteUrl.replace(/^https?:\/\//, '').slice(0, 30)) : '—'}</div>
-        <div class="l" style="margin-top:6px">${rt.siteUrl ? '来自浏览器插件上报' : '安装插件后可识别具体网页'}</div>
-      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">积分兑换 <span class="badge gold">${pts.balance} 分</span></div>
+    <div class="card-sub">
+      专注 1 分钟 = 1 分。用积分可以强行解锁：当前单价 <b>${pts.price} 分 / 分钟</b>，
+      今天第 n 次解锁单价 ×1.4（第 1 次 ${pts.price}，第 2 次 ${Math.round(pts.price * 1.4)}，第 3 次 ${Math.round(pts.price * 1.96)}）。
+    </div>
+    <div class="row" style="align-items:center">
+      <button class="btn btn-primary" data-act="open-unlock">用积分解锁</button>
+      <span class="hint">${on || rt.breakOn ? '解锁期间所有拦截暂停，倒计时结束自动恢复' : '现在没有生效的规则，暂时不需要解锁'}</span>
     </div>
   </div>
 
@@ -173,7 +250,7 @@ function viewOverview() {
     <div>${chips}</div>
   </div>
 
-  <div class="grid-2" style="margin-top:14px;align-items:start">
+  <div class="grid-2" style="margin-top:16px;align-items:start">
     <div class="card">
       <div class="card-title">最近拦截</div>
       <div class="card-sub">只记录最近 240 条，含时间、类型、对象与命中规则。</div>
@@ -186,7 +263,7 @@ function viewOverview() {
         <div class="ev"><span class="t">软件</span><span class="n">${rt.blockedApps} 次拦截</span></div>
         <div class="ev"><span class="t">网页</span><span class="n">${rt.blockedSites} 次拦截</span></div>
         <div class="ev"><span class="t">插件</span><span class="n">${rt.hb ? `${esc(rt.hbBrowser || '浏览器')} · ${Math.max(0, Math.round(Date.now() / 1000 - rt.hb))} 秒前心跳` : '尚未连接'}</span></div>
-        <div class="ev"><span class="t">数据</span><span class="n muted" style="font-size:11px">${esc(d.configPath)}</span></div>
+        <div class="ev"><span class="t">数据</span><span class="n muted" style="font-size:11px">${esc(d.dataPath || '')}</span></div>
       </div>
     </div>
   </div>`;
@@ -208,6 +285,7 @@ function viewRules() {
   if (!d) return '';
   const lists = d.config.lists;
   const activeNames = new Set((d.runtime.active || []).map((a) => a.name));
+  const locked = !!d.runtime.locked;
   const cards = lists.length
     ? lists.map((l) => `
       <div class="rule-card ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
@@ -217,28 +295,36 @@ function viewRules() {
             ${l.mode === 'whitelist'
               ? '<span class="badge red">强制模式 · 只能开白名单</span>'
               : '<span class="badge gold">黑名单 · 这些不能开</span>'}
+            ${l.hard ? '<span class="badge red">固化</span>' : ''}
+            ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
             ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
-            ${l.lock && l.lock.kind !== 'none' ? '<span class="badge">已锁定</span>' : ''}
           </div>
           <div class="rule-meta">${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外<br>
             <span class="muted">${esc(schedSummary(l.schedule))}</span></div>
         </div>
         <div class="rule-actions">
-          <div class="switch" data-act="toggle-rule" data-id="${l.id}" title="启用 / 停用">
+          <div class="switch" data-act="toggle-rule" data-id="${l.id}"
+               style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
+               title="${locked ? '自律固化中，开关已锁定' : '启用 / 停用'}">
             <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
           </div>
-          <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}">删除</button>
+          <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}"
+            ${locked ? 'disabled' : ''}>删除</button>
         </div>
       </div>`).join('')
     : '<div class="empty">还没有规则。点右上角「新建规则」开始。</div>';
 
   return `
+  ${locked ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
+    <b style="color:var(--red)">🔒 自律固化中</b>：${esc((d.runtime.lockNames || []).join('、'))} 正在生效，
+    <b>${esc(d.runtime.lockUntilText || '时段结束')}</b> 之前所有开关都已置灰，改不了也关不掉。
+  </div>` : ''}
   <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:16px">
     <div class="hint" style="max-width:640px">
       一条规则 = 一个黑名单（或白名单）+ 一张周时间表。<b>只有落在时间表里的时段，规则才会生效</b>；
       时间表全空表示 7×24 小时生效。软件与网站分别维护，互不影响。
     </div>
-    <button class="btn btn-primary" data-act="new-rule">+ 新建规则</button>
+    <button class="btn btn-primary" data-act="new-rule" ${locked ? 'disabled' : ''}>+ 新建规则</button>
   </div>
   <div style="display:flex;flex-direction:column;gap:10px">${cards}</div>`;
 }
@@ -279,7 +365,8 @@ function renderEditor() {
     ['sites', `网站 (${r.sites.length})`],
     ['exceptions', `网站例外 (${r.exceptions.length})`],
     ['schedule', '时间表'],
-    ['lock', '锁定'],
+    ['break', '休息'],
+    ['lock', '固化'],
   ];
 
   let body = '';
@@ -287,6 +374,7 @@ function renderEditor() {
   if (S.editorTab === 'sites') body = tabSites(r);
   if (S.editorTab === 'exceptions') body = tabExceptions(r);
   if (S.editorTab === 'schedule') body = tabSchedule(r);
+  if (S.editorTab === 'break') body = tabBreak(r);
   if (S.editorTab === 'lock') body = tabLock(r);
 
   const html = `
@@ -417,33 +505,50 @@ function tabSchedule(r) {
     </div>`;
 }
 
-function tabLock(r) {
-  const k = r.lock.kind;
-  const until = r.lock.until ? new Date(r.lock.until * 1000).toLocaleString() : '';
+function tabBreak(r) {
+  const b = r.brk || { kind: 'none', workMin: 25, breakMin: 5 };
+  const pomo = b.kind === 'pomodoro';
   return `
     <div class="hint" style="margin-bottom:14px">
-      锁定是为了防止自己在生效期间随手把规则关掉。锁定中的规则不能关闭、不能删除、不能改名单。
+      开启番茄后，生效时段会被切成「专注 → 休息 → 专注 …」的循环。
+      <b>休息期间这条规则不拦截</b>（黑名单里的软件和网页都能用），时间一到自动锁回去。
+      循环从时段的起点开始算。
     </div>
-    <div class="seg" style="margin-bottom:16px">
-      <button class="${k === 'none' ? 'active' : ''}" data-act="lock-kind" data-k="none">不锁定</button>
-      <button class="${k === 'timer' ? 'active' : ''}" data-act="lock-kind" data-k="timer">定时解锁</button>
-      <button class="${k === 'password' ? 'active' : ''}" data-act="lock-kind" data-k="password">密码</button>
-      <button class="${k === 'text' ? 'active' : ''}" data-act="lock-kind" data-k="text">抄写文字</button>
+    <div class="seg" style="margin-bottom:18px">
+      <button class="${!pomo ? 'active gold' : ''}" data-act="break-kind" data-k="none">不休息</button>
+      <button class="${pomo ? 'active gold' : ''}" data-act="break-kind" data-k="pomodoro">番茄休息</button>
     </div>
-    ${k === 'timer' ? `<div class="row" style="align-items:center;gap:10px">
-        <span class="hint">锁定时长（分钟）</span>
-        <input type="number" id="lockMins" value="60" min="1" style="width:110px" />
-        <span class="hint">${until ? '当前解锁时间：' + esc(until) : ''}</span>
-      </div>` : ''}
-    ${k === 'password' ? `<div class="row" style="align-items:center;gap:10px">
-        <span class="hint">解锁密码</span>
-        <input type="text" id="lockPwd" value="${esc(r.lock.password || '')}" style="width:220px" placeholder="保存后生效" />
-      </div>` : ''}
-    ${k === 'text' ? `<div class="row" style="align-items:center;gap:10px">
-        <span class="hint">需要抄写的字符数</span>
-        <input type="number" id="lockChars" value="${r.lock.chars || 20}" min="1" max="999" style="width:110px" />
-      </div>` : ''}
-    ${k !== 'none' ? '<div class="note" style="margin-top:16px">锁定一旦保存，在解锁条件满足前无法绕过。请务必记住密码。</div>' : ''}`;
+    ${pomo ? `
+    <div class="row" style="gap:22px;align-items:flex-end;margin-bottom:16px">
+      <div>
+        <div class="hint" style="margin-bottom:6px">专注多久（分钟）</div>
+        <input type="number" id="workMin" min="1" max="240" value="${b.workMin || 25}" style="width:110px" />
+      </div>
+      <div>
+        <div class="hint" style="margin-bottom:6px">休息多久（分钟）</div>
+        <input type="number" id="breakMin" min="1" max="120" value="${b.breakMin || 5}" style="width:110px" />
+      </div>
+      <div class="hint" style="padding-bottom:9px">例如 50 / 10 = 每专注 50 分钟放你 10 分钟</div>
+    </div>
+    <div class="note">
+      生效时段建议留够整轮时间，比如 19:00-21:30 配 50/10，能跑完 2 轮多一点。<br>
+      休息期间积分<b>不加</b>，但程序可以正常退出（休息不算自律时间）。
+    </div>` : '<div class="hint">不设置休息时，整段生效时间都会处于拦截状态。</div>'}`;
+}
+
+function tabLock(r) {
+  const locked = !!(S.data && S.data.runtime && S.data.runtime.locked);
+  return `
+    <div class="hint" style="margin-bottom:14px">
+      「固化」开关在<b>「固化」标签页</b>里控制：开启后生效期间程序不可退出、设置不可修改、任务管理器会被关闭。
+    </div>
+    ${locked ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07)">
+      当前正在固化中（${esc(S.data.runtime.lockUntilText || '时段结束')} 结束），期间无法保存任何修改。
+    </div>` : '<div class="note">当前不在固化时段，设置可以自由修改。</div>'}
+    <div class="hint" style="margin-top:16px">
+      <b>解除方式</b>：时段自然结束，或用积分强行解锁（到「总览 → 积分兑换」）。
+      积分按专注时长发放，每专注 1 分钟 1 分，解锁单价随当天解锁次数递增。
+    </div>`;
 }
 
 /* 拖动刷时段 */
@@ -489,6 +594,9 @@ function viewMask() {
   const m = d.mask;
   const target = d.config.settings.mask.targetTitle || '';
   const op = m.opacity, mg = m.margin;
+  const rad = m.radius == null ? 28 : m.radius;
+  const dur = m.duration == null ? 420 : m.duration;
+  const locked = !!d.runtime.locked;
   return `
   <div class="mask-hero">
     <div style="flex:1">
@@ -497,7 +605,7 @@ function viewMask() {
       <div class="hero-desc" style="margin-top:6px">
         ${m.on
           ? `正锁定在：<b style="color:var(--gold)">${esc(target || '目标窗口')}</b>`
-          : '选一个窗口作为"允许留下的画面"，其余区域会被纯黑遮罩盖住。'}
+          : '选一个窗口作为"允许留下的画面"，遮罩会从它的边缘向外铺满整块显示器。'}
       </div>
       <div style="margin-top:18px;display:flex;gap:9px;flex-wrap:wrap">
         <button class="btn btn-primary" data-act="pick-target">${target ? '重新选择窗口' : '选择目标窗口'}</button>
@@ -508,11 +616,11 @@ function viewMask() {
     <div class="mask-preview">
       <div class="screen"></div>
       <div class="dim" id="previewDim" style="opacity:${op / 100}"></div>
-      <div class="hole">${esc((target || '目标窗口').slice(0, 10))}</div>
+      <div class="hole" id="previewHole" style="border-radius:${Math.max(2, Math.round(rad / 3))}px">${esc((target || '目标窗口').slice(0, 10))}</div>
     </div>
   </div>
 
-  <div class="card" style="margin-top:14px">
+  <div class="card" style="margin-top:16px">
     <div class="card-title">遮罩参数</div>
     <div class="card-sub">拖动即时生效——遮罩开着的时候，你可以直接在屏幕上看到效果。</div>
     <div class="slider-row">
@@ -525,21 +633,34 @@ function viewMask() {
       <input type="range" min="0" max="60" step="1" value="${mg}" id="mgRange" />
       <span class="val" id="mgVal">${mg}px</span>
     </div>
+    <div class="slider-row">
+      <span class="lab">圆角半径</span>
+      <input type="range" min="0" max="80" step="1" value="${rad}" id="radRange" />
+      <span class="val" id="radVal">${rad}px</span>
+    </div>
+    <div class="slider-row">
+      <span class="lab">动画时长</span>
+      <input type="range" min="0" max="1200" step="20" value="${dur}" id="durRange" />
+      <span class="val" id="durVal">${dur}ms</span>
+    </div>
     <div class="row" style="align-items:center;justify-content:space-between;margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
       <div>
         <div style="font-size:12.5px">同时屏蔽鼠标操作</div>
-        <div class="hint" style="margin-top:4px">开启后，遮罩会吃掉所有点击，只有目标窗口和本程序可用。想只是"看不见但能点"，就关掉它。</div>
+        <div class="hint" style="margin-top:4px">开启后，遮罩会吃掉所有点击，只有目标窗口和本程序可用。关掉则是纯粹"看不见"，鼠标可以穿透。</div>
       </div>
       <div class="switch" data-act="toggle-click">
         <input type="checkbox" ${m.blockClick ? 'checked' : ''}><i></i>
       </div>
     </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn btn-sm" data-act="mask-save">保存为默认</button>
+      <span class="hint" style="align-self:center">改动会立即生效；点保存才会写进配置，下次启动沿用</span>
+    </div>
   </div>
 
-  <div class="note" style="margin-top:14px">
-    <b>工作原理：</b>遮罩由 4 块分层窗口（上/下/左/右）环绕目标窗口拼成，窗口一动只挪位置、不重绘，
-    所以拖拽缩放时能跟得上；坐标基于「虚拟桌面」，多显示器、混合 DPI 也不会错位。
-    目标窗口关闭或最小化时遮罩会自动退出。
+  <div class="note" style="margin-top:16px">
+    <b>扩散动画：</b>开启动画时，遮罩从目标窗口的边缘向外扩展，直到铺满它所在的显示器；
+    关闭时反向收回。圆角半径全程保持一致，窗口拖动 / 缩放时遮罩会实时跟随，多显示器和混合 DPI 下按各自的物理分辨率等比适配。
   </div>`;
 }
 
@@ -737,10 +858,12 @@ function viewReports() {
   </div>
 
   <div class="note" style="margin-top:14px">
-    <b>存储方式：</b>原始日数据存在 <code>%APPDATA%\\KingOfFocus\\stats\\days\\</code>（一天一个 JSON，按小时分桶）；
-    报告存在 <code>stats\\reports\\</code>（一份报告一个 JSON，含两种状态各自的扇区数据）。
-    默认保留 <b>${s.retentionDays || 400} 天</b>，可在下方设置里调整。报告可以随时点开回看，也可以手动删除。
-    <div style="margin-top:8px"><button class="btn btn-sm" data-act="open-stats-dir">打开数据目录</button></div>
+    <b>存储方式：</b>全部数据都在软件目录下的 <code>king of focus data</code> 里 —— 原始日数据存
+    <code>stats\\days\\</code>（一天一个 JSON，按小时分桶）；报告存 <code>stats\\reports\\</code>
+    （一份报告一个 JSON，含两种状态各自的扇区数据）。
+    默认保留 <b>${s.retentionDays || 400} 天</b>，可在设置里调整。报告可以随时点开回看，也可以手动删除。
+    <div class="hint" style="margin-top:8px;word-break:break-all">当前路径：${esc(d.dataPath || '')}</div>
+    <div style="margin-top:10px"><button class="btn btn-sm" data-act="open-stats-dir">打开数据目录</button></div>
   </div>`;
 }
 
@@ -827,7 +950,7 @@ function viewAbout() {
   return `
   <div class="mask-hero" style="align-items:center">
     <div style="display:flex;gap:18px;align-items:center">
-      <div class="brand-mark" style="width:64px;height:64px;border-radius:16px;font-size:30px">王</div>
+      <div class="brand-mark" style="width:72px;height:72px;border-radius:20px"><img src="logo.png" alt="" /></div>
       <div>
         <div style="font-size:22px;font-weight:700;letter-spacing:.3px">${esc(d.appName || 'King of Focus')}</div>
         <div class="hint" style="margin-top:6px">
@@ -970,6 +1093,16 @@ function viewSettings() {
   </div>` : ''}
 
   <div class="card">
+    <div class="card-title">外观</div>
+    <div class="card-sub">「跟随系统」会实时响应 Windows 的浅色 / 深色切换，不用重启。</div>
+    <div class="seg">
+      <button class="${(st.theme || 'system') === 'system' ? 'active gold' : ''}" data-act="theme" data-v="system">跟随系统</button>
+      <button class="${st.theme === 'light' ? 'active gold' : ''}" data-act="theme" data-v="light">浅色</button>
+      <button class="${st.theme === 'dark' ? 'active gold' : ''}" data-act="theme" data-v="dark">深色</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">拦截行为</div>
     <div class="card-sub">这些设置对所有规则生效。</div>
     ${sw('dryRun', st.dryRun, '演练模式', '只记录不真的关闭，用来先验证名单是否写对了')}
@@ -1004,6 +1137,23 @@ function viewSettings() {
         <input type="number" id="retentionDays" value="${d.config.settings.stats.retentionDays}" min="30" max="3650" style="width:96px" />
         <span class="hint">天</span>
         <button class="btn btn-sm" data-act="save-num" data-k="retentionDays">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">桌面 HUD</div>
+    <div class="card-sub">
+      自律期间在屏幕右上角浮一个小窗：已经专注多久、还有多久结束，下面一句励志短语。
+      窗口置顶、不进任务栏，跟着浅色/深色主题走。
+    </div>
+    ${sw('hudEnabled', (d.config.settings.hud || {}).enabled, '显示桌面 HUD', '自律时段自动出现，结束后自动隐藏')}
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
+      <div><div style="font-size:12.5px">短语切换间隔</div><div class="hint" style="margin-top:3px">联网取一句（一言），失败时用内置句子轮换</div></div>
+      <div class="row" style="align-items:center;gap:8px">
+        <input type="number" id="quoteMins" min="5" max="1440" value="${(d.config.settings.hud || {}).quoteMinutes || 60}" style="width:90px" />
+        <span class="hint">分钟</span>
+        <button class="btn btn-sm" data-act="save-quote-mins">保存</button>
       </div>
     </div>
   </div>
@@ -1050,11 +1200,14 @@ function drawPie(canvas, slices, total, opts) {
 
   const sum = items.reduce((a, b) => a + b.secs, 0);
   const cx = size / 2, cy = size / 2, rOut = 118, rIn = 74;
+  const cText = cssVar('--text');
+  const cDim = cssVar('--text-3');
+  const cStroke = cssVar('--panel-a');
 
   if (sum <= 0) {
     ctx.beginPath();
     ctx.arc(cx, cy, rOut, 0, Math.PI * 2);
-    ctx.strokeStyle = '#232a3a';
+    ctx.strokeStyle = cssVar('--line-2');
     ctx.lineWidth = rOut - rIn;
     ctx.stroke();
   } else {
@@ -1067,7 +1220,7 @@ function drawPie(canvas, slices, total, opts) {
       ctx.closePath();
       ctx.fillStyle = it.color;
       ctx.fill();
-      ctx.strokeStyle = '#0f1219';
+      ctx.strokeStyle = cStroke;
       ctx.lineWidth = 2;
       ctx.stroke();
       ang += a;
@@ -1075,10 +1228,10 @@ function drawPie(canvas, slices, total, opts) {
   }
 
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#e8ecf4';
+  ctx.fillStyle = cText;
   ctx.font = '600 19px "Microsoft YaHei UI", sans-serif';
   ctx.fillText(opts && opts.center ? opts.center : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分'), cx, cy + 2);
-  ctx.fillStyle = '#6b7488';
+  ctx.fillStyle = cDim;
   ctx.font = '11px "Microsoft YaHei UI", sans-serif';
   ctx.fillText(opts && opts.sub ? opts.sub : '合计', cx, cy + 22);
 
@@ -1150,6 +1303,7 @@ const Act = window.Act = {
 
   async saveEditor() {
     const r = S.editing;
+    syncEditorInputs();
     const nameEl = $('#ruleName');
     if (nameEl) r.name = nameEl.value.trim() || '未命名规则';
     if (S.editorTab === 'lock') {
@@ -1256,6 +1410,86 @@ const Act = window.Act = {
     $('#mgVal').textContent = v + 'px';
     await invoke('mask_set', { margin: +v });
   },
+  async setRadius(v) {
+    $('#radVal').textContent = v + 'px';
+    const h = $('#previewHole');
+    if (h) h.style.borderRadius = Math.max(2, Math.round(v / 3)) + 'px';
+    await invoke('mask_set', { radius: +v });
+  },
+  async setDuration(v) {
+    $('#durVal').textContent = v + 'ms';
+    await invoke('mask_set', { durationMs: +v });
+  },
+  async maskSave() {
+    const m = S.data.config.settings.mask;
+    const cur = S.data.mask;
+    m.opacity = cur.opacity;
+    m.margin = cur.margin;
+    m.radius = cur.radius;
+    m.durationMs = cur.duration;
+    m.blockClick = cur.blockClick;
+    try {
+      await saveConfig();
+      toast('遮罩参数已保存', 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+
+  /* ---- 积分 ---- */
+  openUnlock() {
+    const p = S.data.points;
+    const opts = [5, 10, 15];
+    $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal" style="width:560px" onclick="event.stopPropagation()">
+        <div class="modal-hd">
+          <h3>用积分解锁</h3>
+          <button class="close-x" data-act="close-modal">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="row" style="gap:14px;margin-bottom:16px">
+            <div class="mini" style="flex:1"><div class="l">当前积分</div><div class="v" style="color:var(--gold)">${p.balance}</div></div>
+            <div class="mini" style="flex:1"><div class="l">当前单价</div><div class="v">${p.price} <span style="font-size:12px;font-weight:400">分/分钟</span></div></div>
+          </div>
+          ${opts.map((m) => {
+            const cost = p.price * m;
+            const ok = p.balance >= cost;
+            return `<div class="list-row" style="cursor:pointer;${ok ? '' : 'opacity:.45'}"
+                data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}">
+              <span class="badge ${ok ? 'gold' : 'red'}">${m} 分钟</span>
+              <span class="grow">解锁 ${m} 分钟自由时间</span>
+              <span class="tnum" style="color:${ok ? 'var(--gold)' : 'var(--red)'}">${cost} 分</span>
+            </div>`;
+          }).join('')}
+          <div class="note" style="margin-top:14px">
+            解锁期间所有拦截暂停、可以退出程序；倒计时结束自动恢复固化。<br>
+            今天已经解锁 ${p.count} 次，每多一次单价 ×1.4。提前结束不退还积分。
+          </div>
+        </div>
+        <div class="modal-ft"><button class="btn" data-act="close-modal">取消</button></div>
+      </div>
+    </div>`;
+  },
+  async pointsUnlock(min) {
+    try {
+      const r = await invoke('points_unlock', { minutes: min });
+      closeModal();
+      await pull();
+      render();
+      toast(`已解锁 ${min} 分钟，消耗 ${r.spent} 分`, 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+
+  hardToggle() {
+    syncEditorInputs();
+    S.editing.hard = !S.editing.hard;
+    renderEditor();
+  },
+  breakKind(k) {
+    syncEditorInputs();
+    S.editing.brk = S.editing.brk || { kind: 'none', workMin: 25, breakMin: 5 };
+    S.editing.brk.kind = k;
+    renderEditor();
+  },
   async toggleClick() {
     const on = !S.data.mask.blockClick;
     await invoke('mask_set', { blockClick: on });
@@ -1313,8 +1547,18 @@ const Act = window.Act = {
     renderReportModal();
   },
 
-  async saveCustomDays() {
-    const v = +(($('#customDays') || {}).value || 0);
+  async saveQuoteMins() {
+    const v = +(($('#quoteMins') || {}).value || 60);
+    await invoke('hud_save', {
+      enabled: !!(S.data.config.settings.hud || {}).enabled,
+      quoteMinutes: v,
+    });
+    await pull();
+    render();
+    toast(`短语每 ${v} 分钟换一次`, 'ok');
+  },
+
+  async saveCustomDays() {    const v = +(($('#customDays') || {}).value || 0);
     S.data.config.settings.stats.customDays = Math.max(0, Math.min(365, v));
     if (!S.data.config.settings.stats.customAnchor) S.data.config.settings.stats.customAnchor = todayStr();
     await saveConfig();
@@ -1323,6 +1567,12 @@ const Act = window.Act = {
 
   async cfgSwitch(k) {
     const st = S.data.config.settings;
+    if (k === 'hudEnabled') {
+      const h = st.hud || (st.hud = { enabled: true, quoteMinutes: 60 });
+      h.enabled = !h.enabled;
+      await invoke('hud_save', { enabled: h.enabled, quoteMinutes: h.quoteMinutes || 60 });
+      await pull(); render(); return;
+    }
     if (k === 'autostart') {
       st.autostart = !st.autostart;
       await invoke('set_autostart', { enabled: st.autostart });
@@ -1344,8 +1594,7 @@ const Act = window.Act = {
     render();
   },
 
-  async saveNum(k) {
-    const map = {
+  async saveNum(k) {    const map = {
       pollMs: ['settings', 'pollMs', 300, 5000],
       graceSecs: ['settings', 'graceSecs', 20, 600],
       retentionDays: ['stats', 'retentionDays', 30, 3650],
@@ -1367,6 +1616,19 @@ const Act = window.Act = {
     S.data.config.settings.protected = el.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
     await saveConfig();
     toast('保护名单已保存', 'ok');
+  },
+
+  async setTheme(v) {
+    S.data.config.settings.theme = v;
+    await saveConfig();
+    applyTheme();
+    render();
+    toast(v === 'system' ? '已跟随系统外观' : v === 'light' ? '已切换到浅色' : '已切换到深色', 'ok');
+  },
+  async cycleTheme() {
+    const cur = S.data.config.settings.theme || 'system';
+    const next = cur === 'system' ? 'light' : cur === 'light' ? 'dark' : 'system';
+    await Act.setTheme(next);
   },
 
   async restartAdmin() { await invoke('restart_as_admin'); },
@@ -1489,6 +1751,18 @@ async function loadQuota() {
   try { S.quota = await invoke('update_quota'); } catch (e) { S.quota = { ok: false }; }
 }
 
+/* 保住在编辑器里已经输入但还没保存的内容 */
+function syncEditorInputs() {
+  const r = S.editing;
+  if (!r) return;
+  const nm = $('#ruleName');
+  if (nm) r.name = nm.value;
+  const wm = $('#workMin');
+  if (wm && r.brk) r.brk.workMin = +(wm.value || 25);
+  const bm = $('#breakMin');
+  if (bm && r.brk) r.brk.breakMin = +(bm.value || 5);
+}
+
 /* ---------------- 弹层 ---------------- */
 function closeModal() { $('#modalRoot').innerHTML = ''; }
 
@@ -1604,17 +1878,17 @@ function renderReportModal() {
         ctx.arc(cx, cy, rIn, ang + a, ang, true);
         ctx.closePath();
         ctx.fillStyle = it.color; ctx.fill();
-        ctx.strokeStyle = '#0f1219'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.strokeStyle = cssVar('--panel-a'); ctx.lineWidth = 2; ctx.stroke();
         ang += a;
       }
     } else {
       ctx.beginPath(); ctx.arc(cx, cy, rOut, 0, Math.PI * 2);
-      ctx.strokeStyle = '#232a3a'; ctx.lineWidth = rOut - rIn; ctx.stroke();
+      ctx.strokeStyle = cssVar('--line-2'); ctx.lineWidth = rOut - rIn; ctx.stroke();
     }
     ctx.textAlign = 'center';
-    ctx.fillStyle = '#e8ecf4'; ctx.font = '600 15px "Microsoft YaHei UI", sans-serif';
+    ctx.fillStyle = cssVar('--text'); ctx.font = '600 15px "Microsoft YaHei UI", sans-serif';
     ctx.fillText(fmtDurShort(tot), cx, cy + 1);
-    ctx.fillStyle = '#6b7488'; ctx.font = '10px "Microsoft YaHei UI", sans-serif';
+    ctx.fillStyle = cssVar('--text-3'); ctx.font = '10px "Microsoft YaHei UI", sans-serif';
     ctx.fillText('合计', cx, cy + 18);
 
     const lg = $(legSel);
@@ -1657,10 +1931,17 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'del-rule') { await Act.delRule(el.dataset.id); return; }
   if (act === 'mode') {
+    syncEditorInputs();
     S.editing.mode = el.dataset.mode;
     renderEditor(); return;
   }
-  if (act === 'editor-tab') { S.editorTab = el.dataset.tab; renderEditor(); return; }
+  if (act === 'editor-tab') { syncEditorInputs(); S.editorTab = el.dataset.tab; renderEditor(); return; }
+  if (act === 'hard-toggle') { Act.hardToggle(); return; }
+  if (act === 'break-kind') { Act.breakKind(el.dataset.k); return; }
+  if (act === 'mask-save') { await Act.maskSave(); return; }
+  if (act === 'open-unlock') { Act.openUnlock(); return; }
+  if (act === 'do-unlock') { await Act.pointsUnlock(+el.dataset.min); return; }
+  if (act === 'noop') { toast('积分不够，先去专注赚点分', 'err'); return; }
   if (act === 'save-editor') { await Act.saveEditor(); return; }
   if (act === 'del-app') { S.editing.apps.splice(+el.dataset.i, 1); renderEditor(); return; }
   if (act === 'del-site') { S.editing.sites.splice(+el.dataset.i, 1); renderEditor(); return; }
@@ -1716,7 +1997,10 @@ document.addEventListener('click', async (e) => {
   if (act === 'stat-toggle') { await Act.statToggle(el.dataset.k); return; }
   if (act === 'cfg-switch') { await Act.cfgSwitch(el.dataset.k); return; }
   if (act === 'save-num') { await Act.saveNum(el.dataset.k); return; }
+  if (act === 'save-quote-mins') { await Act.saveQuoteMins(); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
+  if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
+  if (act === 'cycle-theme') { await Act.cycleTheme(); return; }
   if (act === 'restart-admin') { await Act.restartAdmin(); return; }
   if (act === 'open-ext') { await Act.openExt(); return; }
   if (act === 'open-cfg') { await Act.openCfg(); return; }
@@ -1788,9 +2072,13 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('input', async (e) => {
   if (e.target.id === 'opRange') await Act.setOpacity(e.target.value);
   if (e.target.id === 'mgRange') await Act.setMargin(e.target.value);
+  if (e.target.id === 'radRange') await Act.setRadius(e.target.value);
+  if (e.target.id === 'durRange') await Act.setDuration(e.target.value);
 });
 
 /* 启动 */
+document.documentElement.dataset.theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+
 (async function boot() {
   await pull();
   await loadReports();
@@ -1812,6 +2100,13 @@ document.addEventListener('input', async (e) => {
           ? `已下载 ${mb(p.done)} / ${mb(p.total)} MB`
           : `已下载 ${mb(p.done)} MB`
       );
+    });
+
+    // 拦截触发 → 自动跳回首页
+    T.event.listen('goto-home', () => {
+      if (S.editing) return;
+      S.view = 'overview';
+      render();
     });
   }
 

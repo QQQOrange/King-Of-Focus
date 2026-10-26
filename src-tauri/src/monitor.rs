@@ -1,3 +1,4 @@
+use crate::guard;
 use crate::matcher;
 use crate::model::{Config, RuleList};
 use crate::proc::{self, WinApp};
@@ -7,12 +8,40 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager};
 
-pub fn start(shared: Arc<Shared>) {
+/// 把主窗口拉到前台并跳到首页（带 1.5 秒防抖，避免疯狂抢焦点）
+pub fn focus_main(app: &AppHandle, shared: &Shared) {
+    let now_ms = chrono::Local::now().timestamp_millis();
+    let go = match shared.rt.lock() {
+        Ok(mut rt) => {
+            if now_ms - rt.last_focus < 1500 {
+                false
+            } else {
+                rt.last_focus = now_ms;
+                true
+            }
+        }
+        Err(_) => false,
+    };
+    if !go {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit("goto-home", ());
+}
+
+pub fn start(app: AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
         let mut pending: HashMap<u32, Instant> = HashMap::new();
         let mut logged: HashMap<u32, Instant> = HashMap::new();
         let self_pid = std::process::id();
+        let mut acc_ms: u64 = 0;
+        let mut guard_running = false;
 
         loop {
             let cfg: Config = shared.config();
@@ -20,12 +49,37 @@ pub fn start(shared: Arc<Shared>) {
             let now = sched::now_local();
             let today = now.format("%Y-%m-%d").to_string();
 
+            // ---- 固化（硬锁）状态 ----
+            let lock = guard::lock_info(&cfg);
+            if lock.locked {
+                guard::write_heartbeat();
+                if !guard_running {
+                    guard::ensure_guard();
+                    guard_running = true;
+                }
+            } else if guard_running {
+                guard::stop_guard();
+                guard_running = false;
+            }
+
+            // ---- 生效中的规则（休息段内的规则暂时放行）----
             let active: Vec<RuleList> = cfg
                 .lists
                 .iter()
-                .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
+                .filter(|l| {
+                    l.enabled
+                        && sched::is_active(&l.schedule, &now)
+                        && !sched::is_break_now(&l.schedule, &l.brk, &now)
+                })
                 .cloned()
                 .collect();
+
+            // 当前是否有规则处于「休息」
+            let on_break = cfg.lists.iter().any(|l| {
+                l.enabled
+                    && sched::is_active(&l.schedule, &now)
+                    && sched::is_break_now(&l.schedule, &l.brk, &now)
+            });
 
             let next_change = cfg
                 .lists
@@ -35,23 +89,105 @@ pub fn start(shared: Arc<Shared>) {
                 .min()
                 .unwrap_or(0);
 
-            if let Ok(mut rt) = shared.rt.lock() {
-                if rt.day != today {
-                    rt.day = today;
-                    rt.blocked_apps = 0;
-                    rt.blocked_sites = 0;
+            // 番茄阶段（取第一条带番茄的生效规则展示）
+            let (break_now, break_left) = cfg
+                .lists
+                .iter()
+                .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
+                .map(|l| sched::pomodoro_state(&l.schedule, &l.brk, &now))
+                .next()
+                .unwrap_or((false, 0));
+
+            {
+                if let Ok(mut rt) = shared.rt.lock() {
+                    if rt.day != today {
+                        rt.day = today;
+                        rt.blocked_apps = 0;
+                        rt.blocked_sites = 0;
+                    }
+                    rt.active = active.iter().map(|l| (l.name.clone(), l.mode.clone())).collect();
+                    rt.next_change = next_change;
+                    rt.on_break = on_break;
+                    rt.break_left = break_left;
+                    rt.in_break = break_now;
+                    rt.locked = lock.locked;
+                    rt.lock_until = lock.until;
+                    rt.lock_until_text = lock.until_text.clone();
+                    rt.lock_names = lock.names.clone();
+                    let now_ts = chrono::Local::now().timestamp();
+                    let running = !active.is_empty() || lock.locked;
+                    if running && rt.since == 0 {
+                        rt.since = now_ts;
+                    }
+                    if !running {
+                        rt.since = 0;
+                    }
                 }
-                rt.active = active.iter().map(|l| (l.name.clone(), l.mode.clone())).collect();
-                rt.next_change = next_change;
+            }
+
+            // ---- 桌面 HUD 显隐 ----
+            let show_hud = (!active.is_empty() || lock.locked) && cfg.settings.hud.enabled;
+            if let Some(w) = app.get_webview_window("hud") {
+                let vis = w.is_visible().unwrap_or(false);
+                if show_hud && !vis {
+                    if let Ok(Some(mon)) = w.primary_monitor() {
+                        let msize = mon.size();
+                        let scale = mon.scale_factor();
+                        let wsz = w
+                            .outer_size()
+                            .unwrap_or(tauri::PhysicalSize::new(268, 116));
+                        let x = msize.width as i32
+                            - wsz.width as i32
+                            - (cfg.settings.hud.offset_x as f64 * scale) as i32;
+                        let y = (cfg.settings.hud.offset_y as f64 * scale) as i32;
+                        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+                    }
+                    let _ = w.show();
+                } else if !show_hud && vis {
+                    let _ = w.hide();
+                }
+            }
+
+            // ---- 积分：只有真正在「工作段」里才计时 ----
+            if !active.is_empty() && !cfg.settings.dry_run {
+                acc_ms += poll;
+                if acc_ms >= 60_000 {
+                    acc_ms -= 60_000;
+                    shared.add_points(1);
+                }
             }
 
             pending.retain(|_, t| t.elapsed().as_secs() < 45);
             logged.retain(|_, t| t.elapsed().as_secs() < 20);
 
-            if !active.is_empty() {
+            if !active.is_empty() || lock.locked {
                 let apps = proc::screen_apps();
 
-                // 1) 应用拦截
+                // 1) 锁定期间：封杀任务管理器一类的"逃生工具"
+                if lock.locked {
+                    for a in apps.iter() {
+                        if a.pid == self_pid {
+                            continue;
+                        }
+                        let hit = guard::BANNED_PROCS
+                            .iter()
+                            .any(|b| a.name == *b || a.name.contains(b));
+                        if hit {
+                            proc::terminate(a.pid);
+                            focus_main(&app, &shared);
+                            if !cfg.settings.dry_run {
+                                shared.log(
+                                    "app",
+                                    format!("{} — {}", a.name, a.title),
+                                    "自律固化".into(),
+                                    "锁定期间禁止打开此类工具".into(),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // 2) 黑名单 / 强制模式
                 for a in apps.iter() {
                     if a.pid == self_pid {
                         continue;
@@ -73,14 +209,19 @@ pub fn start(shared: Arc<Shared>) {
                         }
                     }
                     match blocked_by {
-                        Some(rule) => on_block(&shared, &cfg, a, rule, &mut pending, &mut logged),
+                        Some(rule) => {
+                            let did = on_block(&shared, &cfg, a, rule, &mut pending, &mut logged);
+                            if did {
+                                focus_main(&app, &shared);
+                            }
+                        }
                         None => {
                             pending.remove(&a.pid);
                         }
                     }
                 }
 
-                // 2) 浏览器守护：允许拦截网站时，扩展失联就关掉浏览器
+                // 3) 浏览器守护
                 if cfg.settings.guard_browser && active.iter().any(|l| !l.sites.is_empty()) {
                     let (hb_ts, hb_browser) = match shared.rt.lock() {
                         Ok(rt) => (rt.hb_ts, rt.hb_browser.clone()),
@@ -115,6 +256,7 @@ pub fn start(shared: Arc<Shared>) {
     });
 }
 
+/// 返回本次是否真的触发了一次新的拦截（用来决定要不要跳首页）
 fn on_block(
     shared: &Shared,
     cfg: &Config,
@@ -122,7 +264,7 @@ fn on_block(
     rule: &RuleList,
     pending: &mut HashMap<u32, Instant>,
     logged: &mut HashMap<u32, Instant>,
-) {
+) -> bool {
     let label = if app.title.is_empty() {
         app.name.clone()
     } else {
@@ -140,7 +282,7 @@ fn on_block(
                 "演练模式：本应拦截（未真的关闭）".into(),
             );
         }
-        return;
+        return first;
     }
 
     if cfg.settings.soft_close {
@@ -148,7 +290,8 @@ fn on_block(
             None => {
                 let ok = proc::soft_close(app.hwnd);
                 pending.insert(app.pid, Instant::now());
-                if !logged.contains_key(&app.pid) {
+                let first = !logged.contains_key(&app.pid);
+                if first {
                     logged.insert(app.pid, Instant::now());
                     shared.log(
                         "app",
@@ -161,6 +304,7 @@ fn on_block(
                         },
                     );
                 }
+                first
             }
             Some(t) => {
                 if t.elapsed().as_millis() >= 700 {
@@ -177,21 +321,32 @@ fn on_block(
                                 "拦截失败：权限不足，请以管理员身份运行".into(),
                             );
                         }
+                        return first;
                     }
                 }
+                false
             }
         }
     } else {
         let ok = proc::terminate(app.pid);
-        let key = logged.get(&app.pid).map(|t| t.elapsed().as_secs() >= 5).unwrap_or(true);
-        if key || !ok {
+        let gate = logged
+            .get(&app.pid)
+            .map(|t| t.elapsed().as_secs() >= 5)
+            .unwrap_or(true);
+        if gate || !ok {
             logged.insert(app.pid, Instant::now());
             shared.log(
                 "app",
                 label,
                 rule.name.clone(),
-                if ok { "已强制结束".into() } else { "拦截失败：权限不足".into() },
+                if ok {
+                    "已强制结束".into()
+                } else {
+                    "拦截失败：权限不足".into()
+                },
             );
+            return ok;
         }
+        false
     }
 }

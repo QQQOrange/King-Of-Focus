@@ -19,8 +19,22 @@
         "minHeight": 690,
         "center": true,
         "resizable": true,
-        "theme": "Dark",
         "visible": true
+      },
+      {
+        "label": "hud",
+        "url": "hud.html",
+        "title": "King of Focus",
+        "width": 272,
+        "height": 122,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "focus": false,
+        "visible": false
       }
     ],
     "security": {

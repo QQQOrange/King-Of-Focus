@@ -2,12 +2,14 @@
 
 mod cfg;
 mod cmds;
+mod guard;
 mod mask;
 mod matcher;
 mod model;
 mod monitor;
 mod net;
 mod proc;
+mod quotes;
 mod sched;
 mod server;
 mod shared;
@@ -40,6 +42,11 @@ fn single_instance() -> bool {
 }
 
 fn main() {
+    // 守护进程模式：由主进程在锁定时拉起，只负责"主进程被杀就复活它"
+    if std::env::args().any(|a| a == "--guard") {
+        guard::guard_main();
+        return;
+    }
     if !single_instance() {
         return;
     }
@@ -54,13 +61,15 @@ fn main() {
         m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
         m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
         m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
+        m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
+        m.duration.store(config.settings.mask.duration_ms.min(2000) as i32, Ordering::Relaxed);
         m.hotkey.store(config.settings.mask.hotkey, Ordering::Relaxed);
         m.target_pid.store(config.settings.mask.target_pid, Ordering::Relaxed);
     }
 
     mask::start(shared.mask.clone());
-    server::start(shared.clone());
     stats::start(shared.clone());
+    quotes::start(shared.clone());
     sync::start_auto(shared.clone());
     update::cleanup();
 
@@ -95,7 +104,18 @@ fn main() {
                             let _ = w.show();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        if crate::guard::lock_info(&sh_menu.config()).locked {
+                            sh_menu.say("自律固化中，结束前无法退出");
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        } else {
+                            crate::guard::stop_guard();
+                            app.exit(0);
+                        }
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -132,7 +152,8 @@ fn main() {
                 });
             }
 
-            monitor::start(shared.clone());
+            monitor::start(app.handle().clone(), shared.clone());
+            server::start(app.handle().clone(), shared.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -150,6 +171,10 @@ fn main() {
             cmds::set_autostart,
             cmds::quit_app,
             cmds::hide_window,
+            cmds::show_main,
+            cmds::points_unlock,
+            cmds::hud_state,
+            cmds::hud_save,
             cmds::stats_range,
             cmds::stats_flush,
             cmds::stats_dir_path,

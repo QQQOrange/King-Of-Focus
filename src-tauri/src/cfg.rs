@@ -1,11 +1,34 @@
 use crate::model::Config;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-pub fn data_dir() -> PathBuf {
+pub const DATA_FOLDER: &str = "king of focus data";
+
+/// 便携模式：所有数据都放在 exe 同级的 `king of focus data` 里。
+/// 只有该目录不可写（比如装在 Program Files）时才退回 %APPDATA%。
+fn resolve_data_dir() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join(DATA_FOLDER);
+            if std::fs::create_dir_all(&p).is_ok() {
+                let probe = p.join(".write-test");
+                if std::fs::write(&probe, b"kof").is_ok() {
+                    let _ = std::fs::remove_file(&probe);
+                    return p;
+                }
+            }
+        }
+    }
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(base).join("KingOfFocus");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn data_dir() -> PathBuf {
+    DATA_DIR.get_or_init(resolve_data_dir).clone()
 }
 
 pub fn config_path() -> PathBuf {

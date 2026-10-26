@@ -121,3 +121,62 @@ pub fn summary(schedule: &[Vec<Slot>]) -> String {
 pub fn mins(m: u32) -> String {
     format!("{:02}:{:02}", (m / 60) % 24, m % 60)
 }
+
+/// 当前所处的时段（返回绝对分钟区间，已处理跨夜与跨周）
+pub fn current_slot(schedule: &[Vec<Slot>], now: &NaiveDateTime) -> Option<(i64, i64)> {
+    let di = weekday_index(now.weekday());
+    let abs_now = di * 1440 + (now.hour() * 60 + now.minute()) as i64;
+    for (a, b) in abs_ranges(schedule) {
+        for k in [-1i64, 0, 1] {
+            let s = abs_now + k * 10080;
+            if s >= a && s < b {
+                return Some((a, b));
+            }
+        }
+    }
+    None
+}
+
+/// 当前时段还剩多少秒结束
+pub fn slot_left_secs(schedule: &[Vec<Slot>], now: &NaiveDateTime) -> Option<i64> {
+    let (_, b) = current_slot(schedule, now)?;
+    let di = weekday_index(now.weekday());
+    let abs_now = di * 1440 + (now.hour() * 60 + now.minute()) as i64;
+    Some(((b - abs_now) * 60 - now.second() as i64).max(0))
+}
+
+/// 番茄：当前是否处于休息段，以及这一小段还剩多少秒
+pub fn pomodoro_state(
+    schedule: &[Vec<Slot>],
+    brk: &crate::model::BreakCfg,
+    now: &NaiveDateTime,
+) -> (bool, i64) {
+    if brk.kind != "pomodoro" || brk.work_min == 0 || brk.break_min == 0 {
+        return (false, 0);
+    }
+    let (a, _) = match current_slot(schedule, now) {
+        Some(x) => x,
+        None => return (false, 0),
+    };
+    let di = weekday_index(now.weekday());
+    let abs_now = di * 1440 + (now.hour() * 60 + now.minute()) as i64;
+    let mut elapsed_min = abs_now - a;
+    if elapsed_min < 0 {
+        elapsed_min += 10080;
+    }
+    let cycle = (brk.work_min + brk.break_min) as i64;
+    let pos = elapsed_min % cycle;
+    let in_break = pos >= brk.work_min as i64;
+    let left_min = if in_break {
+        cycle - pos - 1
+    } else {
+        brk.work_min as i64 - pos - 1
+    };
+    let left = left_min * 60 + (60 - now.second() as i64);
+    (in_break, left.max(0))
+}
+
+/// 休息中不拦截
+pub fn is_break_now(schedule: &[Vec<Slot>], brk: &crate::model::BreakCfg, now: &NaiveDateTime) -> bool {
+    pomodoro_state(schedule, brk, now).0
+}

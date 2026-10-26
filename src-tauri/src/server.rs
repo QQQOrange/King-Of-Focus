@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-pub fn start(shared: Arc<Shared>) {
+pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
         let port = shared.config().settings.port;
         let addr = format!("127.0.0.1:{port}");
@@ -21,7 +21,7 @@ pub fn start(shared: Arc<Shared>) {
         };
         println!("[King of Focus] 扩展服务已监听 http://{addr}");
         for request in server.incoming_requests() {
-            handle(&shared, request);
+            handle(&app, &shared, request);
         }
     });
 }
@@ -45,7 +45,7 @@ fn reply(req: Request, code: u16, body: String) {
     let _ = req.respond(resp);
 }
 
-fn handle(shared: &Arc<Shared>, mut req: Request) {
+fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
 
@@ -88,6 +88,8 @@ fn handle(shared: &Arc<Shared>, mut req: Request) {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("?").to_string();
                 let rule = v.get("rule").and_then(|x| x.as_str()).unwrap_or("网站黑名单").to_string();
                 shared.log("site", url, rule, "浏览器插件拦截".into());
+                // 网页被拦 → 同样把主程序拉到前台首页
+                crate::monitor::focus_main(app, shared);
             }
             reply(req, 200, json!({"ok": true}).to_string())
         }
