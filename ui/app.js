@@ -136,6 +136,8 @@ async function pull() {
 }
 
 function renderChrome() {
+  const tbn = $('#testBanner');
+  if (tbn) tbn.classList.toggle('hidden', !(S.data && S.data.testMode));
   const d = S.data;
   if (!d) return;
   const on = d.runtime.disciplineOn;
@@ -1423,6 +1425,33 @@ function viewSettings() {
   <div class="card">
     <div class="card-title">系统</div>
     ${sw('autostart', st.autostart, '开机自动启动', '写入 HKCU 的 Run 项，不需要管理员')}
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div style="font-size:12.5px">测试模式
+          ${d.testMode ? '<span class="badge gold" style="margin-left:6px">正在测试中</span>' : ''}
+        </div>
+        <div class="hint" style="margin-top:4px">
+          所有功能（拦截、遮罩、统计、报告）都<b>真实生效</b>，唯一区别是自律模式可以随时开关。
+          配置与统计写在独立目录，退出时可选「保留」或「丢弃」，都不会污染正式数据。
+        </div>
+      </div>
+      ${d.testMode
+        ? '<div class="row" style="gap:8px"><button class="btn btn-sm" data-act="test-exit-keep">退出并保留</button><button class="btn btn-sm btn-danger" data-act="test-exit-discard">退出并丢弃</button></div>'
+        : '<button class="btn btn-sm btn-primary" data-act="test-enter">进入测试模式</button>'}
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div style="font-size:12.5px">以管理员模式启动
+          <span class="badge ${d.admin ? 'green' : 'red'}" style="margin-left:6px">${d.admin ? '当前已是管理员' : '当前是普通权限'}</span>
+        </div>
+        <div class="hint" style="margin-top:4px">
+          打开后会弹 UAC 并重启成管理员。管理员权限下，遮罩可以<b>摘掉其他置顶浮窗的“总在最前”属性</b>，
+          像 lazytyper 那种小横条会被一次性盖住，不再来回闪。
+          同时也能拦住以管理员运行的程序。
+        </div>
+      </div>
+      <div class="switch" data-act="toggle-cfg" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
+    </div>
     ${sw('closeToTray', st.closeToTray, '关闭窗口时收进托盘', '拦截引擎在托盘里继续工作')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
       <div><div style="font-size:12.5px">浏览器插件</div><div class="hint" style="margin-top:3px">在 Chrome / Edge 的扩展页打开"开发者模式"，载入已解压的扩展</div></div>
@@ -1796,6 +1825,41 @@ const Act = window.Act = {
     S.editing.brk.kind = k;
     renderEditor();
   },
+  async enterTestMode() {
+    try {
+      const r = await invoke('test_mode_enter');
+      await pull(); await loadReports(); render();
+      toast('已进入测试模式：数据写在 ' + (r.dataDir || '独立目录') + '，自律开关可随时切换', 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+
+  async exitTestMode(keep) {
+    try {
+      await invoke('test_mode_exit', { keep });
+      await pull(); await loadReports(); render();
+      toast(keep ? '已退出测试模式，测试期间的设置与数据已并入正式环境' : '已退出测试模式，测试数据已丢弃', 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+
+  async askExitTest(keep) {
+    $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal">
+        <div class="modal-hd"><h3>${keep ? '退出并保留测试数据' : '退出并丢弃测试数据'}</h3>
+          <button class="close-x" data-act="close-modal">×</button></div>
+        <div class="modal-bd">
+          <div class="note">${keep
+            ? '测试期间的规则、设置、统计会<b>合并进正式环境</b>，回到正式模式后可以看到。正式环境原有的其它数据不会被删除。'
+            : '测试期间产生的配置与统计会<b>全部删除</b>，正式环境保持进入测试模式前的样子。'}</div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn" data-act="close-modal">取消</button>
+          <button class="btn ${keep ? 'btn-primary' : 'btn-danger'}" data-act="test-exit-do" data-keep="${keep ? 1 : 0}">确认退出</button>
+        </div>
+      </div>
+    </div>`;
+  },
+
   async toggleFollow() {
     const on = !S.data.mask.follow;
     await invoke('mask_set', { follow: on });
@@ -1992,6 +2056,15 @@ const Act = window.Act = {
       const h = st.hud || (st.hud = { enabled: true, quoteMinutes: 60 });
       h.enabled = !h.enabled;
       await invoke('hud_save', { enabled: h.enabled, quoteMinutes: h.quoteMinutes || 60 });
+      await pull(); render(); return;
+    }
+    if (k === 'runAsAdmin') {
+      st.runAsAdmin = !st.runAsAdmin;
+      try {
+        await invoke('set_run_as_admin', { enabled: st.runAsAdmin });
+        toast(st.runAsAdmin ? '已保存，正在以管理员身份重启…' : '已关闭管理员模式（下次启动生效）', 'ok');
+      } catch (e) { toast(String(e), 'err'); return; }
+      await saveConfig();
       await pull(); render(); return;
     }
     if (k === 'autostart') {
@@ -2448,6 +2521,10 @@ document.addEventListener('click', async (e) => {
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
   if (act === 'toggle-smooth') { await Act.toggleSmooth(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
+  if (act === 'test-enter') { await Act.enterTestMode(); return; }
+  if (act === 'test-exit-keep') { await Act.askExitTest(true); return; }
+  if (act === 'test-exit-discard') { await Act.askExitTest(false); return; }
+  if (act === 'test-exit-do') { closeModal(); await Act.exitTestMode(el.dataset.keep === '1'); return; }
   if (act === 'stats-tab') { await Act.statsTab(el.dataset.tab); return; }
   if (act === 'range') { await Act.setRange(el.dataset.r); return; }
   if (act === 'range-apply') { await Act.applyRange(); return; }

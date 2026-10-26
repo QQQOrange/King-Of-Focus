@@ -44,6 +44,17 @@
         <div class="clock" id="clock">--:--</div>
       </div>
     </header>
+    <div class="test-banner hidden" id="testBanner">
+      <div class="tb-left">
+        <span class="tb-dot"></span>
+        <b>测试模式</b>
+        <span class="tb-sub">所有功能真实生效，数据写在独立目录，不影响正式成绩</span>
+      </div>
+      <div class="row" style="gap:8px">
+        <button class="btn btn-sm" data-act="test-exit-keep">退出并保留</button>
+        <button class="btn btn-sm btn-danger" data-act="test-exit-discard">退出并丢弃</button>
+      </div>
+    </div>
     <section class="content" id="content"></section>
   </main>
 </div>

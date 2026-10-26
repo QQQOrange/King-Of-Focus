@@ -76,6 +76,21 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/testmode" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let res = if url.contains("enter=1") {
+                    crate::cmds::test_mode_enter_impl(shared)
+                } else {
+                    crate::cmds::test_mode_exit_impl(shared, url.contains("keep=1"))
+                };
+                match res {
+                    Ok(v) => reply(req, 200, v.to_string()),
+                    Err(e) => reply(req, 500, json!({"error": e}).to_string()),
+                }
+            }
+        }
         "/api/debug/start" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())

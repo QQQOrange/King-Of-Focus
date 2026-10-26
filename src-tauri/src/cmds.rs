@@ -105,6 +105,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "notice": notice,
         },
         "admin": is_admin(),
+        "testMode": crate::testmode::on(),
+        "dataDir": cfg::data_dir().to_string_lossy(),
         "pid": std::process::id(),
         "points": {
             "balance": config.points.balance,
@@ -195,6 +197,92 @@ pub async fn pick_path(app: AppHandle, kind: String) -> Option<String> {
             .blocking_pick_file()
             .map(|p| p.to_string())
     }
+}
+
+
+/// 把配置灌进运行态（启动时和切换测试模式后都要走这一遍）
+pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
+    let config = shared.config();
+    let m = &*shared.mask;
+    m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
+    m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
+    m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
+    m.smooth.store(config.settings.mask.smooth, Ordering::Relaxed);
+    m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
+    m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
+    m.duration
+        .store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
+    if let Some((md, vk)) = crate::mask::parse_hotkey(&config.settings.mask.hotkey) {
+        m.hk_mod.store(md, Ordering::Relaxed);
+        m.hk_vk.store(vk, Ordering::Relaxed);
+        m.hk_gen.fetch_add(1, Ordering::Relaxed);
+    }
+    m.auto.store(config.settings.mask.auto, Ordering::Relaxed);
+    if let Ok(mut g) = m.auto_apps.lock() {
+        *g = config.settings.mask.auto_apps.clone();
+    }
+    m.target_pid
+        .store(config.settings.mask.target_pid, Ordering::Relaxed);
+}
+
+/// 进入测试模式：换到独立数据目录，所有功能照常生效，但自律模式可以随时开关
+#[tauri::command]
+pub fn test_mode_enter(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    test_mode_enter_impl(&shared)
+}
+
+pub fn test_mode_enter_impl(shared: &Arc<Shared>) -> Result<Value, String> {
+    if crate::testmode::on() {
+        return Ok(json!({"on": true}));
+    }
+    // 先把正式数据落盘，避免切换时丢当前累计
+    crate::stats::flush(shared);
+    crate::testmode::enter()?;
+    let c = cfg::load();
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    crate::stats::reload_today(shared);
+    apply_runtime_cfg(shared);
+    Ok(json!({
+        "on": true,
+        "dataDir": cfg::data_dir().to_string_lossy(),
+        "configPath": cfg::config_path().to_string_lossy(),
+    }))
+}
+
+/// 退出测试模式。keep=true 保留测试期间的设置与数据（合并进正式环境），false 全部丢弃。
+#[tauri::command]
+pub fn test_mode_exit(shared: State<'_, Arc<Shared>>, keep: bool) -> Result<Value, String> {
+    test_mode_exit_impl(&shared, keep)
+}
+
+pub fn test_mode_exit_impl(shared: &Arc<Shared>, keep: bool) -> Result<Value, String> {
+    if !crate::testmode::on() {
+        return Ok(json!({"on": false}));
+    }
+    crate::stats::flush(shared);
+    crate::testmode::exit(keep)?;
+    let c = cfg::load();
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    crate::stats::reload_today(shared);
+    apply_runtime_cfg(shared);
+    Ok(json!({
+        "on": false,
+        "kept": keep,
+        "dataDir": cfg::data_dir().to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+pub fn test_mode_status() -> Value {
+    json!({
+        "on": crate::testmode::on(),
+        "dataDir": cfg::data_dir().to_string_lossy(),
+        "prodDir": cfg::prod_data_dir().to_string_lossy(),
+    })
 }
 
 #[tauri::command]
@@ -451,6 +539,25 @@ pub fn restart_as_admin(app: AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     app.exit(0);
+    Ok(())
+}
+
+/// 打开"总是以管理员身份运行"。开启后立刻提权重启一次（UAC 确认后生效）。
+#[tauri::command]
+pub fn set_run_as_admin(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.run_as_admin = enabled;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    if enabled && !is_admin() {
+        restart_as_admin(app)?;
+    }
     Ok(())
 }
 

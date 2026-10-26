@@ -27,8 +27,20 @@ fn resolve_data_dir() -> PathBuf {
 
 static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn data_dir() -> PathBuf {
+/// 正式数据目录（测试模式下也不变，用于合并/回滚）
+pub fn prod_data_dir() -> PathBuf {
     DATA_DIR.get_or_init(resolve_data_dir).clone()
+}
+
+/// 当前生效的数据目录：测试模式下切到 `<生产目录>/test`
+pub fn data_dir() -> PathBuf {
+    let d = if crate::testmode::on() {
+        crate::testmode::test_dir()
+    } else {
+        prod_data_dir()
+    };
+    let _ = std::fs::create_dir_all(&d);
+    d
 }
 
 pub fn config_path() -> PathBuf {

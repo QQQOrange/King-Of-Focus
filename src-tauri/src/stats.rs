@@ -279,6 +279,16 @@ fn sample(shared: &Shared, cfg: &Config) {
     shared.stats_dirty.store(true, Ordering::Relaxed);
 }
 
+/// 切换数据目录后把"今天"的累计重新读进内存
+pub fn reload_today(shared: &Shared) {
+    let d = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let f = load_day(&d);
+    if let Ok(mut g) = shared.stats.lock() {
+        *g = f;
+    }
+    shared.stats_dirty.store(false, Ordering::Relaxed);
+}
+
 pub fn flush(shared: &Shared) {
     if !shared.stats_dirty.swap(false, Ordering::Relaxed) {
         return;

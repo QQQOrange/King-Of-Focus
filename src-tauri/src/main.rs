@@ -16,6 +16,7 @@ mod sched;
 mod server;
 mod shared;
 mod stats;
+mod testmode;
 mod sync;
 mod update;
 mod version;
@@ -58,25 +59,7 @@ fn main() {
     let shared_exit = shared.clone();
 
     // 把配置里的遮罩参数灌进运行态
-    {
-        let m = &shared.mask;
-        m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
-        m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
-        m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
-        m.smooth.store(config.settings.mask.smooth, Ordering::Relaxed);
-        m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
-        m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
-        m.duration.store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
-        if let Some((md, vk)) = mask::parse_hotkey(&config.settings.mask.hotkey) {
-            m.hk_mod.store(md, Ordering::Relaxed);
-            m.hk_vk.store(vk, Ordering::Relaxed);
-        }
-        m.auto.store(config.settings.mask.auto, Ordering::Relaxed);
-        if let Ok(mut g) = m.auto_apps.lock() {
-            *g = config.settings.mask.auto_apps.clone();
-        }
-        m.target_pid.store(config.settings.mask.target_pid, Ordering::Relaxed);
-    }
+    cmds::apply_runtime_cfg(&shared);
 
     mask::start(shared.mask.clone());
     stats::start(shared.clone());
@@ -97,6 +80,21 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(shared.clone())
         .setup(move |app| {
+            // 配置里要求管理员模式，但当前不是 → 提权重启一次。
+            // 用标记文件防止"用户拒绝 UAC → 每次启动都弹窗"的死循环。
+            if config.settings.run_as_admin && !cmds::is_admin() {
+                let marker = cfg::data_dir().join(".elevate_try");
+                let fresh = std::fs::metadata(&marker)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|e| e.as_secs() < 120)
+                    .unwrap_or(false);
+                if !fresh {
+                    let _ = std::fs::write(&marker, b"1");
+                    let _ = cmds::restart_as_admin(app.handle().clone());
+                }
+            }
             // 运行时再设一次窗口图标，保证任务栏/Alt+Tab 用的是新图标
             for label in ["main", "hud"] {
                 if let Some(w) = app.get_webview_window(label) {
@@ -204,6 +202,10 @@ fn main() {
             cmds::open_extension_dir,
             cmds::restart_as_admin,
             cmds::set_autostart,
+            cmds::set_run_as_admin,
+            cmds::test_mode_enter,
+            cmds::test_mode_exit,
+            cmds::test_mode_status,
             cmds::quit_app,
             cmds::hide_window,
             cmds::show_main,

@@ -414,6 +414,8 @@ pub struct Settings {
     pub port: u16,
     /// 开机自启
     pub autostart: bool,
+    /// 总是以管理员身份运行（能摘掉别人的置顶属性，遮罩才压得住浮窗）
+    pub run_as_admin: bool,
     /// 关闭窗口时最小化到托盘
     pub close_to_tray: bool,
     /// 关闭前先尝试温和关闭
@@ -449,6 +451,7 @@ impl Default for Settings {
             grace_secs: 90,
             port: 27315,
             autostart: false,
+            run_as_admin: false,
             close_to_tray: true,
             soft_close: true,
             site_close_browser: true,

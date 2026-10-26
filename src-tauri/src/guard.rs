@@ -48,6 +48,10 @@ pub struct LockInfo {
 }
 
 pub fn lock_info(cfg: &Config) -> LockInfo {
+    // 测试模式：自律开关随时可用，不做任何固化锁定
+    if crate::testmode::on() {
+        return LockInfo::default();
+    }
     let now = Local::now();
     let nd = now.naive_local();
     let ts = now.timestamp();

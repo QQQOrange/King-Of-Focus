@@ -46,8 +46,15 @@ const VK_K: u32 = 0x4B;
 
 const GWL_EXSTYLE: i32 = -20;
 const HWND_TOPMOST: isize = -1;
+const HWND_NOTOPMOST: isize = -2;
+const WS_EX_TOPMOST_FLAG: u32 = 0x0000_0008;
+
+/// 当前进程是否管理员（决定能不能改别人的窗口属性）
+static IS_ADMIN: AtomicBool = AtomicBool::new(false);
 /// GetWindow 的 GW_HWNDPREV：取 z 序排在自己前面的那个窗口
 const GW_HWNDPREV: u32 = 3;
+/// GetWindow 的 GW_OWNER：取窗口的宿主（owner）
+const GW_OWNER: u32 = 4;
 const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
@@ -186,6 +193,7 @@ extern "system" {
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
     fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
     fn GetWindow(h: Hwnd, cmd: u32) -> Hwnd;
+    fn GetClassNameW(h: Hwnd, buf: *mut u16, max: i32) -> i32;
     fn SetLayeredWindowAttributes(h: Hwnd, key: u32, alpha: u8, flags: u32) -> i32;
     fn SetWindowRgn(h: Hwnd, rgn: Handle, redraw: i32) -> i32;
     fn InvalidateRect(h: Hwnd, r: *const Rect, erase: i32) -> i32;
@@ -702,6 +710,40 @@ impl Overlay {
         false
     }
 
+    /// 把压在遮罩上面的外部置顶窗口的 TOPMOST 属性摘掉。
+    ///
+    /// 这一步需要**高完整性级别**（管理员）才能对别人的窗口 SetWindowLong。
+    /// 摘掉之后对方就落在普通层级，遮罩一次就把它盖死，不会再来回抢——
+    /// 这正是"让 lazytyper 那条横条一次性被盖住"的关键。
+    unsafe fn strip_topmost_above(&self) {
+        if !IS_ADMIN.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut h = GetWindow(self.hwnd, GW_HWNDPREV);
+        let mut guard = 0;
+        while !h.is_null() && guard < 32 {
+            guard += 1;
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, &mut pid);
+            if pid != std::process::id() && IsWindowVisible(h) != 0 && !is_shell_window(h) {
+                let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+                if (ex & WS_EX_TOPMOST_FLAG) != 0 {
+                    SetWindowLongW(h, GWL_EXSTYLE, (ex & !WS_EX_TOPMOST_FLAG) as i32);
+                    SetWindowPos(
+                        h,
+                        HWND_NOTOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                    );
+                }
+            }
+            h = GetWindow(h, GW_HWNDPREV);
+        }
+    }
+
     /// 把遮罩重新顶到最上层。
     /// 任务栏、后打开的全屏视频都是置顶窗口，不周期性重压就会被盖住。
     unsafe fn reassert(&mut self) {
@@ -786,6 +828,29 @@ pub static FOLLOW_OVERRIDE: AtomicIsize = AtomicIsize::new(0);
 
 /// 当前最上层（前台）窗口的矩形。
 /// 排除本程序自己的窗口，避免把遮罩挖在自己身上。
+/// 系统外壳窗口（任务栏、桌面、托盘）。
+/// 这些窗口的 TOPMOST 千万不能动——一旦被摘掉，Windows 会给任务栏画一圈边框，
+/// 就是用户看到的“托盘和任务栏之间多了一个外框”。
+unsafe fn is_shell_window(h: Hwnd) -> bool {
+    let mut buf = [0u16; 96];
+    let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
+    if n <= 0 {
+        return false;
+    }
+    let name = String::from_utf16_lossy(&buf[..n as usize]);
+    matches!(
+        name.as_str(),
+        "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "Progman"
+            | "WorkerW"
+            | "DV2ControlHost"
+            | "NotifyIconOverflowWindow"
+            | "TopLevelWindowForOverflowXamlIsland"
+            | "Windows.UI.Core.CoreWindow"
+    )
+}
+
 /// 窗口的“真实可见边界”。
 /// Win10/11 的 GetWindowRect 会把 DWM 的不可见拖拽边框算进去（约 7px），
 /// 用它挖洞就会在窗口四周留一圈透明缝——这正是“边缘残留间隙”的来源。
@@ -808,9 +873,35 @@ unsafe fn window_bounds(h: Hwnd) -> Option<Rect> {
     None
 }
 
+/// 回溯到"主窗口"。
+///
+/// Windows 用 owner 关系区分主窗口和次生窗口：
+/// - 主窗口：`GetWindow(hwnd, GW_OWNER)` 为空；
+/// - 对话框、设置面板、弹出菜单、工具面板：owner 指向拉起它的那个主窗口。
+///
+/// 遮罩只应该框住主窗口，所以遇到带 owner 的窗口就一路回溯到最顶上的那个。
+unsafe fn root_window(h: Hwnd) -> Hwnd {
+    let mut cur = h;
+    let mut guard = 0;
+    while guard < 8 {
+        guard += 1;
+        let owner = GetWindow(cur, GW_OWNER);
+        if owner.is_null() || IsWindow(owner) == 0 {
+            break;
+        }
+        cur = owner;
+    }
+    cur
+}
+
 unsafe fn follow_rect() -> Option<(Rect, isize)> {
     let ov = FOLLOW_OVERRIDE.load(Ordering::Relaxed);
-    let fg = if ov != 0 { ov as Hwnd } else { GetForegroundWindow() };
+    let raw = if ov != 0 { ov as Hwnd } else { GetForegroundWindow() };
+    if raw.is_null() {
+        return None;
+    }
+    // 弹窗/对话框/设置面板 → 回溯到它的主窗口，只对主窗口生效
+    let fg = root_window(raw);
     if fg.is_null() {
         return None;
     }
@@ -887,6 +978,7 @@ fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
 }
 
 pub fn start(ctl: std::sync::Arc<MaskCtl>) {
+    IS_ADMIN.store(crate::cmds::is_admin(), Ordering::Relaxed);
     spawn_topmost_keeper(ctl.clone());
     thread::spawn(move || unsafe {
         // 混合 DPI 下必须拿物理像素，否则洞和遮罩对不齐
@@ -1271,6 +1363,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 被抢的瞬间再补两次，确保从它抢到到我们压回之间不超过一帧。
             let _ = last_top.elapsed(); // 保留计时器，避免未使用告警
             for o in overlays.iter_mut() {
+                // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死
+                o.strip_topmost_above();
                 o.reassert();
                 if o.covered_by_others() {
                     o.reassert();
