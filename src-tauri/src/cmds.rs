@@ -205,7 +205,7 @@ pub fn mask_start(
     let hwnd = crate::proc::find_window_by_pid(pid)
         .ok_or_else(|| "找不到该窗口，它可能已经关闭了".to_string())?;
     let m = &*shared.mask;
-    m.target.store(hwnd as i32, Ordering::Relaxed);
+    m.target.store(hwnd as isize, Ordering::Relaxed);
     m.target_pid.store(pid, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
@@ -328,9 +328,23 @@ pub fn mask_auto(
     Ok(())
 }
 
+/// 遮罩自查：返回遮罩线程最后一帧的真实状态，方便判断「没生效」卡在哪一步
+#[tauri::command]
+pub fn mask_diag() -> String {
+    crate::mask::DIAG
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| "（无数据：遮罩还没启动过）".into())
+}
+
 /// 一键测试：立刻以本程序主窗口为目标，用 150ms 动画跑一遍，方便反复调参
 #[tauri::command]
 pub fn mask_test(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<bool, String> {
+    mask_test_inner(&app, &shared)
+}
+
+/// 供命令行/调试接口复用，UI 与自动化测试走同一条代码路径
+pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, String> {
     let m = &*shared.mask;
     let self_pid = std::process::id();
     let testing = m.on.load(Ordering::Relaxed) && m.target_pid.load(Ordering::Relaxed) == self_pid;
@@ -344,8 +358,8 @@ pub fn mask_test(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<bool,
 
     let hwnd = match app.get_webview_window("main") {
         Some(w) => match w.hwnd() {
-            Ok(h) => h.0 as i32,
-            Err(_) => crate::proc::find_window_by_pid(self_pid).map(|x| x as i32).unwrap_or(0),
+            Ok(h) => h.0 as isize,
+            Err(_) => crate::proc::find_window_by_pid(self_pid).map(|x| x as isize).unwrap_or(0),
         },
         None => return Err("找不到主窗口".into()),
     };

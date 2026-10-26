@@ -412,6 +412,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// 关闭前先尝试温和关闭
     pub soft_close: bool,
+    /// 网页命中黑名单时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
+    pub site_close_browser: bool,
     /// 全局保护进程名（强制模式不拦截）
     pub protected: Vec<String>,
     /// 外观：system | dark | light
@@ -443,6 +445,7 @@ impl Default for Settings {
             autostart: false,
             close_to_tray: true,
             soft_close: true,
+            site_close_browser: true,
             protected: default_protected(),
             theme: "system".into(),
             mask: MaskCfg::default(),

@@ -9,6 +9,7 @@ mod matcher;
 mod model;
 mod monitor;
 mod net;
+mod notify;
 mod proc;
 mod quotes;
 mod sched;
@@ -195,6 +196,7 @@ fn main() {
             cmds::mask_hotkey,
             cmds::mask_auto,
             cmds::mask_test,
+            cmds::mask_diag,
             cmds::open_path,
             cmds::open_config_dir,
             cmds::open_extension_dir,

@@ -10,7 +10,7 @@
 //! 不再使用矩形拼条方案：拼条做不出圆角，也做不出从窗口边缘向外铺开的
 //! 连续形变；逐像素方案在 2600x1440 上单帧填充约 3ms，静止时不重绘。
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +42,14 @@ const MOD_WIN: u32 = 0x0008;
 const VK_K: u32 = 0x4B;
 
 const GWL_EXSTYLE: i32 = -20;
+const HWND_TOPMOST: isize = -1;
+const SWP_NOSIZE: u32 = 0x0001;
+const SWP_NOMOVE: u32 = 0x0002;
+const SWP_NOACTIVATE: u32 = 0x0010;
+const SWP_NOOWNERZORDER: u32 = 0x0200;
+
+/// 诊断快照（遮罩线程写，UI 读）——用于界面上的「自查」
+pub static DIAG: Mutex<String> = Mutex::new(String::new());
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +176,7 @@ extern "system" {
         flags: u32,
     ) -> i32;
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
+    fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
     fn GetWindowLongW(h: Hwnd, idx: i32) -> i32;
     fn IsWindow(h: Hwnd) -> i32;
     fn GetForegroundWindow() -> Hwnd;
@@ -197,6 +206,24 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Handle;
+    fn GetLastError() -> u32;
+}
+
+/// 仅在 KOF_DEBUG=1 时写日志，正式运行零开销
+pub fn mlog(msg: &str) {
+    if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+        return;
+    }
+    use std::io::Write;
+    let p = crate::cfg::data_dir().join("mask-debug.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            chrono::Local::now().format("%H:%M:%S%.3f"),
+            msg
+        );
+    }
 }
 
 #[link(name = "gdi32")]
@@ -222,7 +249,7 @@ unsafe extern "system" fn wnd_proc(h: Hwnd, msg: u32, wp: usize, lp: isize) -> i
 /// 遮罩运行期状态（UI 线程写入，遮罩线程读取）
 pub struct MaskCtl {
     pub on: AtomicBool,
-    pub target: AtomicI32,
+    pub target: AtomicIsize,
     pub target_pid: AtomicU32,
     pub opacity: AtomicU8,
     pub margin: AtomicI32,
@@ -285,7 +312,7 @@ impl Default for MaskCtl {
     fn default() -> Self {
         MaskCtl {
             on: AtomicBool::new(false),
-            target: AtomicI32::new(0),
+            target: AtomicIsize::new(0),
             target_pid: AtomicU32::new(0),
             opacity: AtomicU8::new(88),
             margin: AtomicI32::new(6),
@@ -352,6 +379,7 @@ impl Overlay {
             std::ptr::null_mut(),
         );
         if hwnd.is_null() {
+            mlog(&format!("CreateWindowExW 失败 err={}", GetLastError()));
             return None;
         }
 
@@ -378,9 +406,14 @@ impl Overlay {
         let bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
         ReleaseDC(std::ptr::null_mut(), screen);
         if bmp.is_null() {
+            mlog(&format!("CreateDIBSection 失败 err={}", GetLastError()));
             DestroyWindow(hwnd);
             return None;
         }
+        mlog(&format!(
+            "Overlay 建立 hwnd={:?} {}x{} @({},{})",
+            hwnd, r.width(), r.height(), r.left, r.top
+        ));
         let old_bmp = SelectObject(mem_dc, bmp);
 
         Some(Overlay {
@@ -507,7 +540,7 @@ impl Overlay {
             source_constant_alpha: 0,
             alpha_format: 1,
         };
-        UpdateLayeredWindow(
+        let ok = UpdateLayeredWindow(
             self.hwnd,
             std::ptr::null_mut(),
             &pt_dst,
@@ -519,9 +552,48 @@ impl Overlay {
             ULW_ALPHA,
         );
         if !self.shown {
+            // 回读位图，确认内容真的是「黑 + 洞」，而不是整块透明/整块黑
+            let at = |x: i32, y: i32| -> u32 {
+                if x < 0 || y < 0 || x >= w || y >= h {
+                    return 0xFFFF_FFFF;
+                }
+                *self.bits.offset((y as isize) * (w as isize) + x as isize)
+            };
+            let cx = (hole.left + hole.right) / 2;
+            let cy = (hole.top + hole.bottom) / 2;
+            mlog(&format!(
+                "首帧 ULW ok={} err={} size={}x{} alpha={} radius={:.0} hole=({},{},{},{})",
+                ok, GetLastError(), w, h, alpha, radius,
+                hole.left, hole.top, hole.right, hole.bottom
+            ));
+            mlog(&format!(
+                "位图回读 角({},0)={:#010X} 洞心({},{})={:#010X} 洞左外={:#010X}",
+                0, at(0, 0), cx, cy, at(cx, cy), at(hole.left - 8, cy)
+            ));
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             self.shown = true;
         }
+    }
+
+    /// 把遮罩重新顶到最上层。
+    /// 后创建的其他置顶窗口（全屏视频、游戏启动器、某些输入法）会盖住我们，
+    /// 所以运行期必须周期性重压一次，否则用户会看到「遮罩没生效」。
+    unsafe fn reassert(&mut self) {
+        if !self.shown {
+            return;
+        }
+        if IsWindowVisible(self.hwnd) == 0 {
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        }
+        SetWindowPos(
+            self.hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
     }
 
     unsafe fn hide(&mut self) {
@@ -586,7 +658,7 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
         if h.is_null() {
             return None;
         }
-        ctl.target.store(h as i32, Ordering::Relaxed);
+        ctl.target.store(h as isize, Ordering::Relaxed);
     }
     if IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
         return None;
@@ -617,7 +689,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             lpsz_menu_name: std::ptr::null(),
             lpsz_class_name: class.as_ptr(),
         };
-        RegisterClassW(&wc);
+        let rc = RegisterClassW(&wc);
+        mlog(&format!("遮罩线程启动，RegisterClassW={} err={}", rc, GetLastError()));
 
         let mut overlays: Vec<Overlay> = Vec::new();
         let mut monitor_sig: Vec<Rect> = Vec::new();
@@ -628,6 +701,11 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut hk_gen_done = 0u32;
         let mut auto_owned = false;
         let mut last_auto = Instant::now();
+        let mut logged_miss = false;
+        let mut lost: Option<Instant> = None;
+        let mut last_hole: Option<Rect> = None;
+        let mut last_top = Instant::now();
+        let mut last_diag = Instant::now();
 
         loop {
             // ---- 消息泵（热键）----
@@ -710,7 +788,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     match hit {
                         Some((h, pid)) => {
                             if ctl.target_pid.load(Ordering::Relaxed) != pid || !ctl.on.load(Ordering::Relaxed) {
-                                ctl.target.store(h as i32, Ordering::Relaxed);
+                                ctl.target.store(h as isize, Ordering::Relaxed);
                                 ctl.target_pid.store(pid, Ordering::Relaxed);
                                 ctl.on.store(true, Ordering::Relaxed);
                                 auto_owned = true;
@@ -742,14 +820,45 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_paint = None;
             }
 
-            // ---- 目标窗口 ----
-            let target = target_rect(&ctl);
-            if target.is_none() && on && was_on {
-                ctl.on.store(false, Ordering::Relaxed);
-                if let Ok(mut n) = ctl.notice.lock() {
-                    *n = Some("目标窗口已关闭，遮罩自动退出".into());
-                }
+            // ---- 目标窗口（允许短暂抖动：目标切走/最小化 1.5 秒内不退出）----
+            let target_now = target_rect(&ctl);
+            if target_now.is_none() && on && !logged_miss {
+                logged_miss = true;
+                mlog(&format!(
+                    "目标暂时无效 on=true target={:#x} pid={}",
+                    ctl.target.load(Ordering::Relaxed),
+                    ctl.target_pid.load(Ordering::Relaxed)
+                ));
+            } else if target_now.is_some() {
+                logged_miss = false;
             }
+            let target = match target_now {
+                Some(t) => {
+                    last_hole = Some(t);
+                    lost = None;
+                    Some(t)
+                }
+                None => {
+                    if on {
+                        let since = *lost.get_or_insert_with(Instant::now);
+                        if since.elapsed().as_millis() > 1500 {
+                            ctl.on.store(false, Ordering::Relaxed);
+                            if let Ok(mut n) = ctl.notice.lock() {
+                                *n = Some("目标窗口已关闭，遮罩自动退出".into());
+                            }
+                            lost = None;
+                            last_hole = None;
+                            None
+                        } else {
+                            // 抖动期沿用上一帧的洞，避免闪一下
+                            last_hole
+                        }
+                    } else {
+                        lost = None;
+                        None
+                    }
+                }
+            };
             was_on = on;
 
             // ---- 动画进度 ----
@@ -838,6 +947,50 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             if need {
                 ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
                 last_paint = Some(key);
+            }
+
+            // 每 500ms 把遮罩重新压到最上层：别的置顶窗口抢不过就重压
+            if last_top.elapsed().as_millis() >= 500 {
+                last_top = Instant::now();
+                for o in overlays.iter_mut() {
+                    o.reassert();
+                }
+            }
+
+            // 每 1s 更新一次诊断快照（界面上的「自查」按钮读它）
+            if last_diag.elapsed().as_millis() >= 1000 {
+                last_diag = Instant::now();
+                let mut parts = Vec::new();
+                for (i, o) in overlays.iter().enumerate() {
+                    let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+                    GetWindowRect(o.hwnd, &mut r);
+                    parts.push(format!(
+                        "屏{} hwnd={:?} 可见={} 区域={}x{}@({},{})",
+                        i + 1,
+                        o.hwnd,
+                        IsWindowVisible(o.hwnd),
+                        r.width(),
+                        r.height(),
+                        r.left,
+                        r.top
+                    ));
+                }
+                let report = format!(
+                    "on={} painted={} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    ctl.on.load(Ordering::Relaxed),
+                    ctl.painted.load(Ordering::Relaxed),
+                    progress,
+                    alpha,
+                    hole_end.left,
+                    hole_end.top,
+                    hole_end.right,
+                    hole_end.bottom,
+                    parts.join(" | "),
+                    mons.len()
+                );
+                if let Ok(mut d) = DIAG.lock() {
+                    *d = report;
+                }
             }
 
             thread::sleep(Duration::from_millis(16));

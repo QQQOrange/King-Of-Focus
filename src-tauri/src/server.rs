@@ -58,6 +58,35 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
 
     match path.as_str() {
         "/api/ping" => reply(req, 200, json!({"ok": true, "app": "King of Focus", "v": 1}).to_string()),
+        // 仅 KOF_DEBUG=1 时开放，供自动化验收脚本驱动遮罩（与 UI 走同一函数）
+        "/api/debug/mask" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let on = !url.contains("off=1");
+                let m = &*shared.mask;
+                if on {
+                    match crate::cmds::mask_test_inner(app, shared) {
+                        Ok(v) => reply(req, 200, json!({"ok": true, "testing": v}).to_string()),
+                        Err(e) => reply(req, 500, json!({"error": e}).to_string()),
+                    }
+                } else {
+                    m.on.store(false, std::sync::atomic::Ordering::Relaxed);
+                    reply(req, 200, json!({"ok": true, "testing": false}).to_string())
+                }
+            }
+        }
+        "/api/debug/diag" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let d = crate::mask::DIAG
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                reply(req, 200, json!({"diag": d, "maskOn": shared.mask.on.load(std::sync::atomic::Ordering::Relaxed)}).to_string())
+            }
+        }
         "/api/state" => reply(req, 200, state_json(shared)),
         "/api/heartbeat" => {
             let mut body = String::new();
@@ -87,7 +116,9 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("?").to_string();
                 let rule = v.get("rule").and_then(|x| x.as_str()).unwrap_or("网站黑名单").to_string();
-                shared.log("site", url, rule, "浏览器插件拦截".into());
+                shared.log("site", url.clone(), rule.clone(), "浏览器插件拦截".into());
+                // 先弹通知，插件端会在收到响应后延迟几百毫秒再关页面
+                crate::notify::blocked_site(app, &url, &rule);
                 // 网页被拦 → 同样把主程序拉到前台首页
                 crate::monitor::focus_main(app, shared);
             }
@@ -127,6 +158,8 @@ fn state_json(shared: &Shared) -> String {
         "active": !rules.is_empty(),
         "maskOn": false,
         "rules": rules,
+        // 插件据此决定：只关标签页，还是连整个浏览器窗口一起关
+        "siteCloseBrowser": cfg.settings.site_close_browser,
         "serverTime": chrono::Local::now().timestamp(),
     })
     .to_string()

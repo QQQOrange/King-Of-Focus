@@ -618,6 +618,7 @@ function viewMask() {
       </div>
       <div style="margin-top:18px;display:flex;gap:9px;flex-wrap:wrap">
         <button class="btn btn-primary" data-act="pick-target">${target ? '重新选择窗口' : '选择目标窗口'}</button>
+        <button class="btn" data-act="mask-diag">自查</button>
         ${target ? `<button class="btn ${m.on && !testing ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on && !testing ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
         <button class="btn ${testing ? 'btn-danger' : ''}" data-act="mask-test">${testing ? '结束测试' : '测试效果'}</button>
       </div>
@@ -1313,6 +1314,7 @@ function viewSettings() {
     <div class="card-sub">这些设置对所有规则生效。</div>
     ${sw('dryRun', st.dryRun, '演练模式', '只记录不真的关闭，用来先验证名单是否写对了')}
     ${sw('softClose', st.softClose, '先温和关闭', '先给程序发关闭信号，0.7 秒不退再强制结束，能保住一部分现场')}
+    ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中黑名单网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
     ${sw('guardBrowser', st.guardBrowser, '浏览器守护', '要拦网页时，如果插件失联，直接关掉浏览器（需先装插件）')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
       <div><div style="font-size:12.5px">扫描间隔</div><div class="hint" style="margin-top:3px">越小越灵敏，占用也越高</div></div>
@@ -1638,6 +1640,31 @@ const Act = window.Act = {
         toast(String(e), 'err');
       }
     }
+  },
+
+  async maskDiag() {
+    let info = '';
+    try { info = await invoke('mask_diag'); } catch (e) { info = String(e); }
+    const lines = String(info || '（无数据）').split(' | ');
+    $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal">
+        <div class="modal-hd">
+          <h3>遮罩自查</h3>
+          <button class="close-x" data-act="close-modal">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="hint" style="margin-bottom:12px">
+            这是遮罩线程最后一帧的真实状态。点「测试效果」后再看，<b>painted=true</b> 且
+            <b>可见=1</b> 就说明遮罩已经在屏幕上生效；如果显示 on=false，说明它被自动退出了。
+          </div>
+          <div class="note" style="font-size:12px;line-height:1.9;word-break:break-all">${esc(lines.join('\n')).replace(/\n/g, '<br>')}</div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn" data-act="close-modal">关闭</button>
+        </div>
+      </div>
+    </div>`;
   },
 
   async maskTest() {
@@ -2370,6 +2397,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (act === 'toggle-mask') { await Act.toggleMask(); return; }
+  if (act === 'mask-diag') { await Act.maskDiag(); return; }
   if (act === 'mask-test') { await Act.maskTest(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
   if (act === 'stats-tab') { await Act.statsTab(el.dataset.tab); return; }

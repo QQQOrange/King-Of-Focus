@@ -284,7 +284,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     }
                     match blocked_by {
                         Some(rule) => {
-                            let did = on_block(&shared, &cfg, a, rule, &mut pending, &mut logged);
+                            let did = on_block(&app, &shared, &cfg, a, rule, &mut pending, &mut logged);
                             if did {
                                 focus_main(&app, &shared);
                             }
@@ -332,6 +332,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
 
 /// 返回本次是否真的触发了一次新的拦截（用来决定要不要跳首页）
 fn on_block(
+    handle: &AppHandle,
     shared: &Shared,
     cfg: &Config,
     app: &WinApp,
@@ -344,6 +345,28 @@ fn on_block(
     } else {
         format!("{} — {}", app.name, app.title)
     };
+
+    // 第一次看到这个目标：先弹通知，让用户知道发生了什么，下一次轮询再动手关。
+    // poll_ms 默认 800ms，所以「看到通知 → 被关掉」大约 1 秒内完成。
+    let fresh = logged
+        .get(&app.pid)
+        .map(|t| t.elapsed().as_secs() >= 8)
+        .unwrap_or(true);
+    if fresh && !cfg.settings.dry_run {
+        logged.insert(app.pid, Instant::now());
+        crate::mask::mlog(&format!(
+            "拦截命中 应用={} 规则={} pid={}",
+            label, rule.name, app.pid
+        ));
+        crate::notify::blocked_app(handle, &label, &rule.name);
+        shared.log(
+            "app",
+            label.clone(),
+            rule.name.clone(),
+            "已拦截：先提示，随后强制关闭".into(),
+        );
+        return true;
+    }
 
     if cfg.settings.dry_run {
         let first = !logged.contains_key(&app.pid);
