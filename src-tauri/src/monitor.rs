@@ -44,6 +44,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
         let mut guard_running = false;
         let mut notified_phase = false;
         let mut last_break_left: i64 = 0;
+        let mut browser_guard = crate::browsers::GuardState::new();
 
         loop {
             let cfg: Config = shared.config();
@@ -199,6 +200,19 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 }
             }
 
+            // ---- 遮罩跟随自律：自律一开始就开遮罩，一结束就关 ----
+            // 只在这里驱动 on，别的代码不再替用户做决定；
+            // 关掉这个开关后，遮罩完全回到手动/热键控制。
+            if cfg.settings.mask.follow_schedule && !cfg.settings.dry_run {
+                let want = !active.is_empty() || lock.locked;
+                if shared.mask.on.load(std::sync::atomic::Ordering::Relaxed) != want {
+                    shared
+                        .mask
+                        .on
+                        .store(want, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
             // ---- 桌面 HUD 显隐 ----
             // 遮罩开着时把 HUD 收起来：HUD 自己是置顶小窗，留在上面会变成
             // 遮罩上的一块"挖不掉的横条"，而且它每秒刷新会跟遮罩抢置顶
@@ -299,7 +313,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     }
                 }
 
-                // 3) 浏览器守护
+                // 3) 浏览器插件巡检：自律时段里，插件没开就别开着浏览器
+                crate::browsers::guard_step(&app, &shared, &cfg, &apps, &mut browser_guard);
+
+                // 4) 浏览器守护
                 if cfg.settings.guard_browser && active.iter().any(|l| !l.sites.is_empty()) {
                     let (hb_ts, hb_browser) = match shared.rt.lock() {
                         Ok(rt) => (rt.hb_ts, rt.hb_browser.clone()),

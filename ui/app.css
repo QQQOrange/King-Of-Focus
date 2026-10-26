@@ -779,3 +779,53 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 @keyframes tbPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 .test-banner .tb-sub { color: var(--text-3); }
 .test-banner b { color: var(--gold); }
+
+/* ══════════ 遮罩主开关 ══════════ */
+.mask-power {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px 15px; margin-top: 12px;
+  border: 1px solid var(--line); border-radius: 14px;
+  transition: border-color .18s, box-shadow .18s, background .18s;
+}
+.mask-power .mp-title { font-size: 14px; font-weight: 600; }
+.mask-power .switch.big { transform: scale(1.25); transform-origin: left center; margin-right: 8px; flex: none; }
+.mask-power.on {
+  border-color: rgba(245, 181, 68, .5);
+  background: linear-gradient(135deg, rgba(245, 181, 68, .10), transparent 72%);
+  box-shadow: 0 0 0 1px rgba(245, 181, 68, .16) inset, 0 10px 30px rgba(245, 181, 68, .07);
+}
+.mask-power.on .mp-title { color: var(--gold); }
+.mask-power.preview { border-color: rgba(245, 181, 68, .34); border-style: dashed; }
+.switch.locked { opacity: .42; pointer-events: none; filter: grayscale(.5); }
+.mask-link { margin-top: 14px; }
+
+/* ══════════ 浏览器列表 ══════════ */
+.brow { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.brow:last-child { border-bottom: 0; }
+.brow-ico { width: 24px; flex: none; text-align: center; color: var(--gold); font-size: 13px; opacity: .85; }
+.brow-main { flex: 1; min-width: 0; }
+.brow-name { font-size: 13px; font-weight: 600; }
+.brow-act { display: flex; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ══════════ 扩展文件夹面板 ══════════ */
+.ext-box {
+  margin-top: 12px; padding: 12px 13px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: rgba(245, 181, 68, .04);
+}
+.ext-box .ext-title { font-size: 12.5px; font-weight: 600; }
+.ext-box .ext-path {
+  margin-top: 9px; padding: 9px 11px;
+  border-radius: 8px; border: 1px dashed var(--line);
+  background: rgba(0, 0, 0, .18);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px; line-height: 1.6; word-break: break-all;
+  -webkit-user-select: all; user-select: all;
+}
+.ext-steps { display: flex; flex-direction: column; gap: 8px; }
+.ext-steps .st { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; line-height: 1.7; }
+.ext-steps .st b {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(245, 181, 68, .16); color: var(--gold); font-size: 11px;
+}

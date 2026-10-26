@@ -209,7 +209,9 @@ pub struct MaskCfg {
     #[serde(deserialize_with = "de_hotkey")]
     pub hotkey: String,
     pub hotkey_label: String,
-    /// 进入下列应用时自动开启遮罩（exe 名，不带 .exe）
+    /// 遮罩跟随自律模式：自律生效时就开，自律结束就关
+    pub follow_schedule: bool,
+    /// 【已废弃】旧版"进入指定应用自动开遮罩"，仅保留字段以兼容老配置
     pub auto: bool,
     pub auto_apps: Vec<String>,
 }
@@ -228,6 +230,7 @@ impl Default for MaskCfg {
             target_title: String::new(),
             hotkey: "Ctrl+Alt+K".into(),
             hotkey_label: "Ctrl+Alt+K".into(),
+            follow_schedule: false,
             auto: false,
             auto_apps: vec![],
         }
@@ -276,6 +279,31 @@ impl Default for NotifyCfg {
             break_before: 2,
             break_notify: true,
             focus_window: false,
+        }
+    }
+}
+
+/// 浏览器巡检与自律时段守护
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BrowserGuardCfg {
+    /// 自律时段里发现浏览器没装插件 / 插件被停用 → 自动关闭
+    pub enabled: bool,
+    /// 关闭前弹一张提示卡（告诉用户为什么、还有几秒）
+    pub notify: bool,
+    /// 宽限毫秒：从"看到浏览器"到"真的关"之间留给用户的反应时间（不超过 5 秒硬约束）
+    pub grace_ms: u32,
+    /// 启动时是否自动探测已安装的浏览器
+    pub detect_on_start: bool,
+}
+
+impl Default for BrowserGuardCfg {
+    fn default() -> Self {
+        BrowserGuardCfg {
+            enabled: true,
+            notify: true,
+            grace_ms: 1200,
+            detect_on_start: true,
         }
     }
 }
@@ -410,6 +438,8 @@ pub struct Settings {
     pub guard_browser: bool,
     /// 扩展心跳容忍秒数
     pub grace_secs: u64,
+    /// 浏览器插件巡检
+    pub browser_guard: BrowserGuardCfg,
     /// 本地通信端口
     pub port: u16,
     /// 开机自启
@@ -449,6 +479,7 @@ impl Default for Settings {
             dry_run: false,
             guard_browser: true,
             grace_secs: 90,
+            browser_guard: BrowserGuardCfg::default(),
             port: 27315,
             autostart: false,
             run_as_admin: false,

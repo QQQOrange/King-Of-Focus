@@ -16,7 +16,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tiny_http = "0.12"
-ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
+# ureq 2.12 里 TLS 由 `tls`(rustls) 特性控制，只开 native-tls 会导致
+# 运行时 "no TLS backend is configured"，所有 HTTPS 请求全部失败。
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "gzip", "json"] }
 
 # 备份加密（参考 Quick search 的成熟选型）：
 #   AES-256-GCM 带认证、有 AES-NI 加速；Argon2id 抗暴力破解。

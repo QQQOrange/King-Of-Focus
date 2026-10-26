@@ -21,6 +21,8 @@ const S = {
   pickerFor: null,
   dragging: false,
   paint: null,
+  browsers: null,
+  browserScanning: false,
 };
 
 const PALETTE = ['#ffb020', '#ff7a45', '#f759ab', '#b37feb', '#5b8cff', '#36cfc9',
@@ -28,7 +30,7 @@ const PALETTE = ['#ffb020', '#ff7a45', '#f759ab', '#b37feb', '#5b8cff', '#36cfc9
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const VIEW_TITLES = {
-  overview: '总览', rules: '规则', mask: '专注遮罩',
+  overview: '总览', rules: '规则', mask: '专注遮罩', browsers: '浏览器插件',
   stats: '时长统计', reports: '统计报告', sync: '云同步',
   settings: '设置', about: '关于', help: '帮助',
 };
@@ -201,7 +203,7 @@ function viewOverview() {
   const evHtml = evs.length
     ? evs.map((e) => `<div class="ev">
         <span class="t">${hhmm(e.ts)}</span>
-        <span class="badge ${e.kind === 'site' ? 'blue' : 'gold'}">${e.kind === 'site' ? '网页' : '软件'}</span>
+        <span class="badge ${e.kind === 'site' ? 'blue' : e.kind === 'browser' ? 'blue' : 'gold'}">${e.kind === 'site' ? '网页' : e.kind === 'browser' ? '浏览器' : '软件'}</span>
         <span class="n" title="${esc(e.target)}">${esc(e.target)}</span>
         <span class="muted" style="font-size:11px">${esc(e.rule)}</span>
       </div>`).join('')
@@ -606,30 +608,76 @@ function viewMask() {
   const op = m.opacity, mg = m.margin;
   const rad = m.radius == null ? 28 : m.radius;
   const dur = m.duration == null ? 420 : m.duration;
-  const locked = !!d.runtime.locked;
-  const testing = m.on && m.targetPid === d.pid;
+  const rt = d.runtime;
+  const on = !!m.on;
+  const previewing = (m.previewLeft || 0) > 0;
+  const followed = !!m.followSchedule;
+  const autonomy = rt.active.length > 0 || !!rt.locked;
+  // 主开关只反映"真实启用"：预览期间不算开启
+  const stateOn = on && !previewing;
+  const powerState = previewing ? 'preview' : stateOn ? 'on' : 'off';
+  const stateTitle = previewing
+    ? `预览中 · ${m.previewLeft} 秒后自动结束`
+    : stateOn
+      ? (followed && autonomy ? '已开启 · 跟随自律' : '已开启 · 正在遮罩')
+      : followed
+        ? (autonomy ? '跟随自律 · 自动开启中' : '跟随自律 · 等待自律开始')
+        : '已关闭';
+  const stateDesc = previewing
+    ? '这只是临时预览，几秒后会自动收起；它<b>不会</b>改变主开关，也不会让遮罩"一直开着"。'
+    : stateOn
+      ? '这是<b>真实生效</b>的状态：其他窗口与任务栏都被压暗，只有当前最上层窗口完整可见。按 Ctrl + Alt + K 可随时关闭。'
+      : '遮罩当前<b>没有生效</b>。打开下面的开关后，除当前窗口外的区域会立刻被压暗。';
   return `
   <div class="mask-hero">
-    <div style="flex:1">
+    <div style="flex:1;min-width:0">
       <div class="hero-label">专注遮罩 / FOCUS MASK</div>
-      <div class="hero-state ${m.on ? 'on' : ''}" style="font-size:22px">${m.on ? '遮罩已开启' : '遮罩未开启'}</div>
-      <div class="hero-desc" style="margin-top:6px">
-        ${m.on
-          ? `正锁定在：<b style="color:var(--gold)">${esc(target || '目标窗口')}</b>`
-          : '选一个窗口作为"允许留下的画面"，遮罩会从它的边缘向外铺满整块显示器。'}
+
+      <div class="mask-power ${powerState}">
+        <div class="switch big ${followed ? 'locked' : ''}" data-act="toggle-mask">
+          <input type="checkbox" ${stateOn ? 'checked' : ''}><i></i>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div class="mp-title">${stateOn ? '专注遮罩已开启' : '专注遮罩已关闭'}</div>
+          <div class="hint" style="margin-top:4px">${stateDesc}</div>
+        </div>
+        <span class="badge ${powerState === 'on' ? 'green' : powerState === 'preview' ? 'gold' : ''}">${stateTitle}</span>
       </div>
-      <div style="margin-top:18px;display:flex;gap:9px;flex-wrap:wrap">
-        <button class="btn btn-primary" data-act="pick-target">${target ? '重新选择窗口' : '选择目标窗口'}</button>
+
+      <div class="row" style="align-items:center;gap:9px;margin-top:12px;flex-wrap:wrap">
+        <button class="btn" data-act="mask-preview">${previewing ? `结束预览（剩 ${m.previewLeft}s）` : '预览效果（5 秒）'}</button>
         <button class="btn" data-act="mask-diag">自查</button>
-        ${(target || m.follow) ? `<button class="btn ${m.on && !testing ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on && !testing ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
-        <button class="btn ${testing ? 'btn-danger' : ''}" data-act="mask-test">${testing ? '结束测试' : '测试效果'}</button>
+        <span class="hint">预览只是看一眼效果，会自动结束，不会改变主开关。</span>
       </div>
-      <div class="hint" style="margin-top:14px">热键 <b>Ctrl + Alt + K</b> 可随时开关遮罩，防止自己被困在黑屏里。</div>
+
+      <div class="mask-link">
+        <div class="row" style="align-items:center;justify-content:space-between;gap:14px">
+          <div>
+            <div style="font-size:12.5px">专注遮罩跟随自律模式</div>
+            <div class="hint" style="margin-top:4px">
+              自律模式一开始，遮罩自动打开；自律模式一结束，遮罩自动关闭。
+              开着它时，上面的主开关由自律状态驱动（显示为自动控制，不能手动切换）；
+              关掉它之后，主开关和 <b>Ctrl + Alt + K</b> 重新完全由你掌握。
+            </div>
+          </div>
+          <div class="switch" data-act="toggle-follow-schedule"><input type="checkbox" ${followed ? 'checked' : ''}><i></i></div>
+        </div>
+        <div class="row" style="align-items:center;justify-content:space-between;gap:14px;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+          <div>
+            <div style="font-size:12.5px">跟随当前窗口</div>
+            <div class="hint" style="margin-top:4px">
+              决定"哪一块留出来"：只留当前最上层（正在用）的窗口，其他全部压暗。切换窗口时高亮会平滑移过去，拖动窗口时实时跟随。
+            </div>
+          </div>
+          <div class="switch" data-act="toggle-follow"><input type="checkbox" ${m.follow ? 'checked' : ''}><i></i></div>
+        </div>
+      </div>
     </div>
+
     <div class="mask-preview">
       <div class="screen"></div>
       <div class="dim" id="previewDim" style="opacity:${op / 100}"></div>
-      <div class="hole" id="previewHole" style="border-radius:${Math.max(2, Math.round(rad / 3))}px">${esc((target || '目标窗口').slice(0, 10))}</div>
+      <div class="hole" id="previewHole" style="border-radius:${Math.max(2, Math.round(rad / 3))}px">当前窗口</div>
     </div>
   </div>
 
@@ -693,10 +741,9 @@ function viewMask() {
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-title">两种开启方式</div>
+    <div class="card-title">快捷键</div>
     <div class="card-sub">
-      三种方式互不冲突、可以同时开：<b>快捷键</b>随时手动开关；<b>自动触发</b>在进入下面列表里的应用时自动开、切走自动关；
-      <b>跟随当前窗口</b>（上方开关）打开后，高亮区域会始终钉在当前最上层窗口上。
+      手动开关遮罩的另一种方式。自动化请用上方的「跟随自律模式」，不再按应用逐个配置。
     </div>
     <div class="row" style="align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
       <span class="hint" style="width:88px">全局快捷键</span>
@@ -708,21 +755,6 @@ function viewMask() {
       格式：修饰键 + 一个键，如 <code>Ctrl+Alt+K</code>、<code>Ctrl+Shift+F2</code>、<code>Win+Alt+1</code>。
       被别的程序占用会直接报错并保留原来的组合。
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:14px">
-      <div>
-        <div style="font-size:12.5px">进入指定应用时自动开启</div>
-        <div class="hint" style="margin-top:4px">前台切到这些应用就自动盖住其他区域；切到别的应用（或退出）自动关掉。</div>
-      </div>
-      <div class="switch" data-act="toggle-auto"><input type="checkbox" ${m.auto ? 'checked' : ''}><i></i></div>
-    </div>
-    <div style="margin-top:12px">
-      ${(m.autoApps || []).length
-        ? (m.autoApps || []).map((a) => `<span class="rule-chip">${esc(a)}<button class="x" data-act="del-auto" data-v="${esc(a)}">×</button></span>`).join('')
-        : '<span class="hint">还没有添加自动触发的应用</span>'}
-    </div>
-    <button class="btn btn-sm" style="margin-top:10px" data-act="pick-auto">+ 添加应用</button>
-  </div>
-
   <div class="note" style="margin-top:16px">
     <b>扩散动画：</b>开启动画时，遮罩从目标窗口的边缘向外扩展，直到铺满它所在的显示器；
     关闭时反向收回。圆角半径全程保持一致，窗口拖动 / 缩放时遮罩会实时跟随，多显示器和混合 DPI 下按各自的物理分辨率等比适配。
@@ -1049,7 +1081,7 @@ function viewAbout() {
   const d = S.data;
   if (!d) return '';
   const st = d.config.settings.update || {};
-  const masked = d.maskedToken || '';
+  const hasToken = !!d.hasToken;
   const quotaTxt = S.quota ? (S.quota.ok ? `${S.quota.remaining} / ${S.quota.limit}` : '读取失败') : '读取中…';
 
   return `
@@ -1108,13 +1140,14 @@ function viewAbout() {
         </div>
       </div>
       <div class="add-row" style="margin-bottom:0">
-        <input type="password" id="ghToken" placeholder="${masked ? esc(masked) + '（已保存，留空则不修改）' : 'ghp_xxxxxxxxxxxx 未设置'}" autocomplete="off" />
+        <input type="password" id="ghToken" placeholder="${hasToken ? '已设置（留空则不修改）' : '粘贴 ghp_ 开头的令牌'}" autocomplete="off" spellcheck="false" />
         <button class="btn" data-act="token-doc" title="如何获取令牌">?</button>
         <button class="btn btn-primary" data-act="save-token">保存</button>
         <button class="btn btn-sm" data-act="quota-refresh">刷新额度</button>
+        ${hasToken ? '<button class="btn btn-sm btn-danger" data-act="clear-token">清除</button>' : ''}
       </div>
       <div class="hint" style="margin-top:8px">
-        令牌只保存在本机配置文件里，以掩码形式显示。点 <b>?</b> 打开 GitHub 官方的令牌创建教程。
+        令牌只保存在本机，界面上<b>不回显任何字符</b>，输入框始终是暗文。${hasToken ? '当前<b>已设置</b>。' : '当前<b>未设置</b>。'}点 <b>?</b> 打开 GitHub 官方教程。
       </div>
     </div>
 
@@ -1308,6 +1341,126 @@ function viewHelp() {
 }
 
 /* ---------------- 视图：设置 ---------------- */
+/* ---------------- 浏览器插件 ---------------- */
+
+/// 设置页通用的开关行（viewSettings 里那个 sw 是局部函数，这里需要一份全局的）
+function cfgSwitchRow(k, v, title, sub) {
+  return `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
+      <div><div style="font-size:12.5px">${title}</div><div class="hint" style="margin-top:3px">${sub}</div></div>
+      <div class="switch" data-act="cfg-switch" data-k="${k}"><input type="checkbox" ${v ? 'checked' : ''}><i></i></div>
+    </div>`;
+}
+
+function browserMeta(ext) {
+  if (ext === 'enabled') return { txt: '插件已启用', cls: 'green' };
+  if (ext === 'disabled') return { txt: '插件被停用', cls: 'gold' };
+  if (ext === 'unsupported') return { txt: '不支持本插件', cls: '' };
+  return { txt: '插件未安装', cls: 'red' };
+}
+
+function viewBrowsers() {
+  const d = S.data;
+  if (!d) return '';
+  const list = (S.browsers && S.browsers.length ? S.browsers : d.browsers) || [];
+  const g = (d.config.settings.browserGuard) || { enabled: true, notify: true, graceMs: 1200, detectOnStart: true };
+  const installed = list.filter((b) => b.installed);
+  const broken = installed.filter((b) => b.ext === 'notInstalled' || b.ext === 'disabled');
+  const ok = installed.filter((b) => b.ext === 'enabled');
+
+  const rows = list.length
+    ? list.map((b) => {
+      const m = browserMeta(b.ext);
+      const canInstall = b.installed && (b.ext === 'notInstalled' || b.ext === 'disabled');
+      const act = !b.installed
+        ? '<span class="muted" style="font-size:12px">未安装</span>'
+        : b.ext === 'unsupported'
+          ? '<span class="muted" style="font-size:12px">无需安装</span>'
+          : canInstall
+            ? `<button class="btn btn-sm btn-primary" data-act="browser-install" data-k="${b.key}">${b.ext === 'disabled' ? '去启用' : '安装插件'}</button>
+               <button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`
+            : `<button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`;
+      const hits = (b.hits || []).length
+        ? `<div class="hint" style="margin-top:4px">命中配置档：${b.hits.map((h) => `${esc(h.profile)}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
+        : '';
+      return `<div class="brow">
+        <div class="brow-ico">${b.installed ? '◉' : '○'}</div>
+        <div class="brow-main">
+          <div class="brow-name">${esc(b.name)}
+            <span class="badge ${b.installed ? 'green' : ''}" style="margin-left:6px">${b.installed ? '已安装' : '未安装'}</span>
+            ${b.installed ? `<span class="badge ${m.cls}" style="margin-left:4px">${m.txt}</span>` : ''}
+            ${b.running ? '<span class="badge blue" style="margin-left:4px">运行中</span>' : ''}
+          </div>
+          <div class="hint" style="margin-top:4px">${esc(b.note || '')}</div>
+          ${hits}
+        </div>
+        <div class="brow-act">${act}</div>
+      </div>`;
+    }).join('')
+    : '<div class="empty">还没检测。点右上角「重新检测」。</div>';
+
+  const sum = !list.length
+    ? '正在检测…'
+    : installed.length
+      ? `已安装 ${installed.length} 个浏览器，${ok.length} 个插件就绪${broken.length ? `，${broken.length} 个需要处理` : ''}`
+      : '这台机器上没有检测到受支持的浏览器';
+
+  return `
+  <div class="card">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div>
+        <div class="card-title">浏览器与配套插件</div>
+        <div class="card-sub">${esc(sum)}</div>
+      </div>
+      <button class="btn btn-sm" data-act="browser-scan" ${S.browserScanning ? 'disabled' : ''}>${S.browserScanning ? '检测中…' : '重新检测'}</button>
+    </div>
+    ${broken.length ? `<div class="note" style="border-left-color:var(--gold);margin:12px 0 4px">
+      <b>有 ${broken.length} 个浏览器的插件没就绪。</b>自律时段里打开它们会被自动关闭——先把插件装上或启用，才不会被拦。
+      <div style="margin-top:8px"><button class="btn btn-sm btn-primary" data-act="browser-guide">安装引导</button></div>
+    </div>` : ''}
+    ${extFolderPanel(d.extInfo)}
+    <div style="margin-top:6px">${rows}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">自律时段守护</div>
+    <div class="card-sub">
+      自律时间（任意规则处于生效状态）里，只要你打开浏览器而插件没装或被停用，会在
+      <b>5 秒内</b>自动关闭它，并记一条拦截记录。装了插件且已启用则完全不受影响。
+    </div>
+    ${cfgSwitchRow('browserGuard.enabled', g.enabled, '启用浏览器巡检', '关闭后，自律时段里不会因为插件状态而关浏览器')}
+    ${cfgSwitchRow('browserGuard.notify', g.notify, '关闭前弹提示', '先弹一张卡片说明原因和剩余秒数，再关闭')}
+    ${cfgSwitchRow('browserGuard.detectOnStart', g.detectOnStart, '启动时自动检测', '每次打开软件都识别一遍浏览器与插件状态')}
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
+      <div>
+        <div style="font-size:12.5px">关闭前宽限</div>
+        <div class="hint" style="margin-top:3px">留给你的反应时间；加上轮询间隔后总耗时不超过 5 秒（上限 3500ms）</div>
+      </div>
+      <div class="row" style="align-items:center;gap:8px">
+        <input type="number" id="bgGrace" value="${g.graceMs}" min="300" max="3500" step="100" style="width:96px" />
+        <span class="hint">毫秒</span>
+        <button class="btn btn-sm" data-act="browser-grace-save">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">判定与检测说明</div>
+    <div class="card-sub">以下都是实际实现口径，不是宣传语。</div>
+    <div class="note" style="line-height:1.95">
+      <b>支持范围</b>：Chrome、Edge、Brave、Vivaldi、Opera、Chromium、360 极速、QQ 浏览器、搜狗高速
+      （这些都能装本插件）；Firefox 会被识别出来，但它不支持 Chromium 扩展，所以只显示、不参与拦截。<br>
+      <b>状态判定</b>：读各浏览器用户目录下每个配置档的 <code>Preferences</code>，
+      在 <code>extensions.settings</code> 里按扩展名找到本插件：
+      完全找不到 = <b>未安装</b>；找到且 <code>state=1</code> 且没有 <code>disable_reasons</code> = <b>已启用</b>；
+      找到但被停用 = <b>被停用</b>。<br>
+      <b>检测频率</b>：启动时全量扫一次；之后后台每 20 秒刷新一次缓存；打开本页或点「重新检测」立即扫。
+      自律时段里每个轮询周期（默认 1 秒）都会用最新缓存判定一次。<br>
+      <b>关闭失败</b>：先发关闭信号，0.4 秒不退再强制结束；如果仍失败（多半是浏览器以管理员运行、而本程序不是），
+      会记一条「关闭失败」，每 60 秒重试一次，并提示你以管理员身份运行。<br>
+      <b>点了安装之后</b>：会给 10 分钟保护期，这期间不会因为插件状态去关浏览器，避免你正开着扩展管理页就被关掉。
+    </div>
+  </div>`;
+}
 function viewSettings() {
   const d = S.data;
   if (!d) return '';
@@ -1450,7 +1603,7 @@ function viewSettings() {
           同时也能拦住以管理员运行的程序。
         </div>
       </div>
-      <div class="switch" data-act="toggle-cfg" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
+      <div class="switch" data-act="cfg-switch" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
     </div>
     ${sw('closeToTray', st.closeToTray, '关闭窗口时收进托盘', '拦截引擎在托盘里继续工作')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
@@ -1548,6 +1701,7 @@ function render() {
   if (S.view === 'overview') html = viewOverview();
   if (S.view === 'rules') html = viewRules();
   if (S.view === 'mask') html = viewMask();
+  if (S.view === 'browsers') html = viewBrowsers();
   if (S.view === 'stats') html = viewStats();
   if (S.view === 'reports') html = viewReports();
   if (S.view === 'sync') html = viewSync();
@@ -1562,6 +1716,103 @@ function render() {
   }
 }
 
+/* ---------------- 复制与扩展目录面板 ---------------- */
+
+/** 复制文本：优先 clipboard API，失败回退到隐藏 textarea + execCommand */
+async function copyText(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(t);
+      return true;
+    }
+  } catch (e) { /* 有些 webview 不给权限，走回退 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+
+/** 安装引导里的"扩展文件夹"面板：路径 + 复制 + 打开，带状态反馈 */
+function extFolderPanel(info) {
+  const i = info || (S.data && S.data.extInfo) || {};
+  const exists = !!i.exists;
+  return `<div class="ext-box">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:10px">
+      <div class="ext-title">扩展文件夹
+        <span class="badge ${exists ? 'green' : 'red'}" style="margin-left:6px">${exists ? '目录已就绪' : '目录未找到'}</span>
+      </div>
+      <div class="row" style="gap:8px">
+        <button class="btn btn-sm btn-primary" data-act="ext-copy">复制路径</button>
+        <button class="btn btn-sm" data-act="ext-open">打开文件夹</button>
+      </div>
+    </div>
+    <div class="ext-path" id="extPath">${esc(i.path || '（未知路径）')}</div>
+    <div class="hint" id="extNote" style="margin-top:8px">
+      ${exists
+        ? '在扩展管理页点「加载已解压的扩展程序」，把上面这个路径粘到地址栏回车后选中该文件夹即可。'
+        : `这个路径下没找到 manifest.json。程序目录是 <code>${esc(i.exeDir || '')}</code>，${i.crx ? '同目录里还有 CRX 安装包，可以直接拖进扩展页。' : '请重新解压完整安装包，或到 GitHub 下载最新版。'}`}
+    </div>
+  </div>`;
+}
+
+/* ---------------- 启动时的浏览器巡检提示 ---------------- */
+async function promptBrowserSetup() {
+  if (S.data && S.data.config.settings.browserGuard && S.data.config.settings.browserGuard.detectOnStart === false) return;
+  let list = [];
+  try {
+    const r = await invoke('browsers_scan');
+    list = r.list || [];
+    S.browsers = list;
+  } catch (e) { return; }
+  const broken = list.filter((b) => b.installed && (b.ext === 'notInstalled' || b.ext === 'disabled'));
+  if (!broken.length) return;
+  // 一次启动只弹一次：本次点"稍后再说"后不再打扰
+  if (sessionStorage.getItem('kof-browser-prompt') === '1') return;
+  sessionStorage.setItem('kof-browser-prompt', '1');
+
+  const rows = broken.map((b) => `
+    <div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)">
+      <span>${esc(b.name)}</span>
+      <span class="badge ${b.ext === 'disabled' ? 'gold' : 'red'}">${b.ext === 'disabled' ? '插件被停用' : '插件未安装'}</span>
+    </div>`).join('');
+
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal">
+      <div class="modal-hd">
+        <h3>浏览器插件还没就绪</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="note" style="margin-bottom:12px">
+          检测到 <b>${broken.length}</b> 个浏览器装了但插件没启用。缺少这个插件会有两个后果：
+          <div style="margin-top:8px;line-height:1.9">
+            ① 网页黑名单拦不住（插件负责在请求层拦截，并在自律时段扫掉已打开的标签页）<br>
+            ② 自律时段里打开这些浏览器会被<b>自动关闭</b>（因为无法确认网页是否违规）
+          </div>
+        </div>
+        <div style="font-size:12.5px">${rows}</div>
+        <div class="hint" style="margin-top:10px">
+          点「去安装」会打开对应浏览器的扩展管理页，并给你 10 分钟安装时间（这期间不会关浏览器）。
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button class="btn" data-act="close-modal">稍后再说</button>
+        <button class="btn btn-primary" data-act="browser-prompt-go">去安装</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 /* ---------------- 动作 ---------------- */
 const Act = window.Act = {
   async nav(view) {
@@ -1569,6 +1820,7 @@ const Act = window.Act = {
     if (view === 'stats' && !S.stats) await loadStats();
     if (view === 'reports') await loadReports();
     if (view === 'sync') { await loadBackups(); }
+    if (view === 'browsers') { await Act.browserScan(); return; }
     if (view === 'about') await loadQuota();
     render();
   },
@@ -1664,39 +1916,20 @@ const Act = window.Act = {
     renderEditor();
   },
 
-  async pickTarget() {
-    S.pickerFor = 'mask';
-    const list = await invoke('list_windows');
-    S.picker = list;
-    renderPicker();
-  },
-
   async toggleMask() {
     const d = S.data;
     if (!d) return;
-    if (d.mask.on) {
-      await invoke('mask_stop');
-      toast('遮罩已关闭');
-      await pull();
-      render();
-    } else if (d.config.settings.mask.follow) {
-      // 跟随模式：不需要指定窗口，直接开，之后自动盯住当前前台窗口
-      await invoke('mask_set', { follow: true });
-      toast('遮罩已开启：会跟着当前最上层窗口走，切窗口自动切换高亮', 'ok');
-      await pull();
-      render();
-    } else {
-      const pid = d.config.settings.mask.targetPid;
-      if (!pid) { Act.pickTarget(); return; }
-      try {
-        await invoke('mask_start', { pid, title: d.config.settings.mask.targetTitle || '' });
-        toast('遮罩已开启，Ctrl+Alt+K 可随时退出', 'ok');
-        await pull();
-        render();
-      } catch (e) {
-        toast(String(e), 'err');
-      }
+    if (d.mask.followSchedule) {
+      toast('「跟随自律模式」开着时，遮罩由自律状态自动控制；想手动开关请先关掉它', 'err');
+      return;
     }
+    const next = !(d.mask.on && !(d.mask.previewLeft > 0));
+    try {
+      await invoke('mask_set_on', { on: next });
+      toast(next ? '遮罩已开启（真实生效），Ctrl+Alt+K 可随时关闭' : '遮罩已关闭', 'ok');
+      await pull();
+      render();
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
 
   async maskDiag() {
@@ -1724,12 +1957,22 @@ const Act = window.Act = {
     </div>`;
   },
 
-  async maskTest() {
+  async maskPreview() {
     try {
-      const on = await invoke('mask_test');
+      const left = await invoke('mask_preview');
       await pull();
       render();
-      toast(on ? '测试中：遮罩以本程序为目标，改参数即时可见，再点一次收起' : '测试已结束', 'ok');
+      toast(left > 0 ? `预览中：${left} 秒后自动结束，不会改变主开关` : '预览已结束', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+  },
+
+  async toggleFollowSchedule() {
+    const on = !S.data.config.settings.mask.followSchedule;
+    try {
+      await invoke('mask_follow_schedule', { enabled: on });
+      await pull();
+      render();
+      toast(on ? '已开启跟随自律：自律开始时自动打开遮罩，结束时自动关闭' : '已关闭跟随自律：遮罩回到手动/快捷键控制', 'ok');
     } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
 
@@ -1942,26 +2185,6 @@ const Act = window.Act = {
       toast(v ? `快捷键已设为 ${v}` : '已取消快捷键', 'ok');
     } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
-  async toggleAuto() {
-    const m = S.data.config.settings.mask;
-    const on = !m.auto;
-    await invoke('mask_auto', { enabled: on, apps: m.autoApps || [] });
-    await pull(); render();
-    toast(on ? '已开启自动触发' : '已关闭自动触发', 'ok');
-  },
-  async pickAuto() {
-    const list = await invoke('list_windows');
-    S.picker = list;
-    S.pickerFor = 'auto';
-    renderPicker();
-  },
-  async delAuto(v) {
-    const m = S.data.config.settings.mask;
-    const apps = (m.autoApps || []).filter((x) => x !== v);
-    await invoke('mask_auto', { enabled: m.auto, apps });
-    await pull(); render();
-  },
-
   /* ---- 备份 ---- */
   async backupMake() {
     try {
@@ -2052,6 +2275,15 @@ const Act = window.Act = {
 
   async cfgSwitch(k) {
     const st = S.data.config.settings;
+    if (k.indexOf('.') > 0) {
+      // 嵌套配置（如 browserGuard.enabled）：按点号路径取字段并取反
+      const [group, field] = k.split('.');
+      if (!st[group]) st[group] = {};
+      st[group][field] = !st[group][field];
+      await saveConfig();
+      render();
+      return;
+    }
     if (k === 'hudEnabled') {
       const h = st.hud || (st.hud = { enabled: true, quoteMinutes: 60 });
       h.enabled = !h.enabled;
@@ -2162,17 +2394,132 @@ const Act = window.Act = {
     }
   },
 
+  /* ---- 浏览器插件 ---- */
+  async browserScan() {
+    S.browserScanning = true;
+    render();
+    try {
+      const r = await invoke('browsers_scan');
+      S.browsers = r.list || [];
+      await pull();
+    } catch (e) {
+      toast(String(e), 'err');
+    }
+    S.browserScanning = false;
+    render();
+  },
+
+  async browserPage(key) {
+    try {
+      const msg = await invoke('browser_open_ext', { key });
+      toast(msg + '（10 分钟内不会因为插件状态关浏览器）', 'ok');
+    } catch (e) {
+      toast(String(e), 'err');
+    }
+  },
+
+  async browserInstall(key) {
+    await Act.browserPage(key);
+    await Act.browserGuide(key);
+  },
+
+  async browserGuide(key) {
+    const name = (S.data.browsers || S.browsers || []).find((b) => b.key === key)?.name || '浏览器';
+    let info = S.data.extInfo || {};
+    try { info = await invoke('browser_ext_info'); } catch (e) { /* 用状态里的旧值 */ }
+    $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal">
+        <div class="modal-hd">
+          <h3>给 ${esc(name)} 装插件</h3>
+          <button class="close-x" data-act="close-modal">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="note" style="margin-bottom:12px">
+            扩展管理页已经帮你打开了。照着下面三步做，一分钟内能装好：
+          </div>
+          <div class="ext-steps">
+            <div class="st"><b>1</b><span>在扩展页右上角打开 <b>开发者模式</b></span></div>
+            <div class="st"><b>2</b><span>点 <b>加载已解压的扩展程序</b>，然后选中下面这个文件夹</span></div>
+            <div class="st"><b>3</b><span>回到这里点 <b>完成，重新检测</b>，状态会变成「插件已启用」</span></div>
+          </div>
+          ${extFolderPanel(info)}
+          <div class="hint" style="margin-top:10px">
+            也可以把 <code>${esc((info.crx || 'KingOfFocus-Extension.crx').split('\\').pop())}</code>
+            直接拖进扩展页（同样要先开开发者模式）。装的时候不会关你的浏览器。
+          </div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn" data-act="close-modal">稍后</button>
+          <button class="btn btn-primary" data-act="browser-scan">完成，重新检测</button>
+        </div>
+      </div>
+    </div>`;
+  },
+
+  async extCopy() {
+    const info = S.data.extInfo || {};
+    const ok = await copyText(info.path || '');
+    const note = $('#extNote');
+    if (ok) {
+      toast('扩展路径已复制到剪贴板', 'ok');
+      if (note) note.innerHTML = `<b style="color:var(--gold)">已复制。</b>在资源管理器地址栏 Ctrl+V 回车，再选中 extension 文件夹。`;
+    } else {
+      // 复制多半失败于 webview 权限：退化成"让用户手动选"
+      toast('复制失败（剪贴板不可用），可以点「打开文件夹」直接从地址栏复制', 'err');
+      if (note) note.innerHTML = `<b style="color:var(--red)">复制失败。</b>请点「打开文件夹」，在资源管理器地址栏里复制路径；或手动输入：<code>${esc(info.path || '')}</code>`;
+    }
+  },
+
+  async browserOpenFolder() {
+    const note = $('#extNote');
+    if (note) note.textContent = '正在打开…';
+    try {
+      const msg = await invoke('browser_open_folder');
+      toast(msg, 'ok');
+      if (note) note.innerHTML = `<b style="color:var(--green, #52c41a)">${esc(msg)}</b>`;
+    } catch (e) {
+      const msg = String(e).replace(/^Error:\s*/, '').replace(/\n/g, ' ');
+      toast('打开失败，已给出替代方案', 'err');
+      if (note) note.innerHTML = `<b style="color:var(--red)">打不开扩展文件夹。</b>${esc(msg)}`;
+    }
+  },
+
+  async browserGraceSave() {
+    const el = $('#bgGrace');
+    const v = Math.max(300, Math.min(3500, Number(el.value) || 1200));
+    S.data.config.settings.browserGuard.graceMs = v;
+    await saveConfig();
+    toast(`关闭前宽限已设为 ${v}ms`, 'ok');
+  },
+
   /* ---- 自动更新 ---- */
   async checkUpdate() {
     toast('正在检查更新…');
     try {
-      const r = await invoke('update_check');
+      // 把输入框里刚填、还没保存的令牌一起带上——否则等于用旧令牌去检测
+      const typed = ($('#ghToken') && $('#ghToken').value.trim()) || '';
+      const r = await invoke('update_check', { token: typed || null });
       await pull();
       render();
       if (!r.ok) { toast('检查失败：' + r.error, 'err'); return; }
-      if (r.newer) showUpdateModal(r, true);
-      else toast('已经是最新版本 v' + r.current, 'ok');
+      if (r.newer) {
+        showUpdateModal(r, true);
+      } else if (!r.asset) {
+        // 仓库只打了 tag、没有 Release 安装包：如实说明，别谎称"已是最新"
+        toast(`远端最新 ${r.latest}，当前 v${r.current}。${r.note || '没有可自动下载的安装包。'}`,
+          r.latest ? '' : 'ok');
+      } else {
+        toast('已经是最新版本 v' + r.current, 'ok');
+      }
     } catch (e) { toast('检查失败：' + e, 'err'); }
+  },
+  async clearToken() {
+    try {
+      await invoke('update_save', { token: '' });
+      await pull(); render();
+      toast('令牌已清除', 'ok');
+    } catch (e) { toast(String(e), 'err'); }
   },
   async saveToken() {
     const el = $('#ghToken');
@@ -2480,29 +2827,10 @@ document.addEventListener('click', async (e) => {
   if (act === 'sched-copy') { Act.schedCopy(el.dataset.from, el.dataset.to); return; }
   if (act === 'sched-clear') { Act.schedClear(); return; }
   if (act === 'lock-kind') { S.editing.lock.kind = el.dataset.k; renderEditor(); return; }
-  if (act === 'pick-target') { await Act.pickTarget(); return; }
   if (act === 'pick-item') {
     const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
     if (!w) return;
-    if (S.pickerFor === 'auto') {
-      const name = (w.name || '').replace(/\.exe$/i, '');
-      if (!name) { toast('拿不到这个程序的进程名', 'err'); return; }
-      const m = S.data.config.settings.mask;
-      const apps = [...new Set([...(m.autoApps || []), name])];
-      await invoke('mask_auto', { enabled: true, apps });
-      closeModal();
-      await pull(); render();
-      toast(`已添加 ${name}，自动触发已开启`, 'ok');
-      return;
-    }
-    if (S.pickerFor === 'mask') {
-      closeModal();
-      try {
-        await invoke('mask_start', { pid: w.pid, title: w.title });
-        await pull(); render();
-        toast('遮罩已开启，Ctrl+Alt+K 可随时退出', 'ok');
-      } catch (err) { toast(String(err), 'err'); }
-    } else {
+    {
       const label = (w.name || '').replace(/\.exe$/i, '') || (w.title || '').slice(0, 20);
       S.editing.apps.push({
         id: 'a' + Date.now().toString(36),
@@ -2517,7 +2845,8 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'toggle-mask') { await Act.toggleMask(); return; }
   if (act === 'mask-diag') { await Act.maskDiag(); return; }
-  if (act === 'mask-test') { await Act.maskTest(); return; }
+  if (act === 'mask-preview') { await Act.maskPreview(); return; }
+  if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
   if (act === 'toggle-smooth') { await Act.toggleSmooth(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
@@ -2544,9 +2873,6 @@ document.addEventListener('click', async (e) => {
   if (act === 'save-quote-mins') { await Act.saveQuoteMins(); return; }
   if (act === 'save-notify') { await Act.saveNotify(); return; }
   if (act === 'save-hotkey') { await Act.saveHotkey(); return; }
-  if (act === 'toggle-auto') { await Act.toggleAuto(); return; }
-  if (act === 'pick-auto') { await Act.pickAuto(); return; }
-  if (act === 'del-auto') { await Act.delAuto(el.dataset.v); return; }
   if (act === 'backup-make') { await Act.backupMake(); return; }
   if (act === 'backup-restore') { await Act.backupRestore(el.dataset.path); return; }
   if (act === 'backup-del') { await Act.backupDelete(el.dataset.path); return; }
@@ -2572,6 +2898,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'check-update') { await Act.checkUpdate(); return; }
   if (act === 'save-token') { await Act.saveToken(); return; }
   if (act === 'token-doc') { await Act.tokenDoc(); return; }
+  if (act === 'clear-token') { await Act.clearToken(); return; }
+  if (act === 'browser-scan') { await Act.browserScan(); return; }
+  if (act === 'browser-page') { await Act.browserPage(el.dataset.k); return; }
+  if (act === 'browser-install') { await Act.browserInstall(el.dataset.k); return; }
+  if (act === 'browser-guide') { await Act.browserGuide(null); return; }
+  if (act === 'browser-open-folder') { await Act.browserOpenFolder(); return; }
+  if (act === 'ext-copy') { await Act.extCopy(); return; }
+  if (act === 'ext-open') { await Act.browserOpenFolder(); return; }
+  if (act === 'browser-grace-save') { await Act.browserGraceSave(); return; }
+  if (act === 'browser-prompt-go') { closeModal(); await Act.browserScan(); Act.nav('browsers'); return; }
   if (act === 'open-repo') { e.preventDefault(); await Act.openRepo(); return; }
   if (act === 'quota-refresh') { await Act.quotaRefresh(); return; }
   if (act === 'update-enabled') { await Act.updateEnabled(); return; }
@@ -2645,6 +2981,8 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   S.customEnd = todayStr();
   render();
   setInterval(pull, 1500);
+  // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导
+  promptBrowserSetup();
 
   // 下载进度
   if (T && T.event) {

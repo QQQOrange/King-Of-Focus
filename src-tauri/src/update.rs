@@ -80,78 +80,192 @@ pub fn quota(token: &str) -> Result<(i64, i64), String> {
 pub fn check(cfg: &UpdateCfg) -> Value {
     let repo = repo_of(cfg);
     let (remaining, limit) = quota(&cfg.token).unwrap_or((0, 0));
-    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let auth = bearer(&cfg.token);
+    let rel_url = format!("https://api.github.com/repos/{repo}/releases/latest");
 
-    match net::get_json(&url, auth.as_deref()) {
-        Ok(v) => {
-            let tag = v
-                .get("tag_name")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            let notes = v
-                .get("body")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            let published = v
-                .get("published_at")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // 优先 Setup 安装包，其次任意 exe，最后 zip
-            let assets = v
-                .get("assets")
-                .and_then(|x| x.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let pick = |pred: &dyn Fn(&str) -> bool| -> Option<(String, String, u64)> {
-                assets.iter().find_map(|a| {
-                    let name = a.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    if !pred(name) {
-                        return None;
+    match net::get_json(&rel_url, auth.as_deref()) {
+        Ok(v) => release_json(&v, cfg, remaining, limit),
+        Err(e) => {
+            // 仓库只打了 tag、还没发 Release 时，GitHub 的 /releases/latest 会返回 404。
+            // 以前这里直接把错误抛给界面，用户看到的就是"检测不了"。
+            // 退一步用 /tags 比较版本号，至少能明确回答"有没有新版"。
+            if e.contains("404") {
+                let tags_url = format!("https://api.github.com/repos/{repo}/tags");
+                match net::get_json(&tags_url, auth.as_deref()) {
+                    Ok(Value::Array(arr)) => {
+                        let best = arr
+                            .iter()
+                            .filter_map(|t| t.get("name").and_then(|x| x.as_str()))
+                            .filter(|n| !n.is_empty())
+                            .max_by(|a, b| cmp_ver(a, b).cmp(&0))
+                            .unwrap_or("");
+                        if best.is_empty() {
+                            // 连标签都没有：再退一步，直接读仓库里的 Cargo.toml 版本号。
+                            // 这样"检测是否有新版"至少是个真实答案，而不是一句"检测不了"。
+                            return match repo_version(&repo, auth.as_deref()) {
+                                Some(tag) => {
+                                    let newer = cmp_ver(&tag, &current()) > 0;
+                                    json!({
+                                        "ok": true,
+                                        "hasUpdate": newer && tag != cfg.skipped_version,
+                                        "latest": tag,
+                                        "newer": newer,
+                                        "current": current(),
+                                        "skipped": cfg.skipped_version,
+                                        "notes": "",
+                                        "publishedAt": "",
+                                        "asset": Value::Null,
+                                        "source": "manifest",
+                                        "remaining": remaining,
+                                        "limit": limit,
+                                        "error": "",
+                                        "note": "仓库还没有 Release / 标签，这里按仓库源码里的版本号比较；需要安装请到 GitHub 下载或自行编译。",
+                                    })
+                                }
+                                None => json!({
+                                    "ok": false,
+                                    "hasUpdate": false,
+                                    "current": current(),
+                                    "remaining": remaining,
+                                    "limit": limit,
+                                    "error": "仓库里没有 Release、没有标签，也读不到源码里的版本号",
+                                }),
+                            };
+                        }
+                        let newer = cmp_ver(best, &current()) > 0;
+                        json!({
+                            "ok": true,
+                            "hasUpdate": newer && best != cfg.skipped_version,
+                            "latest": best,
+                            "newer": newer,
+                            "current": current(),
+                            "skipped": cfg.skipped_version,
+                            "notes": "",
+                            "publishedAt": "",
+                            "asset": Value::Null,
+                            "source": "tag",
+                            "remaining": remaining,
+                            "limit": limit,
+                            "error": "",
+                            "note": "仓库还没有发布 Release 安装包，这里按标签版本比较；需要安装请到 GitHub 手动下载。",
+                        })
                     }
-                    let u = a.get("browser_download_url").and_then(|x| x.as_str())?;
-                    let size = a.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
-                    Some((name.to_string(), u.to_string(), size))
+                    Ok(_) => json!({
+                        "ok": false,
+                        "hasUpdate": false,
+                        "current": current(),
+                        "remaining": remaining,
+                        "limit": limit,
+                        "error": "GitHub 返回的标签列表格式不对",
+                    }),
+                    Err(e2) => json!({
+                        "ok": false,
+                        "hasUpdate": false,
+                        "current": current(),
+                        "remaining": remaining,
+                        "limit": limit,
+                        "error": e2,
+                    }),
+                }
+            } else {
+                json!({
+                    "ok": false,
+                    "hasUpdate": false,
+                    "current": current(),
+                    "remaining": remaining,
+                    "limit": limit,
+                    "error": e,
                 })
-            };
-            let lower = |s: &str| s.to_lowercase();
-            let found = pick(&|n| lower(n).ends_with(".exe") && lower(n).contains("setup"))
-                .or_else(|| pick(&|n| lower(n).ends_with(".exe")))
-                .or_else(|| pick(&|n| lower(n).ends_with(".msi")));
-
-            let has = cmp_ver(&tag, &current()) > 0 && tag != cfg.skipped_version;
-            let asset = match &found {
-                Some((n, u, s)) => json!({"name": n, "url": u, "size": s}),
-                None => Value::Null,
-            };
-            json!({
-                "ok": true,
-                "hasUpdate": has,
-                "latest": tag,
-                "newer": cmp_ver(&tag, &current()) > 0,
-                "current": current(),
-                "skipped": cfg.skipped_version,
-                "notes": notes,
-                "publishedAt": published,
-                "asset": asset,
-                "remaining": remaining,
-                "limit": limit,
-                "error": "",
-            })
+            }
         }
-        Err(e) => json!({
-            "ok": false,
-            "hasUpdate": false,
-            "current": current(),
-            "remaining": remaining,
-            "limit": limit,
-            "error": e,
-        }),
     }
+}
+
+/// 从仓库源码的 Cargo.toml 里读版本号（Release/标签都没有时的最后兜底）
+fn repo_version(repo: &str, auth: Option<&str>) -> Option<String> {
+    let mut last = None;
+    for branch in ["main", "master"] {
+        let url = format!("https://raw.githubusercontent.com/{repo}/{branch}/src-tauri/Cargo.toml");
+        if let Ok(text) = net::get_text(&url, auth, None) {
+            for line in text.lines() {
+                let l = line.trim();
+                if let Some(rest) = l.strip_prefix("version") {
+                    if let Some(v) = rest.split('"').nth(1) {
+                        let v = v.trim().to_string();
+                        if !v.is_empty() {
+                            return Some(v);
+                        }
+                    }
+                }
+            }
+        }
+        last = Some(());
+    }
+    let _ = last;
+    None
+}
+
+/// 把 GitHub 的 release 响应转成界面用的结构
+fn release_json(v: &Value, cfg: &UpdateCfg, remaining: i64, limit: i64) -> Value {
+    let tag = v
+        .get("tag_name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let notes = v
+        .get("body")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let published = v
+        .get("published_at")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // 优先 Setup 安装包，其次任意 exe，最后 msi
+    let assets = v
+        .get("assets")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let pick = |pred: &dyn Fn(&str) -> bool| -> Option<(String, String, u64)> {
+        assets.iter().find_map(|a| {
+            let name = a.get("name").and_then(|x| x.as_str()).unwrap_or("");
+            if !pred(name) {
+                return None;
+            }
+            let u = a.get("browser_download_url").and_then(|x| x.as_str())?;
+            let size = a.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+            Some((name.to_string(), u.to_string(), size))
+        })
+    };
+    let lower = |s: &str| s.to_lowercase();
+    let found = pick(&|n| lower(n).ends_with(".exe") && lower(n).contains("setup"))
+        .or_else(|| pick(&|n| lower(n).ends_with(".exe")))
+        .or_else(|| pick(&|n| lower(n).ends_with(".msi")));
+
+    let newer = cmp_ver(&tag, &current()) > 0;
+    let asset = match &found {
+        Some((n, u, s)) => json!({"name": n, "url": u, "size": s}),
+        None => Value::Null,
+    };
+    json!({
+        "ok": true,
+        "hasUpdate": newer && tag != cfg.skipped_version,
+        "latest": tag,
+        "newer": newer,
+        "current": current(),
+        "skipped": cfg.skipped_version,
+        "notes": notes,
+        "publishedAt": published,
+        "asset": asset,
+        "source": "release",
+        "remaining": remaining,
+        "limit": limit,
+        "error": "",
+        "note": if found.is_none() { "这个 Release 里没有可自动安装的安装包，请到 GitHub 手动下载。" } else { "" },
+    })
 }
 
 fn safe_name(name: &str) -> String {

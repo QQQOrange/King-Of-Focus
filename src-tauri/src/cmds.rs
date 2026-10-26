@@ -14,6 +14,22 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[link(name = "shell32")]
 extern "system" {
     fn IsUserAnAdmin() -> i32;
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        op: *const u16,
+        file: *const u16,
+        params: *const u16,
+        dir: *const u16,
+        show: i32,
+    ) -> isize;
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 pub fn is_admin() -> bool {
@@ -84,6 +100,10 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
         )
     };
     let mask = &*shared.mask;
+    let preview_left = {
+        let until = mask.preview_until.load(Ordering::Relaxed);
+        (until - chrono::Local::now().timestamp()).max(0)
+    };
     json!({
         "config": config,
         "runtime": runtime,
@@ -100,13 +120,17 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
-            "auto": config.settings.mask.auto,
-            "autoApps": config.settings.mask.auto_apps,
+            "followSchedule": config.settings.mask.follow_schedule,
+            "previewLeft": preview_left,
             "notice": notice,
         },
         "admin": is_admin(),
         "testMode": crate::testmode::on(),
         "dataDir": cfg::data_dir().to_string_lossy(),
+        "browsers": crate::browsers::snapshot(),
+        "browserGuard": config.settings.browser_guard,
+        "extFolder": crate::browsers::ext_dir().map(|p| p.to_string_lossy().to_string()),
+        "extInfo": ext_info_json(),
         "pid": std::process::id(),
         "points": {
             "balance": config.points.balance,
@@ -121,7 +145,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
         "repoUrl": crate::version::REPO_URL,
         "tokenDocUrl": crate::version::TOKEN_DOC_URL,
         "appName": crate::version::APP_NAME,
-        "maskedToken": mask_secret(&config.settings.update.token),
+        // 只告诉前端"有没有设置"，任何片段都不外发——令牌不该出现在界面上
+        "hasToken": !config.settings.update.token.trim().is_empty(),
         "configPath": cfg::config_path().to_string_lossy(),
         "dataPath": cfg::data_dir().to_string_lossy(),
         "now": now.format("%Y-%m-%d %H:%M").to_string(),
@@ -149,6 +174,17 @@ pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(),
 }
 
 /// 只露头尾的掩码，用于界面展示
+fn ext_info_json() -> Value {
+    let loc = crate::browsers::ext_location();
+    json!({
+        "path": loc.path,
+        "exists": loc.exists,
+        "crx": loc.crx,
+        "exeDir": loc.exe_dir,
+        "source": loc.source,
+    })
+}
+
 fn mask_secret(s: &str) -> String {
     let t = s.trim();
     if t.is_empty() {
@@ -217,10 +253,8 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
         m.hk_vk.store(vk, Ordering::Relaxed);
         m.hk_gen.fetch_add(1, Ordering::Relaxed);
     }
-    m.auto.store(config.settings.mask.auto, Ordering::Relaxed);
-    if let Ok(mut g) = m.auto_apps.lock() {
-        *g = config.settings.mask.auto_apps.clone();
-    }
+    m.auto_follow
+        .store(config.settings.mask.follow_schedule, Ordering::Relaxed);
     m.target_pid
         .store(config.settings.mask.target_pid, Ordering::Relaxed);
 }
@@ -285,6 +319,49 @@ pub fn test_mode_status() -> Value {
     })
 }
 
+
+/// 重新探测已安装的浏览器与插件状态（用户点「重新检测」/ 启动时调用）
+#[tauri::command]
+pub fn browsers_scan() -> Value {
+    let list = crate::browsers::scan(true);
+    let installed = list.iter().filter(|b| b.installed).count();
+    let broken = list
+        .iter()
+        .filter(|b| b.installed && (b.ext == "notInstalled" || b.ext == "disabled"))
+        .count();
+    json!({
+        "list": list,
+        "installed": installed,
+        "broken": broken,
+        "extFolder": crate::browsers::ext_dir().map(|p| p.to_string_lossy().to_string()),
+    })
+}
+
+/// 打开某个浏览器的扩展管理页（安装流程第一步），并给 10 分钟保护期
+#[tauri::command]
+pub fn browser_open_ext(key: String) -> Result<String, String> {
+    crate::browsers::open_ext_page(&key)
+}
+
+/// 扩展目录信息（路径 / 是否存在 / CRX / 程序目录 / 来源），供安装引导展示与复制
+#[tauri::command]
+pub fn browser_ext_info() -> Value {
+    let loc = crate::browsers::ext_location();
+    json!({
+        "path": loc.path,
+        "exists": loc.exists,
+        "crx": loc.crx,
+        "exeDir": loc.exe_dir,
+        "source": loc.source,
+    })
+}
+
+/// 在资源管理器里打开 extension 目录（"加载已解压的扩展程序"要用）
+#[tauri::command]
+pub fn browser_open_folder() -> Result<String, String> {
+    crate::browsers::open_ext_folder()
+}
+
 #[tauri::command]
 pub fn mask_start(
     app: AppHandle,
@@ -335,6 +412,7 @@ pub fn mask_set(
     block_click: Option<bool>,
     smooth: Option<bool>,
     follow: Option<bool>,
+    follow_schedule: Option<bool>,
 ) {
     let m = &*shared.mask;
     if let Some(o) = opacity {
@@ -353,10 +431,12 @@ pub fn mask_set(
         m.smooth.store(v, Ordering::Relaxed);
     }
     if let Some(v) = follow {
+        // 只管"遮罩范围"：跟随当前窗口 / 固定目标。绝不顺手开关遮罩——
+        // 开关承载别的含义，正是之前"以为关了其实开着"的根源。
         m.follow.store(v, Ordering::Relaxed);
-        // 跟随模式本身就是"常开"，打开它就直接开始
-        m.painted.store(false, Ordering::Relaxed);
-        m.on.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = follow_schedule {
+        m.auto_follow.store(v, Ordering::Relaxed);
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
@@ -410,21 +490,43 @@ pub fn mask_hotkey(shared: State<'_, Arc<Shared>>, combo: String) -> Result<(), 
     Ok(())
 }
 
-/// 自动触发：进入这些应用就开遮罩，切走就关
+/// 主开关：遮罩是否真实启用。界面上那个"专注遮罩"开关只调它。
 #[tauri::command]
-pub fn mask_auto(
-    shared: State<'_, Arc<Shared>>,
-    enabled: bool,
-    apps: Vec<String>,
-) -> Result<(), String> {
+pub fn mask_set_on(shared: State<'_, Arc<Shared>>, on: bool) {
     let m = &*shared.mask;
-    m.auto.store(enabled, Ordering::Relaxed);
-    if let Ok(mut g) = m.auto_apps.lock() {
-        *g = apps.clone();
+    m.preview_until.store(0, Ordering::Relaxed);
+    m.test_lock.store(false, Ordering::Relaxed);
+    m.manual_hwnd.store(0, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(on, Ordering::Relaxed);
+}
+
+/// 预览效果：临时打开 5 秒就自动收，不会把主开关改成"已启用"
+#[tauri::command]
+pub fn mask_preview(shared: State<'_, Arc<Shared>>) -> i64 {
+    let m = &*shared.mask;
+    let now = chrono::Local::now().timestamp();
+    if m.preview_until.load(Ordering::Relaxed) > now {
+        // 正在预览 → 再点一次提前结束
+        m.preview_until.store(0, Ordering::Relaxed);
+        m.test_lock.store(false, Ordering::Relaxed);
+        m.on.store(false, Ordering::Relaxed);
+        return 0;
     }
+    m.test_lock.store(true, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(true, Ordering::Relaxed);
+    m.preview_until.store(now + 5, Ordering::Relaxed);
+    5
+}
+
+/// 遮罩跟随自律模式
+#[tauri::command]
+pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    let m = &*shared.mask;
+    m.auto_follow.store(enabled, Ordering::Relaxed);
     let mut c = shared.config();
-    c.settings.mask.auto = enabled;
-    c.settings.mask.auto_apps = apps;
+    c.settings.mask.follow_schedule = enabled;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
         *w = c;
@@ -447,20 +549,22 @@ pub fn mask_test(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<bool,
     mask_test_inner(&app, &shared)
 }
 
-/// 供命令行/调试接口复用，UI 与自动化测试走同一条代码路径
+/// 供命令行/调试接口复用，UI 与自动化测试走同一条代码路径。
+///
+/// 语义是「预览」而不是「开启」：固定高亮本程序窗口，5 秒后自动收起，
+/// 期间主开关的意向不会被改写——这样界面上永远不会出现
+/// "我只是想看下效果，结果遮罩一直开着"的情况。
 pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, String> {
     let m = &*shared.mask;
-    let self_pid = std::process::id();
-    let testing = m.on.load(Ordering::Relaxed) && m.target_pid.load(Ordering::Relaxed) == self_pid;
-
-    if testing {
+    let now = chrono::Local::now().timestamp();
+    if m.preview_until.load(Ordering::Relaxed) > now {
+        m.preview_until.store(0, Ordering::Relaxed);
         m.test_lock.store(false, Ordering::Relaxed);
         m.on.store(false, Ordering::Relaxed);
-        m.duration
-            .store(shared.config().settings.mask.duration_ms.min(2000) as i32, Ordering::Relaxed);
         return Ok(false);
     }
 
+    let self_pid = std::process::id();
     let hwnd = match app.get_webview_window("main") {
         Some(w) => match w.hwnd() {
             Ok(h) => h.0 as isize,
@@ -472,17 +576,14 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
         return Err("找不到主窗口句柄".into());
     }
 
-    // 测试只跟遮罩本身有关，和自律模式无关；
-    // 动画时长沿用用户设置（想快速连点就把时长调小，而不是偷偷改成固定值）
     m.duration
         .store(shared.config().settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     m.target.store(hwnd, Ordering::Relaxed);
     m.target_pid.store(self_pid, Ordering::Relaxed);
     m.test_lock.store(true, Ordering::Relaxed);
-    m.manual_hwnd.store(0, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
-    let _ = app.get_webview_window("main").map(|w| w.set_always_on_top(false));
+    m.preview_until.store(now + 5, Ordering::Relaxed);
     Ok(true)
 }
 
@@ -529,15 +630,37 @@ pub fn open_extension_dir() -> Result<(), String> {
 #[tauri::command]
 pub fn restart_as_admin(app: AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let cmd = format!(
-        "Start-Process -FilePath '{}' -Verb RunAs",
-        exe.to_string_lossy().replace('\'', "''")
-    );
-    Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &cmd])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    let op = wide("runas");
+    let file = wide(&exe.to_string_lossy());
+    let dir = exe
+        .parent()
+        .map(|p| wide(&p.to_string_lossy()))
+        .unwrap_or_else(|| wide(""));
+
+    // 直接走 ShellExecuteW("runas")：返回值 <= 32 就是失败，
+    // 能区分"用户点了 UAC 的否"和"真的没权限"。
+    // 以前用隐藏窗口拉 PowerShell，用户取消 UAC 时宿主进程照样 exit，
+    // 表现就是"点了按钮，程序直接消失、什么也没发生"。
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            dir.as_ptr(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r as usize <= 32 {
+        let why = match r as usize {
+            5 => "你在 UAC 弹窗里点了「否」，或者当前账户没有管理员权限".to_string(),
+            2 => "找不到程序文件".to_string(),
+            31 => "系统无法启动提权进程".to_string(),
+            n => format!("ShellExecute 返回 {n}"),
+        };
+        return Err(format!("提权失败：{why}"));
+    }
+    // 提权后的新实例已经起来了，这个进程让位
     app.exit(0);
     Ok(())
 }
@@ -550,13 +673,22 @@ pub fn set_run_as_admin(
     enabled: bool,
 ) -> Result<(), String> {
     let mut c = shared.config();
+    let before = c.settings.run_as_admin;
     c.settings.run_as_admin = enabled;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
-        *w = c;
+        *w = c.clone();
     }
     if enabled && !is_admin() {
-        restart_as_admin(app)?;
+        if let Err(e) = restart_as_admin(app) {
+            // 没提权成功就把开关退回去，避免"界面显示已开启、实际没生效"
+            c.settings.run_as_admin = before;
+            let _ = cfg::save(&c);
+            if let Ok(mut w) = shared.cfg.write() {
+                *w = c;
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -855,8 +987,19 @@ pub fn sync_download(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
 // ---------------- 自动更新 ----------------
 
 #[tauri::command]
-pub fn update_check(shared: State<'_, Arc<Shared>>) -> Value {
-    let c = shared.config();
+pub fn update_check(shared: State<'_, Arc<Shared>>, token: Option<String>) -> Value {
+    let mut c = shared.config();
+    // 用户可能刚把令牌粘进输入框就点了「立即检查」：先用上它，别逼他先去保存
+    if let Some(t) = token {
+        let t = t.trim().to_string();
+        if !t.is_empty() && t != c.settings.update.token {
+            c.settings.update.token = t;
+            let _ = cfg::save(&c);
+            if let Ok(mut w) = shared.cfg.write() {
+                *w = c.clone();
+            }
+        }
+    }
     let v = crate::update::check(&c.settings.update);
     let mut c2 = c.clone();
     c2.settings.update.last_check = chrono::Local::now().timestamp();

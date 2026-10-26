@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backup;
+mod browsers;
 mod cfg;
 mod cmds;
 mod guard;
@@ -194,7 +195,9 @@ fn main() {
             cmds::mask_stop,
             cmds::mask_set,
             cmds::mask_hotkey,
-            cmds::mask_auto,
+            cmds::mask_follow_schedule,
+            cmds::mask_set_on,
+            cmds::mask_preview,
             cmds::mask_test,
             cmds::mask_diag,
             cmds::open_path,
@@ -206,6 +209,10 @@ fn main() {
             cmds::test_mode_enter,
             cmds::test_mode_exit,
             cmds::test_mode_status,
+            cmds::browsers_scan,
+            cmds::browser_open_ext,
+            cmds::browser_open_folder,
+            cmds::browser_ext_info,
             cmds::quit_app,
             cmds::hide_window,
             cmds::show_main,

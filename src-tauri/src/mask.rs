@@ -10,7 +10,9 @@
 //! 不再使用矩形拼条方案：拼条做不出圆角，也做不出从窗口边缘向外铺开的
 //! 连续形变；逐像素方案在 2600x1440 上单帧填充约 3ms，静止时不重绘。
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering,
+};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,6 +49,8 @@ const VK_K: u32 = 0x4B;
 const GWL_EXSTYLE: i32 = -20;
 const HWND_TOPMOST: isize = -1;
 const HWND_NOTOPMOST: isize = -2;
+/// HWND_TOP：对已是置顶的窗口表示「放到置顶带顶端」——这是唯一能真正提升层级的方式
+const HWND_TOP: isize = 0;
 const WS_EX_TOPMOST_FLAG: u32 = 0x0000_0008;
 
 /// 当前进程是否管理员（决定能不能改别人的窗口属性）
@@ -59,6 +63,13 @@ const SWP_NOSIZE: u32 = 0x0001;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOACTIVATE: u32 = 0x0010;
 const SWP_NOOWNERZORDER: u32 = 0x0200;
+
+/// 抬升尝试统计（成功 / 失败），用来判断"压不上去"到底卡在哪
+pub static RAISE_OK: AtomicU64 = AtomicU64::new(0);
+pub static RAISE_FAIL: AtomicU64 = AtomicU64::new(0);
+pub static RAISE_ERR: AtomicU32 = AtomicU32::new(0);
+pub static RAISE_DROP_FAIL: AtomicU64 = AtomicU64::new(0);
+pub static RAISE_DROP_ERR: AtomicU32 = AtomicU32::new(0);
 
 /// 覆盖层窗口句柄（遮罩线程写，置顶守护线程读）
 static OVERLAY_HWNDS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
@@ -246,6 +257,19 @@ pub fn mlog(msg: &str) {
     }
 }
 
+// 把系统定时器精度提到 1ms：默认 15.6ms 会让 4ms 的 sleep 变成 16ms，
+// 置顶守护看起来"每 16ms 才压一次"，浮窗就能在中间露出来。
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThread() -> Handle;
+    fn SetThreadPriority(h: Handle, p: i32) -> i32;
+}
+
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(period: u32) -> u32;
+}
+
 #[link(name = "dwmapi")]
 extern "system" {
     fn DwmGetWindowAttribute(h: Hwnd, attr: u32, pv: *mut core::ffi::c_void, size: u32) -> i32;
@@ -294,9 +318,10 @@ pub struct MaskCtl {
     pub hk_vk: AtomicU32,
     pub hk_gen: AtomicU32,
     pub hk_ok: AtomicBool,
-    /// 进入指定应用时自动开启
-    pub auto: AtomicBool,
-    pub auto_apps: std::sync::Mutex<Vec<String>>,
+    /// 跟随自律模式：自律生效就开、自律结束就关（由 monitor 驱动）
+    pub auto_follow: AtomicBool,
+    /// 预览截止时间（unix 秒，0 = 没在预览）。预览只持续几秒，不改变主开关的意向
+    pub preview_until: AtomicI64,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口跑）
     pub follow: AtomicBool,
     /// 测试态：临时不跟随，固定高亮本程序窗口
@@ -362,8 +387,8 @@ impl Default for MaskCtl {
             hk_vk: AtomicU32::new(VK_K),
             hk_gen: AtomicU32::new(1),
             hk_ok: AtomicBool::new(false),
-            auto: AtomicBool::new(false),
-            auto_apps: Mutex::new(Vec::new()),
+            auto_follow: AtomicBool::new(false),
+            preview_until: AtomicI64::new(0),
             follow: AtomicBool::new(false),
             test_lock: AtomicBool::new(false),
             manual_hwnd: AtomicIsize::new(0),
@@ -410,6 +435,8 @@ struct Overlay {
     shown: bool,
     /// Region 模式下上一帧的区域参数，没变就不重建区域
     last_key: Option<(i32, i32, i32, i32, i32, u8)>,
+    /// 上一帧任务栏签名的校验和（任务栏位移/隐藏时触发重画）
+    last_bar_sig: i64,
     cur_alpha: u8,
 }
 
@@ -483,6 +510,7 @@ impl Overlay {
             clickthrough: true,
             shown: false,
             last_key: None,
+            last_bar_sig: 0,
             cur_alpha: 255,
         })
     }
@@ -554,6 +582,18 @@ impl Overlay {
         if self.w <= 0 || self.h <= 0 {
             return;
         }
+        // 任务栏永远不遮：把它也算进"要扣掉的区域"。放在 key 里，任务栏移动/自动隐藏时能触发重画
+        let bars: Vec<Rect> = taskbar_rects()
+            .into_iter()
+            .filter(|r| {
+                // 如果当前高亮的正是任务栏本身，就不用再扣一次
+                !(r.left == hole.left && r.top == hole.top && r.right == hole.right && r.bottom == hole.bottom)
+            })
+            .collect();
+        let bar_sig: i64 = bars
+            .iter()
+            .map(|r| (r.left as i64 * 31 + r.top as i64 * 17 + r.right as i64 * 7 + r.bottom as i64))
+            .sum();
         let key = (
             hole.left,
             hole.top,
@@ -562,10 +602,12 @@ impl Overlay {
             radius as i32,
             alpha,
         );
-        if self.shown && self.last_key == Some(key) {
+        let key_changed = self.shown && self.last_key == Some(key) && self.last_bar_sig == bar_sig;
+        if key_changed {
             return;
         }
         self.last_key = Some(key);
+        self.last_bar_sig = bar_sig;
 
         if self.cur_alpha != alpha || !self.shown {
             SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
@@ -583,7 +625,22 @@ impl Overlay {
             if hx1 > 0 && hy1 > 0 && hx0 < self.w && hy0 < self.h {
                 let d = ((radius.max(0.0)) * 2.0).round() as i32;
                 let d = d.max(1);
-                let cut = CreateRoundRectRgn(hx0, hy0, hx1 + 1, hy1 + 1, d, d);
+                let cut = CreateRoundRectRgn(hx0, hy0, hx1, hy1, d, d);
+                if !cut.is_null() {
+                    CombineRgn(full, full, cut, RGN_DIFF);
+                    DeleteObject(cut);
+                }
+            }
+            // 任务栏：从遮罩区域里扣掉，保证它不被压暗（用户明确要求）
+            for b in bars.iter() {
+                let bx0 = b.left - self.x;
+                let by0 = b.top - self.y;
+                let bx1 = b.right - self.x;
+                let by1 = b.bottom - self.y;
+                if bx1 <= 0 || by1 <= 0 || bx0 >= self.w || by0 >= self.h {
+                    continue;
+                }
+                let cut = CreateRectRgn(bx0, by0, bx1, by1);
                 if !cut.is_null() {
                     CombineRgn(full, full, cut, RGN_DIFF);
                     DeleteObject(cut);
@@ -623,6 +680,16 @@ impl Overlay {
             bottom: hole_screen.bottom - self.y,
         };
         let px = (alpha as u32) << 24; // 预乘黑：B=G=R=0, A=alpha
+        // 任务栏区域置为全透明（不压暗），与区域模式保持一致
+        let bars: Vec<Rect> = taskbar_rects()
+            .into_iter()
+            .filter(|b| {
+                !(b.left == hole_screen.left
+                    && b.top == hole_screen.top
+                    && b.right == hole_screen.right
+                    && b.bottom == hole_screen.bottom)
+            })
+            .collect();
 
         let buf = std::slice::from_raw_parts_mut(self.bits, (w as usize) * (h as usize));
         for row in 0..h {
@@ -642,6 +709,19 @@ impl Overlay {
                     if b > a {
                         line[a..b].fill(0);
                     }
+                }
+            }
+        }
+
+        for b in bars.iter() {
+            let x0 = (b.left - self.x).max(0).min(w);
+            let x1 = (b.right - self.x).max(0).min(w);
+            let y0 = (b.top - self.y).max(0).min(h);
+            let y1 = (b.bottom - self.y).max(0).min(h);
+            if x1 > x0 {
+                for y in y0..y1 {
+                    let row = &mut buf[(y as usize) * (w as usize)..(y as usize + 1) * (w as usize)];
+                    row[x0 as usize..x1 as usize].fill(0);
                 }
             }
         }
@@ -750,18 +830,7 @@ impl Overlay {
         if !self.shown {
             return;
         }
-        if IsWindowVisible(self.hwnd) == 0 {
-            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-        }
-        SetWindowPos(
-            self.hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        );
+        force_above(self.hwnd);
     }
 
     unsafe fn hide(&mut self) {
@@ -851,11 +920,46 @@ unsafe fn is_shell_window(h: Hwnd) -> bool {
     )
 }
 
+/// 任务栏矩形（主屏 + 副屏）。遮罩要"跳过"这些区域——任务栏永远保持原样。
+unsafe fn taskbar_rects() -> Vec<Rect> {
+    unsafe extern "system" fn cb(h: Hwnd, lp: isize) -> i32 {
+        let out = &mut *(lp as *mut Vec<Rect>);
+        if IsWindowVisible(h) == 0 {
+            return 1;
+        }
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32);
+        if n <= 0 {
+            return 1;
+        }
+        let name = String::from_utf16_lossy(&buf[..n as usize]);
+        if name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd" {
+            let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+            if GetWindowRect(h, &mut r) != 0 && r.width() > 0 && r.height() > 0 {
+                out.push(r);
+            }
+        }
+        1
+    }
+    let mut out: Vec<Rect> = Vec::new();
+    EnumWindows(Some(cb), &mut out as *mut Vec<Rect> as isize);
+    out
+}
+
 /// 窗口的“真实可见边界”。
 /// Win10/11 的 GetWindowRect 会把 DWM 的不可见拖拽边框算进去（约 7px），
 /// 用它挖洞就会在窗口四周留一圈透明缝——这正是“边缘残留间隙”的来源。
 /// DWMWA_EXTENDED_FRAME_BOUNDS 返回的是肉眼看到的那个框。
 unsafe fn window_bounds(h: Hwnd) -> Option<Rect> {
+    // 系统外壳（任务栏、开始菜单、托盘浮出层）没有"隐形拖拽边框"，
+    // 但它们的 DWM 扩展边框会把投影（约 8~16px）算进来。
+    // 用 DWM 边框挖洞 → 窗口四周会留一圈"外扩"的亮边，正是用户看到的现象。
+    if is_shell_window(h) {
+        let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(h, &mut r) != 0 && r.width() > 0 && r.height() > 0 {
+            return Some(r);
+        }
+    }
     let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
     let hr = DwmGetWindowAttribute(
         h,
@@ -946,13 +1050,67 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     window_bounds(h)
 }
 
+/// 把某个覆盖层压到"所有外部窗口之上"。
+///
+/// 关键点：对一个**已经是 topmost** 的窗口再调 `SetWindowPos(HWND_TOPMOST)`
+/// 是空操作——它不会在置顶带内部往上提层级。所以只要上面压着别的置顶窗口
+/// （lazytyper 那种每隔几毫秒把自己重新置顶的横条），就必须把那个窗口当锚点：
+/// `SetWindowPos(自己, 对方, …)` 才能插到它上面，否则永远压不回去，
+/// 表现出来就是"横条一弹一弹地闪出来"。
+unsafe fn force_above(hwnd: Hwnd) {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return;
+    }
+    if IsWindowVisible(hwnd) == 0 {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    // 只在自己确实被压在下面时才动，避免无谓的 z 序操作
+    let mut has_above = false;
+    let mut h = GetWindow(hwnd, GW_HWNDPREV);
+    let mut guard = 0;
+    while !h.is_null() && guard < 256 {
+        guard += 1;
+        if IsWindowVisible(h) != 0 {
+            has_above = true;
+            break;
+        }
+        h = GetWindow(h, GW_HWNDPREV);
+    }
+    if !has_above {
+        return;
+    }
+
+    // 关键：对"已经是置顶"的窗口，
+    //   SetWindowPos(hwnd, HWND_TOPMOST, …) 是**空操作**（不会在置顶带内提升层级）；
+    //   HWND_NOTOPMOST 再 HWND_TOPMOST 会把它踢到置顶带**底部**（实测 51 → 131）；
+    //   唯一有效的是 HWND_TOP(0)：对置顶窗口表示"放到置顶带顶端"（实测成功反超）。
+    let ok = SetWindowPos(
+        hwnd,
+        HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+    );
+    if ok != 0 {
+        RAISE_OK.fetch_add(1, Ordering::Relaxed);
+    } else {
+        RAISE_FAIL.fetch_add(1, Ordering::Relaxed);
+        RAISE_ERR.store(GetLastError(), Ordering::Relaxed);
+    }
+}
+
 /// 置顶守护：独立线程以 ~250Hz 把覆盖层压到最上层。
 /// 有些浮窗（lazytyper、歌词条）每次动画都重新置顶，主循环 60Hz 压不过它的节奏，
 /// 这里用更高的频率专门做这一件事，把"漏遮"压到肉眼不可见。
 fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
     thread::spawn(move || unsafe {
+        // 置顶守护对延迟很敏感：常规优先级下 1ms 的 sleep 实测会被拖到 5~15ms，
+        // 提到 HIGHEST 后能把"浮窗抢到我们前面"的时间窗压到一帧以内。
+        SetThreadPriority(GetCurrentThread(), 2); // THREAD_PRIORITY_HIGHEST
         loop {
-            thread::sleep(Duration::from_millis(4));
+            thread::sleep(Duration::from_millis(1));
             if !ctl.on.load(Ordering::Relaxed) {
                 continue;
             }
@@ -962,15 +1120,7 @@ fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
             };
             for h in hs {
                 if h != 0 {
-                    SetWindowPos(
-                        h as Hwnd,
-                        HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-                    );
+                    force_above(h as Hwnd);
                 }
             }
         }
@@ -978,6 +1128,10 @@ fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
 }
 
 pub fn start(ctl: std::sync::Arc<MaskCtl>) {
+    // 先提定时器精度，否则下面 2ms 的守护循环会被系统拉到 16ms
+    unsafe {
+        timeBeginPeriod(1);
+    }
     IS_ADMIN.store(crate::cmds::is_admin(), Ordering::Relaxed);
     spawn_topmost_keeper(ctl.clone());
     thread::spawn(move || unsafe {
@@ -1008,8 +1162,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut last_tick = Instant::now();
         let mut was_on = false;
         let mut hk_gen_done = 0u32;
-        let mut auto_owned = false;
-        let mut last_auto = Instant::now();
         let mut logged_miss = false;
         let mut lost: Option<Instant> = None;
         let mut last_hole: Option<Rect> = None;
@@ -1062,7 +1214,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let dt = now.duration_since(last_tick).as_secs_f32().min(0.1);
             last_tick = now;
 
-            // on 始终是总开关：用户在界面/快捷键/自动触发里开的就是它。
+            // 预览到点自动收：预览只是"看一眼效果"，不该悄悄变成真开启
+            let pv = ctl.preview_until.load(Ordering::Relaxed);
+            if pv > 0 && chrono::Local::now().timestamp() >= pv {
+                ctl.preview_until.store(0, Ordering::Relaxed);
+                ctl.test_lock.store(false, Ordering::Relaxed);
+                ctl.on.store(false, Ordering::Relaxed);
+            }
+
+            // on 始终是总开关：界面上的主开关、全局热键、跟随自律都作用在它上面。
             // follow 只决定"洞口钉在哪个窗口上"，不参与开关判断。
             let follow_flag = ctl.follow.load(Ordering::Relaxed);
             let on = ctl.on.load(Ordering::Relaxed);
@@ -1082,54 +1242,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 let ok = vk != 0 && RegisterHotKey(std::ptr::null_mut(), 0xA1, md, vk) != 0;
                 ctl.hk_ok.store(ok, Ordering::Relaxed);
                 hk_gen_done = gen;
-            }
-
-            // ---- 自动触发：前台切到指定应用就开，切走就关 ----
-            if last_auto.elapsed().as_millis() >= 200 {
-                last_auto = Instant::now();
-                if ctl.auto.load(Ordering::Relaxed) {
-                    let apps = ctl.auto_apps.lock().map(|v| v.clone()).unwrap_or_default();
-                    let mut hit: Option<(Hwnd, u32)> = None;
-                    if !apps.is_empty() {
-                        let fg = GetForegroundWindow();
-                        if !fg.is_null() {
-                            let mut pid = 0u32;
-                            GetWindowThreadProcessId(fg, &mut pid);
-                            if pid != 0 {
-                                let path = crate::proc::exe_path(pid);
-                                let name = if path.is_empty() {
-                                    String::new()
-                                } else {
-                                    crate::proc::stem(&path)
-                                };
-                                if !name.is_empty()
-                                    && apps.iter().any(|a| a.eq_ignore_ascii_case(&name))
-                                {
-                                    hit = Some((fg, pid));
-                                }
-                            }
-                        }
-                    }
-                    match hit {
-                        Some((h, pid)) => {
-                            if ctl.target_pid.load(Ordering::Relaxed) != pid || !ctl.on.load(Ordering::Relaxed) {
-                                ctl.target.store(h as isize, Ordering::Relaxed);
-                                ctl.target_pid.store(pid, Ordering::Relaxed);
-                                ctl.manual_hwnd.store(0, Ordering::Relaxed);
-                                ctl.on.store(true, Ordering::Relaxed);
-                                auto_owned = true;
-                            }
-                        }
-                        None => {
-                            // 切到别的应用时**不再收掉遮罩**。
-                            // 自动触发只是"点火"：一旦在列表应用里打开过遮罩，
-                            // 之后就一直跟着当前最上层窗口走（用户切到别的软件也要遮）。
-                            auto_owned = false;
-                        }
-                    }
-                } else {
-                    auto_owned = false;
-                }
             }
 
             // ---- 分辨率/显示器变化才销毁重建（位图按需创建，不占用平时内存）----
@@ -1280,6 +1392,18 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
 
             let t = target.unwrap();
+            // 任务栏 / 开始菜单 / 托盘浮出层这类系统外壳：留白必须强制为 0。
+            // 它们是贴着屏幕边缘的整块区域，任何正留白都会在四周露出一圈"外扩"，
+            // 看起来就像遮罩没有贴住窗口。
+            let is_shell = {
+                let h = if follow {
+                    followed_key
+                } else {
+                    ctl.target.load(Ordering::Relaxed)
+                };
+                h != 0 && is_shell_window(h as Hwnd)
+            };
+            let margin = if is_shell { 0 } else { margin };
             let want = Rect {
                 left: t.left - margin,
                 top: t.top - margin,
@@ -1391,11 +1515,16 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={} 模式={}{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={} 模式={}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
                     if smooth { "逐像素圆角" } else { "区域挖洞" },
                     if follow { " 跟随前台" } else { "" },
+                    RAISE_OK.load(Ordering::Relaxed),
+                    RAISE_FAIL.load(Ordering::Relaxed),
+                    RAISE_ERR.load(Ordering::Relaxed),
+                    RAISE_DROP_FAIL.load(Ordering::Relaxed),
+                    RAISE_DROP_ERR.load(Ordering::Relaxed),
                     followed_key,
                     ctl.manual_hwnd.load(Ordering::Relaxed),
                     FOLLOW_OVERRIDE.load(Ordering::Relaxed),

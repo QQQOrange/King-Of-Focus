@@ -116,6 +116,65 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/events" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let evs = shared
+                    .rt
+                    .lock()
+                    .map(|rt| rt.events.iter().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                reply(req, 200, json!({ "events": evs }).to_string())
+            }
+        }
+        "/api/debug/update" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let c = shared.config();
+                reply(req, 200, crate::update::check(&c.settings.update).to_string())
+            }
+        }
+        "/api/debug/ext" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let loc = crate::browsers::ext_location();
+                reply(req, 200, serde_json::to_string(&loc).unwrap_or_default())
+            }
+        }
+        "/api/debug/browsers" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let list = crate::browsers::scan(true);
+                reply(req, 200, json!({"list": list}).to_string())
+            }
+        }
+        "/api/debug/browsers_probe" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let p = url
+                    .split("path=")
+                    .nth(1)
+                    .map(|v| percent_decode(v.split('&').next().unwrap_or("")))
+                    .unwrap_or_default();
+                let hits = crate::browsers::probe_profiles(&p);
+                reply(req, 200, json!({"hits": hits}).to_string())
+            }
+        }
+        "/api/debug/maskpreview" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                match crate::cmds::mask_test_inner(&app, shared) {
+                    Ok(v) => reply(req, 200, json!({"ok": true, "preview": v}).to_string()),
+                    Err(e) => reply(req, 500, json!({"error": e}).to_string()),
+                }
+            }
+        }
         "/api/debug/maskon" | "/api/debug/maskoff" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())
@@ -201,6 +260,24 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
         ),
         _ => reply(req, 404, json!({"error": "not found"}).to_string()),
     }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
 
 fn state_json(shared: &Shared) -> String {
