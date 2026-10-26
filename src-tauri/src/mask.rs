@@ -30,6 +30,9 @@ const WS_EX_TOPMOST: u32 = 0x0000_0008;
 const SW_SHOWNOACTIVATE: i32 = 4;
 const SW_HIDE: i32 = 0;
 const ULW_ALPHA: u32 = 0x0000_0002;
+const LWA_ALPHA: u32 = 0x0000_0002;
+const RGN_DIFF: i32 = 4;
+const BLACK_BRUSH: i32 = 4;
 const DIB_RGB_COLORS: u32 = 0;
 
 const PM_REMOVE: u32 = 0x0001;
@@ -177,6 +180,9 @@ extern "system" {
     ) -> i32;
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
     fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
+    fn SetLayeredWindowAttributes(h: Hwnd, key: u32, alpha: u8, flags: u32) -> i32;
+    fn SetWindowRgn(h: Hwnd, rgn: Handle, redraw: i32) -> i32;
+    fn InvalidateRect(h: Hwnd, r: *const Rect, erase: i32) -> i32;
     fn GetWindowLongW(h: Hwnd, idx: i32) -> i32;
     fn IsWindow(h: Hwnd) -> i32;
     fn GetForegroundWindow() -> Hwnd;
@@ -240,6 +246,10 @@ extern "system" {
     fn SelectObject(dc: Hdc, obj: Handle) -> Handle;
     fn DeleteObject(obj: Handle) -> i32;
     fn DeleteDC(dc: Hdc) -> i32;
+    fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> Handle;
+    fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> Handle;
+    fn CombineRgn(dst: Handle, a: Handle, b: Handle, mode: i32) -> i32;
+    fn GetStockObject(idx: i32) -> Handle;
 }
 
 unsafe extern "system" fn wnd_proc(h: Hwnd, msg: u32, wp: usize, lp: isize) -> isize {
@@ -266,6 +276,10 @@ pub struct MaskCtl {
     /// 进入指定应用时自动开启
     pub auto: AtomicBool,
     pub auto_apps: std::sync::Mutex<Vec<String>>,
+    /// 跟随当前最上层窗口（洞口自动跟着前台窗口跑）
+    pub follow: AtomicBool,
+    /// true = 逐像素圆角（抗锯齿）；false = 区域挖洞（兼容性最好，默认）
+    pub smooth: AtomicBool,
     pub painted: AtomicBool,
     pub notice: Mutex<Option<String>>,
 }
@@ -325,6 +339,8 @@ impl Default for MaskCtl {
             hk_ok: AtomicBool::new(false),
             auto: AtomicBool::new(false),
             auto_apps: Mutex::new(Vec::new()),
+            follow: AtomicBool::new(false),
+            smooth: AtomicBool::new(false),
             painted: AtomicBool::new(false),
             notice: Mutex::new(None),
         }
@@ -346,6 +362,13 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// 每台显示器一块覆盖层
+///
+/// 两套画法，默认走第一套：
+/// - `Region`：整窗刷黑 + 整窗透明度 + `SetWindowRgn` 把目标窗口那块"挖掉"。
+///   传统分层窗口路子，不依赖 DWM 的逐像素合成，兼容性最好；区域是全屏的，
+///   所以任务栏、浮动工具条也一起盖住。
+/// - `Smooth`：`UpdateLayeredWindow` 逐像素 alpha，圆角有抗锯齿，
+///   但个别显卡/远程桌面/经典主题下会整块不显示（这正是「遮罩没反应」的一种成因）。
 struct Overlay {
     hwnd: Hwnd,
     mem_dc: Hdc,
@@ -358,6 +381,9 @@ struct Overlay {
     h: i32,
     clickthrough: bool,
     shown: bool,
+    /// Region 模式下上一帧的区域参数，没变就不重建区域
+    last_key: Option<(i32, i32, i32, i32, i32, u8)>,
+    cur_alpha: u8,
 }
 
 impl Overlay {
@@ -410,11 +436,12 @@ impl Overlay {
             DestroyWindow(hwnd);
             return None;
         }
+        let old_bmp = SelectObject(mem_dc, bmp);
+
         mlog(&format!(
             "Overlay 建立 hwnd={:?} {}x{} @({},{})",
             hwnd, r.width(), r.height(), r.left, r.top
         ));
-        let old_bmp = SelectObject(mem_dc, bmp);
 
         Some(Overlay {
             hwnd,
@@ -428,6 +455,8 @@ impl Overlay {
             h: r.height(),
             clickthrough: true,
             shown: false,
+            last_key: None,
+            cur_alpha: 255,
         })
     }
 
@@ -493,14 +522,73 @@ impl Overlay {
         Some((x0.max(0), x1.min(w)))
     }
 
-    /// 把一块"遮罩 + 圆角洞"的位图画进 DIB 并提交给 DWM
-    unsafe fn paint(&mut self, hole_screen: &Rect, radius: f32, alpha: u8) {
+    /// Region 模式：整窗半透明黑，用区域把目标窗口挖出来
+    unsafe fn paint_region(&mut self, hole: &Rect, radius: f32, alpha: u8) {
+        if self.w <= 0 || self.h <= 0 {
+            return;
+        }
+        let key = (
+            hole.left,
+            hole.top,
+            hole.right,
+            hole.bottom,
+            radius as i32,
+            alpha,
+        );
+        if self.shown && self.last_key == Some(key) {
+            return;
+        }
+        self.last_key = Some(key);
+
+        if self.cur_alpha != alpha || !self.shown {
+            SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
+            self.cur_alpha = alpha;
+        }
+
+        // 洞换到窗口局部坐标
+        let hx0 = hole.left - self.x;
+        let hy0 = hole.top - self.y;
+        let hx1 = hole.right - self.x;
+        let hy1 = hole.bottom - self.y;
+
+        let full = CreateRectRgn(0, 0, self.w, self.h);
+        if !full.is_null() {
+            if hx1 > 0 && hy1 > 0 && hx0 < self.w && hy0 < self.h {
+                let d = ((radius.max(0.0)) * 2.0).round() as i32;
+                let d = d.max(1);
+                let cut = CreateRoundRectRgn(hx0, hy0, hx1 + 1, hy1 + 1, d, d);
+                if !cut.is_null() {
+                    CombineRgn(full, full, cut, RGN_DIFF);
+                    DeleteObject(cut);
+                }
+            }
+            // SetWindowRgn 成功后区域归系统所有，不能自己删
+            if SetWindowRgn(self.hwnd, full, 1) == 0 {
+                DeleteObject(full);
+            }
+        }
+
+        if !self.shown {
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            self.shown = true;
+            // 只在第一次显示时催一次重绘；之后靠 SetWindowRgn 带着重画，
+            // 否则每帧对 4K 全屏做一次擦背景会把消息泵压死
+            let _ = InvalidateRect(self.hwnd, std::ptr::null(), 1);
+            mlog(&format!(
+                "Region 首帧 hwnd={:?} {}x{} alpha={} radius={:.0} 洞=({},{},{},{})",
+                self.hwnd, self.w, self.h, alpha, radius,
+                hole.left, hole.top, hole.right, hole.bottom
+            ));
+        }
+    }
+
+    /// Smooth 模式：逐像素 alpha，圆角有抗锯齿
+    unsafe fn paint_smooth(&mut self, hole_screen: &Rect, radius: f32, alpha: u8) {
         let w = self.w;
         let h = self.h;
         if w <= 0 || h <= 0 || self.bits.is_null() {
             return;
         }
-        // 洞换到本屏局部坐标
         let hole = Rect {
             left: hole_screen.left - self.x,
             top: hole_screen.top - self.y,
@@ -552,7 +640,6 @@ impl Overlay {
             ULW_ALPHA,
         );
         if !self.shown {
-            // 回读位图，确认内容真的是「黑 + 洞」，而不是整块透明/整块黑
             let at = |x: i32, y: i32| -> u32 {
                 if x < 0 || y < 0 || x >= w || y >= h {
                     return 0xFFFF_FFFF;
@@ -562,13 +649,10 @@ impl Overlay {
             let cx = (hole.left + hole.right) / 2;
             let cy = (hole.top + hole.bottom) / 2;
             mlog(&format!(
-                "首帧 ULW ok={} err={} size={}x{} alpha={} radius={:.0} hole=({},{},{},{})",
-                ok, GetLastError(), w, h, alpha, radius,
-                hole.left, hole.top, hole.right, hole.bottom
-            ));
-            mlog(&format!(
-                "位图回读 角({},0)={:#010X} 洞心({},{})={:#010X} 洞左外={:#010X}",
-                0, at(0, 0), cx, cy, at(cx, cy), at(hole.left - 8, cy)
+                "Smooth 首帧 ULW ok={} err={} size={}x{} alpha={} 洞=({},{},{},{}) 回读: 角={:#010X} 洞心={:#010X}",
+                ok, GetLastError(), w, h, alpha,
+                hole.left, hole.top, hole.right, hole.bottom,
+                at(0, 0), at(cx, cy)
             ));
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             self.shown = true;
@@ -576,8 +660,7 @@ impl Overlay {
     }
 
     /// 把遮罩重新顶到最上层。
-    /// 后创建的其他置顶窗口（全屏视频、游戏启动器、某些输入法）会盖住我们，
-    /// 所以运行期必须周期性重压一次，否则用户会看到「遮罩没生效」。
+    /// 任务栏、后打开的全屏视频都是置顶窗口，不周期性重压就会被盖住。
     unsafe fn reassert(&mut self) {
         if !self.shown {
             return;
@@ -600,6 +683,7 @@ impl Overlay {
         if self.shown {
             ShowWindow(self.hwnd, SW_HIDE);
             self.shown = false;
+            self.last_key = None;
         }
     }
 }
@@ -647,6 +731,42 @@ unsafe fn find_by_pid(pid: u32) -> Hwnd {
     ctx.1
 }
 
+/// 调试用：强制把某个窗口当作"当前最上层窗口"（0 = 不覆盖）
+pub static FOLLOW_OVERRIDE: AtomicIsize = AtomicIsize::new(0);
+
+/// 当前最上层（前台）窗口的矩形。
+/// 排除本程序自己的窗口，避免把遮罩挖在自己身上。
+unsafe fn follow_rect() -> Option<(Rect, isize)> {
+    let ov = FOLLOW_OVERRIDE.load(Ordering::Relaxed);
+    let fg = if ov != 0 { ov as Hwnd } else { GetForegroundWindow() };
+    if fg.is_null() {
+        return None;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(fg, &mut pid);
+    if ov == 0 && (pid == 0 || pid == std::process::id()) {
+        return None;
+    }
+    if IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
+        return None;
+    }
+    let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+    if GetWindowRect(fg, &mut r) == 0 || r.width() <= 0 || r.height() <= 0 {
+        return None;
+    }
+    Some((r, fg as isize))
+}
+
+/// 两个矩形之间做插值（窗口切换时的过渡）
+fn lerp_rect(a: &Rect, b: &Rect, t: f32) -> Rect {
+    Rect {
+        left: lerp(a.left as f32, b.left as f32, t).round() as i32,
+        top: lerp(a.top as f32, b.top as f32, t).round() as i32,
+        right: lerp(a.right as f32, b.right as f32, t).round() as i32,
+        bottom: lerp(a.bottom as f32, b.bottom as f32, t).round() as i32,
+    }
+}
+
 unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     let mut h = ctl.target.load(Ordering::Relaxed) as Hwnd;
     if h.is_null() || IsWindow(h) == 0 {
@@ -685,7 +805,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             h_instance: inst,
             h_icon: std::ptr::null_mut(),
             h_cursor: std::ptr::null_mut(),
-            hbr_background: std::ptr::null_mut(),
+            hbr_background: GetStockObject(BLACK_BRUSH),
             lpsz_menu_name: std::ptr::null(),
             lpsz_class_name: class.as_ptr(),
         };
@@ -705,6 +825,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut lost: Option<Instant> = None;
         let mut last_hole: Option<Rect> = None;
         let mut last_top = Instant::now();
+        // 跟随模式：记住"洞口当前挂在哪个窗口上"，以及切换过渡的起点
+        let mut follow_key: isize = 0;
+        let mut hole_from: Option<Rect> = None;
+        let mut hole_t0 = Instant::now();
+        let mut hole_painted: Option<Rect> = None;
+        let mut followed_key: isize = 0;
         let mut last_diag = Instant::now();
 
         loop {
@@ -719,7 +845,13 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 pt_y: 0,
                 _private: 0,
             };
+            let mut pump_budget = 0;
             while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                pump_budget += 1;
+                if pump_budget > 128 {
+                    // 消息风暴（例如大面积重绘）时先让出，保证动画继续走
+                    break;
+                }
                 if msg.message == WM_QUIT {
                     for o in overlays.iter_mut() {
                         o.destroy();
@@ -741,12 +873,16 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let dt = now.duration_since(last_tick).as_secs_f32().min(0.1);
             last_tick = now;
 
-            let on = ctl.on.load(Ordering::Relaxed);
+            // 跟随模式 = 常开：没有合适的前台窗口时自动收起，一出现就自动回来，
+            // 不需要用户再去点一次"开启遮罩"
+            let follow_flag = ctl.follow.load(Ordering::Relaxed);
+            let on = ctl.on.load(Ordering::Relaxed) || follow_flag;
             let opacity = ctl.opacity.load(Ordering::Relaxed).min(100) as f32 / 100.0;
             let margin = ctl.margin.load(Ordering::Relaxed).max(0);
             let radius = ctl.radius.load(Ordering::Relaxed).clamp(0, 120) as f32;
-            let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 2000) as f32 / 1000.0;
+            let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 3000) as f32 / 1000.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
+            let smooth = ctl.smooth.load(Ordering::Relaxed);
 
             // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
             let gen = ctl.hk_gen.load(Ordering::Relaxed);
@@ -820,8 +956,27 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_paint = None;
             }
 
-            // ---- 目标窗口（允许短暂抖动：目标切走/最小化 1.5 秒内不退出）----
-            let target_now = target_rect(&ctl);
+            // ---- 目标窗口 ----
+            // 跟随模式：永远盯住当前最上层窗口；否则用用户指定的那个
+            let follow = ctl.follow.load(Ordering::Relaxed);
+            let follow_now = if follow { follow_rect() } else { None };
+            if follow {
+                let key = follow_now.map(|(_, h)| h).unwrap_or(0);
+                followed_key = key;
+                if key != follow_key {
+                    // 换了窗口（或切到别的程序）→ 从上一次画的位置平滑移过去
+                    follow_key = key;
+                    hole_from = hole_painted;
+                    hole_t0 = Instant::now();
+                }
+            }
+            // 跟随模式下拿不到前台窗口（比如焦点在本程序上）就当作"没有目标"，
+            // 绝不能回退到旧的手选目标，否则洞口会停在别的地方
+            let target_now = if follow {
+                follow_now.map(|(r, _)| r)
+            } else {
+                target_rect(&ctl)
+            };
             if target_now.is_none() && on && !logged_miss {
                 logged_miss = true;
                 mlog(&format!(
@@ -886,6 +1041,22 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
                 ctl.painted.store(false, Ordering::Relaxed);
                 last_paint = None;
+                // 这里也要刷新诊断，否则界面会一直显示上一次的"已开启/洞口"
+                if last_diag.elapsed().as_millis() >= 500 {
+                    last_diag = Instant::now();
+                    let report = format!(
+                        "on={} painted=false 模式={}{} 跟随窗口={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
+                        on,
+                        if smooth { "逐像素圆角" } else { "区域挖洞" },
+                        if follow_flag { " 跟随前台" } else { "" },
+                        followed_key,
+                        FOLLOW_OVERRIDE.load(Ordering::Relaxed),
+                        mons.len()
+                    );
+                    if let Ok(mut d) = DIAG.lock() {
+                        *d = report;
+                    }
+                }
                 if !animating {
                     thread::sleep(Duration::from_millis(40));
                 }
@@ -893,11 +1064,26 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
 
             let t = target.unwrap();
-            let hole_end = Rect {
+            let want = Rect {
                 left: t.left - margin,
                 top: t.top - margin,
                 right: t.right + margin,
                 bottom: t.bottom + margin,
+            };
+            // 只有"换了窗口"才做过渡；窗口被拖动/缩放时 want 每帧都在变，
+            // 这时必须 1:1 跟随，否则会有一帧的延迟感
+            let hole_end = match hole_from {
+                Some(from) => {
+                    let span = if duration <= 0.001 { 1.0 } else { duration };
+                    let p = (hole_t0.elapsed().as_secs_f32() / span).min(1.0);
+                    if p >= 1.0 {
+                        hole_from = None;
+                        want
+                    } else {
+                        lerp_rect(&from, &want, ease_out(p))
+                    }
+                }
+                None => want,
             };
             let e = ease_out(progress);
 
@@ -942,7 +1128,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     right: lerp(m.right as f32, hole_end.right as f32, e).round() as i32,
                     bottom: lerp(m.bottom as f32, hole_end.bottom as f32, e).round() as i32,
                 };
-                o.paint(&hole, radius, alpha);
+                hole_painted = Some(hole);
+                if smooth {
+                    o.paint_smooth(&hole, radius, alpha);
+                } else {
+                    o.paint_region(&hole, radius, alpha);
+                }
             }
             if need {
                 ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
@@ -958,7 +1149,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
 
             // 每 1s 更新一次诊断快照（界面上的「自查」按钮读它）
-            if last_diag.elapsed().as_millis() >= 1000 {
+            if last_diag.elapsed().as_millis() >= 200 {
                 last_diag = Instant::now();
                 let mut parts = Vec::new();
                 for (i, o) in overlays.iter().enumerate() {
@@ -976,9 +1167,13 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={} 模式={}{} 跟随窗口={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
+                    if smooth { "逐像素圆角" } else { "区域挖洞" },
+                    if follow { " 跟随前台" } else { "" },
+                    followed_key,
+                    FOLLOW_OVERRIDE.load(Ordering::Relaxed),
                     progress,
                     alpha,
                     hole_end.left,

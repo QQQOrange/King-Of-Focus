@@ -96,6 +96,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "radius": mask.radius.load(Ordering::Relaxed),
             "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
+            "smooth": mask.smooth.load(Ordering::Relaxed),
+            "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
             "auto": config.settings.mask.auto,
@@ -240,6 +242,8 @@ pub fn mask_set(
     radius: Option<i32>,
     duration_ms: Option<u32>,
     block_click: Option<bool>,
+    smooth: Option<bool>,
+    follow: Option<bool>,
 ) {
     let m = &*shared.mask;
     if let Some(o) = opacity {
@@ -252,7 +256,16 @@ pub fn mask_set(
         m.radius.store(v.clamp(0, 120), Ordering::Relaxed);
     }
     if let Some(v) = duration_ms {
-        m.duration.store(v.min(2000) as i32, Ordering::Relaxed);
+        m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
+    }
+    if let Some(v) = smooth {
+        m.smooth.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = follow {
+        m.follow.store(v, Ordering::Relaxed);
+        // 跟随模式本身就是"常开"，打开它就直接开始
+        m.painted.store(false, Ordering::Relaxed);
+        m.on.store(v, Ordering::Relaxed);
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
@@ -367,8 +380,10 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
         return Err("找不到主窗口句柄".into());
     }
 
-    // 测试只跟遮罩本身有关，和自律模式无关
-    m.duration.store(150, Ordering::Relaxed);
+    // 测试只跟遮罩本身有关，和自律模式无关；
+    // 动画时长沿用用户设置（想快速连点就把时长调小，而不是偷偷改成固定值）
+    m.duration
+        .store(shared.config().settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     m.target.store(hwnd, Ordering::Relaxed);
     m.target_pid.store(self_pid, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);

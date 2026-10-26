@@ -632,8 +632,20 @@ function viewMask() {
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-title">遮罩参数</div>
-    <div class="card-sub">拖动即时生效——遮罩开着的时候，你可以直接在屏幕上看到效果。</div>
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:13px;font-weight:600">跟随当前窗口</div>
+        <div class="hint" style="margin-top:4px">
+          打开后不用选目标窗口：遮罩会自动盯住<b>当前最上层（正在用）的窗口</b>，
+          只留它可见，其他窗口全被盖住。切换窗口时洞口平滑移过去，拖动窗口时 1:1 跟随。
+        </div>
+      </div>
+      <div class="switch" data-act="toggle-follow">
+        <input type="checkbox" ${m.follow ? 'checked' : ''}><i></i>
+      </div>
+    </div>
+    <div class="card-title" style="margin-top:16px">遮罩参数</div>
+    <div class="card-sub">拖动即时生效——遮罩开着的时候，你可以直接在屏幕上看到效果。动画速度就是"从窗口边缘铺满全屏"用多久，数值越大越慢，0 = 瞬间出现。</div>
     <div class="slider-row">
       <span class="lab">不透明度</span>
       <input type="range" min="20" max="100" step="1" value="${op}" id="opRange" />
@@ -650,8 +662,8 @@ function viewMask() {
       <span class="val" id="radVal">${rad}px</span>
     </div>
     <div class="slider-row">
-      <span class="lab">动画时长</span>
-      <input type="range" min="0" max="1200" step="20" value="${dur}" id="durRange" />
+      <span class="lab">动画速度</span>
+      <input type="range" min="0" max="3000" step="20" value="${dur}" id="durRange" />
       <span class="val" id="durVal">${dur}ms</span>
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
@@ -661,6 +673,15 @@ function viewMask() {
       </div>
       <div class="switch" data-act="toggle-click">
         <input type="checkbox" ${m.blockClick ? 'checked' : ''}><i></i>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;margin-top:10px;border-top:1px solid var(--line);padding-top:14px">
+      <div>
+        <div style="font-size:12.5px">高清圆角（逐像素）</div>
+        <div class="hint" style="margin-top:4px">默认关闭，用区域挖洞，兼容性最好、必定出画面。打开后圆角有抗锯齿，但个别显卡/远程桌面下可能整块不显示——如果打开后遮罩消失，关掉它。</div>
+      </div>
+      <div class="switch" data-act="toggle-smooth">
+        <input type="checkbox" ${m.smooth ? 'checked' : ''}><i></i>
       </div>
     </div>
     <div class="row" style="margin-top:10px">
@@ -1704,6 +1725,8 @@ const Act = window.Act = {
     m.radius = cur.radius;
     m.durationMs = cur.duration;
     m.blockClick = cur.blockClick;
+    m.smooth = !!cur.smooth;
+    m.follow = !!cur.follow;
     try {
       await saveConfig();
       toast('遮罩参数已保存', 'ok');
@@ -1766,6 +1789,22 @@ const Act = window.Act = {
     S.editing.brk.kind = k;
     renderEditor();
   },
+  async toggleFollow() {
+    const on = !S.data.mask.follow;
+    await invoke('mask_set', { follow: on });
+    await pull();
+    render();
+    toast(on ? '已开启跟随：遮罩会跟着当前最上层窗口走' : '已关闭跟随', 'ok');
+  },
+
+  async toggleSmooth() {
+    const on = !S.data.mask.smooth;
+    await invoke('mask_set', { smooth: on });
+    S.data.mask.smooth = on;
+    render();
+    toast(on ? '已切到逐像素高清圆角；若遮罩消失就关掉它' : '已切回区域挖洞（兼容性优先）', 'ok');
+  },
+
   async toggleClick() {
     const on = !S.data.mask.blockClick;
     await invoke('mask_set', { blockClick: on });
@@ -2400,6 +2439,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'mask-diag') { await Act.maskDiag(); return; }
   if (act === 'mask-test') { await Act.maskTest(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
+  if (act === 'toggle-smooth') { await Act.toggleSmooth(); return; }
+  if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
   if (act === 'stats-tab') { await Act.statsTab(el.dataset.tab); return; }
   if (act === 'range') { await Act.setRange(el.dataset.r); return; }
   if (act === 'range-apply') { await Act.applyRange(); return; }
