@@ -43,6 +43,13 @@ pub fn load() -> Config {
                 if c.version == 0 {
                     c.version = 1;
                 }
+                // v2：遮罩改成"跟着当前前台窗口走"，并且紧贴窗口边界（去掉 6px 留白，
+                // 同时改用 DWM 可见边框，避免 Win10/11 的隐形拖拽边框造成一圈缝）
+                if c.version < 2 {
+                    c.version = 2;
+                    c.settings.mask.follow = true;
+                    c.settings.mask.margin = 0;
+                }
                 sanitize(&mut c);
                 c
             }

@@ -232,6 +232,13 @@ pub fn mlog(msg: &str) {
     }
 }
 
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmGetWindowAttribute(h: Hwnd, attr: u32, pv: *mut core::ffi::c_void, size: u32) -> i32;
+}
+
+const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+
 #[link(name = "gdi32")]
 extern "system" {
     fn CreateCompatibleDC(dc: Hdc) -> Hdc;
@@ -278,6 +285,8 @@ pub struct MaskCtl {
     pub auto_apps: std::sync::Mutex<Vec<String>>,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口跑）
     pub follow: AtomicBool,
+    /// 测试态：临时不跟随，固定高亮本程序窗口
+    pub test_lock: AtomicBool,
     /// true = 逐像素圆角（抗锯齿）；false = 区域挖洞（兼容性最好，默认）
     pub smooth: AtomicBool,
     pub painted: AtomicBool,
@@ -340,6 +349,7 @@ impl Default for MaskCtl {
             auto: AtomicBool::new(false),
             auto_apps: Mutex::new(Vec::new()),
             follow: AtomicBool::new(false),
+            test_lock: AtomicBool::new(false),
             smooth: AtomicBool::new(false),
             painted: AtomicBool::new(false),
             notice: Mutex::new(None),
@@ -736,6 +746,28 @@ pub static FOLLOW_OVERRIDE: AtomicIsize = AtomicIsize::new(0);
 
 /// 当前最上层（前台）窗口的矩形。
 /// 排除本程序自己的窗口，避免把遮罩挖在自己身上。
+/// 窗口的“真实可见边界”。
+/// Win10/11 的 GetWindowRect 会把 DWM 的不可见拖拽边框算进去（约 7px），
+/// 用它挖洞就会在窗口四周留一圈透明缝——这正是“边缘残留间隙”的来源。
+/// DWMWA_EXTENDED_FRAME_BOUNDS 返回的是肉眼看到的那个框。
+unsafe fn window_bounds(h: Hwnd) -> Option<Rect> {
+    let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+    let hr = DwmGetWindowAttribute(
+        h,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut r as *mut Rect as *mut core::ffi::c_void,
+        std::mem::size_of::<Rect>() as u32,
+    );
+    if hr == 0 && r.width() > 0 && r.height() > 0 {
+        return Some(r);
+    }
+    let mut r2 = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+    if GetWindowRect(h, &mut r2) != 0 && r2.width() > 0 && r2.height() > 0 {
+        return Some(r2);
+    }
+    None
+}
+
 unsafe fn follow_rect() -> Option<(Rect, isize)> {
     let ov = FOLLOW_OVERRIDE.load(Ordering::Relaxed);
     let fg = if ov != 0 { ov as Hwnd } else { GetForegroundWindow() };
@@ -750,10 +782,7 @@ unsafe fn follow_rect() -> Option<(Rect, isize)> {
     if IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
         return None;
     }
-    let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
-    if GetWindowRect(fg, &mut r) == 0 || r.width() <= 0 || r.height() <= 0 {
-        return None;
-    }
+    let r = window_bounds(fg)?;
     Some((r, fg as isize))
 }
 
@@ -783,11 +812,7 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     if IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
         return None;
     }
-    let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };
-    if GetWindowRect(h, &mut r) == 0 || r.width() <= 0 || r.height() <= 0 {
-        return None;
-    }
-    Some(r)
+    window_bounds(h)
 }
 
 pub fn start(ctl: std::sync::Arc<MaskCtl>) {
@@ -873,10 +898,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let dt = now.duration_since(last_tick).as_secs_f32().min(0.1);
             last_tick = now;
 
-            // 跟随模式 = 常开：没有合适的前台窗口时自动收起，一出现就自动回来，
-            // 不需要用户再去点一次"开启遮罩"
+            // on 始终是总开关：用户在界面/快捷键/自动触发里开的就是它。
+            // follow 只决定"洞口钉在哪个窗口上"，不参与开关判断。
             let follow_flag = ctl.follow.load(Ordering::Relaxed);
-            let on = ctl.on.load(Ordering::Relaxed) || follow_flag;
+            let on = ctl.on.load(Ordering::Relaxed);
             let opacity = ctl.opacity.load(Ordering::Relaxed).min(100) as f32 / 100.0;
             let margin = ctl.margin.load(Ordering::Relaxed).max(0);
             let radius = ctl.radius.load(Ordering::Relaxed).clamp(0, 120) as f32;
@@ -958,7 +983,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
 
             // ---- 目标窗口 ----
             // 跟随模式：永远盯住当前最上层窗口；否则用用户指定的那个
-            let follow = ctl.follow.load(Ordering::Relaxed);
+            let follow = ctl.follow.load(Ordering::Relaxed) && !ctl.test_lock.load(Ordering::Relaxed);
             let follow_now = if follow { follow_rect() } else { None };
             if follow {
                 let key = follow_now.map(|(_, h)| h).unwrap_or(0);
@@ -972,8 +997,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
             // 跟随模式下拿不到前台窗口（比如焦点在本程序上）就当作"没有目标"，
             // 绝不能回退到旧的手选目标，否则洞口会停在别的地方
+            // 跟随模式下前台若是本程序自己（比如刚点了按钮），保持上一帧的高亮，
+            // 不要因为"读不到前台"就把遮罩收掉
             let target_now = if follow {
-                follow_now.map(|(r, _)| r)
+                follow_now.map(|(r, _)| r).or(last_hole)
             } else {
                 target_rect(&ctl)
             };

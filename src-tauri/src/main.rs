@@ -65,10 +65,6 @@ fn main() {
         m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
         m.smooth.store(config.settings.mask.smooth, Ordering::Relaxed);
         m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
-        // 跟随模式＝常开：启动就进入，不用再点“开启遮罩”
-        if config.settings.mask.follow {
-            m.on.store(true, Ordering::Relaxed);
-        }
         m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
         m.duration.store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
         if let Some((md, vk)) = mask::parse_hotkey(&config.settings.mask.hotkey) {

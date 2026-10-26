@@ -619,7 +619,7 @@ function viewMask() {
       <div style="margin-top:18px;display:flex;gap:9px;flex-wrap:wrap">
         <button class="btn btn-primary" data-act="pick-target">${target ? '重新选择窗口' : '选择目标窗口'}</button>
         <button class="btn" data-act="mask-diag">自查</button>
-        ${target ? `<button class="btn ${m.on && !testing ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on && !testing ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
+        ${(target || m.follow) ? `<button class="btn ${m.on && !testing ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on && !testing ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
         <button class="btn ${testing ? 'btn-danger' : ''}" data-act="mask-test">${testing ? '结束测试' : '测试效果'}</button>
       </div>
       <div class="hint" style="margin-top:14px">热键 <b>Ctrl + Alt + K</b> 可随时开关遮罩，防止自己被困在黑屏里。</div>
@@ -652,7 +652,7 @@ function viewMask() {
       <span class="val" id="opVal">${op}%</span>
     </div>
     <div class="slider-row">
-      <span class="lab">边缘留白</span>
+      <span class="lab">边缘留白（0=紧贴）</span>
       <input type="range" min="0" max="60" step="1" value="${mg}" id="mgRange" />
       <span class="val" id="mgVal">${mg}px</span>
     </div>
@@ -693,7 +693,8 @@ function viewMask() {
   <div class="card" style="margin-top:16px">
     <div class="card-title">两种开启方式</div>
     <div class="card-sub">
-      快捷键随时手动开关；或者让它在进入指定应用时自动开、切走自动关。
+      三种方式互不冲突、可以同时开：<b>快捷键</b>随时手动开关；<b>自动触发</b>在进入下面列表里的应用时自动开、切走自动关；
+      <b>跟随当前窗口</b>（上方开关）打开后，高亮区域会始终钉在当前最上层窗口上。
     </div>
     <div class="row" style="align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
       <span class="hint" style="width:88px">全局快捷键</span>
@@ -1647,6 +1648,12 @@ const Act = window.Act = {
     if (d.mask.on) {
       await invoke('mask_stop');
       toast('遮罩已关闭');
+      await pull();
+      render();
+    } else if (d.config.settings.mask.follow) {
+      // 跟随模式：不需要指定窗口，直接开，之后自动盯住当前前台窗口
+      await invoke('mask_set', { follow: true });
+      toast('遮罩已开启：会跟着当前最上层窗口走，切窗口自动切换高亮', 'ok');
       await pull();
       render();
     } else {

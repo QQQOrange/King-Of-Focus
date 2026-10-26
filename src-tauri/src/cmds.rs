@@ -363,6 +363,7 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
     let testing = m.on.load(Ordering::Relaxed) && m.target_pid.load(Ordering::Relaxed) == self_pid;
 
     if testing {
+        m.test_lock.store(false, Ordering::Relaxed);
         m.on.store(false, Ordering::Relaxed);
         m.duration
             .store(shared.config().settings.mask.duration_ms.min(2000) as i32, Ordering::Relaxed);
@@ -386,6 +387,7 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
         .store(shared.config().settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     m.target.store(hwnd, Ordering::Relaxed);
     m.target_pid.store(self_pid, Ordering::Relaxed);
+    m.test_lock.store(true, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
     let _ = app.get_webview_window("main").map(|w| w.set_always_on_top(false));

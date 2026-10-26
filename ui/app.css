@@ -159,7 +159,13 @@ a:hover { text-decoration: underline; }
 }
 ::-webkit-scrollbar-track { background: transparent; }
 
-.app { display: grid; grid-template-columns: 232px 1fr; height: 100vh; }
+.app {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  /* minmax(0,1fr) 让这一行可以被压缩，否则内容超长会把行撑开、被 body 的 overflow:hidden 裁掉 */
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+}
 
 /* ══════════ 侧边栏 ══════════ */
 .sidebar {
@@ -220,7 +226,7 @@ a:hover { text-decoration: underline; }
 .side-version { margin-top: 8px; font-size: 10.5px; color: var(--text-3); opacity: .6; letter-spacing: .3px; }
 
 /* ══════════ 主区 ══════════ */
-.main { display: flex; flex-direction: column; min-width: 0; }
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .topbar {
   height: 60px; flex: 0 0 60px;
   display: flex; align-items: center; justify-content: space-between;
@@ -239,7 +245,11 @@ a:hover { text-decoration: underline; }
 }
 
 .content {
-  flex: 1; overflow-y: auto;
+  flex: 1 1 auto;
+  /* 关键：flex 子项必须 min-height:0 才能收缩，否则内容超出时不会出现滚动条 */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px 28px 48px;
   background:
     radial-gradient(70% 55% at 82% -10%, var(--glow-1) 0%, transparent 60%),

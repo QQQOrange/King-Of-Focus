@@ -218,10 +218,10 @@ impl Default for MaskCfg {
     fn default() -> Self {
         MaskCfg {
             opacity: 88,
-            margin: 6,
+            margin: 0,
             radius: 28,
             duration_ms: 420,
-            follow: false,
+            follow: true,
             smooth: false,
             block_click: false,
             target_pid: 0,
@@ -524,7 +524,7 @@ impl Default for Config {
         };
         l.id = "seed-study".into();
         Config {
-            version: 1,
+            version: 2,
             lists: vec![l],
             settings: Settings::default(),
             updated_at: chrono::Local::now().timestamp(),

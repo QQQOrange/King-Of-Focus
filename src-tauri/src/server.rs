@@ -76,6 +76,17 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/maskon" | "/api/debug/maskoff" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let on = path.ends_with("maskon");
+                let m = &*shared.mask;
+                m.test_lock.store(false, std::sync::atomic::Ordering::Relaxed);
+                m.on.store(on, std::sync::atomic::Ordering::Relaxed);
+                reply(req, 200, json!({"ok": true, "on": on}).to_string())
+            }
+        }
         "/api/debug/follow" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())
