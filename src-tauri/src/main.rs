@@ -77,6 +77,15 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(shared.clone())
         .setup(move |app| {
+            // 运行时再设一次窗口图标，保证任务栏/Alt+Tab 用的是新图标
+            for label in ["main", "hud"] {
+                if let Some(w) = app.get_webview_window(label) {
+                    if let Ok(img) = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png")) {
+                        let _ = w.set_icon(img);
+                    }
+                }
+            }
+
             let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
             let mask_item = MenuItem::with_id(app, "mask", "开关专注遮罩", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 King of Focus", true, None::<&str>)?;

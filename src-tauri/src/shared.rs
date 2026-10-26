@@ -43,6 +43,8 @@ pub struct Runtime {
     /// 当前励志短语
     pub quote: String,
     pub quote_from: String,
+    /// 刚结束的一段自律（秒 + 规则名），等界面取走弹恭喜
+    pub celebrate: Option<(i64, String)>,
 }
 
 impl Default for Runtime {
@@ -73,6 +75,7 @@ impl Default for Runtime {
             since: 0,
             quote: String::new(),
             quote_from: String::new(),
+            celebrate: None,
         }
     }
 }

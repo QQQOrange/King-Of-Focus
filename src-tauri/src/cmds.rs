@@ -45,7 +45,11 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     let config = shared.config();
     let now = crate::sched::now_local();
     let (runtime, notice) = {
-        let rt = shared.rt.lock().unwrap();
+        let mut rt = shared.rt.lock().unwrap();
+        let celebrate = rt
+            .celebrate
+            .take()
+            .map(|(secs, names)| json!({"secs": secs, "rules": names}));
         // 提示只弹一次：取走即清空
         let m = shared
             .mask
@@ -74,6 +78,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "breakAny": rt.on_break,
                 "breakLeft": rt.break_left,
                 "notice": app_notice,
+                "celebrate": celebrate,
             }),
             m,
         )

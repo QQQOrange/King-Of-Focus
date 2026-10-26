@@ -124,6 +124,12 @@ async function pull() {
     if (S.data && S.data.mask && S.data.mask.notice) {
       toast(S.data.mask.notice);
     }
+    if (S.data && S.data.runtime && S.data.runtime.notice) {
+      toast(S.data.runtime.notice, 'err');
+    }
+    if (S.data && S.data.runtime && S.data.runtime.celebrate) {
+      showCelebrate(S.data.runtime.celebrate);
+    }
   } catch (e) {
     console.error(e);
   }
@@ -1074,6 +1080,57 @@ function setProgress(pct, text) {
   if (b) b.style.width = Math.max(0, Math.min(100, pct)) + '%';
   const t = $('#upText');
   if (t && text) t.textContent = text;
+}
+
+/* ---------------- 自律结束 · 恭喜弹窗 ---------------- */
+const PRAISE = [
+  '你今天的样子，比昨天更像你想成为的人。',
+  '这一段专注，已经赢了昨天刷手机的自己。',
+  '能坐下来的人，最后都走得挺远。',
+  '自律不是煎熬，是你终于开始对自己好。',
+  '别人看不见的这段时间，会变成看得见的差距。',
+  '你没有辜负这段时间，一次都没有。',
+  '保持住——这已经是很多人做不到的事了。',
+  '专注的每一分钟，都在给你攒底气。',
+  '这就是「说到做到」的样子。',
+  '很棒，真的。继续。',
+  '你证明了自己能行，这比什么都重要。',
+  '今天这一局，你赢了。',
+  '安静的坚持最狠，你正在做这件事。',
+  '没有白坐的，都在长成你的本事。',
+];
+
+function showCelebrate(c) {
+  const secs = c.secs || 0;
+  const h = Math.floor(secs / 3600);
+  const m = Math.round((secs % 3600) / 60);
+  const dur = h > 0 ? `${h} 小时 ${m} 分` : `${Math.max(1, m)} 分钟`;
+  const praise = PRAISE[Math.floor(Math.random() * PRAISE.length)];
+
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:520px;text-align:center" onclick="event.stopPropagation()">
+      <div class="modal-bd" style="padding:38px 34px 26px">
+        <div style="font-size:44px;line-height:1;margin-bottom:14px">🎉</div>
+        <div style="font-size:13px;color:var(--text-3);letter-spacing:2px">本 轮 完 成</div>
+        <div style="font-size:30px;font-weight:750;margin:12px 0 4px;color:var(--gold);font-variant-numeric:tabular-nums">
+          ${dur}
+        </div>
+        <div style="font-size:12.5px;color:var(--text-2);margin-bottom:22px">
+          ${esc(c.rules || '自律规则')} · 全程没有破功
+        </div>
+        <div class="note" style="text-align:left;font-size:13px;line-height:1.9">
+          ${esc(praise)}
+        </div>
+        <div class="hint" style="margin-top:16px">
+          这一段的专注已经换成积分，去「总览」看看你现在攒了多少。
+        </div>
+      </div>
+      <div class="modal-ft" style="justify-content:center">
+        <button class="btn btn-primary" data-act="close-modal">继续加油</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 /* ---------------- 视图：设置 ---------------- */

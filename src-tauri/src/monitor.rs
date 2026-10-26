@@ -98,6 +98,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 .next()
                 .unwrap_or((false, 0));
 
+            let mut just_finished = false;
+
             {
                 if let Ok(mut rt) = shared.rt.lock() {
                     if rt.day != today {
@@ -119,9 +121,33 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     if running && rt.since == 0 {
                         rt.since = now_ts;
                     }
-                    if !running {
+                    if !running && rt.since > 0 {
+                        // 一段自律结束了 → 攒一条"恭喜"给界面弹窗
+                        let secs = (now_ts - rt.since).max(0);
+                        if secs >= 60 {
+                            let names = if rt.lock_names.is_empty() {
+                                rt.active
+                                    .iter()
+                                    .map(|(n, _)| n.clone())
+                                    .collect::<Vec<_>>()
+                                    .join("、")
+                            } else {
+                                rt.lock_names.join("、")
+                            };
+                            rt.celebrate = Some((secs, names));
+                            just_finished = true;
+                        }
                         rt.since = 0;
                     }
+                }
+            }
+
+            if just_finished {
+                // 让用户能立刻看到恭喜弹窗
+                let _ = app.emit("goto-home", ());
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.show();
                 }
             }
 
