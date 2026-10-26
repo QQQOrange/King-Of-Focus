@@ -103,6 +103,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "notice": notice,
         },
         "admin": is_admin(),
+        "pid": std::process::id(),
         "points": {
             "balance": config.points.balance,
             "earned": config.points.total_earned,
@@ -209,9 +210,9 @@ pub fn mask_start(
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
 
-    // 主窗口置顶，保证遮罩期间随时能关掉
+    // 主窗口不再强制置顶（保持正常窗口层级，可以被别的窗口盖住/最小化）
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_always_on_top(true);
+        let _ = w.set_always_on_top(false);
     }
     let mut c = shared.config();
     c.settings.mask.target_pid = pid;
@@ -325,6 +326,41 @@ pub fn mask_auto(
         *w = c;
     }
     Ok(())
+}
+
+/// 一键测试：立刻以本程序主窗口为目标，用 150ms 动画跑一遍，方便反复调参
+#[tauri::command]
+pub fn mask_test(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<bool, String> {
+    let m = &*shared.mask;
+    let self_pid = std::process::id();
+    let testing = m.on.load(Ordering::Relaxed) && m.target_pid.load(Ordering::Relaxed) == self_pid;
+
+    if testing {
+        m.on.store(false, Ordering::Relaxed);
+        m.duration
+            .store(shared.config().settings.mask.duration_ms.min(2000) as i32, Ordering::Relaxed);
+        return Ok(false);
+    }
+
+    let hwnd = match app.get_webview_window("main") {
+        Some(w) => match w.hwnd() {
+            Ok(h) => h.0 as i32,
+            Err(_) => crate::proc::find_window_by_pid(self_pid).map(|x| x as i32).unwrap_or(0),
+        },
+        None => return Err("找不到主窗口".into()),
+    };
+    if hwnd == 0 {
+        return Err("找不到主窗口句柄".into());
+    }
+
+    // 测试只跟遮罩本身有关，和自律模式无关
+    m.duration.store(150, Ordering::Relaxed);
+    m.target.store(hwnd, Ordering::Relaxed);
+    m.target_pid.store(self_pid, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(true, Ordering::Relaxed);
+    let _ = app.get_webview_window("main").map(|w| w.set_always_on_top(false));
+    Ok(true)
 }
 
 #[tauri::command]

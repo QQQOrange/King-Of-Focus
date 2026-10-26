@@ -605,6 +605,7 @@ function viewMask() {
   const rad = m.radius == null ? 28 : m.radius;
   const dur = m.duration == null ? 420 : m.duration;
   const locked = !!d.runtime.locked;
+  const testing = m.on && m.targetPid === d.pid;
   return `
   <div class="mask-hero">
     <div style="flex:1">
@@ -617,7 +618,8 @@ function viewMask() {
       </div>
       <div style="margin-top:18px;display:flex;gap:9px;flex-wrap:wrap">
         <button class="btn btn-primary" data-act="pick-target">${target ? '重新选择窗口' : '选择目标窗口'}</button>
-        ${target ? `<button class="btn ${m.on ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
+        ${target ? `<button class="btn ${m.on && !testing ? 'btn-danger' : ''}" data-act="toggle-mask">${m.on && !testing ? '关闭遮罩' : '开启遮罩'}</button>` : ''}
+        <button class="btn ${testing ? 'btn-danger' : ''}" data-act="mask-test">${testing ? '结束测试' : '测试效果'}</button>
       </div>
       <div class="hint" style="margin-top:14px">热键 <b>Ctrl + Alt + K</b> 可随时开关遮罩，防止自己被困在黑屏里。</div>
     </div>
@@ -1638,6 +1640,15 @@ const Act = window.Act = {
     }
   },
 
+  async maskTest() {
+    try {
+      const on = await invoke('mask_test');
+      await pull();
+      render();
+      toast(on ? '测试中：遮罩以本程序为目标，改参数即时可见，再点一次收起' : '测试已结束', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+  },
+
   async setOpacity(v) {
     $('#opVal').textContent = v + '%';
     const dim = $('#previewDim');
@@ -2359,6 +2370,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (act === 'toggle-mask') { await Act.toggleMask(); return; }
+  if (act === 'mask-test') { await Act.maskTest(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
   if (act === 'stats-tab') { await Act.statsTab(el.dataset.tab); return; }
   if (act === 'range') { await Act.setRange(el.dataset.r); return; }

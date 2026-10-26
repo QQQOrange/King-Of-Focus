@@ -126,7 +126,7 @@ fn main() {
                         let on = sh_menu.mask.on.load(Ordering::Relaxed);
                         sh_menu.mask.on.store(!on, Ordering::Relaxed);
                         if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.set_always_on_top(!on);
+                            let _ = w.set_always_on_top(false);
                             let _ = w.show();
                         }
                     }
@@ -194,6 +194,7 @@ fn main() {
             cmds::mask_set,
             cmds::mask_hotkey,
             cmds::mask_auto,
+            cmds::mask_test,
             cmds::open_path,
             cmds::open_config_dir,
             cmds::open_extension_dir,
