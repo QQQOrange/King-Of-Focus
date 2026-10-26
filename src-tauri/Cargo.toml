@@ -18,6 +18,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tiny_http = "0.12"
 ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
 
+# 备份加密（参考 Quick search 的成熟选型）：
+#   AES-256-GCM 带认证、有 AES-NI 加速；Argon2id 抗暴力破解。
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "rand_core", "getrandom"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+
 [profile.release]
 opt-level = "s"
 lto = true

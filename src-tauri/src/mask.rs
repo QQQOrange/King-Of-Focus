@@ -37,6 +37,8 @@ const WM_QUIT: u32 = 0x0012;
 const WM_HOTKEY: u32 = 0x0312;
 const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
+const MOD_SHIFT: u32 = 0x0004;
+const MOD_WIN: u32 = 0x0008;
 const VK_K: u32 = 0x4B;
 
 const GWL_EXSTYLE: i32 = -20;
@@ -168,6 +170,7 @@ extern "system" {
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
     fn GetWindowLongW(h: Hwnd, idx: i32) -> i32;
     fn IsWindow(h: Hwnd) -> i32;
+    fn GetForegroundWindow() -> Hwnd;
     fn IsWindowVisible(h: Hwnd) -> i32;
     fn IsIconic(h: Hwnd) -> i32;
     fn GetWindowRect(h: Hwnd, r: *mut Rect) -> i32;
@@ -228,9 +231,54 @@ pub struct MaskCtl {
     /// 扩散动画时长（毫秒）
     pub duration: AtomicI32,
     pub block_click: AtomicBool,
-    pub hotkey: AtomicBool,
+    /// 热键：修饰键位掩码 / 虚拟键码 / 注册代数 / 上次注册是否成功
+    pub hk_mod: AtomicU32,
+    pub hk_vk: AtomicU32,
+    pub hk_gen: AtomicU32,
+    pub hk_ok: AtomicBool,
+    /// 进入指定应用时自动开启
+    pub auto: AtomicBool,
+    pub auto_apps: std::sync::Mutex<Vec<String>>,
     pub painted: AtomicBool,
     pub notice: Mutex<Option<String>>,
+}
+
+/// 解析 "Ctrl+Alt+K" → (修饰键, VK)。不认识的组合返回 None
+pub fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
+    let mut mods = 0u32;
+    let mut vk = 0u32;
+    for part in s.split('+').map(|x| x.trim()) {
+        if part.is_empty() {
+            return None;
+        }
+        let low = part.to_lowercase();
+        match low.as_str() {
+            "ctrl" | "control" => mods |= MOD_CONTROL,
+            "alt" => mods |= MOD_ALT,
+            "shift" => mods |= MOD_SHIFT,
+            "win" | "meta" | "super" => mods |= MOD_WIN,
+            _ => {
+                let b = part.as_bytes();
+                if b.len() == 1 {
+                    let c = b[0].to_ascii_uppercase();
+                    if c.is_ascii_alphanumeric() {
+                        vk = c as u32;
+                    }
+                } else if low.starts_with('f') {
+                    if let Ok(n) = low[1..].parse::<u32>() {
+                        if (1..=24).contains(&n) {
+                            vk = 0x70 + n - 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if vk == 0 || mods == 0 {
+        None
+    } else {
+        Some((mods, vk))
+    }
 }
 
 impl Default for MaskCtl {
@@ -244,7 +292,12 @@ impl Default for MaskCtl {
             radius: AtomicI32::new(28),
             duration: AtomicI32::new(420),
             block_click: AtomicBool::new(false),
-            hotkey: AtomicBool::new(true),
+            hk_mod: AtomicU32::new(MOD_CONTROL | MOD_ALT),
+            hk_vk: AtomicU32::new(VK_K),
+            hk_gen: AtomicU32::new(1),
+            hk_ok: AtomicBool::new(false),
+            auto: AtomicBool::new(false),
+            auto_apps: Mutex::new(Vec::new()),
             painted: AtomicBool::new(false),
             notice: Mutex::new(None),
         }
@@ -572,7 +625,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut last_paint: Option<(Rect, u8, i32, i32)> = None;
         let mut last_tick = Instant::now();
         let mut was_on = false;
-        let mut hotkey_ok = RegisterHotKey(std::ptr::null_mut(), 0xA1, MOD_CONTROL | MOD_ALT, VK_K) != 0;
+        let mut hk_gen_done = 0u32;
+        let mut auto_owned = false;
+        let mut last_auto = Instant::now();
 
         loop {
             // ---- 消息泵（热键）----
@@ -615,8 +670,63 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 2000) as f32 / 1000.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
 
-            if ctl.hotkey.load(Ordering::Relaxed) && !hotkey_ok {
-                hotkey_ok = RegisterHotKey(std::ptr::null_mut(), 0xA1, MOD_CONTROL | MOD_ALT, VK_K) != 0;
+            // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
+            let gen = ctl.hk_gen.load(Ordering::Relaxed);
+            if gen != hk_gen_done {
+                UnregisterHotKey(std::ptr::null_mut(), 0xA1);
+                let vk = ctl.hk_vk.load(Ordering::Relaxed);
+                let md = ctl.hk_mod.load(Ordering::Relaxed);
+                let ok = vk != 0 && RegisterHotKey(std::ptr::null_mut(), 0xA1, md, vk) != 0;
+                ctl.hk_ok.store(ok, Ordering::Relaxed);
+                hk_gen_done = gen;
+            }
+
+            // ---- 自动触发：前台切到指定应用就开，切走就关 ----
+            if last_auto.elapsed().as_millis() >= 200 {
+                last_auto = Instant::now();
+                if ctl.auto.load(Ordering::Relaxed) {
+                    let apps = ctl.auto_apps.lock().map(|v| v.clone()).unwrap_or_default();
+                    let mut hit: Option<(Hwnd, u32)> = None;
+                    if !apps.is_empty() {
+                        let fg = GetForegroundWindow();
+                        if !fg.is_null() {
+                            let mut pid = 0u32;
+                            GetWindowThreadProcessId(fg, &mut pid);
+                            if pid != 0 {
+                                let path = crate::proc::exe_path(pid);
+                                let name = if path.is_empty() {
+                                    String::new()
+                                } else {
+                                    crate::proc::stem(&path)
+                                };
+                                if !name.is_empty()
+                                    && apps.iter().any(|a| a.eq_ignore_ascii_case(&name))
+                                {
+                                    hit = Some((fg, pid));
+                                }
+                            }
+                        }
+                    }
+                    match hit {
+                        Some((h, pid)) => {
+                            if ctl.target_pid.load(Ordering::Relaxed) != pid || !ctl.on.load(Ordering::Relaxed) {
+                                ctl.target.store(h as i32, Ordering::Relaxed);
+                                ctl.target_pid.store(pid, Ordering::Relaxed);
+                                ctl.on.store(true, Ordering::Relaxed);
+                                auto_owned = true;
+                            }
+                        }
+                        None => {
+                            // 切到别的应用 / 退出该应用 → 收掉自己开的遮罩
+                            if auto_owned && ctl.on.load(Ordering::Relaxed) {
+                                ctl.on.store(false, Ordering::Relaxed);
+                            }
+                            auto_owned = false;
+                        }
+                    }
+                } else {
+                    auto_owned = false;
+                }
             }
 
             // ---- 分辨率/显示器变化才销毁重建（位图按需创建，不占用平时内存）----

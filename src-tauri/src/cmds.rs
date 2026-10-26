@@ -96,7 +96,10 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "radius": mask.radius.load(Ordering::Relaxed),
             "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
-            "hotkey": mask.hotkey.load(Ordering::Relaxed),
+            "hotkey": config.settings.mask.hotkey,
+            "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
+            "auto": config.settings.mask.auto,
+            "autoApps": config.settings.mask.auto_apps,
             "notice": notice,
         },
         "admin": is_admin(),
@@ -255,9 +258,77 @@ pub fn mask_set(
     }
 }
 
+/// 设置全局快捷键（带冲突检测：注册失败会回滚到原来的组合）
 #[tauri::command]
-pub fn open_path(path: String) {
-    let _ = Command::new("explorer")
+pub fn mask_hotkey(shared: State<'_, Arc<Shared>>, combo: String) -> Result<(), String> {
+    let m = &*shared.mask;
+    let trimmed = combo.trim().to_string();
+    let parsed = if trimmed.is_empty() {
+        None
+    } else {
+        match crate::mask::parse_hotkey(&trimmed) {
+            Some(v) => Some(v),
+            None => return Err("格式不对，需要至少一个修饰键加一个键，例如 Ctrl+Alt+K".into()),
+        }
+    };
+
+    let (prev_md, prev_vk) = (
+        m.hk_mod.load(Ordering::Relaxed),
+        m.hk_vk.load(Ordering::Relaxed),
+    );
+    match parsed {
+        Some((md, vk)) => {
+            m.hk_mod.store(md, Ordering::Relaxed);
+            m.hk_vk.store(vk, Ordering::Relaxed);
+        }
+        None => m.hk_vk.store(0, Ordering::Relaxed),
+    }
+    m.hk_gen.fetch_add(1, Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    let ok = m.hk_ok.load(Ordering::Relaxed);
+
+    if !trimmed.is_empty() && !ok {
+        // 被别的程序占用 → 回滚，别把用户原来的热键搞丢
+        m.hk_mod.store(prev_md, Ordering::Relaxed);
+        m.hk_vk.store(prev_vk, Ordering::Relaxed);
+        m.hk_gen.fetch_add(1, Ordering::Relaxed);
+        return Err(format!("{trimmed} 已被其他程序占用，换一个组合再试"));
+    }
+
+    let mut c = shared.config();
+    c.settings.mask.hotkey = trimmed.clone();
+    c.settings.mask.hotkey_label = trimmed;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+/// 自动触发：进入这些应用就开遮罩，切走就关
+#[tauri::command]
+pub fn mask_auto(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+    apps: Vec<String>,
+) -> Result<(), String> {
+    let m = &*shared.mask;
+    m.auto.store(enabled, Ordering::Relaxed);
+    if let Ok(mut g) = m.auto_apps.lock() {
+        *g = apps.clone();
+    }
+    let mut c = shared.config();
+    c.settings.mask.auto = enabled;
+    c.settings.mask.auto_apps = apps;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_path(path: String) {    let _ = Command::new("explorer")
         .arg(path)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
@@ -673,4 +744,62 @@ pub fn open_url(url: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------- 备份 ----------------
+
+#[tauri::command]
+pub fn backup_make(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    crate::backup::make(&shared)
+}
+
+#[tauri::command]
+pub fn backup_list() -> Value {
+    json!(crate::backup::list())
+}
+
+#[tauri::command]
+pub fn backup_restore(shared: State<'_, Arc<Shared>>, path: String) -> Result<String, String> {
+    crate::backup::restore_local(&shared, &path)
+}
+
+#[tauri::command]
+pub fn backup_delete(path: String) -> Result<(), String> {
+    crate::backup::delete_file(&path)
+}
+
+#[tauri::command]
+pub fn backup_open_dir() {
+    open_path(crate::backup::dir().to_string_lossy().to_string());
+}
+
+#[tauri::command]
+pub fn backup_save(
+    shared: State<'_, Arc<Shared>>,
+    password: String,
+    auto_on_start: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.backup.password = password;
+    c.settings.backup.auto_on_start = auto_on_start;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn backup_cloud_list(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    crate::backup::cloud_list(&shared).map(|v| json!(v))
+}
+
+#[tauri::command]
+pub fn backup_cloud_upload(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    crate::backup::cloud_upload(&shared)
+}
+
+#[tauri::command]
+pub fn backup_cloud_restore(shared: State<'_, Arc<Shared>>, name: String) -> Result<String, String> {
+    crate::backup::cloud_restore(&shared, &name)
 }

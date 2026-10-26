@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backup;
 mod cfg;
 mod cmds;
 mod guard;
@@ -63,13 +64,29 @@ fn main() {
         m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
         m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
         m.duration.store(config.settings.mask.duration_ms.min(2000) as i32, Ordering::Relaxed);
-        m.hotkey.store(config.settings.mask.hotkey, Ordering::Relaxed);
+        if let Some((md, vk)) = mask::parse_hotkey(&config.settings.mask.hotkey) {
+            m.hk_mod.store(md, Ordering::Relaxed);
+            m.hk_vk.store(vk, Ordering::Relaxed);
+        }
+        m.auto.store(config.settings.mask.auto, Ordering::Relaxed);
+        if let Ok(mut g) = m.auto_apps.lock() {
+            *g = config.settings.mask.auto_apps.clone();
+        }
         m.target_pid.store(config.settings.mask.target_pid, Ordering::Relaxed);
     }
 
     mask::start(shared.mask.clone());
     stats::start(shared.clone());
     quotes::start(shared.clone());
+
+    // 启动时自动备份（只留最近 10 份 / 7 天）
+    if config.settings.backup.auto_on_start {
+        let sh = shared.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let _ = backup::make(&sh);
+        });
+    }
     sync::start_auto(shared.clone());
     update::cleanup();
 
@@ -128,14 +145,16 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
+                    // 单击或双击都直接打开主界面
+                    let hit = matches!(
+                        event,
+                        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
+                            | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }
+                    );
+                    if hit {
                         let app = tray.app_handle();
                         if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
@@ -173,6 +192,8 @@ fn main() {
             cmds::mask_start,
             cmds::mask_stop,
             cmds::mask_set,
+            cmds::mask_hotkey,
+            cmds::mask_auto,
             cmds::open_path,
             cmds::open_config_dir,
             cmds::open_extension_dir,
@@ -185,6 +206,15 @@ fn main() {
             cmds::hud_state,
             cmds::hud_save,
             cmds::notify_save,
+            cmds::backup_make,
+            cmds::backup_list,
+            cmds::backup_restore,
+            cmds::backup_delete,
+            cmds::backup_open_dir,
+            cmds::backup_save,
+            cmds::backup_cloud_list,
+            cmds::backup_cloud_upload,
+            cmds::backup_cloud_restore,
             cmds::stats_range,
             cmds::stats_flush,
             cmds::stats_dir_path,

@@ -168,6 +168,21 @@ impl Default for RuleList {
     }
 }
 
+/// 兼容旧配置：hotkey 曾是 bool（true = 用默认组合，false = 关闭）
+fn de_hotkey<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Bool(true) => "Ctrl+Alt+K".to_string(),
+        serde_json::Value::Bool(false) => String::new(),
+        _ => "Ctrl+Alt+K".to_string(),
+    })
+}
+
 /// 专注遮罩配置
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
@@ -185,10 +200,14 @@ pub struct MaskCfg {
     /// 上次使用的目标窗口
     pub target_pid: u32,
     pub target_title: String,
-    /// 是否启用全局热键退出遮罩
-    pub hotkey: bool,
-    /// 热键字符串，仅用于展示
+    /// 全局快捷键，如 "Ctrl+Alt+K"；空串 = 不注册
+    /// （旧版本这里是 bool，老配置要能平滑读进来）
+    #[serde(deserialize_with = "de_hotkey")]
+    pub hotkey: String,
     pub hotkey_label: String,
+    /// 进入下列应用时自动开启遮罩（exe 名，不带 .exe）
+    pub auto: bool,
+    pub auto_apps: Vec<String>,
 }
 
 impl Default for MaskCfg {
@@ -201,8 +220,29 @@ impl Default for MaskCfg {
             block_click: false,
             target_pid: 0,
             target_title: String::new(),
-            hotkey: true,
+            hotkey: "Ctrl+Alt+K".into(),
             hotkey_label: "Ctrl+Alt+K".into(),
+            auto: false,
+            auto_apps: vec![],
+        }
+    }
+}
+
+/// 备份配置
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BackupCfg {
+    /// 备份密码；留空则用 Windows DPAPI 加密（跟本机账户走）
+    pub password: String,
+    /// 打开软件时顺手做一次本地备份
+    pub auto_on_start: bool,
+}
+
+impl Default for BackupCfg {
+    fn default() -> Self {
+        BackupCfg {
+            password: String::new(),
+            auto_on_start: false,
         }
     }
 }
@@ -388,6 +428,8 @@ pub struct Settings {
     pub hud: HudCfg,
     /// 提醒
     pub notify: NotifyCfg,
+    /// 备份
+    pub backup: BackupCfg,
 }
 
 impl Default for Settings {
@@ -409,6 +451,7 @@ impl Default for Settings {
             update: UpdateCfg::default(),
             hud: HudCfg::default(),
             notify: NotifyCfg::default(),
+            backup: BackupCfg::default(),
         }
     }
 }

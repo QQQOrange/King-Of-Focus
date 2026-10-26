@@ -30,7 +30,7 @@ const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周�
 const VIEW_TITLES = {
   overview: '总览', rules: '规则', mask: '专注遮罩',
   stats: '时长统计', reports: '统计报告', sync: '云同步',
-  settings: '设置', about: '关于',
+  settings: '设置', about: '关于', help: '帮助',
 };
 
 /* ---------------- 工具 ---------------- */
@@ -387,7 +387,7 @@ function renderEditor() {
 
   const html = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal wide" onclick="event.stopPropagation()">
+    <div class="modal wide">
       <div class="modal-hd">
         <h3>${S.editingNew ? '新建规则' : '编辑规则'}</h3>
         <button class="close-x" data-act="close-editor">×</button>
@@ -666,6 +666,36 @@ function viewMask() {
     </div>
   </div>
 
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">两种开启方式</div>
+    <div class="card-sub">
+      快捷键随时手动开关；或者让它在进入指定应用时自动开、切走自动关。
+    </div>
+    <div class="row" style="align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+      <span class="hint" style="width:88px">全局快捷键</span>
+      <input type="text" id="hkInput" value="${esc(m.hotkey || '')}" placeholder="Ctrl+Alt+K（留空=不注册）" style="flex:1;max-width:270px" />
+      <button class="btn btn-sm" data-act="save-hotkey">保存</button>
+      <span class="badge ${m.hotkeyOk ? 'green' : 'red'}">${m.hotkeyOk ? '已注册' : '未注册'}</span>
+    </div>
+    <div class="hint" style="margin-bottom:14px">
+      格式：修饰键 + 一个键，如 <code>Ctrl+Alt+K</code>、<code>Ctrl+Shift+F2</code>、<code>Win+Alt+1</code>。
+      被别的程序占用会直接报错并保留原来的组合。
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:14px">
+      <div>
+        <div style="font-size:12.5px">进入指定应用时自动开启</div>
+        <div class="hint" style="margin-top:4px">前台切到这些应用就自动盖住其他区域；切到别的应用（或退出）自动关掉。</div>
+      </div>
+      <div class="switch" data-act="toggle-auto"><input type="checkbox" ${m.auto ? 'checked' : ''}><i></i></div>
+    </div>
+    <div style="margin-top:12px">
+      ${(m.autoApps || []).length
+        ? (m.autoApps || []).map((a) => `<span class="rule-chip">${esc(a)}<button class="x" data-act="del-auto" data-v="${esc(a)}">×</button></span>`).join('')
+        : '<span class="hint">还没有添加自动触发的应用</span>'}
+    </div>
+    <button class="btn btn-sm" style="margin-top:10px" data-act="pick-auto">+ 添加应用</button>
+  </div>
+
   <div class="note" style="margin-top:16px">
     <b>扩散动画：</b>开启动画时，遮罩从目标窗口的边缘向外扩展，直到铺满它所在的显示器；
     关闭时反向收回。圆角半径全程保持一致，窗口拖动 / 缩放时遮罩会实时跟随，多显示器和混合 DPI 下按各自的物理分辨率等比适配。
@@ -934,6 +964,46 @@ function viewSync() {
   </div>
 
   <div class="card">
+    <div class="card-title">本地备份 <span class="badge">${(S.backups || []).length} 份</span></div>
+    <div class="card-sub">
+      存在软件目录下的 <code>king of focus back</code>，写盘前就加密：设了密码用 AES-256-GCM（可跨机恢复），
+      没设密码用本机 Windows DPAPI。只保留最近 10 份、且 7 天内的。
+    </div>
+    <div class="row" style="gap:9px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="btn btn-primary btn-sm" data-act="backup-make">立即备份</button>
+      <button class="btn btn-sm" data-act="backup-dir">打开备份目录</button>
+    </div>
+    <div class="row" style="align-items:center;gap:9px;margin-bottom:14px;flex-wrap:wrap">
+      <span class="hint" style="width:74px">备份密码</span>
+      <input type="password" id="bkPass" style="flex:1;max-width:280px"
+        placeholder="${(d.config.settings.backup || {}).password ? '已设置（留空 = 不修改）' : '留空 = 用本机 DPAPI 加密'}" />
+      <label class="row" style="align-items:center;gap:6px;font-size:11.5px;cursor:pointer">
+        <input type="checkbox" id="bkAuto" ${(d.config.settings.backup || {}).autoOnStart ? 'checked' : ''} /> 启动时自动备份
+      </label>
+      <button class="btn btn-sm" data-act="backup-pass">保存</button>
+    </div>
+    ${(S.backups || []).length ? (S.backups || []).map((f) => `<div class="list-row">
+        <span class="badge gold">${esc(f.name)}</span>
+        <span class="grow muted" style="font-size:10.5px">${new Date((f.mtime || 0) * 1000).toLocaleString()} · ${Math.round((f.size || 0) / 1024)} KB</span>
+        <button class="btn btn-sm" data-act="backup-restore" data-path="${esc(f.path)}">恢复</button>
+        <button class="x" data-act="backup-del" data-path="${esc(f.path)}">×</button>
+      </div>`).join('') : '<div class="empty">还没有本地备份。点「立即备份」生成第一份。</div>'}
+  </div>
+
+  <div class="card">
+    <div class="card-title">云端备份</div>
+    <div class="card-sub">
+      把加密后的备份传到上面的 WebDAV 目录，可以列出历史版本任选一份恢复。
+      保留策略和本地一致：最近 10 份、7 天内。
+    </div>
+    <div class="row" style="gap:9px;flex-wrap:wrap">
+      <button class="btn btn-primary btn-sm" data-act="cloud-upload" ${sy.url ? '' : 'disabled'}>上传当前配置</button>
+      <button class="btn btn-sm" data-act="cloud-list" ${sy.url ? '' : 'disabled'}>查看云端备份 / 恢复</button>
+    </div>
+    ${sy.url ? '' : '<div class="hint" style="margin-top:10px">先在下面填写 WebDAV 地址</div>'}
+  </div>
+
+  <div class="card">
     <div class="card-title">同步规则</div>
     <div class="card-sub">冲突时不会静默丢掉任何一边。</div>
     <div class="hint" style="line-height:2">
@@ -1041,7 +1111,7 @@ function showUpdateModal(info, manual) {
   const notes = (info.notes || '').slice(0, 1200);
   $('#modalRoot').innerHTML = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal">
       <div class="modal-hd">
         <h3>发现新版本 v${esc(info.latest)}</h3>
         <button class="close-x" data-act="close-modal">×</button>
@@ -1111,7 +1181,7 @@ function showCelebrate(c) {
 
   $('#modalRoot').innerHTML = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal" style="width:520px;text-align:center" onclick="event.stopPropagation()">
+    <div class="modal" style="width:520px;text-align:center">
       <div class="modal-bd" style="padding:38px 34px 26px">
         <div style="font-size:44px;line-height:1;margin-bottom:14px">🎉</div>
         <div style="font-size:13px;color:var(--text-3);letter-spacing:2px">本 轮 完 成</div>
@@ -1132,6 +1202,81 @@ function showCelebrate(c) {
         <button class="btn btn-primary" data-act="close-modal">继续加油</button>
       </div>
     </div>
+  </div>`;
+}
+
+/* ---------------- 视图：帮助 ---------------- */
+function viewHelp() {
+  const d = S.data;
+  const v = d ? d.version : '0.0.1';
+  const dt = d ? d.buildDate : '';
+  const sec = (t, body) => `<div class="card">
+      <div class="card-title">${t}</div>
+      <div class="card-sub" style="margin-bottom:8px">${body}</div>
+    </div>`;
+
+  return `
+  <div class="note" style="margin-bottom:16px">
+    <b>使用手册</b> · 与 v${esc(v)} 同步更新（${esc(dt)}）。改动了功能，这一页会跟着一起改。
+  </div>
+
+  ${sec('1 · 三步开始', `
+    ① 到「规则」新建一条规则 → ② 加软件 / 加网站 → ③ 在「时间表」里拖出你要的时段。
+    打开规则开关，到了时段它就会自己开始拦；不在时段内完全静默。
+  `)}
+
+  ${sec('2 · 规则、时间表与生效', `
+    一条规则 = 一份名单 + 一张周时间表。<b>时间表全空 = 全天生效</b>；否则只在画出来的格子里生效。
+    时间表按周循环，下周自动重复；要让每天一样，就在「时间表」里点「周一 → 全部」。
+    黑名单 = 名单里的不许开；强制模式 = 只有名单里的能开，其他前台窗口都会被关。
+  `)}
+
+  ${sec('3 · 番茄与提醒', `
+    规则里可以设「专注 N 分钟 / 休息 M 分钟」，循环锚点是从该时段的起点开始算。
+    休息期间这条规则不拦截，时间到自动锁回。<br>
+    提醒在「设置 → 提醒」：学习结束前 X 分钟、休息结束前 Y 分钟各响一次（0~120 分钟，0 = 不发），
+    休息提醒可以单独关。触发时主界面弹提示、HUD 上的倒计时变金色闪烁。
+  `)}
+
+  ${sec('4 · 固化与积分', `
+    「固化」打开后，生效期间不能退出程序、不能改任何设置，任务管理器会被自动关掉；
+    进程被杀掉会被守护进程在 2 秒内拉回来。<br>
+    解除只有两条路：<b>时段结束</b> 或 <b>用积分解锁</b>。
+    专注每分钟 +1 分，解锁单价 15 分/分钟、当天第 n 次 ×1.4。
+    <br>注意：时间表留空（全天生效）的规则不会触发固化，否则会把自己永久锁死。
+  `)}
+
+  ${sec('5 · 专注遮罩', `
+    选一个目标窗口，其余区域被遮罩盖住，遮罩从窗口边缘扩散到铺满整块显示器。
+    透明度 / 留白 / 圆角 / 动画时长都能实时调。<br>
+    两种开启方式：全局快捷键（默认 <b>Ctrl+Alt+K</b>，可在遮罩页改，被占用会报错）；
+    或者「进入指定应用自动开启」——切到这些应用就自己盖、切走自动关。
+  `)}
+
+  ${sec('6 · 统计与报告', `
+    每秒采样一次前台窗口；按「自律模式开启 / 未开启」两套数据独立记录，互不混合。
+    前台是浏览器且插件上报过，就记到域名上，否则记到 exe 上。<br>
+    报告在日/周/月/年结束后自动生成（程序没开会下次启动补齐），也可以手动生成。
+    三种口径：只看开启、只看未开启、两者汇总（同一应用/域名秒数直接相加）。
+  `)}
+
+  ${sec('7 · 备份与云同步', `
+    本地备份在软件目录下的 <code>king of focus back</code>，写盘前加密（设了密码用 AES-256-GCM，
+    没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。<br>
+    云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。
+    「立即同步」只同步规则和设置，不做版本归档。
+  `)}
+
+  ${sec('8 · 常见问题', `
+    <b>拦截没反应？</b> 目标程序是管理员权限，就右键以管理员身份运行本程序。<br>
+    <b>网页没拦住？</b> 插件没装或没连上，看侧边栏「浏览器插件」状态。<br>
+    <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁，或者把规则开关关掉（固化了就关不掉）。<br>
+    <b>数据在哪？</b> 全在软件目录的 <code>king of focus data</code>，整个文件夹拷走就能迁移。
+  `)}
+
+  <div class="row" style="gap:9px;margin-top:4px">
+    <button class="btn" data-act="open-repo">查看项目主页</button>
+    <button class="btn" data-act="open-cfg">打开配置目录</button>
   </div>`;
 }
 
@@ -1352,6 +1497,7 @@ function render() {
   if (S.view === 'reports') html = viewReports();
   if (S.view === 'sync') html = viewSync();
   if (S.view === 'settings') html = viewSettings();
+  if (S.view === 'help') html = viewHelp();
   if (S.view === 'about') html = viewAbout();
   $('#content').innerHTML = html;
 
@@ -1367,6 +1513,7 @@ const Act = window.Act = {
     S.view = view;
     if (view === 'stats' && !S.stats) await loadStats();
     if (view === 'reports') await loadReports();
+    if (view === 'sync') { await loadBackups(); }
     if (view === 'about') await loadQuota();
     render();
   },
@@ -1531,7 +1678,7 @@ const Act = window.Act = {
     const opts = [5, 10, 15];
     $('#modalRoot').innerHTML = `
     <div class="modal-mask" data-act="close-modal-bg">
-      <div class="modal" style="width:560px" onclick="event.stopPropagation()">
+      <div class="modal" style="width:560px">
         <div class="modal-hd">
           <h3>用积分解锁</h3>
           <button class="close-x" data-act="close-modal">×</button>
@@ -1636,6 +1783,88 @@ const Act = window.Act = {
     if (!r) { toast('报告读取失败', 'err'); return; }
     S.reportView = r;
     renderReportModal();
+  },
+
+  /* ---- 遮罩：快捷键 / 自动触发 ---- */
+  async saveHotkey() {
+    const v = ($('#hkInput') || {}).value || '';
+    try {
+      await invoke('mask_hotkey', { combo: v });
+      await pull(); render();
+      toast(v ? `快捷键已设为 ${v}` : '已取消快捷键', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+  },
+  async toggleAuto() {
+    const m = S.data.config.settings.mask;
+    const on = !m.auto;
+    await invoke('mask_auto', { enabled: on, apps: m.autoApps || [] });
+    await pull(); render();
+    toast(on ? '已开启自动触发' : '已关闭自动触发', 'ok');
+  },
+  async pickAuto() {
+    const list = await invoke('list_windows');
+    S.picker = list;
+    S.pickerFor = 'auto';
+    renderPicker();
+  },
+  async delAuto(v) {
+    const m = S.data.config.settings.mask;
+    const apps = (m.autoApps || []).filter((x) => x !== v);
+    await invoke('mask_auto', { enabled: m.auto, apps });
+    await pull(); render();
+  },
+
+  /* ---- 备份 ---- */
+  async backupMake() {
+    try {
+      const r = await invoke('backup_make');
+      await loadBackups();
+      render();
+      toast(`已生成备份 ${r.name}（${r.encrypted ? '密码加密' : 'DPAPI 加密'}）`, 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+  async backupRestore(path) {
+    if (!confirm('用这份备份覆盖当前配置？当前配置会被替换。')) return;
+    try {
+      const msg = await invoke('backup_restore', { path });
+      closeModal(); await pull(); render();
+      toast(msg, 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+  async backupDelete(path) {
+    if (!confirm('删除这份备份文件？')) return;
+    await invoke('backup_delete', { path });
+    await loadBackups(); render();
+  },
+  async backupSavePass() {
+    const v = ($('#bkPass') || {}).value || '';
+    await invoke('backup_save', { password: v, autoOnStart: !!($('#bkAuto') || {}).checked });
+    await pull(); render();
+    toast(v ? '备份密码已保存（之后都用它加密）' : '已改为本机 DPAPI 加密', 'ok');
+  },
+  async cloudList() {
+    toast('正在读取云端备份…');
+    try {
+      S.cloud = await invoke('backup_cloud_list');
+      renderCloudModal();
+    } catch (e) { toast('读取失败：' + e, 'err'); }
+  },
+  async cloudUpload() {
+    try {
+      const msg = await invoke('backup_cloud_upload');
+      S.cloud = await invoke('backup_cloud_list');
+      await loadBackups();
+      render();
+      toast(msg, 'ok');
+    } catch (e) { toast(String(e), 'err'); }
+  },
+  async cloudRestore(name) {
+    if (!confirm('用云端的 ' + name + ' 覆盖当前配置？')) return;
+    try {
+      const msg = await invoke('backup_cloud_restore', { name });
+      closeModal(); await pull(); render();
+      toast(msg, 'ok');
+    } catch (e) { toast(String(e), 'err'); }
   },
 
   async saveNotify() {
@@ -1862,6 +2091,33 @@ async function loadReports() {
 async function loadQuota() {
   try { S.quota = await invoke('update_quota'); } catch (e) { S.quota = { ok: false }; }
 }
+async function loadBackups() {
+  try { S.backups = await invoke('backup_list'); } catch (e) { S.backups = []; }
+}
+
+function renderCloudModal() {
+  const list = S.cloud || [];
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:620px">
+      <div class="modal-hd">
+        <h3>云端备份（${list.length} 份）</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        ${list.length ? list.map((f) => `<div class="list-row">
+            <span class="badge gold">${esc(f.name)}</span>
+            <span class="grow muted" style="font-size:10.5px">${esc(f.url || '')}</span>
+            <button class="btn btn-sm" data-act="cloud-restore" data-name="${esc(f.name)}">恢复</button>
+          </div>`).join('') : '<div class="empty">云端还没有备份。<br>先点「上传当前配置」。</div>'}
+        <div class="hint" style="margin-top:14px">
+          只保留最近 ${10} 份、且 7 天内的备份；超出范围的会在上传时自动清理。
+        </div>
+      </div>
+      <div class="modal-ft"><button class="btn" data-act="close-modal">关闭</button></div>
+    </div>
+  </div>`;
+}
 
 /* 保住在编辑器里已经输入但还没保存的内容 */
 function syncEditorInputs() {
@@ -1882,7 +2138,7 @@ function renderPicker() {
   const list = (S.picker || []).filter((w) => w.title);
   const html = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal">
       <div class="modal-hd">
         <h3>${S.pickerFor === 'mask' ? '选择要保留显示的窗口' : '选择要拦截的程序'}</h3>
         <button class="close-x" data-act="close-modal">×</button>
@@ -1919,7 +2175,7 @@ function renderReportModal() {
   const merged = mergeSlices(r.on || [], r.off || []);
   $('#modalRoot').innerHTML = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal wide" onclick="event.stopPropagation()" style="width:940px">
+    <div class="modal wide" style="width:940px">
       <div class="modal-hd">
         <h3>${esc(r.title)} <span class="badge">${r.start} ~ ${r.end}</span></h3>
         <button class="close-x" data-act="close-modal">×</button>
@@ -2071,6 +2327,17 @@ document.addEventListener('click', async (e) => {
   if (act === 'pick-item') {
     const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
     if (!w) return;
+    if (S.pickerFor === 'auto') {
+      const name = (w.name || '').replace(/\.exe$/i, '');
+      if (!name) { toast('拿不到这个程序的进程名', 'err'); return; }
+      const m = S.data.config.settings.mask;
+      const apps = [...new Set([...(m.autoApps || []), name])];
+      await invoke('mask_auto', { enabled: true, apps });
+      closeModal();
+      await pull(); render();
+      toast(`已添加 ${name}，自动触发已开启`, 'ok');
+      return;
+    }
     if (S.pickerFor === 'mask') {
       closeModal();
       try {
@@ -2111,6 +2378,18 @@ document.addEventListener('click', async (e) => {
   if (act === 'save-num') { await Act.saveNum(el.dataset.k); return; }
   if (act === 'save-quote-mins') { await Act.saveQuoteMins(); return; }
   if (act === 'save-notify') { await Act.saveNotify(); return; }
+  if (act === 'save-hotkey') { await Act.saveHotkey(); return; }
+  if (act === 'toggle-auto') { await Act.toggleAuto(); return; }
+  if (act === 'pick-auto') { await Act.pickAuto(); return; }
+  if (act === 'del-auto') { await Act.delAuto(el.dataset.v); return; }
+  if (act === 'backup-make') { await Act.backupMake(); return; }
+  if (act === 'backup-restore') { await Act.backupRestore(el.dataset.path); return; }
+  if (act === 'backup-del') { await Act.backupDelete(el.dataset.path); return; }
+  if (act === 'backup-pass') { await Act.backupSavePass(); return; }
+  if (act === 'cloud-list') { await Act.cloudList(); return; }
+  if (act === 'cloud-upload') { await Act.cloudUpload(); return; }
+  if (act === 'cloud-restore') { await Act.cloudRestore(el.dataset.name); return; }
+  if (act === 'backup-dir') { await invoke('backup_open_dir'); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
   if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
   if (act === 'cycle-theme') { await Act.cycleTheme(); return; }
@@ -2195,6 +2474,7 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
 (async function boot() {
   await pull();
   await loadReports();
+  await loadBackups();
   if (!S.data) { $('#content').innerHTML = '<div class="empty">无法连接后台服务</div>'; return; }
   S.customStart = todayStr();
   S.customEnd = todayStr();
