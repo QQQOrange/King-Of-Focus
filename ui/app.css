@@ -710,13 +710,23 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 @keyframes pop { from { transform: scale(.97) translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
 .modal.wide { width: 900px; }
 .modal-hd {
+  flex: 0 0 auto;
   padding: 19px 24px;
   border-bottom: 1px solid var(--line);
   display: flex; align-items: center; justify-content: space-between;
 }
 .modal-hd h3 { margin: 0; font-size: 14.5px; font-weight: 650; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.modal-bd { padding: 20px 24px; overflow-y: auto; }
+.modal-bd {
+  /* 关键：flex 列容器里的内容区必须能被压缩，否则内容一多就会把页脚顶出去，
+     表现就是路径框 / 步骤文字和底部按钮叠在一起 */
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .modal-ft {
+  flex: 0 0 auto;
   padding: 15px 24px;
   border-top: 1px solid var(--line);
   display: flex; justify-content: flex-end; gap: 10px;
@@ -828,4 +838,81 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   flex: none; width: 20px; height: 20px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: rgba(245, 181, 68, .16); color: var(--gold); font-size: 11px;
+}
+
+/* ══════════ 安装引导 / 浏览器列表：纵向分层，任何宽度都不挤 ══════════ */
+
+/* 路径面板：标题、路径、按钮各占一行 */
+.ext-box {
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(245, 181, 68, .045);
+}
+.ext-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.ext-head .ext-title { font-size: 12.5px; font-weight: 600; }
+.ext-path {
+  margin-top: 9px;
+  max-height: 104px; overflow: auto;
+  padding: 9px 11px;
+  border: 1px dashed var(--line); border-radius: 8px;
+  background: rgba(0, 0, 0, .18);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px; line-height: 1.65;
+  word-break: break-all;
+  -webkit-user-select: all; user-select: all;
+}
+.ext-actions { display: flex; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+.ext-actions .btn { flex: 0 0 auto; }
+.ext-box .hint { margin-top: 9px; }
+
+/* 步骤：用 <ol> 原生序号，避免自绘圆形标记的基线错位 */
+.ext-steps {
+  counter-reset: st;
+  margin: 0; padding: 0; list-style: none;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.ext-steps li {
+  counter-increment: st;
+  position: relative;
+  padding-left: 30px;
+  font-size: 12.5px; line-height: 1.75; color: var(--text-2);
+}
+.ext-steps li b { color: var(--text); font-weight: 600; }
+.ext-steps li::before {
+  content: counter(st);
+  position: absolute; left: 0; top: 1px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(245, 181, 68, .16); color: var(--gold);
+  font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* 浏览器行：grid 三列（图标 / 内容 / 操作），窄屏时操作整行下移 */
+.brow {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  column-gap: 12px; row-gap: 6px;
+  align-items: start;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+.brow:last-child { border-bottom: 0; }
+.brow-name {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 13px; font-weight: 600; line-height: 1.5;
+}
+.brow-main { min-width: 0; }
+.brow-main .hint { margin-top: 5px; }
+.brow-act {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  justify-self: end; align-self: center;
+}
+@media (max-width: 900px) {
+  .brow { grid-template-columns: 24px minmax(0, 1fr); }
+  .brow-act { grid-column: 2; justify-self: start; align-self: start; margin-top: 2px; }
 }

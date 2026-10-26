@@ -1380,17 +1380,18 @@ function viewBrowsers() {
                <button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`
             : `<button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`;
       const hits = (b.hits || []).length
-        ? `<div class="hint" style="margin-top:4px">命中配置档：${b.hits.map((h) => `${esc(h.profile)}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
+        ? `<div class="hint">命中配置档：${b.hits.map((h) => `${esc(h.profile)}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
         : '';
       return `<div class="brow">
         <div class="brow-ico">${b.installed ? '◉' : '○'}</div>
         <div class="brow-main">
-          <div class="brow-name">${esc(b.name)}
-            <span class="badge ${b.installed ? 'green' : ''}" style="margin-left:6px">${b.installed ? '已安装' : '未安装'}</span>
-            ${b.installed ? `<span class="badge ${m.cls}" style="margin-left:4px">${m.txt}</span>` : ''}
-            ${b.running ? '<span class="badge blue" style="margin-left:4px">运行中</span>' : ''}
+          <div class="brow-name">
+            <span class="bname">${esc(b.name)}</span>
+            <span class="badge ${b.installed ? 'green' : ''}">${b.installed ? '已安装' : '未安装'}</span>
+            ${b.installed ? `<span class="badge ${m.cls}">${m.txt}</span>` : ''}
+            ${b.running ? '<span class="badge blue">运行中</span>' : ''}
           </div>
-          <div class="hint" style="margin-top:4px">${esc(b.note || '')}</div>
+          <div class="hint">${esc(b.note || '')}</div>
           ${hits}
         </div>
         <div class="brow-act">${act}</div>
@@ -1741,22 +1742,21 @@ async function copyText(text) {
   } catch (e) { return false; }
 }
 
-/** 安装引导里的"扩展文件夹"面板：路径 + 复制 + 打开，带状态反馈 */
+/** 安装引导里的"扩展文件夹"面板：标题、路径、按钮各占一行，任何宽度都不会挤在一起 */
 function extFolderPanel(info) {
   const i = info || (S.data && S.data.extInfo) || {};
   const exists = !!i.exists;
   return `<div class="ext-box">
-    <div class="row" style="justify-content:space-between;align-items:center;gap:10px">
-      <div class="ext-title">扩展文件夹
-        <span class="badge ${exists ? 'green' : 'red'}" style="margin-left:6px">${exists ? '目录已就绪' : '目录未找到'}</span>
-      </div>
-      <div class="row" style="gap:8px">
-        <button class="btn btn-sm btn-primary" data-act="ext-copy">复制路径</button>
-        <button class="btn btn-sm" data-act="ext-open">打开文件夹</button>
-      </div>
+    <div class="ext-head">
+      <div class="ext-title">扩展文件夹</div>
+      <span class="badge ${exists ? 'green' : 'red'}">${exists ? '目录已就绪' : '目录未找到'}</span>
     </div>
     <div class="ext-path" id="extPath">${esc(i.path || '（未知路径）')}</div>
-    <div class="hint" id="extNote" style="margin-top:8px">
+    <div class="ext-actions">
+      <button class="btn btn-sm btn-primary" data-act="ext-copy">复制路径</button>
+      <button class="btn btn-sm" data-act="ext-open">打开文件夹</button>
+    </div>
+    <div class="hint" id="extNote">
       ${exists
         ? '在扩展管理页点「加载已解压的扩展程序」，把上面这个路径粘到地址栏回车后选中该文件夹即可。'
         : `这个路径下没找到 manifest.json。程序目录是 <code>${esc(i.exeDir || '')}</code>，${i.crx ? '同目录里还有 CRX 安装包，可以直接拖进扩展页。' : '请重新解压完整安装包，或到 GitHub 下载最新版。'}`}
@@ -2435,14 +2435,14 @@ const Act = window.Act = {
           <button class="close-x" data-act="close-modal">×</button>
         </div>
         <div class="modal-bd">
-          <div class="note" style="margin-bottom:12px">
-            扩展管理页已经帮你打开了。照着下面三步做，一分钟内能装好：
+          <div class="hint" style="margin-bottom:12px">
+            扩展管理页已经帮你打开了，三步就能装好：
           </div>
-          <div class="ext-steps">
-            <div class="st"><b>1</b><span>在扩展页右上角打开 <b>开发者模式</b></span></div>
-            <div class="st"><b>2</b><span>点 <b>加载已解压的扩展程序</b>，然后选中下面这个文件夹</span></div>
-            <div class="st"><b>3</b><span>回到这里点 <b>完成，重新检测</b>，状态会变成「插件已启用」</span></div>
-          </div>
+          <ol class="ext-steps">
+            <li>在扩展页右上角打开 <b>开发者模式</b></li>
+            <li>点 <b>加载已解压的扩展程序</b>，选中下面这个文件夹</li>
+            <li>回到这里点 <b>完成，重新检测</b>，状态会变成「插件已启用」</li>
+          </ol>
           ${extFolderPanel(info)}
           <div class="hint" style="margin-top:10px">
             也可以把 <code>${esc((info.crx || 'KingOfFocus-Extension.crx').split('\\').pop())}</code>
