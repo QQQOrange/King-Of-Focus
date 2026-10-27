@@ -431,6 +431,24 @@ impl Overlay {
         SetWindowLongW(self.hwnd, GWL_EXSTYLE, ex as i32);
     }
 
+    /// 遮罩"让开"的口袋矩形（屏幕坐标）：把目标矩形再向外撑出圆角半径。
+    ///
+    /// 圆角必须画在**窗口外侧**。`CreateRoundRectRgn` 的圆弧是往矩形内部拐的，
+    /// 如果直接拿窗口矩形当参数，四个角各会被吃掉 radius 像素——
+    /// 那正是"选中的窗口没有被完整显示"的根源。先把矩形撑出去，
+    /// 圆弧就整个落在窗口之外，窗口边界 1px 都不会被切。
+    ///
+    /// radius = 0 时口袋就是目标矩形本身（含边距），遮罩严丝合缝地贴着窗口。
+    fn pocket_rect(hole: &Rect, radius: f32) -> Rect {
+        let r = radius.max(0.0).round() as i32;
+        Rect {
+            left: hole.left - r,
+            top: hole.top - r,
+            right: hole.right + r,
+            bottom: hole.bottom + r,
+        }
+    }
+
     /// Region 模式：整窗半透明黑，用区域把目标窗口挖出来
     unsafe fn paint_region(&mut self, hole: &Rect, radius: f32, alpha: u8) {
         if self.w <= 0 || self.h <= 0 {
@@ -477,9 +495,14 @@ impl Overlay {
         let full = CreateRectRgn(0, 0, self.w, self.h);
         if !full.is_null() {
             if hx1 > 0 && hy1 > 0 && hx0 < self.w && hy0 < self.h {
-                let d = ((radius.max(0.0)) * 2.0).round() as i32;
-                let d = d.max(1);
-                let cut = CreateRoundRectRgn(hx0, hy0, hx1, hy1, d, d);
+                // 口袋 = 目标矩形外撑 radius，圆角弧线落在窗口外侧（见 pocket_rect）
+                let p = Self::pocket_rect(hole, radius);
+                let px0 = p.left - self.x;
+                let py0 = p.top - self.y;
+                let px1 = p.right - self.x;
+                let py1 = p.bottom - self.y;
+                let d = (((radius.max(0.0).round()) as i32) * 2).max(1);
+                let cut = CreateRoundRectRgn(px0, py0, px1, py1, d, d);
                 if !cut.is_null() {
                     CombineRgn(full, full, cut, RGN_DIFF);
                     DeleteObject(cut);
@@ -1354,6 +1377,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         r.top
                     ));
                 }
+                let pocket = Overlay::pocket_rect(&hole_end, radius);
                 let report = format!(
                     "on={} painted={}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} fps={} 循环={}/s 单帧={:.1}ms 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
@@ -1372,10 +1396,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     stat_fps,
                     stat_loop,
                     stat_paint_ms,
-                    hole_end.left,
-                    hole_end.top,
-                    hole_end.right,
-                    hole_end.bottom,
+                    pocket.left,
+                    pocket.top,
+                    pocket.right,
+                    pocket.bottom,
                     parts.join(" | "),
                     mons.len()
                 );
@@ -1404,6 +1428,81 @@ mod tests {
 
     fn r(l: i32, t: i32, rr: i32, b: i32) -> Rect {
         Rect { left: l, top: t, right: rr, bottom: b }
+    }
+
+    /// 点是否落在圆角矩形内（与 `CreateRoundRectRgn` 的几何一致）。
+    /// 用来验证"窗口有没有被圆角切掉"——这是遮罩最核心的正确性不变量。
+    fn in_round_rect(px: f64, py: f64, rect: &Rect, rad: f64) -> bool {
+        let (l, t, rr, b) = (
+            rect.left as f64,
+            rect.top as f64,
+            rect.right as f64,
+            rect.bottom as f64,
+        );
+        if px < l || px > rr || py < t || py > b {
+            return false;
+        }
+        if rad <= 0.0 {
+            return true;
+        }
+        // 把点夹到"圆心所在的矩形"，得到最近的圆心，再比半径
+        let cx = px.clamp(l + rad, rr - rad);
+        let cy = py.clamp(t + rad, b - rad);
+        let (dx, dy) = (px - cx, py - cy);
+        dx * dx + dy * dy <= rad * rad + 1e-6
+    }
+
+    /// **核心不变量**：选中窗口的每一个像素都必须在遮罩的"口袋"里，不能被圆角切掉。
+    ///
+    /// 旧实现直接给窗口矩形套 `CreateRoundRectRgn`，圆弧在矩形内部拐进来，
+    /// 四个角各被吃掉 radius 像素——用户看到的就是"选中的页面没有被完整显示"。
+    #[test]
+    fn 圆角不得吃掉窗口任何一个角() {
+        let win = r(100, 100, 700, 500);
+        // 反向验证：直接拿窗口矩形套圆角（也就是修复前的旧几何），窗口左上角确实
+        // 会落在圆角之外。这条断言用来证明"检测手段本身是有效的"——
+        // 否则上面那轮循环可能是永远通过的假阳性。
+        assert!(
+            !in_round_rect(win.left as f64, win.top as f64, &win, 28.0),
+            "旧几何下窗口角本应被切掉；如果这条通过不了，说明判定函数写错了"
+        );
+        for radius in [0.0f32, 1.0, 8.0, 28.0, 60.0, 80.0] {
+            let pocket = Overlay::pocket_rect(&win, radius);
+            let rad = radius.round() as f64;
+            // 窗口内 41x41 采样点，含四个角点
+            for i in 0..=40 {
+                for j in 0..=40 {
+                    let px = win.left as f64 + (win.right - win.left) as f64 * i as f64 / 40.0;
+                    let py = win.top as f64 + (win.bottom - win.top) as f64 * j as f64 / 40.0;
+                    assert!(
+                        in_round_rect(px, py, &pocket, rad),
+                        "radius={} 时窗口内的点 ({}, {}) 落在口袋外（会被遮罩盖住）",
+                        radius,
+                        px,
+                        py
+                    );
+                }
+            }
+        }
+    }
+
+    /// radius = 0 时口袋必须严丝合缝等于目标矩形，不能有任何多余留白
+    #[test]
+    fn 半径为零时口袋紧贴窗口() {
+        let win = r(10, 20, 310, 220);
+        assert_eq!(Overlay::pocket_rect(&win, 0.0), win);
+    }
+
+    /// radius > 0 时口袋应当对称外扩，且四个角确实是圆弧（不是直角）
+    #[test]
+    fn 圆角口袋向外撑开() {
+        let win = r(0, 0, 200, 100);
+        let p = Overlay::pocket_rect(&win, 30.0);
+        assert_eq!(p, r(-30, -30, 230, 130));
+        // 口袋的角点（矩形四角）应当落在圆角之外 —— 说明角被圆掉了
+        assert!(!in_round_rect(-30.0, -30.0, &p, 30.0), "口袋自己的角应该被圆掉");
+        // 而窗口的角点必须在里面
+        assert!(in_round_rect(0.0, 0.0, &p, 30.0), "窗口的角必须保留");
     }
 
     /// 速度 = 0 时必须瞬时到位，不能有任何过渡。

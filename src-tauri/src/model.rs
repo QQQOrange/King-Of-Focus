@@ -191,7 +191,11 @@ pub struct MaskCfg {
     pub opacity: u8,
     /// 目标窗口四周留出的可见边距（像素）
     pub margin: i32,
-    /// 遮罩圆角半径（像素）
+    /// 遮罩口袋的圆角半径（像素）。
+    ///
+    /// 这个值同时也是"口袋向外撑开的宽度"——圆角必须画在窗口外侧，
+    /// 所以 0 才是"严丝合缝贴住窗口、窗口 100% 可见"的推荐值；
+    /// 调大后窗口四周会留出一圈圆角留白，能看到背后的内容。
     pub radius: i32,
     /// 扩散 / 收起动画时长（毫秒，0 = 瞬间）
     pub duration_ms: u32,
@@ -219,10 +223,10 @@ impl Default for MaskCfg {
         MaskCfg {
             opacity: 88,
             margin: 0,
-            radius: 28,
+            radius: 0,
             duration_ms: 420,
             follow: true,
-            block_click: false,
+            block_click: true,
             target_pid: 0,
             target_title: String::new(),
             hotkey: "Ctrl+Alt+K".into(),

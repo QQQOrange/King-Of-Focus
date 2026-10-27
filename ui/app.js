@@ -1200,7 +1200,7 @@ function viewMask() {
       <span class="val" id="mgVal">${mg}px</span>
     </div>
     <div class="slider-row">
-      <span class="lab">圆角半径</span>
+      <span class="lab">圆角半径（0=紧贴窗口）</span>
       <input type="range" min="0" max="80" step="1" value="${rad}" id="radRange" />
       <span class="val" id="radVal">${rad}px</span>
     </div>
@@ -1211,8 +1211,13 @@ function viewMask() {
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
       <div>
-        <div style="font-size:12.5px">同时屏蔽鼠标操作</div>
-        <div class="hint" style="margin-top:4px">开启后，遮罩会吃掉所有点击，只有目标窗口和本程序可用。关掉则是纯粹"看不见"，鼠标可以穿透。</div>
+        <div style="font-size:12.5px">点击遮罩空白处不穿透</div>
+        <div class="hint" style="margin-top:4px">
+          开启后，点遮罩空白区域没有任何反应，也不会把别的窗口切到前台——专心时最稳。<br>
+          关掉则点击会穿透到被遮罩的窗口，方便临时操作，但点到别的应用会让它变成前台，
+          遮罩会跟着换目标。<br>
+          不论开关，<b>选中窗口本身永远正常可点</b>。
+        </div>
       </div>
       <div class="switch" data-act="toggle-click">
         <input type="checkbox" ${m.blockClick ? 'checked' : ''}><i></i>
@@ -1240,8 +1245,12 @@ function viewMask() {
       被别的程序占用会直接报错并保留原来的组合。
     </div>
   <div class="note" style="margin-top:16px">
-    <b>扩散动画：</b>开启动画时，遮罩从目标窗口的边缘向外扩展，直到铺满它所在的显示器；
-    关闭时反向收回。圆角半径全程保持一致，窗口拖动 / 缩放时遮罩会实时跟随，多显示器和混合 DPI 下按各自的物理分辨率等比适配。
+    <b>遮罩怎么让开：</b>遮罩是一整块盖住全屏的图层，选中窗口那一块从遮罩里"让开"，
+    所以窗口本身完整可见、层级不变（不抢任何窗口的置顶状态）。<b>圆角半径 0 就是严丝合缝地贴住窗口</b>，
+    调大相当于在窗口四周留一圈圆角留白——圆角永远画在窗口外侧，不会切掉窗口四角。<br>
+    <b>扩散动画：</b>开启时遮罩从窗口边缘向外铺满整个显示器，关闭时反向收回；
+    切换目标窗口时高亮框会平滑移过去。窗口拖动 / 缩放时 1:1 实时跟随，
+    多显示器和混合 DPI 下按各自的物理分辨率等比适配。
   </div>`;
 }
 
