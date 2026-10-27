@@ -277,9 +277,17 @@ pub struct ClockCfg {
     /// 旧字段：全周共用的 24 段。仅用于一次性迁移，sanitize 后清空
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hours: Vec<HourPlan>,
+    /// 通用默认时长：新框选 / 单击选中的时段沿用这套「专注 / 休息」，
+    /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
+    #[serde(default = "default_def_work")]
+    pub def_work: u32,
+    #[serde(default = "default_def_brk")]
+    pub def_brk: u32,
 }
 
 fn default_true() -> bool { true }
+fn default_def_work() -> u32 { 50 }
+fn default_def_brk() -> u32 { 10 }
 
 impl Default for ClockCfg {
     fn default() -> Self {
@@ -288,6 +296,8 @@ impl Default for ClockCfg {
             apply_rules: true,
             days: vec![vec![HourPlan::default(); 24]; 7],
             hours: Vec::new(),
+            def_work: 50,
+            def_brk: 10,
         }
     }
 }

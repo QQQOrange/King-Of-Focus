@@ -140,6 +140,15 @@ pub fn sanitize(c: &mut Config) {
         }
     }
     hc.hours.clear();
+    // 通用默认时长：与单段同样的夹紧口径（新选时段沿用这套值）
+    hc.def_work = hc.def_work.clamp(1, 60);
+    hc.def_brk = hc.def_brk.min(60);
+    if hc.def_brk > 0 {
+        hc.def_work = hc.def_work.clamp(1, 59);
+        if hc.def_work + hc.def_brk > 60 {
+            hc.def_brk = 60 - hc.def_work;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +166,8 @@ mod tests {
             apply_rules: true,
             days: Vec::new(),
             hours,
+            def_work: 50,
+            def_brk: 10,
         };
         sanitize(&mut c);
         let hc = &c.settings.focus_clock;
@@ -179,6 +190,8 @@ mod tests {
             apply_rules: true,
             days: vec![day],
             hours: Vec::new(),
+            def_work: 50,
+            def_brk: 10,
         };
         sanitize(&mut c);
         let hc = &c.settings.focus_clock;
@@ -188,5 +201,44 @@ mod tests {
         assert_eq!((p.work, p.brk), (50, 10), "work+brk 超 60 时应把休息夹到 60-work");
         // 只有第 0 天有选择，其它天应保持关闭
         assert!(!hc.days[1][9].on);
+    }
+
+    #[test]
+    fn clock_def_wb_defaults_and_clamps() {
+        // 旧配置没有 defWork/defBrk：应回落到 50/10
+        let mut c = Config::default();
+        c.settings.focus_clock = ClockCfg {
+            enabled: false,
+            apply_rules: true,
+            days: Vec::new(),
+            hours: Vec::new(),
+            def_work: 0,
+            def_brk: 0,
+        };
+        sanitize(&mut c);
+        assert_eq!(
+            (c.settings.focus_clock.def_work, c.settings.focus_clock.def_brk),
+            (1, 0),
+            "0 值应被夹到合法区间"
+        );
+
+        // 畸形值：work+brk 超 60 → 休息夹到 60-work
+        let mut c2 = Config::default();
+        c2.settings.focus_clock.def_work = 90;
+        c2.settings.focus_clock.def_brk = 30;
+        sanitize(&mut c2);
+        assert_eq!(
+            (c2.settings.focus_clock.def_work, c2.settings.focus_clock.def_brk),
+            (59, 1)
+        );
+
+        // serde 缺省：反序列化不带这两个字段时应走 default（50/10）
+        let json = r#"{"enabled":false,"applyRules":true,"days":[],"hours":[]}"#;
+        let hc: ClockCfg = serde_json::from_str(json).unwrap();
+        assert_eq!((hc.def_work, hc.def_brk), (50, 10));
+        // 序列化应带上 camelCase 字段
+        let out = serde_json::to_string(&hc).unwrap();
+        assert!(out.contains("\"defWork\":50"), "{out}");
+        assert!(out.contains("\"defBrk\":10"), "{out}");
     }
 }

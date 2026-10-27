@@ -63,7 +63,7 @@ const STATE = {
         blockClick: false, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
         hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
       focusClock: {
-        enabled: true, applyRules: true,
+        enabled: true, applyRules: true, defWork: 45, defBrk: 15,
         days: [ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10),
           ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(9, 11, 45, 15), ccDay(0, 0, 50, 10)],
       },
@@ -125,7 +125,7 @@ window.__audit = async (view) => {
   if (content.scrollWidth > content.clientWidth + 1) {
     out.overflow.push(`#content ${content.scrollWidth}>${content.clientWidth}`);
   }
-  document.querySelectorAll('.card,.hrow,.tl,.cc,.mask-hero,.ext-box,.brow,.clock-state,.cc-legend').forEach((el) => {
+  document.querySelectorAll('.card,.hrow,.tl,.cc,.mask-hero,.ext-box,.brow,.clock-state,.cc-legend,.cc-def').forEach((el) => {
     if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) {
       out.overflow.push((el.className || el.tagName) + ` ${el.scrollWidth}>${el.clientWidth}`);
     }
@@ -160,7 +160,9 @@ window.__audit = async (view) => {
     out.grid = {
       x: +g.left.toFixed(1), y: +g.top.toFixed(1), w: +g.width.toFixed(1), h: +g.height.toFixed(1),
       cellW: +rs[0].width.toFixed(1), cellH: +rs[0].height.toFixed(1),
+      first: [+rs[0].left.toFixed(1), +rs[0].top.toFixed(1)],
       cols: [...new Set(rs.map((r) => Math.round(r.left)))].sort((a, b) => a - b),
+      rowTops: [...new Set(rs.map((r) => Math.round(r.top)))].sort((a, b) => a - b),
     };
   }
   // 通用：同层兄弟元素垂直方向不应互相覆盖
@@ -189,6 +191,19 @@ window.__itest = async () => {
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
   const fc = () => S.data.config.settings.focusClock;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const cls = (d, h) => {
+    const c = cell(d, h);
+    return ['jt', 'jb', 'jl', 'jr'].filter((k) => c.classList.contains(k)).join(' ');
+  };
+
+  // 0. 连通类名：连在一起的选中时段，格子按相邻边带上连通标记（供 CSS 抹接缝）
+  out.push(['连通：周一 8 点 jt+jr', cls(0, 8), 'jt jr']);
+  out.push(['连通：周一 9 点 jt+jb+jr', cls(0, 9), 'jt jb jr']);
+  out.push(['连通：周一 11 点 jb+jr', cls(0, 11), 'jb jr']);
+  out.push(['连通：周五–周六跨天相连（周六 9 点 jt+jl）', cls(5, 9), 'jt jl']);
+  out.push(['连通：周六 10 点 jb+jl', cls(5, 10), 'jb jl']);
+  out.push(['未选格无连通类', cls(0, 7), '']);
+  out.push(['未选格无连通类（周日）', cls(6, 9), '']);
 
   // 1. 二维拖选：周三 13 点 → 周五 15 点（3 天 × 3 小时 = 9 段，原本全关）
   fire('mousedown', cell(2, 13));
@@ -200,6 +215,11 @@ window.__itest = async () => {
   out.push(['拖选 9 段全开', fc().days.slice(2, 5).every((day) => [13, 14, 15].every((h) => day[h].on))]);
   out.push(['拖选不碰区外', !fc().days[1][13].on && !fc().days[5][13].on && !fc().days[2][12].on && !fc().days[2][16].on]);
   out.push(['区外原有保留', fc().days[0][8].on === true]);
+  out.push(['新选时段沿用通用时长 45/15', (() => { const p = fc().days[3][14]; return p.work === 45 && p.brk === 15; })()]);
+  out.push(['原有选中保留自定义值', fc().days[0][8].work === 50 && fc().days[0][8].brk === 10]);
+  out.push(['拖选后连通类名（周三 13 点 jt+jr）', cls(2, 13), 'jt jr']);
+  out.push(['拖选后连通类名（周四 13 点 jt+jl+jr）', cls(3, 13), 'jt jl jr']);
+  out.push(['拖选后连通类名（周四 14 点 jt+jb+jl+jr）', cls(3, 14), 'jt jb jl jr']);
   out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
 
   // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）
@@ -217,13 +237,21 @@ window.__itest = async () => {
   out.push(['单击关闭单格', fc().days[0][8].on === false]);
   out.push(['单击不影响同列其它格', fc().days[0][9].on === true]);
 
-  // 3. 右键菜单：周六 14 点（原本关）→ 设为 45/15
+  // 2b. 右键已选中的单格：预填这一格自身的时长（50/10），而不是通用值
+  fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
+  await wait(120);
+  out.push(['ON 单格预填自身时长', $('#ccW').value === '50' && $('#ccB').value === '10']);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+
+  // 3. 右键菜单：周六 14 点（原本关）→ 预填通用时长，手动设为 45/15
   fire('contextmenu', cell(5, 14), { clientX: 420, clientY: 420 });
   await wait(120);
   const menu = document.querySelector('.cc-menu');
   out.push(['右键弹出菜单', !!menu]);
   if (menu) {
     out.push(['目标默认这一格', $('#ccTgt').textContent, '周六 14:00 – 15:00']);
+    out.push(['OFF 格预填通用时长 45/15', $('#ccW').value === '45' && $('#ccB').value === '15']);
     $('#ccW').value = '45';
     $('#ccB').value = '15';
     $('#ccApply').click();
@@ -254,6 +282,7 @@ window.__itest = async () => {
   await wait(250);
   const p36 = fc().days[3][6];
   out.push(['work+brk 夹紧到 60', p36.work + p36.brk === 60 && p36.work === 58 && p36.brk === 2]);
+  out.push(['勾选后同步为通用时长', fc().defWork === 58 && fc().defBrk === 2]);
 
   // 6. Escape 关菜单
   fire('contextmenu', cell(1, 6), { clientX: 420, clientY: 420 });
@@ -268,6 +297,29 @@ window.__itest = async () => {
   await wait(250);
   out.push(['清空全部', fc().days.every((day) => day.every((p) => !p.on))]);
   out.push(['清空后摘要', $('#clockLive').textContent, '未选择任何时段']);
+
+  // 8. 通用时长：卡片行保存 → 之后新选中的时段沿用
+  $('#defW').value = '30';
+  $('#defB').value = '5';
+  document.querySelector('[data-act="clock-def-save"]').click();
+  await wait(250);
+  out.push(['通用时长保存生效', fc().defWork === 30 && fc().defBrk === 5]);
+  out.push(['保存后输入框回显新值', $('#defW').value === '30' && $('#defB').value === '5']);
+  fire('mousedown', cell(2, 2));
+  fire('mouseup', document);
+  await wait(250);
+  out.push(['保存后新单击选中沿用 30/5', (() => { const p = fc().days[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
+
+  // 9. 不勾「同时设为通用」→ 只改这一片，通用值不动
+  fire('contextmenu', cell(4, 22), { clientX: 420, clientY: 420 });
+  await wait(120);
+  $('#ccW').value = '55';
+  $('#ccB').value = '5';
+  $('#ccDefToo').checked = false;
+  $('#ccApply').click();
+  await wait(250);
+  out.push(['不勾选则只改本片', (() => { const p = fc().days[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
+  out.push(['不勾选不动通用值', fc().defWork === 30 && fc().defBrk === 5]);
 
   const pre = document.createElement('pre');
   pre.id = 'itest';
@@ -287,6 +339,8 @@ window.__itest = async () => {
     try { await Act.nav(view); } catch (e) {}
   }
   await new Promise((r) => setTimeout(r, 500));
+  // 无头截图与 dump-dom 的滚动基准拉齐，便于像素级核对
+  window.scrollTo(0, 0);
   // 截图辅助：?openmenu=d,h 打开某一格的右键菜单后停住
   const om = q.get('openmenu');
   if (om) {

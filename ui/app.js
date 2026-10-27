@@ -623,30 +623,36 @@ function paintSchedule() {
 
 /* ---------------- 视图：自律时段（7 列 × 24 小时柱状图） ---------------- */
 const WD = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-const CC_DEF = () => ({ on: false, work: 50, brk: 10 });
+const CC_DEF_W = 50, CC_DEF_B = 10; // 配置里没有通用时长时的兜底值
 
 /** 归一化 focusClock：7 天 × 24 小时（兼容旧版"全周共用 24 段"的 hours） */
 function clockCfg() {
   const s = S.data && S.data.config && S.data.config.settings;
-  if (!s) return { enabled: false, applyRules: true, days: [] };
+  if (!s) return { enabled: false, applyRules: true, days: [], defWork: CC_DEF_W, defBrk: CC_DEF_B };
   if (!s.focusClock) s.focusClock = { enabled: false, applyRules: true, days: [] };
   const fc = s.focusClock;
   if (!Array.isArray(fc.days)) fc.days = [];
+  // 通用默认时长：新框选/单击选中的时段沿用这套专注/休息（右键菜单可更新）
+  fc.defWork = Math.max(1, Math.min(60, Math.round(fc.defWork || CC_DEF_W)));
+  fc.defBrk = Math.max(0, Math.min(60, Math.round(fc.defBrk || CC_DEF_B)));
+  if (fc.defBrk > 0 && fc.defWork + fc.defBrk > 60) fc.defBrk = 60 - fc.defWork;
+  // 新时段的默认值跟着通用时长走
+  const fresh = () => ({ on: false, work: fc.defWork, brk: fc.defBrk });
   // 旧结构迁移：hours（全周共用）→ 复制到 7 天（后端 sanitize 也会做，这里兜底）
   if (!fc.days.length && Array.isArray(fc.hours) && fc.hours.length) {
     const legacy = [];
     for (let h = 0; h < 24; h++) {
       const p = fc.hours[h] || {};
-      legacy.push({ on: !!p.on, work: +(p.work || 50), brk: +(p.brk || 10) });
+      legacy.push({ on: !!p.on, work: +(p.work || CC_DEF_W), brk: +(p.brk || CC_DEF_B) });
     }
     fc.days = Array.from({ length: 7 }, () => legacy.map((p) => ({ ...p })));
   }
-  while (fc.days.length < 7) fc.days.push(Array.from({ length: 24 }, CC_DEF));
+  while (fc.days.length < 7) fc.days.push(Array.from({ length: 24 }, fresh));
   fc.days.length = 7;
   fc.days.forEach((day, d) => {
-    if (!Array.isArray(day)) fc.days[d] = Array.from({ length: 24 }, CC_DEF);
+    if (!Array.isArray(day)) fc.days[d] = Array.from({ length: 24 }, fresh);
     const dd = fc.days[d];
-    while (dd.length < 24) dd.push(CC_DEF());
+    while (dd.length < 24) dd.push(fresh());
     dd.length = 24;
     for (const p of dd) {
       p.work = Math.max(0, Math.min(60, Math.round(p.work || 0)));
@@ -659,6 +665,30 @@ function clockCfg() {
   });
   delete fc.hours;
   return fc;
+}
+
+/** 连通判定：格子 (d,h) 的上下左右有选中的邻居，那条边就不画接缝，
+ * 于是一片连在一起的选中时段在柱状图上看起来就是连成一片的。 */
+function ccJoins(fc, d, h) {
+  const on = (dd, hh) => !!(fc.days[dd] && fc.days[dd][hh] && fc.days[dd][hh].on);
+  return { jt: on(d, h + 1), jb: on(d, h - 1), jl: on(d - 1, h), jr: on(d + 1, h) };
+}
+
+/** 把连通类名写到 DOM 上（渲染和拖选预览共用） */
+function ccApplyJoins(root) {
+  const fc = clockCfg();
+  const onCells = new Set();
+  root.querySelectorAll('.cc-cell').forEach((c) => {
+    if (c.classList.contains('on')) onCells.add(`${+c.dataset.d},${+c.dataset.h}`);
+  });
+  const isOn = (d, h) => onCells.has(`${d},${h}`);
+  root.querySelectorAll('.cc-cell').forEach((c) => {
+    const d = +c.dataset.d, h = +c.dataset.h, on = isOn(d, h);
+    c.classList.toggle('jt', on && isOn(d, h + 1));
+    c.classList.toggle('jb', on && isOn(d, h - 1));
+    c.classList.toggle('jl', on && isOn(d - 1, h));
+    c.classList.toggle('jr', on && isOn(d + 1, h));
+  });
 }
 
 /** 已选时段总数（小时数） */
@@ -742,7 +772,10 @@ function viewClock() {
       const bar = p.on
         ? `<span class="cc-bar"><i class="w" style="height:${Math.round((w / 60) * 100)}%"></i><i class="b" style="height:${Math.round((b / 60) * 100)}%"></i><i class="t" style="height:${Math.round((t / 60) * 100)}%"></i></span>`
         : '';
-      grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}" data-d="${dd}" data-h="${h}"
+      // 连在一起的选中时段：有选中邻居的那几条边去掉接缝，视觉上连成一片
+      const j = p.on ? ccJoins(fc, dd, h) : {};
+      const jc = ['jt', 'jb', 'jl', 'jr'].filter((k) => j[k]).map((k) => ' ' + k).join('');
+      grid += `<div class="cc-cell${p.on ? ' on' : ''}${jc}${dd === wdNow && h === hourNow ? ' now' : ''}" data-d="${dd}" data-h="${h}"
         title="${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}">${bar}</div>`;
     }
   }
@@ -771,9 +804,17 @@ function viewClock() {
       <span><i class="sw w"></i>专注</span>
       <span><i class="sw b"></i>休息</span>
       <span><i class="sw t"></i>继续专注（时段没排满的尾段）</span>
+      <span class="hint">连在一起的选中时段会连成一片显示</span>
+    </div>
+    <div class="cc-def">
+      <span class="cc-def-lab">通用时长</span>
+      <label>专注 <input type="number" id="defW" min="1" max="60" step="1" value="${fc.defWork}"> 分</label>
+      <label>休息 <input type="number" id="defB" min="0" max="60" step="1" value="${fc.defBrk}"> 分</label>
+      <button class="btn btn-sm" data-act="clock-def-save">保存</button>
+      <span class="hint">之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
     <div class="tl-legend">
-      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长</b>。</span>
+      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长</b>。</span>
       <button class="btn btn-sm" data-act="clock-clear">清空全部</button>
     </div>
     <div class="tl-range">已选：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
@@ -2826,16 +2867,19 @@ const Act = window.Act = {
       for (let h = h0; h <= h1; h++) {
         const p = fc.days[d][h];
         if (p.on !== on) n++;
+        // 新选中的时段沿用「通用」专注/休息；已选中的保留原值，不冲掉自定义
+        if (on && !p.on) { p.work = fc.defWork; p.brk = fc.defBrk; }
         p.on = on;
       }
     }
     await saveConfig();
     render();
-    if (n) toast(on ? `已选上 ${n} 个小时段` : `已取消 ${n} 个小时段`, 'ok');
+    if (n) toast(on ? `已选上 ${n} 个小时段（专注 ${fc.defWork} 分 / 休息 ${fc.defBrk} 分）` : `已取消 ${n} 个小时段`, 'ok');
   },
 
-  /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段） */
-  async clockSetWB(d0, d1, h0, h1, w, b) {
+  /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段）。
+   *  defToo = 同时把这一套更新成「通用」时长，之后新选的时段沿用 */
+  async clockSetWB(d0, d1, h0, h1, w, b, defToo) {
     const fc = clockCfg();
     let n = 0;
     for (let d = d0; d <= d1; d++) {
@@ -2847,9 +2891,25 @@ const Act = window.Act = {
         n++;
       }
     }
+    if (defToo) { fc.defWork = w; fc.defBrk = b; }
     await saveConfig();
     render();
-    toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段`, 'ok');
+    toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}`, 'ok');
+  },
+
+  /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息 */
+  async clockDefSave() {
+    const fc = clockCfg();
+    let w = Math.round(Number($('#defW').value) || 0);
+    let b = Math.round(Number($('#defB').value) || 0);
+    w = Math.max(1, Math.min(60, w));
+    b = Math.max(0, Math.min(60, b));
+    if (b > 0 && w + b > 60) b = 60 - w;
+    fc.defWork = w;
+    fc.defBrk = b;
+    await saveConfig();
+    render();
+    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用`, 'ok');
   },
 
   /* ---- 自动更新 ---- */
@@ -3206,6 +3266,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-enable') { await Act.clockEnable(); return; }
   if (act === 'clock-apply-rules') { await Act.clockApplyRules(); return; }
   if (act === 'clock-clear') { await Act.clockClear(); return; }
+  if (act === 'clock-def-save') { await Act.clockDefSave(); return; }
   if (act === 'mask-diag') { await Act.maskDiag(); return; }
   if (act === 'mask-preview') { await Act.maskPreview(); return; }
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
@@ -3331,6 +3392,8 @@ function paintCcDrag() {
     c.classList.toggle('on', on);
     c.classList.toggle('edge', dg.moved && inRect && (d === d0 || d === d1 || h === h0 || h === h1));
   });
+  // 预览态也要重算连通类名，否则拖过的接缝擦不干净
+  ccApplyJoins(document);
   const lab = $('#clockLive');
   if (lab) lab.textContent = ccRectText(d0, d1, h0, h1);
 }
@@ -3387,6 +3450,12 @@ function ccOpenMenu(d, h, x, y) {
     t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: Math.min(r.h0, r.h1), h1: Math.max(r.h0, r.h1) };
   }
   const p = fc.days[d][h];
+  // 输入框预填：只作用这一格且这一格已选中 → 用这一格的值；否则用「通用」时长
+  const prefill = (single) => {
+    const one = single && p.on;
+    return { w: one ? (p.work || CC_DEF_W) : fc.defWork, b: one ? (p.brk || CC_DEF_B) : fc.defBrk };
+  };
+  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
   const el = document.createElement('div');
   el.className = 'cc-menu';
   el.innerHTML = `
@@ -3398,13 +3467,14 @@ function ccOpenMenu(d, h, x, y) {
       <button class="chip-btn" data-scope="col">这一列（一整天）</button>
     </div>
     <div class="cc-menu-row">
-      <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${p.work || 50}"> 分</label>
-      <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${p.brk || 10}"> 分</label>
+      <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${pre.w}"> 分</label>
+      <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${pre.b}"> 分</label>
     </div>
     <div class="cc-menu-scope">
       ${[[25, 5], [45, 15], [50, 10], [60, 0]].map(([w, b]) =>
         `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
     </div>
+    <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
     <div class="cc-menu-hint">应用后会顺便开启这些时段；休息期间不拦截、不遮罩。排不满 60 分钟的尾段算继续专注。</div>
     <div class="cc-menu-ft">
       <button class="btn btn-sm" data-act="cc-close">取消</button>
@@ -3426,6 +3496,10 @@ function ccOpenMenu(d, h, x, y) {
     else return;
     tgt.textContent = ccRectText(t.d0, t.d1, t.h0, t.h1);
     cnt.textContent = (t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1);
+    // 目标范围变了，输入框也跟着换：单格看这一格的值，多格看通用时长
+    const q = prefill(t.d0 === t.d1 && t.h0 === t.h1);
+    $('#ccW', el).value = q.w;
+    $('#ccB', el).value = q.b;
   };
 
   el.addEventListener('click', async (e) => {
@@ -3448,7 +3522,7 @@ function ccOpenMenu(d, h, x, y) {
       w2 = Math.max(1, Math.min(60, w2));
       b2 = Math.max(0, Math.min(60, b2));
       if (b2 > 0 && w2 + b2 > 60) b2 = 60 - w2;
-      await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2);
+      await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked);
       ccCloseMenu();
       return;
     }

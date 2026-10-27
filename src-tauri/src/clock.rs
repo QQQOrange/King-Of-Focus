@@ -194,6 +194,8 @@ mod tests {
             apply_rules: true,
             days,
             hours: Vec::new(),
+            def_work: 50,
+            def_brk: 10,
         };
         c
     }
