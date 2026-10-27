@@ -1222,10 +1222,12 @@ function viewMask() {
       <div>
         <div style="font-size:12.5px">高清圆角（逐像素）</div>
         <div class="hint" style="margin-top:4px">
-          打开后圆角有抗锯齿，边缘更细腻。它和默认的「区域挖洞」是两套互斥的画法，
-          切换时会重建覆盖层；<b>万一你的机器/远程桌面不支持，会自动降级回区域挖洞并在这里提示</b>，不会再出现"一开就整块消失"。
+          关着的时候圆角是系统按区域裁的，边缘是 1px 的硬台阶，半径小时能看出锯齿；
+          打开后改成逐像素 alpha，边缘像素按覆盖率过渡，圆角在任何半径下都是平滑的。
+          两者是互斥画法，切换时会重建覆盖层。<b>万一你的显卡/远程桌面不支持逐像素，
+          会自动降级回区域挖洞并在下面标出来</b>；把开关关掉再打开就是再试一次。
         </div>
-        ${m.smoothFallback ? `<div class="badge gold" style="margin-top:8px">已自动降级为区域挖洞</div>` : ''}
+        ${m.smoothFallback ? `<div class="badge gold" style="margin-top:8px">当前设备不支持逐像素，已自动降级为区域挖洞</div>` : ''}
       </div>
       <div class="switch" data-act="toggle-smooth">
         <input type="checkbox" ${m.smooth ? 'checked' : ''}><i></i>
@@ -1233,7 +1235,7 @@ function viewMask() {
     </div>
     <div class="row" style="margin-top:10px">
       <button class="btn btn-sm" data-act="mask-save">保存为默认</button>
-      <span class="hint" style="align-self:center">改动会立即生效；点保存才会写进配置，下次启动沿用</span>
+      <span class="hint" style="align-self:center">改动会立即生效；圆角画法切换后会自动记住，其余参数点保存才写进配置</span>
     </div>
   </div>
 
@@ -2639,9 +2641,15 @@ const Act = window.Act = {
   async toggleSmooth() {
     const on = !S.data.mask.smooth;
     await invoke('mask_set', { smooth: on });
-    S.data.mask.smooth = on;
+    // 后端切换时会顺手把画法写进配置，这里拉一次让两边的状态对齐
+    await pull();
     render();
-    toast(on ? '已切到逐像素高清圆角；若遮罩消失就关掉它' : '已切回区域挖洞（兼容性优先）', 'ok');
+    toast(
+      on
+        ? '已切到逐像素高清圆角：圆角边缘有过渡，不再是一格一格的台阶'
+        : '已切回区域挖洞（兼容性优先，圆角是硬边）',
+      'ok'
+    );
   },
 
   async toggleClick() {

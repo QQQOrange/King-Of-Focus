@@ -562,11 +562,16 @@ impl Overlay {
         SetWindowLongW(self.hwnd, GWL_EXSTYLE, ex as i32);
     }
 
-    /// 圆角矩形的"洞"在该行的水平区间；None 表示这一行没洞（整行遮住）
-    fn span(row: i32, hole: &Rect, radius: f32, w: i32) -> Option<(i32, i32)> {
+    /// 圆角矩形的"洞"在该行的水平区间（窗口局部坐标，**浮点**）；None 表示这一行没洞。
+    ///
+    /// 这里刻意不 round 成整数。逐像素画法要靠在边界上做亚像素混合来抗锯齿，
+    /// 一旦量化到整像素，圆角就退化成 `CreateRoundRectRgn` 那种 1px 阶梯——
+    /// 两套画法看起来一模一样，"高清圆角"也就白开了。
+    fn span_f(row: i32, hole: &Rect, radius: f32) -> Option<(f32, f32)> {
         let (top, bottom) = (hole.top as f32, hole.bottom as f32);
-        let y = row as f32;
-        if y < top || y >= bottom {
+        // 用像素中心而不是行号判行：像素 row 覆盖 [row, row+1)，中心是 row+0.5
+        let yc = row as f32 + 0.5;
+        if yc < top || yc >= bottom {
             return None;
         }
         let r = radius
@@ -575,23 +580,73 @@ impl Overlay {
             .min((hole.height() as f32) / 2.0);
         let mut inset = 0.0f32;
         if r > 0.5 {
-            let dy_top = y - top;
+            let dy_top = yc - top;
             if dy_top < r {
                 let d = r - dy_top;
                 inset = r - (r * r - d * d).max(0.0).sqrt();
             }
-            let dy_bot = bottom - 1.0 - y;
+            let dy_bot = bottom - yc;
             if dy_bot < r {
                 let d = r - dy_bot;
                 inset = inset.max(r - (r * r - d * d).max(0.0).sqrt());
             }
         }
-        let x0 = (hole.left as f32 + inset).round() as i32;
-        let x1 = (hole.right as f32 - inset).round() as i32;
-        if x1 <= 0 || x0 >= w {
-            return None;
+        Some((hole.left as f32 + inset, hole.right as f32 - inset))
+    }
+
+    /// 覆盖层是否因为"画法不一致"需要重建。
+    ///
+    /// `use_region` 的不算。已经降级成区域画法的覆盖层如果还参与这个判断，
+    /// 就会变成：ULW 失败 → mode=1 → 判成需要切换 → 重建（新窗口 use_region=false）
+    /// → 再试再失败 → **每帧重建一次全屏窗口**，既闪又费。
+    fn mode_mismatch(mode: u8, want_mode: u8, use_region: bool) -> bool {
+        mode != 0 && mode != want_mode && !use_region
+    }
+
+    /// 遮罩像素值：预乘黑，RGB 恒为 0，只有 alpha 随覆盖率变化
+    fn shade(alpha: u8, cov: f32) -> u32 {
+        ((alpha as f32 * cov.clamp(0.0, 1.0)).round() as u32) << 24
+    }
+
+    /// 把"圆角洞"的一行渲染进 `line`。
+    ///
+    /// 洞内全透明、洞外全遮罩，**边界像素按洞覆盖的比例算 alpha**——
+    /// 这就是抗锯齿的唯一来源。整行的洞区间是浮点，左边界落在哪个像素、
+    /// 该像素被洞吃掉多少，都是连续的，所以圆角曲线上不会出现 1px 台阶。
+    fn paint_row(line: &mut [u32], row: i32, hole: &Rect, radius: f32, alpha: u8) {
+        let w = line.len();
+        if w == 0 {
+            return;
         }
-        Some((x0.max(0), x1.min(w)))
+        let px = (alpha as u32) << 24;
+        let Some((a, b)) = Self::span_f(row, hole, radius) else {
+            line.fill(px);
+            return;
+        };
+        // 洞整个落在窗口外：整行照旧遮住
+        let a = a.max(0.0);
+        let b = b.min(w as f32);
+        if b <= a {
+            line.fill(px);
+            return;
+        }
+        // 先整行铺遮罩，再把洞擦出来。比"左填一段右填一段"更难漏掉像素，
+        // 位图是复用的，漏掉一格就会留下上一帧的鬼影。
+        line.fill(px);
+        let ia = a.floor() as usize;
+        let ib = (b.ceil() as usize).min(w);
+        for v in line.iter_mut().take(ib).skip(ia) {
+            *v = 0;
+        }
+        // 左边界：像素 [ia, ia+1) 里洞只吃掉 [a, ia+1)，剩下 a-ia 仍是遮罩
+        if ia < w {
+            line[ia] = Self::shade(alpha, a - ia as f32);
+        }
+        // 右边界：像素 [ib-1, ib) 里洞只吃掉 [ib-1, b)，剩下 1-(b-ib+1) 仍是遮罩
+        if ib > 0 && ib - 1 < w && (ib - 1) as f32 >= a {
+            let cov = 1.0 - (b - (ib as f32 - 1.0));
+            line[ib - 1] = Self::shade(alpha, cov);
+        }
     }
 
     /// Region 模式：整窗半透明黑，用区域把目标窗口挖出来
@@ -707,7 +762,6 @@ impl Overlay {
             right: hole_screen.right - self.x,
             bottom: hole_screen.bottom - self.y,
         };
-        let px = (alpha as u32) << 24; // 预乘黑：B=G=R=0, A=alpha
         // 任务栏区域置为全透明（不压暗），与区域模式保持一致
         let bars: Vec<Rect> = taskbar_rects()
             .into_iter()
@@ -722,23 +776,7 @@ impl Overlay {
         let buf = std::slice::from_raw_parts_mut(self.bits, (w as usize) * (h as usize));
         for row in 0..h {
             let line = &mut buf[(row as usize) * (w as usize)..(row as usize + 1) * (w as usize)];
-            match Self::span(row, &hole, radius, w) {
-                None => line.fill(px),
-                Some((x0, x1)) => {
-                    let a = x0.clamp(0, w) as usize;
-                    let b = x1.clamp(0, w) as usize;
-                    if a > 0 {
-                        line[..a].fill(px);
-                    }
-                    if b < w as usize {
-                        line[b..].fill(px);
-                    }
-                    // 洞内必须清成全透明：位图是复用的，不清会留下上一帧的"鬼影"
-                    if b > a {
-                        line[a..b].fill(0);
-                    }
-                }
-            }
+            Self::paint_row(line, row, &hole, radius, alpha);
         }
 
         for b in bars.iter() {
@@ -1239,6 +1277,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut monitor_sig: Vec<Rect> = Vec::new();
         let mut progress: f32 = 0.0; // 0 = 无遮罩，1 = 完全铺开
         let mut last_paint: Option<(Rect, u8, i32, i32)> = None;
+        // 上一帧的「高清圆角」开关。只在 false→true 的边沿给一次重试机会，
+        // 否则自动降级过后用户关一次再开也永远回到区域画法。
+        let mut last_smooth = ctl.smooth.load(Ordering::Relaxed);
         let mut last_tick = Instant::now();
         let mut hk_gen_done = 0u32;
         let mut logged_miss = false;
@@ -1558,7 +1599,17 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 会稳定失败，窗口就整块不显示。旧代码只改了标志位、没重建窗口，
             // 于是"打开高清圆角 → 遮罩彻底消失"。
             let want_mode = if smooth { 2u8 } else { 1u8 };
-            if !overlays.is_empty() && overlays.iter().any(|o| o.mode != 0 && o.mode != want_mode) {
+            // 用户重新打开「高清圆角」= 想再试一次。降级结论是记在覆盖层上的，
+            // 不主动清掉的话，"关掉再打开"也永远停在区域画法上。
+            let retry_smooth = smooth && !last_smooth;
+            last_smooth = smooth;
+            // 已经降级过的覆盖层（use_region）不再算"画法不一致"。
+            // 不排除它就会死循环：ULW 失败 → mode=1 → 判成需要切换 → 重建 →
+            // use_region 被新窗口清回 false → 再试再失败 → 每帧重建一次全屏窗口。
+            let mode_changed = overlays
+                .iter()
+                .any(|o| Overlay::mode_mismatch(o.mode, want_mode, o.use_region));
+            if !overlays.is_empty() && (mode_changed || retry_smooth) {
                 for o in overlays.iter_mut() {
                     o.destroy();
                 }
@@ -1752,5 +1803,89 @@ mod tests {
     fn 进度到顶时洞口完全展开() {
         let e = ease_out(1.0);
         assert_eq!(e, 1.0);
+    }
+
+    /* ---------------- 逐像素圆角：抗锯齿到底有没有做 ---------------- */
+
+    const FULL: u32 = 255 << 24;
+
+    /// 半径 0 且边界是整像素：洞内全透、洞外全遮罩，不该有多余的中间值
+    #[test]
+    fn 无圆角时边界是硬边() {
+        let hole = r(10, 5, 40, 25);
+        let mut line = vec![0u32; 60];
+        Overlay::paint_row(&mut line, 15, &hole, 0.0, 255);
+        assert_eq!(line[5], FULL, "洞外应是满遮罩");
+        assert_eq!(line[10], 0, "洞内应全透明");
+        assert_eq!(line[39], 0, "洞内应全透明");
+        assert_eq!(line[40], FULL, "洞外应是满遮罩");
+        assert_eq!(line.iter().filter(|v| **v != 0 && **v != FULL).count(), 0);
+    }
+
+    /// 这是「高清圆角」名副其实的唯一证据：圆角行上，洞的左右边界落在半像素上，
+    /// 边界像素必须拿到 0<alpha<满 的过渡值。
+    /// 旧实现把边界 round 成整数、洞内填 0、洞外填满，全程只有两种值——
+    /// 那样和 CreateRoundRectRgn 的 1px 台阶没有区别，用户开着也看不出变化。
+    #[test]
+    fn 圆角边界产生过渡像素() {
+        let hole = r(0, 0, 100, 100);
+        let mut line = vec![0u32; 100];
+        Overlay::paint_row(&mut line, 0, &hole, 20.0, 255);
+        let soft: Vec<usize> = line
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| (**v >> 24) > 0 && (**v >> 24) < 255)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(soft.len(), 2, "左右边界各应有一个过渡像素，实得 {:?}", soft);
+        assert_eq!(line[50], 0, "洞中心必须全透明");
+        // 过渡值要真的一半左右，而不是被量化成 0 或满
+        let a = line[soft[0]] >> 24;
+        assert!(a > 60 && a < 200, "边界像素应是明显过渡值，实得 {}", a);
+    }
+
+    /// 圆角必须真的把洞收窄：第一行明显比中间行窄，中间行不受圆角影响
+    #[test]
+    fn 圆角行比中间行窄() {
+        let hole = r(0, 0, 100, 100);
+        let (a0, b0) = Overlay::span_f(0, &hole, 20.0).unwrap();
+        let (a50, b50) = Overlay::span_f(50, &hole, 20.0).unwrap();
+        assert_eq!(a50, 0.0, "中间行不该被圆角收窄");
+        assert_eq!(b50, 100.0);
+        assert!(a0 > 10.0, "圆角首行的洞左边界应明显内收，实得 {}", a0);
+        assert!(b0 < 90.0, "圆角首行的洞右边界应明显内收，实得 {}", b0);
+    }
+
+    /// 圆角半径比洞本身还大时不能算出负数宽度、更不能越界写
+    #[test]
+    fn 半径大于洞尺寸也不越界() {
+        let hole = r(2, 2, 5, 5);
+        let mut line = vec![0u32; 20];
+        Overlay::paint_row(&mut line, 2, &hole, 20.0, 180);
+        assert_eq!(line.len(), 20);
+        assert!(line.iter().all(|v| (*v >> 24) <= 180));
+    }
+
+    /// 洞整块落在本屏之外（多显示器）：整行照旧遮住，不能露出一条缝
+    #[test]
+    fn 洞在窗口外时整行仍被遮住() {
+        let hole = r(500, 10, 600, 20);
+        let mut line = vec![0u32; 100];
+        Overlay::paint_row(&mut line, 15, &hole, 8.0, 120);
+        assert!(line.iter().all(|v| *v == 120 << 24), "洞不在这块屏时应整行遮住");
+    }
+
+    /// 降级过的覆盖层必须退出"画法切换"判断，否则会每帧重建全屏窗口
+    #[test]
+    fn 降级后不再触发重建() {
+        // mode=1 区域 + 已降级，即使想要逐像素也不该判成需要重建
+        assert!(!Overlay::mode_mismatch(1, 2, true), "降级后不该再判成画法不一致");
+        // 没降级时，两套画法互切都要重建
+        assert!(Overlay::mode_mismatch(1, 2, false), "区域 → 逐像素需要重建");
+        assert!(Overlay::mode_mismatch(2, 1, false), "逐像素 → 区域需要重建");
+        // 画法已经一致 / 还没画过：不用重建
+        assert!(!Overlay::mode_mismatch(2, 2, false));
+        assert!(!Overlay::mode_mismatch(1, 1, false));
+        assert!(!Overlay::mode_mismatch(0, 2, false), "新窗口还没画过，不用重建");
     }
 }

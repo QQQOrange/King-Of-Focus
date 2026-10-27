@@ -562,7 +562,21 @@ pub fn mask_set(
         m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
     }
     if let Some(v) = smooth {
-        m.smooth.store(v, Ordering::Relaxed);
+        let changed = m.smooth.swap(v, Ordering::Relaxed) != v;
+        // 「高清圆角」是画法总切换，丢了最容易被当成"开了没用"：运行期已经生效，
+        // 这里顺手写进配置，重启后还在。写盘失败（比如自律锁定）不该影响当前效果，
+        // 所以只静默跳过，不往上抛错。
+        if changed {
+            let mut c = shared.config();
+            if c.settings.mask.smooth != v {
+                c.settings.mask.smooth = v;
+                if cfg::save(&c).is_ok() {
+                    if let Ok(mut w) = shared.cfg.write() {
+                        *w = c;
+                    }
+                }
+            }
+        }
     }
     if let Some(v) = follow {
         // 只管"遮罩范围"：跟随当前窗口 / 固定目标。绝不顺手开关遮罩——

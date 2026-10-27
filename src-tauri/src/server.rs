@@ -201,6 +201,13 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 if let Some(v) = q("follow=") {
                     m.follow.store(v != 0, std::sync::atomic::Ordering::Relaxed);
                 }
+                // 圆角两套画法互切 + 半径，验收"高清圆角到底有没有抗锯齿"要靠它
+                if let Some(v) = q("radius=") {
+                    m.radius.store(v.clamp(0, 120) as i32, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(v) = q("smooth=") {
+                    m.smooth.store(v != 0, std::sync::atomic::Ordering::Relaxed);
+                }
                 reply(
                     req,
                     200,
@@ -208,6 +215,8 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         "ok": true,
                         "duration": m.duration.load(std::sync::atomic::Ordering::Relaxed),
                         "opacity": m.opacity.load(std::sync::atomic::Ordering::Relaxed),
+                        "radius": m.radius.load(std::sync::atomic::Ordering::Relaxed),
+                        "smooth": m.smooth.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .to_string(),
                 )
