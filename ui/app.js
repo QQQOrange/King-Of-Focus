@@ -1164,6 +1164,18 @@ function viewMask() {
           </div>
           <div class="switch" data-act="toggle-follow"><input type="checkbox" ${m.follow ? 'checked' : ''}><i></i></div>
         </div>
+        <div class="row" style="align-items:center;justify-content:space-between;gap:14px;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+          <div>
+            <div style="font-size:12.5px">覆盖式遮罩（推荐）</div>
+            <div class="hint" style="margin-top:4px">
+              <b>开</b>：遮罩是静止的一整块，压住全屏；选中的窗口被浮到遮罩之上。
+              遮罩全程不重绘，所以快速拖动、缩放、切换时都是零延迟，窗口永远完整可见。<br>
+              <b>关</b>：遮罩改成"开一个口子"让窗口露出来，这种模式可以用圆角半径/边缘留白，
+              但遮罩要跟着窗口重画，极限拖动下会有一帧的落后。
+            </div>
+          </div>
+          <div class="switch" data-act="toggle-cover"><input type="checkbox" ${m.cover ? 'checked' : ''}><i></i></div>
+        </div>
       </div>
     </div>
 
@@ -2631,6 +2643,20 @@ const Act = window.Act = {
     toast(on ? '已开启跟随：遮罩会跟着当前最上层窗口走' : '已关闭跟随', 'ok');
   },
 
+  async toggleCover() {
+    const on = !S.data.mask.cover;
+    await invoke('mask_set', { cover: on });
+    // 后端切换时会把渲染方式落盘，拉一次让两边对齐
+    await pull();
+    render();
+    toast(
+      on
+        ? '已切到覆盖式：遮罩静止，选中窗口浮在上面，拖动零延迟'
+        : '已切回挖洞式：可以用圆角和留白，但遮罩要跟着窗口重画',
+      'ok'
+    );
+  },
+
   async toggleClick() {
     const on = !S.data.mask.blockClick;
     await invoke('mask_set', { blockClick: on });
@@ -3645,6 +3671,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'mask-preview') { await Act.maskPreview(); return; }
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
+  if (act === 'toggle-cover') { await Act.toggleCover(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
   if (act === 'test-enter') { await Act.enterTestMode(); return; }
   if (act === 'test-exit-keep') { await Act.askExitTest(true); return; }

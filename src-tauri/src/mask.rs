@@ -72,6 +72,10 @@ pub static RAISE_DROP_ERR: AtomicU32 = AtomicU32::new(0);
 /// 覆盖层窗口句柄（遮罩线程写，置顶守护线程读）
 static OVERLAY_HWNDS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
+/// 覆盖模式下"应该待在遮罩上面"的窗口（选中窗口 + 它的弹窗）。
+/// 置顶守护线程在另一个线程里跑，拿不到主循环的局部状态，只能走这个口子。
+static RAISE_EXCEPT: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
 /// 诊断快照（遮罩线程写，UI 读）——用于界面上的「自查」
 pub static DIAG: Mutex<String> = Mutex::new(String::new());
 
@@ -261,6 +265,9 @@ pub struct MaskCtl {
     pub preview_until: AtomicI64,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口跑）
     pub follow: AtomicBool,
+    /// true = 覆盖模式（遮罩静止铺满，目标窗口置顶浮在上面）；
+    /// false = 挖洞模式（遮罩开挖口袋，支持圆角/留白）
+    pub cover: AtomicBool,
     /// 测试态：临时不跟随，固定高亮本程序窗口
     pub test_lock: AtomicBool,
     /// 手动选定的目标窗口句柄；非 0 时优先于"跟随前台"（0 = 没有手动锁定）
@@ -326,6 +333,7 @@ impl Default for MaskCtl {
             schedule_on: AtomicBool::new(false),
             preview_until: AtomicI64::new(0),
             follow: AtomicBool::new(false),
+            cover: AtomicBool::new(true),
             test_lock: AtomicBool::new(false),
             manual_hwnd: AtomicIsize::new(0),
             painted: AtomicBool::new(false),
@@ -366,6 +374,10 @@ struct Overlay {
     /// 上一帧任务栏签名的校验和（任务栏位移/隐藏时触发重画）
     last_bar_sig: i64,
     cur_alpha: u8,
+    /// 覆盖模式下任务栏签名的校验和：只有在任务栏变化时才重建那块固定区域
+    cover_sig: i64,
+    /// 上次查任务栏的时间。任务栏枚举不便宜，没必要每帧做
+    cover_t: Instant,
 }
 
 impl Overlay {
@@ -407,6 +419,8 @@ impl Overlay {
             last_key: None,
             last_bar_sig: 0,
             cur_alpha: 255,
+            cover_sig: i64::MIN,
+            cover_t: Instant::now(),
         })
     }
 
@@ -546,7 +560,7 @@ impl Overlay {
     /// 是否有"外部"窗口压在遮罩上面。
     /// 桌面挂件（时钟、歌词条、下载悬浮窗）大多会周期性把自己重新置顶，
     /// 它们每秒抢一次，而我们每 500ms 才压一次 → 用户看到的就是"间断地被遮住"。
-    unsafe fn covered_by_others(&self) -> bool {
+    unsafe fn covered_by_others(&self, except: &[Hwnd]) -> bool {
         if !self.shown {
             return false;
         }
@@ -559,7 +573,13 @@ impl Overlay {
             guard += 1;
             let mut pid = 0u32;
             GetWindowThreadProcessId(h, &mut pid);
-            if pid != std::process::id() && IsWindowVisible(h) != 0 {
+            // except 里的窗口（覆盖模式下的选中窗口和它的弹窗）本来就该在上面，
+            // 不能算"被盖"——否则每一轮都会判定需要重提，白白烧掉大量 CPU，
+            // 还会和目标的置顶来回拉锯。
+            if pid != std::process::id()
+                && IsWindowVisible(h) != 0
+                && !except.iter().any(|e| *e == h)
+            {
                 return true;
             }
             h = GetWindow(h, GW_HWNDPREV);
@@ -572,7 +592,10 @@ impl Overlay {
     /// 这一步需要**高完整性级别**（管理员）才能对别人的窗口 SetWindowLong。
     /// 摘掉之后对方就落在普通层级，遮罩一次就把它盖死，不会再来回抢——
     /// 这正是"让 lazytyper 那条横条一次性被盖住"的关键。
-    unsafe fn strip_topmost_above(&self) {
+    ///
+    /// `except` 里的窗口不能碰：覆盖模式下选中窗口本来就该待在遮罩上面，
+    /// 把它的 TOPMOST 摘掉等于当场把用户正在用的窗口压到遮罩底下。
+    unsafe fn strip_topmost_above(&self, except: &[Hwnd]) {
         if !IS_ADMIN.load(Ordering::Relaxed) {
             return;
         }
@@ -582,7 +605,11 @@ impl Overlay {
             guard += 1;
             let mut pid = 0u32;
             GetWindowThreadProcessId(h, &mut pid);
-            if pid != std::process::id() && IsWindowVisible(h) != 0 && !is_shell_window(h) {
+            if pid != std::process::id()
+                && IsWindowVisible(h) != 0
+                && !is_shell_window(h)
+                && !except.iter().any(|e| *e == h)
+            {
                 let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
                 if (ex & WS_EX_TOPMOST_FLAG) != 0 {
                     SetWindowLongW(h, GWL_EXSTYLE, (ex & !WS_EX_TOPMOST_FLAG) as i32);
@@ -610,6 +637,72 @@ impl Overlay {
         force_above(self.hwnd);
     }
 
+    /// 覆盖模式：整块铺满，遮罩全程静止。
+    ///
+    /// 只在"任务栏变化"时重建一次固定区域（任务栏要留出来，不能压暗），
+    /// 除此之外一帧都不碰窗口区域。这正是覆盖模式比挖洞跟手的根本原因：
+    /// 窗口拖动时遮罩根本不需要重绘，视觉上完全由 DWM 合成，没有"迟到一帧"。
+    unsafe fn paint_cover(&mut self, alpha: u8) {
+        if self.w <= 0 || self.h <= 0 {
+            return;
+        }
+        // 任务栏枚举（FindWindow + 取矩形）不便宜，而任务栏根本不会毫秒级变化。
+        // 挖洞模式静止时靠 need 直接跳过这段，覆盖模式每帧都会走进来，
+        // 所以这里必须自己节流——否则光查任务栏就能吃掉三四十个点单核。
+        if self.cover_t.elapsed().as_millis() >= 500 {
+            self.cover_t = Instant::now();
+            let bars = taskbar_rects();
+            let sig: i64 = bars
+                .iter()
+                .map(|r| r.left as i64 * 31 + r.top as i64 * 17 + r.right as i64 * 7 + r.bottom as i64)
+                .sum();
+            if sig != self.cover_sig {
+                self.cover_sig = sig;
+                let full = CreateRectRgn(0, 0, self.w, self.h);
+                if !full.is_null() {
+                    for b in bars.iter() {
+                        let (x0, y0) = (b.left - self.x, b.top - self.y);
+                        let (x1, y1) = (b.right - self.x, b.bottom - self.y);
+                        if x1 <= 0 || y1 <= 0 || x0 >= self.w || y0 >= self.h {
+                            continue;
+                        }
+                        let cut = CreateRectRgn(x0, y0, x1, y1);
+                        if !cut.is_null() {
+                            CombineRgn(full, full, cut, RGN_DIFF);
+                            DeleteObject(cut);
+                        }
+                    }
+                    if SetWindowRgn(self.hwnd, full, 1) == 0 {
+                        DeleteObject(full);
+                    }
+                }
+                // 区域变了，Cutout 的缓存不能再用
+                self.last_key = None;
+            }
+        }
+        if self.cur_alpha != alpha || !self.shown {
+            SetLayeredWindowAttributes(self.hwnd, 0, alpha, LWA_ALPHA);
+            self.cur_alpha = alpha;
+        }
+        if !self.shown {
+            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            self.shown = true;
+            let _ = InvalidateRect(self.hwnd, std::ptr::null(), 1);
+            mlog(&format!(
+                "Cover 首帧 hwnd={:?} {}x{} alpha={}",
+                self.hwnd, self.w, self.h, alpha
+            ));
+        }
+    }
+
+    /// 把遮罩重新顶到最上层，但放过 `except` 里的窗口（覆盖模式下的选中窗口）
+    unsafe fn reassert_except(&mut self, except: &[Hwnd]) {
+        if !self.shown {
+            return;
+        }
+        force_above_except(self.hwnd, except);
+    }
+
     unsafe fn hide(&mut self) {
         if self.shown {
             ShowWindow(self.hwnd, SW_HIDE);
@@ -626,8 +719,131 @@ fn publish_overlays(list: &[Overlay]) {
     }
 }
 
-fn monitors() -> Vec<Rect> {
-    unsafe extern "system" fn cb(m: Hmonitor, _dc: Hdc, _clip: *mut Rect, data: isize) -> i32 {
+/// 被覆盖模式临时提到遮罩之上的窗口。
+///
+/// `was_topmost` 必须记准确：原本就在置顶带里的窗口，摘掉遮罩后不能把它降级，
+/// 否则用户开一次专注遮罩，自己那个本来置顶的播放器就永久掉到普通层级了。
+struct Raised {
+    hwnd: Hwnd,
+    was_topmost: bool,
+}
+
+/// 把窗口提到遮罩之上（保持位置、大小、激活状态不变）。
+///
+/// 注意对**已经是 topmost** 的窗口，`SetWindowPos(HWND_TOPMOST)` 是空操作，
+/// 在置顶带内部提不动层级，必须用 `HWND_TOP`——这一点和 force_above 同一个坑。
+unsafe fn ensure_above(h: Hwnd, raised: &mut Vec<Raised>) {
+    if h.is_null() || IsWindow(h) == 0 || IsWindowVisible(h) == 0 {
+        return;
+    }
+    let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+    let was = (ex & WS_EX_TOPMOST_FLAG) != 0;
+    if !was {
+        // 不在置顶带里：必须变成 topmost，否则永远在遮罩下面。这一步只做一次。
+        if !raised.iter().any(|r| r.hwnd == h) {
+            raised.push(Raised { hwnd: h, was_topmost: false });
+        }
+        SetWindowPos(
+            h,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        return;
+    }
+    // 已经是 topmost：只有头顶真的压着遮罩时才需要再提。
+    // 不这么判断的话，每帧对每个窗口都 SetWindowPos，单核能烧掉三十多个点——
+    // 而绝大多数帧的 z 序根本没变。
+    let mut w = GetWindow(h, GW_HWNDPREV);
+    let mut guard = 0;
+    let mut behind_mask = false;
+    while !w.is_null() && guard < 64 {
+        guard += 1;
+        if IsWindowVisible(w) != 0 {
+            behind_mask = is_mask_class(w);
+            break;
+        }
+        w = GetWindow(w, GW_HWNDPREV);
+    }
+    if !behind_mask {
+        return;
+    }
+    // 对已经 topmost 的窗口 HWND_TOPMOST 是空操作，只能靠 HWND_TOP 在置顶带内提到顶
+    SetWindowPos(
+        h,
+        HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+    );
+}
+
+/// 把不再需要的窗口恢复到调用前的层级。
+unsafe fn release_raised(raised: &mut Vec<Raised>, keep: &[Hwnd]) {
+    raised.retain(|r| {
+        if keep.iter().any(|k| *k == r.hwnd) {
+            return true;
+        }
+        if IsWindow(r.hwnd) != 0 && !r.was_topmost {
+            SetWindowPos(
+                r.hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            );
+        }
+        false
+    });
+}
+
+struct CollectCtx {
+    pid: u32,
+    out: Vec<Hwnd>,
+}
+
+unsafe extern "system" fn collect_visible_cb(h: Hwnd, data: isize) -> i32 {
+    let ctx = &mut *(data as *mut CollectCtx);
+    let mut p = 0u32;
+    GetWindowThreadProcessId(h, &mut p);
+    if p == ctx.pid && IsWindowVisible(h) != 0 && !is_mask_class(h) {
+        ctx.out.push(h);
+    }
+    1
+}
+
+/// 判断是不是遮罩自己的窗口。遮罩也属于本进程，覆盖模式下如果把它一起
+/// 当作"选中窗口"提到最上面，遮罩就翻身盖住一切了。
+fn is_mask_class(h: Hwnd) -> bool {
+    unsafe {
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(h, buf.as_mut_ptr(), 64);
+        if n <= 0 {
+            return false;
+        }
+        String::from_utf16_lossy(&buf[..n as usize]) == "KofMaskV2"
+    }
+}
+
+/// 收集某个进程所有可见的顶层窗口。
+///
+/// 覆盖模式下必须把它们一起浮到遮罩之上：下拉菜单、右键菜单、工具提示都是
+/// **独立的顶层窗口**，不属于选中窗口的子树。只把主窗口置顶的话，
+/// 一拉菜单菜单就被遮罩整个吃掉——这是覆盖模式最容易踩的坑。
+unsafe fn collect_visible_windows(pid: u32) -> Vec<Hwnd> {
+    let mut ctx = CollectCtx { pid, out: Vec::new() };
+    EnumWindows(Some(collect_visible_cb), &mut ctx as *mut _ as isize);
+    ctx.out
+}
+
+fn monitors() -> Vec<Rect> {    unsafe extern "system" fn cb(m: Hmonitor, _dc: Hdc, _clip: *mut Rect, data: isize) -> i32 {
         let out = &mut *(data as *mut Vec<Rect>);
         let mut mi = MonitorInfo {
             cb_size: std::mem::size_of::<MonitorInfo>() as u32,
@@ -869,6 +1085,52 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     window_bounds(h)
 }
 
+/// 把窗口压到最上层，但**放过** `except` 里的窗口。
+///
+/// 覆盖模式下遮罩和选中窗口都在置顶带里：遮罩定时重压是为了防浮窗盖住它，
+/// 但如果重压时把选中窗口也压下去，用户就会看到窗口一闪一闪地被遮罩吃掉。
+/// 所以重压前先看头顶是谁——是自己人就别动。
+unsafe fn force_above_except(hwnd: Hwnd, except: &[Hwnd]) {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return;
+    }
+    if IsWindowVisible(hwnd) == 0 {
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    let mut h = GetWindow(hwnd, GW_HWNDPREV);
+    let mut guard = 0;
+    let mut covered_by_self = false;
+    let mut has_above = false;
+    while !h.is_null() && guard < 256 {
+        guard += 1;
+        if IsWindowVisible(h) != 0 {
+            has_above = true;
+            covered_by_self = except.iter().any(|e| *e == h);
+            break;
+        }
+        h = GetWindow(h, GW_HWNDPREV);
+    }
+    // 头顶就是选中窗口（或它的弹窗）：这正是覆盖模式要的效果，别把它压回去
+    if covered_by_self || !has_above {
+        return;
+    }
+    let ok = SetWindowPos(
+        hwnd,
+        HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+    );
+    if ok != 0 {
+        RAISE_OK.fetch_add(1, Ordering::Relaxed);
+    } else {
+        RAISE_FAIL.fetch_add(1, Ordering::Relaxed);
+        RAISE_ERR.store(GetLastError(), Ordering::Relaxed);
+    }
+}
+
 /// 把某个覆盖层压到"所有外部窗口之上"。
 ///
 /// 关键点：对一个**已经是 topmost** 的窗口再调 `SetWindowPos(HWND_TOPMOST)`
@@ -937,9 +1199,17 @@ fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
                 Ok(v) => v.clone(),
                 Err(_) => continue,
             };
+            // 覆盖模式下选中窗口就待在遮罩上面，守护线程必须放过它。
+            // 不放过的话，这里的 250Hz 会和主循环的目标置顶来回拉锯：
+            // 遮罩每 4ms 压上一次、主循环再提回来，用户看到的是窗口闪，
+            // 顺便白烧掉十几个点的 CPU。
+            let except: Vec<Hwnd> = match RAISE_EXCEPT.try_lock() {
+                Ok(v) => v.iter().map(|x| *x as Hwnd).collect(),
+                Err(_) => Vec::new(),
+            };
             for h in hs {
                 if h != 0 {
-                    force_above(h as Hwnd);
+                    force_above_except(h as Hwnd, &except);
                 }
             }
         }
@@ -1002,6 +1272,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         // 循环频率：区分"画得慢"和"循环本身转得慢"
         let mut stat_loop_n = 0u32;
         let mut stat_loop = 0u32;
+        // ---- 覆盖模式专用 ----
+        // 被临时提到遮罩之上的窗口（含原 topmost 状态，退出时必须还原）
+        let mut raised: Vec<Raised> = Vec::new();
+        // 上一帧的渲染方式：切换时要作废旧模式留下的窗口区域
+        let mut prev_cover = ctl.cover.load(Ordering::Relaxed);
+        // 选中窗口所在进程的全部可见顶层窗口（含下拉菜单这类独立 popup）
+        let mut popups: Vec<Hwnd> = Vec::new();
+        let mut popup_pid = 0u32;
+        let mut popup_t = Instant::now();
 
         loop {
             // ---- 生效判定（先算出来，消息泵和后面都共用同一个口径）----
@@ -1077,6 +1356,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let radius = ctl.radius.load(Ordering::Relaxed).clamp(0, 120) as f32;
             let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 3000) as f32 / 1000.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
+            let cover = ctl.cover.load(Ordering::Relaxed);
 
             // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
             let gen = ctl.hk_gen.load(Ordering::Relaxed);
@@ -1211,15 +1491,25 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 for o in overlays.iter_mut() {
                     o.hide();
                 }
+                // 遮罩收起 → 把之前临时提到最上层的窗口全部还原。
+                // 不做这一步，用户用过的窗口会一直挂在我们制造的 topmost 上。
+                release_raised(&mut raised, &[]);
+                if let Ok(mut g) = RAISE_EXCEPT.try_lock() {
+                    g.clear();
+                }
+                popups.clear();
+                popup_pid = 0;
                 ctl.painted.store(false, Ordering::Relaxed);
                 last_paint = None;
                 // 这里也要刷新诊断，否则界面会一直显示上一次的"已开启/洞口"
                 if last_diag.elapsed().as_millis() >= 500 {
                     last_diag = Instant::now();
                     let report = format!(
-                        "on={} painted=false{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
+                        "on={} painted=false 模式={}{} 置顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
                         on,
+                        if cover { "覆盖" } else { "挖洞" },
                         if follow_flag { " 跟随前台" } else { "" },
+                        raised.len(),
                         followed_key,
                         ctl.manual_hwnd.load(Ordering::Relaxed),
                         FOLLOW_OVERRIDE.load(Ordering::Relaxed),
@@ -1281,15 +1571,29 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 for o in overlays.iter_mut() {
                     o.hide();
                 }
+                release_raised(&mut raised, &[]);
                 thread::sleep(Duration::from_millis(16));
                 continue;
+            }
+
+            // 渲染方式切换：Cutout 走区域，Cover 走整块。
+            // 切回 Cover 时必须把 Cutout 留下的洞区域作废，否则遮罩会一直保持上一次的洞口形状。
+            if cover != prev_cover {
+                prev_cover = cover;
+                for o in overlays.iter_mut() {
+                    o.cover_sig = i64::MIN;
+                    o.last_key = None;
+                }
+                release_raised(&mut raised, &[]);
+                last_paint = None;
+                mlog(&format!("渲染方式切换 → {}", if cover { "覆盖" } else { "挖洞" }));
             }
 
             let key = (hole_end, alpha, radius as i32, progress.to_bits() as i32);
             let need = animating || last_paint != Some(key);
 
             // 真正要画的时候才分配位图
-            if need && overlays.len() != mons.len() {
+            if overlays.len() != mons.len() && (need || cover) {
                 for o in overlays.iter_mut() {
                     o.destroy();
                 }
@@ -1302,32 +1606,98 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 publish_overlays(&overlays);
             }
 
+            // 覆盖模式下"自己人"的窗口列表：选中窗口 + 它的弹窗。
+            // 遮罩重压时必须放过它们，否则会把用户正在用的窗口一闪一闪地压下去。
+            let mut self_wins: Vec<Hwnd> = Vec::new();
+
             let t_paint = Instant::now();
-            for (i, o) in overlays.iter_mut().enumerate() {
-                o.set_clickthrough(!block_click);
-                if !need {
-                    continue;
+            if cover {
+                // ================= 覆盖模式 =================
+                // 遮罩是静止的一整块（只在任务栏变化时重算一次区域），
+                // 窗口靠"置顶"浮到遮罩之上，所以遮罩全程不需要跟随、不会滞后。
+                for o in overlays.iter_mut() {
+                    o.set_clickthrough(!block_click);
+                    o.paint_cover(alpha);
                 }
-                let m = mons[i.min(mons.len() - 1)];
-                // 洞口从"整块显示器"平滑收缩到目标窗口
-                let hole = Rect {
-                    left: lerp(m.left as f32, hole_end.left as f32, e).round() as i32,
-                    top: lerp(m.top as f32, hole_end.top as f32, e).round() as i32,
-                    right: lerp(m.right as f32, hole_end.right as f32, e).round() as i32,
-                    bottom: lerp(m.bottom as f32, hole_end.bottom as f32, e).round() as i32,
+                // 选中窗口 + 它的弹窗一起浮上来
+                let tgt = if follow {
+                    followed_key
+                } else {
+                    ctl.target.load(Ordering::Relaxed)
                 };
-                hole_painted = Some(hole);
-                o.paint_region(&hole, radius, alpha);
-            }
-            if need {
+                let mut tpid = 0u32;
+                if tgt != 0 {
+                    GetWindowThreadProcessId(tgt as Hwnd, &mut tpid);
+                }
+                if tpid != 0 && (popup_pid != tpid || popup_t.elapsed().as_millis() >= 500) {
+                    popup_pid = tpid;
+                    popup_t = Instant::now();
+                    popups = collect_visible_windows(tpid);
+                }
+                if tgt == 0 {
+                    popups.clear();
+                }
+                if tgt != 0 {
+                    self_wins.push(tgt as Hwnd);
+                }
+                for h in popups.iter() {
+                    if *h != tgt as Hwnd {
+                        self_wins.push(*h);
+                    }
+                }
+                release_raised(&mut raised, &self_wins);
+                // 主窗口先提，弹窗后提 —— 后提的在上，菜单才会压在窗口之上
+                if tgt != 0 {
+                    ensure_above(tgt as Hwnd, &mut raised);
+                }
+                for h in popups.iter() {
+                    if *h != tgt as Hwnd {
+                        ensure_above(*h, &mut raised);
+                    }
+                }
                 ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
-                last_paint = Some(key);
                 last_paint_at = Instant::now();
-                // 帧率诊断：窗口快速拖动时"遮罩跟不上"到底是画得慢还是循环被别的事拖住，
-                // 只能靠这两个数说话（重画次数/秒 + 单次重画耗时）
-                stat_n += 1;
+                // 覆盖模式下遮罩本身不重绘，所以这里**不累加** stat_n：
+                // 自查里看到 fps=0 就说明"遮罩一帧都没画"，这正是零延迟的根据。
                 stat_paint_us += t_paint.elapsed().as_micros() as u64;
+            } else {
+                // ================= 挖洞模式 =================
+                for (i, o) in overlays.iter_mut().enumerate() {
+                    o.set_clickthrough(!block_click);
+                    if !need {
+                        continue;
+                    }
+                    let m = mons[i.min(mons.len() - 1)];
+                    // 洞口从"整块显示器"平滑收缩到目标窗口
+                    let hole = Rect {
+                        left: lerp(m.left as f32, hole_end.left as f32, e).round() as i32,
+                        top: lerp(m.top as f32, hole_end.top as f32, e).round() as i32,
+                        right: lerp(m.right as f32, hole_end.right as f32, e).round() as i32,
+                        bottom: lerp(m.bottom as f32, hole_end.bottom as f32, e).round() as i32,
+                    };
+                    hole_painted = Some(hole);
+                    o.paint_region(&hole, radius, alpha);
+                }
+                if need {
+                    ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
+                    last_paint = Some(key);
+                    last_paint_at = Instant::now();
+                    // 帧率诊断：窗口快速拖动时"遮罩跟不上"到底是画得慢还是循环被别的事拖住，
+                    // 只能靠这两个数说话（重画次数/秒 + 单次重画耗时）
+                    stat_n += 1;
+                    stat_paint_us += t_paint.elapsed().as_micros() as u64;
+                }
             }
+            // 把"自己人"告诉置顶守护线程。挖洞模式下 self_wins 是空的，
+            // 这一步同时起到"切回挖洞时清掉豁免"的作用——不清的话，
+            // 守护线程会继续放过上一次的窗口，遮罩就压不住它了。
+            if let Ok(mut g) = RAISE_EXCEPT.try_lock() {
+                if g.len() != self_wins.len() || g.iter().zip(self_wins.iter()).any(|(a, b)| *a != *b as isize) {
+                    g.clear();
+                    g.extend(self_wins.iter().map(|h| *h as isize));
+                }
+            }
+
             if stat_t0.elapsed().as_millis() >= 1000 {
                 stat_fps = stat_n;
                 stat_loop = stat_loop_n;
@@ -1346,15 +1716,31 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 桌面浮窗（lazytyper / 时钟 / 歌词条）会周期性把自己重新置顶，
             // SetWindowPos 是"后调用者赢"，所以必须持续重压；但没必要每 2ms 压一次——
             // 那时循环周期还是 16ms，节流到 16ms 与原行为等价，却能把跟随期间的 CPU 降下来。
-            if last_top.elapsed().as_millis() >= 15 {
+            // 覆盖模式下遮罩本身不重绘，重压只为防浮窗抢位。
+            // 浮窗抢位是"每秒几次"级别的慢动作，50ms 压一次完全够用；
+            // 挖洞模式保持 15ms，因为它还要靠这个跟住窗口。
+            if last_top.elapsed().as_millis() >= if cover { 50 } else { 15 } {
                 last_top = Instant::now();
                 for o in overlays.iter_mut() {
-                    // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死
-                    o.strip_topmost_above();
-                    o.reassert();
-                    if o.covered_by_others() {
+                    // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死。
+                    // self_wins 里的窗口不能碰 —— 覆盖模式下选中窗口本来就该在上面。
+                    o.strip_topmost_above(&self_wins);
+                    if cover {
+                        o.reassert_except(&self_wins);
+                    } else {
                         o.reassert();
-                        o.reassert();
+                    }
+                    if o.covered_by_others(&self_wins) {
+                        if cover {
+                            o.reassert_except(&self_wins);
+                        } else {
+                            o.reassert();
+                        }
+                        if cover {
+                            o.reassert_except(&self_wins);
+                        } else {
+                            o.reassert();
+                        }
                     }
                 }
             }
@@ -1379,9 +1765,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
                 let pocket = Overlay::pocket_rect(&hole_end, radius);
                 let report = format!(
-                    "on={} painted={}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} fps={} 循环={}/s 单帧={:.1}ms 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={} 模式={}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} fps={} 循环={}/s 单帧={:.1}ms 置顶={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
+                    if cover { "覆盖" } else { "挖洞" },
                     if follow { " 跟随前台" } else { "" },
                     RAISE_OK.load(Ordering::Relaxed),
                     RAISE_FAIL.load(Ordering::Relaxed),
@@ -1396,6 +1783,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     stat_fps,
                     stat_loop,
                     stat_paint_ms,
+                    raised.len(),
                     pocket.left,
                     pocket.top,
                     pocket.right,
@@ -1408,12 +1796,19 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
             }
 
-            // 跟随周期：窗口在动时压到 2ms，遮罩最多落后一个周期——旧值 16ms 在快速
-            // 拖动下会明显拖影（窗口已经移开几十像素，遮罩还在原位）。
-            // 窗口静止 120ms 后放回 8ms：跟随精度对静止画面没有意义，把空转 CPU 让出去。
-            // 遮罩没开或没有目标时 40ms，几乎不占 CPU。
+            // 跟随周期。
+            // 挖洞模式：窗口在动时 2ms（遮罩要跟着重画，落后 ≈3.5ms）；
+            // 静止 120ms 后放到 8ms，别为静止画面白烧 CPU。
+            // 覆盖模式：遮罩根本不重绘，周期只影响"多快发现换了目标窗口"，
+            // 4ms 足够（人眼对切换目标的感知远粗于 25ms），省下的都是纯赚。
             let tick_ms = if on && target.is_some() {
-                if last_paint_at.elapsed().as_millis() < 120 { 2 } else { 8 }
+                if cover {
+                    6
+                } else if last_paint_at.elapsed().as_millis() < 120 {
+                    2
+                } else {
+                    8
+                }
             } else {
                 40
             };

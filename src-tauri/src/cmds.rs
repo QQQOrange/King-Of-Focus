@@ -213,6 +213,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "radius": mask.radius.load(Ordering::Relaxed),
             "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
+            "cover": mask.cover.load(Ordering::Relaxed),
             "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
@@ -350,6 +351,7 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
     m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
+    m.cover.store(config.settings.mask.cover, Ordering::Relaxed);
     m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
     m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
     m.duration
@@ -540,6 +542,7 @@ pub fn mask_set(
     radius: Option<i32>,
     duration_ms: Option<u32>,
     block_click: Option<bool>,
+    cover: Option<bool>,
     follow: Option<bool>,
     follow_schedule: Option<bool>,
 ) {
@@ -566,6 +569,21 @@ pub fn mask_set(
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
+    }
+    if let Some(c) = cover {
+        let changed = m.cover.swap(c, Ordering::Relaxed) != c;
+        // 渲染方式是"整个遮罩怎么工作"，丢了最容易被当成功能坏了，顺手落盘
+        if changed {
+            let mut cfg_now = shared.config();
+            if cfg_now.settings.mask.cover != c {
+                cfg_now.settings.mask.cover = c;
+                if crate::cfg::save(&cfg_now).is_ok() {
+                    if let Ok(mut w) = shared.cfg.write() {
+                        *w = cfg_now;
+                    }
+                }
+            }
+        }
     }
 }
 

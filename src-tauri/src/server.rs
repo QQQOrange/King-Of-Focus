@@ -208,6 +208,10 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 if let Some(v) = q("margin=") {
                     m.margin.store(v.clamp(0, 200) as i32, std::sync::atomic::Ordering::Relaxed);
                 }
+                // 渲染方式：0 = 挖洞，1 = 覆盖
+                if let Some(v) = q("cover=") {
+                    m.cover.store(v != 0, std::sync::atomic::Ordering::Relaxed);
+                }
                 reply(
                     req,
                     200,
@@ -217,6 +221,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         "opacity": m.opacity.load(std::sync::atomic::Ordering::Relaxed),
                         "radius": m.radius.load(std::sync::atomic::Ordering::Relaxed),
                         "margin": m.margin.load(std::sync::atomic::Ordering::Relaxed),
+                        "cover": m.cover.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .to_string(),
                 )

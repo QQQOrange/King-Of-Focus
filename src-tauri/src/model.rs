@@ -201,6 +201,9 @@ pub struct MaskCfg {
     pub duration_ms: u32,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口）
     pub follow: bool,
+    /// 渲染方式：true = 覆盖（遮罩静止铺满全屏，选中窗口置顶浮在遮罩之上）；
+    /// false = 挖洞（遮罩开一个口袋让目标窗口露出来，支持圆角/留白）
+    pub cover: bool,
     /// 是否屏蔽鼠标点击（遮罩吃掉点击，防止手滑去点别的窗口）
     pub block_click: bool,
     /// 上次使用的目标窗口
@@ -226,6 +229,7 @@ impl Default for MaskCfg {
             radius: 0,
             duration_ms: 420,
             follow: true,
+            cover: true,
             block_click: true,
             target_pid: 0,
             target_title: String::new(),
