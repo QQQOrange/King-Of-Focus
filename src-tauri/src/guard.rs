@@ -295,15 +295,28 @@ pub fn guard_main() {
                 break; // 防止无限拉起
             }
             restarts += 1;
-            if let Ok(exe) = std::env::current_exe() {
-                let _ = Command::new(exe).spawn();
-            }
+            respawn_main();
             // 给新进程一点时间写心跳
             thread::sleep(Duration::from_secs(4));
         }
     }
     let _ = std::fs::remove_file(pid_path());
     let _ = std::fs::remove_file(hb_path());
+}
+
+/// 复活主进程。
+///
+/// 这里**不**直接调 ShellExecuteW 提权：守护进程是后台无窗口进程，
+/// 由它弹 UAC 会在用户毫无预期的时候突然拦截屏幕。
+/// 正确做法是普通拉起，让新主进程自己走 main() 里的提权流程
+/// （带"120 秒内不重复弹窗"的失败标记）。
+///
+/// 另外：守护进程是主进程 spawn 出来的，**会继承主进程的权限**。
+/// 主进程是管理员时，守护也是管理员，普通拉起出来的新主进程同样是管理员。
+fn respawn_main() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).spawn();
+    }
 }
 
 /// 停止守护（解锁后调用）

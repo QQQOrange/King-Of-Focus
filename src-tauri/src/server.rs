@@ -180,6 +180,39 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/maskcfg" => {
+            // 供自动化验收脚本设置遮罩参数（与 UI 走同一套运行态）
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                let m = &*shared.mask;
+                let q = |k: &str| -> Option<i64> {
+                    url.split(k)
+                        .nth(1)
+                        .and_then(|v| v.split('&').next())
+                        .and_then(|v| v.parse::<i64>().ok())
+                };
+                if let Some(v) = q("duration=") {
+                    m.duration.store(v.clamp(0, 3000) as i32, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(v) = q("opacity=") {
+                    m.opacity.store(v.clamp(0, 100) as u8, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(v) = q("follow=") {
+                    m.follow.store(v != 0, std::sync::atomic::Ordering::Relaxed);
+                }
+                reply(
+                    req,
+                    200,
+                    json!({
+                        "ok": true,
+                        "duration": m.duration.load(std::sync::atomic::Ordering::Relaxed),
+                        "opacity": m.opacity.load(std::sync::atomic::Ordering::Relaxed),
+                    })
+                    .to_string(),
+                )
+            }
+        }
         "/api/debug/maskon" | "/api/debug/maskoff" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())

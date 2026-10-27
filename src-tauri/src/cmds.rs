@@ -36,6 +36,89 @@ pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
+/// ShellExecuteW 的失败原因码 → 人话
+fn shell_exec_reason(n: usize) -> String {
+    match n {
+        5 => "你在 UAC 弹窗里点了「否」，或者当前账户没有管理员权限".to_string(),
+        2 => "找不到程序文件".to_string(),
+        31 => "系统无法启动提权进程".to_string(),
+        n => format!("ShellExecute 返回 {n}"),
+    }
+}
+
+/// 以管理员身份拉起一个新实例（UAC 弹窗由系统负责）。
+///
+/// `params` 作为命令行参数传给新实例：
+///   - `--elevated`          标记"我是提权副本"（跳过本次启动的提权循环）
+///   - `--wait-pid=<pid>`    等这个 pid 的进程退出后再接管单实例锁
+///
+/// 早期版本 params 传的是 NULL，新实例完全不知道自己是谁，
+/// 于是被单实例互斥体判定为"重复启动"直接退出 —— 用户看到的就是"点了没反应 / 闪退"。
+pub fn spawn_elevated(params: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let op = wide("runas");
+    let file = wide(&exe.to_string_lossy());
+    let dir = exe
+        .parent()
+        .map(|p| wide(&p.to_string_lossy()))
+        .unwrap_or_else(|| wide(""));
+    let ps = wide(params);
+
+    // 返回值 <= 32 就是失败，能区分"用户点了 UAC 的否"和"真的没权限"
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            ps.as_ptr(),
+            dir.as_ptr(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r as usize <= 32 {
+        return Err(format!("提权失败：{}", shell_exec_reason(r as usize)));
+    }
+    Ok(())
+}
+
+/// 提权重启自己：新实例会等本进程退出后再接管单实例锁
+pub fn spawn_elevated_self() -> Result<(), String> {
+    let params = format!("--elevated --wait-pid={}", std::process::id());
+    spawn_elevated(&params)
+}
+
+/// 提权失败标记文件：用户拒绝 UAC 后，短时间内不再重复弹窗。
+///
+/// 名字用 `.elevate_fail` 而不是早期的 `.elevate_try`：
+/// 早期版本在"准备提权"时就写标记，导致**提权成功后标记仍在**，
+/// 120 秒内的第二次启动会跳过提权 —— 于是"点开先闪退、第 2 次点才正常"，
+/// 而且实际运行的实例永远不是管理员。现在只在**提权失败**时才写。
+pub const ELEVATE_MARKER: &str = ".elevate_fail";
+
+fn elevate_marker_path() -> std::path::PathBuf {
+    crate::cfg::data_dir().join(ELEVATE_MARKER)
+}
+
+/// 标记文件是不是"刚失败过"（120 秒内）
+pub fn elevate_marker_fresh() -> bool {
+    std::fs::metadata(elevate_marker_path())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|e| e.as_secs() < 120)
+        .unwrap_or(false)
+}
+
+/// 记下"刚刚提权失败"，避免每次启动都弹 UAC
+pub fn mark_elevate_failed() {
+    let _ = std::fs::write(elevate_marker_path(), b"1");
+}
+
+/// 提权成功后清掉失败标记
+pub fn clear_elevate_marker() {
+    let _ = std::fs::remove_file(elevate_marker_path());
+}
+
 /// 积分解锁的每分钟单价（每天第 n 次解锁 ×1.4 递增）
 pub fn unlock_price(cfg: &Config) -> i64 {
     let base = 15f64;
@@ -682,41 +765,23 @@ pub fn open_extension_dir() -> Result<(), String> {
     }
 }
 
+/// 提权重启：拉起一个带 `--elevated` 标记的新实例，本进程让位退出。
+///
+/// 关键点：必须把 `--elevated` 和 `--wait-pid` 传给新实例。
+/// - 没有 `--elevated`：新实例走普通启动路径，会被单实例互斥体判定为
+///   "重复启动"直接退出 —— 表现就是"点了没反应 / 闪退"。
+/// - 没有 `--wait-pid`：新实例一起来就抢锁，而本进程还活着 → 抢不到锁，
+///   只能轮询等待，接管会慢好几秒。
 #[tauri::command]
 pub fn restart_as_admin(app: AppHandle) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let op = wide("runas");
-    let file = wide(&exe.to_string_lossy());
-    let dir = exe
-        .parent()
-        .map(|p| wide(&p.to_string_lossy()))
-        .unwrap_or_else(|| wide(""));
-
-    // 直接走 ShellExecuteW("runas")：返回值 <= 32 就是失败，
-    // 能区分"用户点了 UAC 的否"和"真的没权限"。
-    // 以前用隐藏窗口拉 PowerShell，用户取消 UAC 时宿主进程照样 exit，
-    // 表现就是"点了按钮，程序直接消失、什么也没发生"。
-    let r = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            op.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            dir.as_ptr(),
-            1, // SW_SHOWNORMAL
-        )
-    };
-    if r as usize <= 32 {
-        let why = match r as usize {
-            5 => "你在 UAC 弹窗里点了「否」，或者当前账户没有管理员权限".to_string(),
-            2 => "找不到程序文件".to_string(),
-            31 => "系统无法启动提权进程".to_string(),
-            n => format!("ShellExecute 返回 {n}"),
-        };
-        return Err(format!("提权失败：{why}"));
-    }
-    // 提权后的新实例已经起来了，这个进程让位
-    app.exit(0);
+    spawn_elevated_self()?;
+    // 延迟一小会儿再退出：让当前这次 invoke 的响应先发回前端，
+    // 否则界面会先弹一个"调用失败"的红色提示，然后才重启。
+    let h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        h.exit(0);
+    });
     Ok(())
 }
 

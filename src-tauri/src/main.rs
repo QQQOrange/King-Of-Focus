@@ -33,31 +33,146 @@ use tauri::Manager;
 #[link(name = "kernel32")]
 extern "system" {
     fn CreateMutexW(attr: *const u8, owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+    fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
 }
 
-/// 单实例：已经有一个在跑就直接退出，避免两个进程抢着拦同一个程序
-fn single_instance() -> bool {
-    let name: Vec<u16> = "Local\\KingOfFocus-SingleInstance\0".encode_utf16().collect();
+const INSTANCE_MUTEX: &str = "Local\\KingOfFocus-SingleInstance";
+
+/// 当前进程持有的单实例互斥体句柄（故意不随进程关闭，进程退出时由系统回收）
+static INSTANCE_LOCK: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// 尝试创建单实例互斥体，成功返回 true
+fn create_instance_lock() -> bool {
+    let name: Vec<u16> = format!("{INSTANCE_MUTEX}\0").encode_utf16().collect();
     unsafe {
         let h = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
         if h.is_null() {
             return true;
         }
-        std::io::Error::last_os_error().raw_os_error() != Some(183)
+        if std::io::Error::last_os_error().raw_os_error() == Some(183) {
+            // 已存在：必须关掉这个句柄，否则互斥体对象永远不销毁，
+            // 提权副本会一直拿到 183，永远接不了班。
+            CloseHandle(h);
+            return false;
+        }
+        INSTANCE_LOCK.store(h, Ordering::SeqCst);
+        true
+    }
+}
+
+/// 主动释放单实例锁（提权交接时用，让新实例能立刻接管）
+#[allow(dead_code)]
+pub fn release_instance_lock() {
+    let p = INSTANCE_LOCK.swap(std::ptr::null_mut(), Ordering::SeqCst);
+    if !p.is_null() {
+        unsafe {
+            CloseHandle(p);
+        }
+    }
+}
+
+/// 抢单实例锁。
+///
+/// `elevated = true` 表示这是提权副本：它是被上一个进程"接班"的，
+/// 上一个进程可能还没退干净，所以这里要轮询等待，最多等 15 秒。
+/// 早期版本这里直接 return，导致提权副本一启动就被判定为"重复启动"退出 ——
+///
+/// 也就是用户看到的"点开先闪退、第 2 次点才正常"。
+fn acquire_instance(elevated: bool) -> bool {
+    if create_instance_lock() {
+        return true;
+    }
+    if !elevated {
+        return false;
+    }
+    for _ in 0..150 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if create_instance_lock() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 从命令行参数里解析 `--wait-pid=1234`
+fn arg_wait_pid(args: &[String]) -> Option<u32> {
+    args.iter()
+        .find_map(|a| a.strip_prefix("--wait-pid="))
+        .and_then(|v| v.trim().parse::<u32>().ok())
+}
+
+/// 等指定的原进程真正退出（提权交接用）
+///
+/// 必须等它退出、并且互斥体随之释放，提权副本才能干净地接管。
+/// 直接抢锁会拿到 ERROR_ALREADY_EXISTS，然后只能干等。
+fn wait_process_exit(pid: u32, timeout_ms: u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while std::time::Instant::now() < deadline {
+        if !proc::is_alive(pid) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
 fn main() {
     // 守护进程模式：由主进程在锁定时拉起，只负责"主进程被杀就复活它"
-    if std::env::args().any(|a| a == "--guard") {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--guard") {
         guard::guard_main();
         return;
     }
-    if !single_instance() {
+    // 提权副本标记：由 spawn_elevated("--elevated") 传入
+    let elevated = args.iter().any(|a| a == "--elevated");
+
+    // 提权副本：先等原进程真正退出（它退出会释放单实例互斥体），
+    // 再去抢锁 —— 否则会一直拿到 ERROR_ALREADY_EXISTS。
+    if elevated {
+        if let Some(pid) = arg_wait_pid(&args) {
+            wait_process_exit(pid, 20_000);
+        }
+    }
+
+    // 先抢单实例锁：已经有实例在跑就安静退出。
+    // 顺序很重要 —— 必须先确认"没有别的实例"，再决定要不要弹 UAC，
+    // 否则用户重复双击 exe 时会莫名弹一次 UAC。
+    if !acquire_instance(elevated) {
         return;
     }
 
     let config = cfg::load();
+
+    // 清理早期版本的提权标记（.elevate_try）。
+    // 旧版在"准备提权"时就写标记，提权成功后也不删 —— 结果 120 秒内的
+    // 第二次启动会跳过提权，实际跑的实例永远不是管理员。
+    let _ = std::fs::remove_file(cfg::data_dir().join(".elevate_try"));
+
+    // 提权副本：清掉"上次提权失败"的标记
+    if elevated {
+        cmds::clear_elevate_marker();
+    } else if config.settings.run_as_admin && !cmds::is_admin() {
+        // 启动即提权。必须发生在创建窗口之前：
+        // 否则会先弹出一个普通权限的窗口再被杀掉 —— 用户看到的"闪退"。
+        if !cmds::elevate_marker_fresh() {
+            match cmds::spawn_elevated_self() {
+                Ok(()) => {
+                    // 提权副本会等本进程退出（--wait-pid）后再接管单实例锁。
+                    // 这里**不要**提前释放锁：提前释放会让"再点一次 exe"的
+                    // 第三个进程有机会抢到锁，把提权副本挤掉。
+                    // 本进程返回即退出，句柄由系统回收，锁自然释放。
+                    return;
+                }
+                Err(e) => {
+                    // UAC 被拒 / 没权限：记录标记 120 秒内不再弹窗，
+                    // 但本次仍以普通权限继续跑，不让程序起不来。
+                    eprintln!("[king-of-focus] {e}");
+                    cmds::mark_elevate_failed();
+                }
+            }
+        }
+    }
+
     let shared = Arc::new(shared::Shared::new(config.clone()));
     let shared_exit = shared.clone();
 
@@ -85,21 +200,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(shared.clone())
         .setup(move |app| {
-            // 配置里要求管理员模式，但当前不是 → 提权重启一次。
-            // 用标记文件防止"用户拒绝 UAC → 每次启动都弹窗"的死循环。
-            if config.settings.run_as_admin && !cmds::is_admin() {
-                let marker = cfg::data_dir().join(".elevate_try");
-                let fresh = std::fs::metadata(&marker)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.elapsed().ok())
-                    .map(|e| e.as_secs() < 120)
-                    .unwrap_or(false);
-                if !fresh {
-                    let _ = std::fs::write(&marker, b"1");
-                    let _ = cmds::restart_as_admin(app.handle().clone());
-                }
-            }
+            // 注：管理员提权已在 main() 里、创建窗口之前完成。
+            // 放在 setup() 里会先闪出一个普通权限窗口再被杀掉（用户看到的"闪退"）。
             // 运行时再设一次窗口图标，保证任务栏/Alt+Tab 用的是新图标
             for label in ["main", "hud"] {
                 if let Some(w) = app.get_webview_window(label) {

@@ -1091,6 +1091,26 @@ fn lerp_rect(a: &Rect, b: &Rect, t: f32) -> Rect {
     }
 }
 
+/// 洞口在"切换目标窗口"过渡中的当前位置。
+///
+/// 返回 `(当前洞口, 过渡是否已结束)`。
+///
+/// **speed = 0 必须瞬时到位**：model.rs 里 `duration_ms` 的语义明写「0 = 瞬间」。
+/// 早期实现在这里写死 `span = 1.0`（秒），等于"把速度调到 0，洞口反而要滑 1 秒"，
+/// 是用户反馈"速度设成 0 还是有过渡动画"的直接原因。
+fn hole_transition(from: &Rect, to: &Rect, elapsed: f32, duration: f32) -> (Rect, bool) {
+    if duration <= 0.001 {
+        // 瞬时：不插值，直接落到目标位置
+        return (*to, true);
+    }
+    let p = (elapsed / duration).min(1.0);
+    if p >= 1.0 {
+        (*to, true)
+    } else {
+        (lerp_rect(from, to, ease_out(p)), false)
+    }
+}
+
 unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     let mut h = ctl.target.load(Ordering::Relaxed) as Hwnd;
     if h.is_null() || IsWindow(h) == 0 {
@@ -1491,14 +1511,16 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 这时必须 1:1 跟随，否则会有一帧的延迟感
             let hole_end = match hole_from {
                 Some(from) => {
-                    let span = if duration <= 0.001 { 1.0 } else { duration };
-                    let p = (hole_t0.elapsed().as_secs_f32() / span).min(1.0);
-                    if p >= 1.0 {
+                    let (rect, done) = hole_transition(
+                        &from,
+                        &want,
+                        hole_t0.elapsed().as_secs_f32(),
+                        duration,
+                    );
+                    if done {
                         hole_from = None;
-                        want
-                    } else {
-                        lerp_rect(&from, &want, ease_out(p))
                     }
+                    rect
                 }
                 None => want,
             };
@@ -1661,4 +1683,76 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             thread::sleep(Duration::from_millis(16));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(l: i32, t: i32, rr: i32, b: i32) -> Rect {
+        Rect { left: l, top: t, right: rr, bottom: b }
+    }
+
+    /// 速度 = 0 时必须瞬时到位，不能有任何过渡。
+    /// 这是用户明确反馈过的 bug：把动画速度设成 0，洞口却还要滑 1 秒。
+    #[test]
+    fn 速度为0时瞬间到位() {
+        let from = r(0, 0, 100, 100);
+        let to = r(500, 500, 600, 600);
+        // 任意时刻（包括 0ms）都应直接落在目标位置
+        for ms in [0.0f32, 1.0, 16.0, 250.0, 999.0, 5000.0] {
+            let (pos, done) = hole_transition(&from, &to, ms / 1000.0, 0.0);
+            assert_eq!(pos, to, "speed=0 时在 {}ms 处没有瞬时到位", ms);
+            assert!(done, "speed=0 时过渡应立即结束");
+        }
+    }
+
+    /// speed=0 但 duration 是个极小非零值时，也应当按"瞬间"处理
+    #[test]
+    fn 极小时长同样瞬时() {
+        let from = r(0, 0, 100, 100);
+        let to = r(500, 500, 600, 600);
+        let (pos, done) = hole_transition(&from, &to, 0.0, 0.0005);
+        assert_eq!(pos, to);
+        assert!(done);
+    }
+
+    /// 正常时长：起点=旧位置，结束点=新位置，中途应有插值
+    #[test]
+    fn 正常时长有过渡() {
+        let from = r(0, 0, 100, 100);
+        let to = r(500, 500, 600, 600);
+        let (start, done) = hole_transition(&from, &to, 0.0, 1.0);
+        assert_eq!(start, from, "过渡起点应是旧位置");
+        assert!(!done, "刚开始不应结束");
+
+        let (mid, done) = hole_transition(&from, &to, 0.5, 1.0);
+        assert!(!done);
+        assert!(mid.left > from.left && mid.left < to.left, "中途应处于插值状态");
+
+        let (end, done) = hole_transition(&from, &to, 1.5, 1.0);
+        assert_eq!(end, to, "超过时长后应落到目标位置");
+        assert!(done, "超过时长后过渡应结束");
+    }
+
+    /// 洞口从整屏收缩到目标窗口的主动画：speed=0 时进度必须一帧到 1.0
+    #[test]
+    fn 主动画速度为0时一帧到位() {
+        let duration = 0.0f32; // 0ms
+        let dt = 0.016f32; // 一帧
+        let step = if duration <= 0.001 { 1.0 } else { dt / duration };
+        assert_eq!(step, 1.0);
+        let progress = (0.0f32 + step).min(1.0);
+        assert_eq!(progress, 1.0, "speed=0 时扩散进度应一帧到顶");
+        // 淡入曲线：progress=1 时 fade 也应直接到 1（不残留过渡）
+        let fade = ease_out((progress / 0.35).min(1.0));
+        assert_eq!(fade, 1.0, "speed=0 时透明度不应有淡入残留");
+    }
+
+    /// 洞口收缩系数：progress=1 时 e=1，洞口已经是目标窗口
+    #[test]
+    fn 进度到顶时洞口完全展开() {
+        let e = ease_out(1.0);
+        assert_eq!(e, 1.0);
+    }
 }

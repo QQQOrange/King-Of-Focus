@@ -993,7 +993,7 @@ function viewMask() {
 
     <div class="mask-preview">
       <div class="screen"></div>
-      <div class="dim" id="previewDim" style="opacity:${op / 100}"></div>
+      <div class="dim" id="previewDim" style="opacity:${op / 100};transition-duration:${dur}ms"></div>
       <div class="hole" id="previewHole" style="border-radius:${Math.max(2, Math.round(rad / 3))}px">当前窗口</div>
     </div>
   </div>
@@ -2330,6 +2330,9 @@ const Act = window.Act = {
   },
   async setDuration(v) {
     $('#durVal').textContent = v + 'ms';
+    // 预览框的过渡时长跟着速度走：速度 0 → 预览也是瞬时，两边语义一致
+    const dim = $('#previewDim');
+    if (dim) dim.style.transitionDuration = v + 'ms';
     await invoke('mask_set', { durationMs: +v });
   },
   async maskSave() {
@@ -2630,8 +2633,14 @@ const Act = window.Act = {
       st.runAsAdmin = !st.runAsAdmin;
       try {
         await invoke('set_run_as_admin', { enabled: st.runAsAdmin });
-        toast(st.runAsAdmin ? '已保存，正在以管理员身份重启…' : '已关闭管理员模式（下次启动生效）', 'ok');
-      } catch (e) { toast(String(e), 'err'); return; }
+      } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); return; }
+      if (st.runAsAdmin) {
+        // 后端已经落盘 + 拉起了提权副本，本进程 350ms 后退出。
+        // 这里不要再 saveConfig / pull —— 进程随时会走，调用会失败并弹红条。
+        toast('已保存，正在以管理员身份重启…', 'ok');
+        return;
+      }
+      toast('已关闭管理员模式（下次启动生效）', 'ok');
       await saveConfig();
       await pull(); render(); return;
     }

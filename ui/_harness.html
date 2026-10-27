@@ -111,6 +111,19 @@ window.__TAURI__ = {
     if (cmd === 'get_state') return JSON.parse(JSON.stringify(STATE));
     // 让假后端真的"记住"配置，save_config → pull 闭环，便于交互回归
     if (cmd === 'save_config') { STATE.config = JSON.parse(JSON.stringify(args.config)); return null; }
+    // 遮罩参数即时生效（对应后端 mask_set）
+    if (cmd === 'mask_set') {
+      if (args.opacity != null) STATE.mask.opacity = args.opacity;
+      if (args.margin != null) STATE.mask.margin = args.margin;
+      if (args.radius != null) STATE.mask.radius = args.radius;
+      if (args.durationMs != null) STATE.mask.duration = args.durationMs;
+      return null;
+    }
+    // 管理员开关：后端落盘 + 拉起提权副本（前端不自己 save）
+    if (cmd === 'set_run_as_admin') {
+      STATE.config.settings.runAsAdmin = !!args.enabled;
+      return null;
+    }
     if (cmd === 'browsers_scan') return { list: [], installed: 0, broken: 0 };
     if (cmd === 'browser_ext_info') return STATE.extInfo;
     if (cmd === 'mask_diag') return 'on=true painted=true 模式=区域挖洞';
@@ -390,6 +403,39 @@ window.__itest = async () => {
   await wait(200);
   out.push(['测试模式下不锁总开关', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
   await window.__patch({ testMode: false });
+
+  // 13. 遮罩：速度设为 0 必须"瞬间"，预览过渡时长要跟着走
+  await Act.nav('mask');
+  await wait(200);
+  const durRange = document.querySelector('#durRange');
+  out.push(['遮罩页有速度滑块', !!durRange]);
+  if (durRange) {
+    durRange.value = '0';
+    durRange.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(300);
+    out.push(['速度 0 显示为 0ms', document.querySelector('#durVal').textContent, '0ms']);
+    const pd = document.querySelector('#previewDim');
+    out.push(['速度 0 → 预览过渡时长 0ms', pd ? pd.style.transitionDuration : '(无预览元素)', '0ms']);
+    // 后端确实收到了 0（前端 S.data 要等下一次轮询才刷新，所以直接查假后端状态）
+    out.push(['速度 0 → 后端收到 0', STATE.mask.duration, 0]);
+    await pull();
+    out.push(['速度 0 → 轮询后界面状态也是 0', S.data.mask.duration, 0]);
+  }
+
+  // 14. 管理员开关：打开后走的是"后端落盘 + 拉起提权副本"，
+  //     前端不能再去 saveConfig / pull（进程 350ms 后就退出，调用必失败）
+  await Act.nav('settings');
+  await wait(200);
+  const adminSw = document.querySelector('[data-act="cfg-switch"][data-k="runAsAdmin"]');
+  out.push(['设置里有管理员模式开关', !!adminSw]);
+  if (adminSw) {
+    // 假后端要能接住 set_run_as_admin，否则前端会走 catch 分支
+    const before = S.data.config.settings.runAsAdmin;
+    adminSw.click();
+    await wait(300);
+    out.push(['管理员开关已切到开启', S.data.config.settings.runAsAdmin, !before]);
+    out.push(['界面显示当前是管理员', !document.querySelector('#sideStatus').textContent.includes('未以管理员身份运行')]);
+  }
 
   const pre = document.createElement('pre');
   pre.id = 'itest';

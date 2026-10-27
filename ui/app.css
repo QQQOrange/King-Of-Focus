@@ -737,6 +737,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   box-shadow: 0 10px 30px -10px rgba(0, 0, 0, .55);
 }
 .mask-preview .screen { position: absolute; inset: 0; background: linear-gradient(135deg, #1c2333, #0f131a); }
+/* 时长由 JS 按"动画速度"实时注入（transition-duration），
+   默认 .1s 只是首屏兜底；速度设成 0 时注入 0ms → 预览也是瞬时 */
 .mask-preview .dim { position: absolute; inset: 0; background: #000; transition: opacity .1s; }
 .mask-preview .hole {
   position: absolute; left: 46px; top: 32px; right: 46px; bottom: 32px;
