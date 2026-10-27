@@ -197,8 +197,6 @@ pub struct MaskCfg {
     pub duration_ms: u32,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口）
     pub follow: bool,
-    /// true = 逐像素抗锯齿圆角；false（默认）= 区域挖洞，兼容性优先
-    pub smooth: bool,
     /// 是否屏蔽鼠标点击（遮罩吃掉点击，防止手滑去点别的窗口）
     pub block_click: bool,
     /// 上次使用的目标窗口
@@ -224,7 +222,6 @@ impl Default for MaskCfg {
             radius: 28,
             duration_ms: 420,
             follow: true,
-            smooth: false,
             block_click: false,
             target_pid: 0,
             target_title: String::new(),

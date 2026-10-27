@@ -1218,24 +1218,9 @@ function viewMask() {
         <input type="checkbox" ${m.blockClick ? 'checked' : ''}><i></i>
       </div>
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;margin-top:10px;border-top:1px solid var(--line);padding-top:14px">
-      <div>
-        <div style="font-size:12.5px">高清圆角（逐像素）</div>
-        <div class="hint" style="margin-top:4px">
-          关着的时候圆角是系统按区域裁的，边缘是 1px 的硬台阶，半径小时能看出锯齿；
-          打开后改成逐像素 alpha，边缘像素按覆盖率过渡，圆角在任何半径下都是平滑的。
-          两者是互斥画法，切换时会重建覆盖层。<b>万一你的显卡/远程桌面不支持逐像素，
-          会自动降级回区域挖洞并在下面标出来</b>；把开关关掉再打开就是再试一次。
-        </div>
-        ${m.smoothFallback ? `<div class="badge gold" style="margin-top:8px">当前设备不支持逐像素，已自动降级为区域挖洞</div>` : ''}
-      </div>
-      <div class="switch" data-act="toggle-smooth">
-        <input type="checkbox" ${m.smooth ? 'checked' : ''}><i></i>
-      </div>
-    </div>
     <div class="row" style="margin-top:10px">
       <button class="btn btn-sm" data-act="mask-save">保存为默认</button>
-      <span class="hint" style="align-self:center">改动会立即生效；圆角画法切换后会自动记住，其余参数点保存才写进配置</span>
+      <span class="hint" style="align-self:center">改动会立即生效；点保存才会写进配置，下次启动沿用</span>
     </div>
   </div>
 
@@ -2531,7 +2516,6 @@ const Act = window.Act = {
     m.radius = cur.radius;
     m.durationMs = cur.duration;
     m.blockClick = cur.blockClick;
-    m.smooth = !!cur.smooth;
     m.follow = !!cur.follow;
     try {
       await saveConfig();
@@ -2636,20 +2620,6 @@ const Act = window.Act = {
     await pull();
     render();
     toast(on ? '已开启跟随：遮罩会跟着当前最上层窗口走' : '已关闭跟随', 'ok');
-  },
-
-  async toggleSmooth() {
-    const on = !S.data.mask.smooth;
-    await invoke('mask_set', { smooth: on });
-    // 后端切换时会顺手把画法写进配置，这里拉一次让两边的状态对齐
-    await pull();
-    render();
-    toast(
-      on
-        ? '已切到逐像素高清圆角：圆角边缘有过渡，不再是一格一格的台阶'
-        : '已切回区域挖洞（兼容性优先，圆角是硬边）',
-      'ok'
-    );
   },
 
   async toggleClick() {
@@ -3666,7 +3636,6 @@ document.addEventListener('click', async (e) => {
   if (act === 'mask-preview') { await Act.maskPreview(); return; }
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
-  if (act === 'toggle-smooth') { await Act.toggleSmooth(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
   if (act === 'test-enter') { await Act.enterTestMode(); return; }
   if (act === 'test-exit-keep') { await Act.askExitTest(true); return; }

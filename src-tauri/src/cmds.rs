@@ -213,9 +213,6 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "radius": mask.radius.load(Ordering::Relaxed),
             "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
-            "smooth": mask.smooth.load(Ordering::Relaxed),
-            // 逐像素画法失败已自动降级成区域画法：界面要如实告诉用户
-            "smoothFallback": mask.smooth_fail.load(Ordering::Relaxed),
             "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
@@ -353,7 +350,6 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
     m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
-    m.smooth.store(config.settings.mask.smooth, Ordering::Relaxed);
     m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
     m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
     m.duration
@@ -544,7 +540,6 @@ pub fn mask_set(
     radius: Option<i32>,
     duration_ms: Option<u32>,
     block_click: Option<bool>,
-    smooth: Option<bool>,
     follow: Option<bool>,
     follow_schedule: Option<bool>,
 ) {
@@ -560,23 +555,6 @@ pub fn mask_set(
     }
     if let Some(v) = duration_ms {
         m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
-    }
-    if let Some(v) = smooth {
-        let changed = m.smooth.swap(v, Ordering::Relaxed) != v;
-        // 「高清圆角」是画法总切换，丢了最容易被当成"开了没用"：运行期已经生效，
-        // 这里顺手写进配置，重启后还在。写盘失败（比如自律锁定）不该影响当前效果，
-        // 所以只静默跳过，不往上抛错。
-        if changed {
-            let mut c = shared.config();
-            if c.settings.mask.smooth != v {
-                c.settings.mask.smooth = v;
-                if cfg::save(&c).is_ok() {
-                    if let Ok(mut w) = shared.cfg.write() {
-                        *w = c;
-                    }
-                }
-            }
-        }
     }
     if let Some(v) = follow {
         // 只管"遮罩范围"：跟随当前窗口 / 固定目标。绝不顺手开关遮罩——

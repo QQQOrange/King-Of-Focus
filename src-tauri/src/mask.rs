@@ -31,11 +31,9 @@ const WS_EX_TOPMOST: u32 = 0x0000_0008;
 
 const SW_SHOWNOACTIVATE: i32 = 4;
 const SW_HIDE: i32 = 0;
-const ULW_ALPHA: u32 = 0x0000_0002;
 const LWA_ALPHA: u32 = 0x0000_0002;
 const RGN_DIFF: i32 = 4;
 const BLACK_BRUSH: i32 = 4;
-const DIB_RGB_COLORS: u32 = 0;
 
 const PM_REMOVE: u32 = 0x0001;
 const WM_QUIT: u32 = 0x0012;
@@ -122,47 +120,6 @@ struct WndClassW {
 }
 
 #[repr(C)]
-struct BitmapInfoHeader {
-    bi_size: u32,
-    bi_width: i32,
-    bi_height: i32,
-    bi_planes: u16,
-    bi_bit_count: u16,
-    bi_compression: u32,
-    bi_size_image: u32,
-    bi_x_pels: i32,
-    bi_y_pels: i32,
-    bi_clr_used: u32,
-    bi_clr_important: u32,
-}
-
-#[repr(C)]
-struct BitmapInfo {
-    header: BitmapInfoHeader,
-    colors: [u32; 3],
-}
-
-#[repr(C)]
-struct Point {
-    x: i32,
-    y: i32,
-}
-
-#[repr(C)]
-struct Size {
-    cx: i32,
-    cy: i32,
-}
-
-#[repr(C)]
-struct BlendFunction {
-    blend_op: u8,
-    blend_flags: u8,
-    source_constant_alpha: u8,
-    alpha_format: u8,
-}
-
-#[repr(C)]
 struct MonitorInfo {
     cb_size: u32,
     rc_monitor: Rect,
@@ -190,17 +147,6 @@ extern "system" {
     fn DefWindowProcW(h: Hwnd, msg: u32, wp: usize, lp: isize) -> isize;
     fn DestroyWindow(h: Hwnd) -> i32;
     fn ShowWindow(h: Hwnd, cmd: i32) -> i32;
-    fn UpdateLayeredWindow(
-        h: Hwnd,
-        dst: Hdc,
-        pt_dst: *const Point,
-        size: *const Size,
-        src: Hdc,
-        pt_src: *const Point,
-        color_key: u32,
-        blend: *const BlendFunction,
-        flags: u32,
-    ) -> i32;
     fn SetWindowLongW(h: Hwnd, idx: i32, val: i32) -> i32;
     fn SetWindowPos(h: Hwnd, after: isize, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> i32;
     fn GetWindow(h: Hwnd, cmd: u32) -> Hwnd;
@@ -214,8 +160,6 @@ extern "system" {
     fn IsWindowVisible(h: Hwnd) -> i32;
     fn IsIconic(h: Hwnd) -> i32;
     fn GetWindowRect(h: Hwnd, r: *mut Rect) -> i32;
-    fn GetDC(h: Hwnd) -> Hdc;
-    fn ReleaseDC(h: Hwnd, dc: Hdc) -> i32;
     fn EnumDisplayMonitors(
         dc: Hdc,
         clip: *const Rect,
@@ -279,18 +223,7 @@ const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 
 #[link(name = "gdi32")]
 extern "system" {
-    fn CreateCompatibleDC(dc: Hdc) -> Hdc;
-    fn CreateDIBSection(
-        dc: Hdc,
-        bmi: *const BitmapInfo,
-        usage: u32,
-        bits: *mut *mut core::ffi::c_void,
-        section: Handle,
-        offset: u32,
-    ) -> Handle;
-    fn SelectObject(dc: Hdc, obj: Handle) -> Handle;
     fn DeleteObject(obj: Handle) -> i32;
-    fn DeleteDC(dc: Hdc) -> i32;
     fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> Handle;
     fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> Handle;
     fn CombineRgn(dst: Handle, a: Handle, b: Handle, mode: i32) -> i32;
@@ -324,8 +257,6 @@ pub struct MaskCtl {
     /// 遮罩生效 = 用户意向(on) OR (auto_follow AND schedule_on)，
     /// 这样"跟随自律"是叠加项，不会再把主开关的意思改来改去。
     pub schedule_on: AtomicBool,
-    /// 逐像素画法最近一次是否失败（失败会自动回退区域画法，界面据此提示）
-    pub smooth_fail: AtomicBool,
     /// 预览截止时间（unix 秒，0 = 没在预览）。预览只持续几秒，不改变主开关的意向
     pub preview_until: AtomicI64,
     /// 跟随当前最上层窗口（洞口自动跟着前台窗口跑）
@@ -334,8 +265,6 @@ pub struct MaskCtl {
     pub test_lock: AtomicBool,
     /// 手动选定的目标窗口句柄；非 0 时优先于"跟随前台"（0 = 没有手动锁定）
     pub manual_hwnd: AtomicIsize,
-    /// true = 逐像素圆角（抗锯齿）；false = 区域挖洞（兼容性最好，默认）
-    pub smooth: AtomicBool,
     pub painted: AtomicBool,
     pub notice: Mutex<Option<String>>,
 }
@@ -395,12 +324,10 @@ impl Default for MaskCtl {
             hk_ok: AtomicBool::new(false),
             auto_follow: AtomicBool::new(false),
             schedule_on: AtomicBool::new(false),
-            smooth_fail: AtomicBool::new(false),
             preview_until: AtomicI64::new(0),
             follow: AtomicBool::new(false),
             test_lock: AtomicBool::new(false),
             manual_hwnd: AtomicIsize::new(0),
-            smooth: AtomicBool::new(false),
             painted: AtomicBool::new(false),
             notice: Mutex::new(None),
         }
@@ -423,35 +350,22 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// 每台显示器一块覆盖层
 ///
-/// 两套画法，默认走第一套：
-/// - `Region`：整窗刷黑 + 整窗透明度 + `SetWindowRgn` 把目标窗口那块"挖掉"。
-///   传统分层窗口路子，不依赖 DWM 的逐像素合成，兼容性最好；区域是全屏的，
-///   所以任务栏、浮动工具条也一起盖住。
-/// - `Smooth`：`UpdateLayeredWindow` 逐像素 alpha，圆角有抗锯齿，
-///   但个别显卡/远程桌面/经典主题下会整块不显示（这正是「遮罩没反应」的一种成因）。
+/// 整窗刷半透明黑 + 整窗透明度 + `SetWindowRgn` 把目标窗口那块"挖掉"。
+/// 传统分层窗口路子，不依赖 DWM 的逐像素合成，兼容性最好；区域是全屏的，
+/// 所以任务栏、浮动工具条也一起盖住。
 struct Overlay {
     hwnd: Hwnd,
-    mem_dc: Hdc,
-    bmp: Handle,
-    old_bmp: Handle,
-    bits: *mut u32,
     x: i32,
     y: i32,
     w: i32,
     h: i32,
     clickthrough: bool,
     shown: bool,
-    /// Region 模式下上一帧的区域参数，没变就不重建区域
+    /// 上一帧的区域参数，没变就不重建区域
     last_key: Option<(i32, i32, i32, i32, i32, u8)>,
     /// 上一帧任务栏签名的校验和（任务栏位移/隐藏时触发重画）
     last_bar_sig: i64,
     cur_alpha: u8,
-    /// 这个窗口当前画法：0 = 还没画过，1 = 区域挖洞，2 = 逐像素
-    mode: u8,
-    /// 逐像素画法失败后永久回退到区域画法（同一窗口上 ULW 失败会一直失败）
-    use_region: bool,
-    /// 窗口上是否还留着 SetWindowRgn 装的区域（ULW 之前必须清掉）
-    has_region: bool,
 }
 
 impl Overlay {
@@ -477,35 +391,6 @@ impl Overlay {
             return None;
         }
 
-        let screen = GetDC(std::ptr::null_mut());
-        let mem_dc = CreateCompatibleDC(screen);
-        let bmi = BitmapInfo {
-            header: BitmapInfoHeader {
-                bi_size: std::mem::size_of::<BitmapInfoHeader>() as u32,
-                bi_width: r.width(),
-                // 负高度 = 自上而下，和我们的绘制顺序一致
-                bi_height: -r.height(),
-                bi_planes: 1,
-                bi_bit_count: 32,
-                bi_compression: 0,
-                bi_size_image: 0,
-                bi_x_pels: 0,
-                bi_y_pels: 0,
-                bi_clr_used: 0,
-                bi_clr_important: 0,
-            },
-            colors: [0; 3],
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        let bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
-        ReleaseDC(std::ptr::null_mut(), screen);
-        if bmp.is_null() {
-            mlog(&format!("CreateDIBSection 失败 err={}", GetLastError()));
-            DestroyWindow(hwnd);
-            return None;
-        }
-        let old_bmp = SelectObject(mem_dc, bmp);
-
         mlog(&format!(
             "Overlay 建立 hwnd={:?} {}x{} @({},{})",
             hwnd, r.width(), r.height(), r.left, r.top
@@ -513,10 +398,6 @@ impl Overlay {
 
         Some(Overlay {
             hwnd,
-            mem_dc,
-            bmp,
-            old_bmp,
-            bits: bits as *mut u32,
             x: r.left,
             y: r.top,
             w: r.width(),
@@ -526,22 +407,10 @@ impl Overlay {
             last_key: None,
             last_bar_sig: 0,
             cur_alpha: 255,
-            mode: 0,
-            use_region: false,
-            has_region: false,
         })
     }
 
     unsafe fn destroy(&mut self) {
-        if self.bmp != std::ptr::null_mut() {
-            SelectObject(self.mem_dc, self.old_bmp);
-            DeleteObject(self.bmp);
-            self.bmp = std::ptr::null_mut();
-        }
-        if self.mem_dc != std::ptr::null_mut() {
-            DeleteDC(self.mem_dc);
-            self.mem_dc = std::ptr::null_mut();
-        }
         if !self.hwnd.is_null() {
             DestroyWindow(self.hwnd);
             self.hwnd = std::ptr::null_mut();
@@ -560,93 +429,6 @@ impl Overlay {
             ex &= !WS_EX_TRANSPARENT;
         }
         SetWindowLongW(self.hwnd, GWL_EXSTYLE, ex as i32);
-    }
-
-    /// 圆角矩形的"洞"在该行的水平区间（窗口局部坐标，**浮点**）；None 表示这一行没洞。
-    ///
-    /// 这里刻意不 round 成整数。逐像素画法要靠在边界上做亚像素混合来抗锯齿，
-    /// 一旦量化到整像素，圆角就退化成 `CreateRoundRectRgn` 那种 1px 阶梯——
-    /// 两套画法看起来一模一样，"高清圆角"也就白开了。
-    fn span_f(row: i32, hole: &Rect, radius: f32) -> Option<(f32, f32)> {
-        let (top, bottom) = (hole.top as f32, hole.bottom as f32);
-        // 用像素中心而不是行号判行：像素 row 覆盖 [row, row+1)，中心是 row+0.5
-        let yc = row as f32 + 0.5;
-        if yc < top || yc >= bottom {
-            return None;
-        }
-        let r = radius
-            .max(0.0)
-            .min((hole.width() as f32) / 2.0)
-            .min((hole.height() as f32) / 2.0);
-        let mut inset = 0.0f32;
-        if r > 0.5 {
-            let dy_top = yc - top;
-            if dy_top < r {
-                let d = r - dy_top;
-                inset = r - (r * r - d * d).max(0.0).sqrt();
-            }
-            let dy_bot = bottom - yc;
-            if dy_bot < r {
-                let d = r - dy_bot;
-                inset = inset.max(r - (r * r - d * d).max(0.0).sqrt());
-            }
-        }
-        Some((hole.left as f32 + inset, hole.right as f32 - inset))
-    }
-
-    /// 覆盖层是否因为"画法不一致"需要重建。
-    ///
-    /// `use_region` 的不算。已经降级成区域画法的覆盖层如果还参与这个判断，
-    /// 就会变成：ULW 失败 → mode=1 → 判成需要切换 → 重建（新窗口 use_region=false）
-    /// → 再试再失败 → **每帧重建一次全屏窗口**，既闪又费。
-    fn mode_mismatch(mode: u8, want_mode: u8, use_region: bool) -> bool {
-        mode != 0 && mode != want_mode && !use_region
-    }
-
-    /// 遮罩像素值：预乘黑，RGB 恒为 0，只有 alpha 随覆盖率变化
-    fn shade(alpha: u8, cov: f32) -> u32 {
-        ((alpha as f32 * cov.clamp(0.0, 1.0)).round() as u32) << 24
-    }
-
-    /// 把"圆角洞"的一行渲染进 `line`。
-    ///
-    /// 洞内全透明、洞外全遮罩，**边界像素按洞覆盖的比例算 alpha**——
-    /// 这就是抗锯齿的唯一来源。整行的洞区间是浮点，左边界落在哪个像素、
-    /// 该像素被洞吃掉多少，都是连续的，所以圆角曲线上不会出现 1px 台阶。
-    fn paint_row(line: &mut [u32], row: i32, hole: &Rect, radius: f32, alpha: u8) {
-        let w = line.len();
-        if w == 0 {
-            return;
-        }
-        let px = (alpha as u32) << 24;
-        let Some((a, b)) = Self::span_f(row, hole, radius) else {
-            line.fill(px);
-            return;
-        };
-        // 洞整个落在窗口外：整行照旧遮住
-        let a = a.max(0.0);
-        let b = b.min(w as f32);
-        if b <= a {
-            line.fill(px);
-            return;
-        }
-        // 先整行铺遮罩，再把洞擦出来。比"左填一段右填一段"更难漏掉像素，
-        // 位图是复用的，漏掉一格就会留下上一帧的鬼影。
-        line.fill(px);
-        let ia = a.floor() as usize;
-        let ib = (b.ceil() as usize).min(w);
-        for v in line.iter_mut().take(ib).skip(ia) {
-            *v = 0;
-        }
-        // 左边界：像素 [ia, ia+1) 里洞只吃掉 [a, ia+1)，剩下 a-ia 仍是遮罩
-        if ia < w {
-            line[ia] = Self::shade(alpha, a - ia as f32);
-        }
-        // 右边界：像素 [ib-1, ib) 里洞只吃掉 [ib-1, b)，剩下 1-(b-ib+1) 仍是遮罩
-        if ib > 0 && ib - 1 < w && (ib - 1) as f32 >= a {
-            let cov = 1.0 - (b - (ib as f32 - 1.0));
-            line[ib - 1] = Self::shade(alpha, cov);
-        }
     }
 
     /// Region 模式：整窗半透明黑，用区域把目标窗口挖出来
@@ -721,11 +503,8 @@ impl Overlay {
             // SetWindowRgn 成功后区域归系统所有，不能自己删
             if SetWindowRgn(self.hwnd, full, 1) == 0 {
                 DeleteObject(full);
-            } else {
-                self.has_region = true;
             }
         }
-        self.mode = 1;
 
         if !self.shown {
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -738,107 +517,6 @@ impl Overlay {
                 self.hwnd, self.w, self.h, alpha, radius,
                 hole.left, hole.top, hole.right, hole.bottom
             ));
-        }
-    }
-
-    /// Smooth 模式：逐像素 alpha，圆角有抗锯齿
-    unsafe fn paint_smooth(&mut self, hole_screen: &Rect, radius: f32, alpha: u8) {
-        let w = self.w;
-        let h = self.h;
-        if w <= 0 || h <= 0 || self.bits.is_null() {
-            return;
-        }
-        // 关键前提：**装过区域的窗口不能走 UpdateLayeredWindow**。
-        // 一旦 SetWindowRgn 生效（或者之前对它调过 SetLayeredWindowAttributes），
-        // ULW 会稳定返回 ERROR_INVALID_PARAMETER(87) —— 而失败时窗口就整块不显示，
-        // 这正是"打开高清圆角后遮罩完全消失"的直接原因。
-        if self.has_region {
-            SetWindowRgn(self.hwnd, std::ptr::null_mut(), 1);
-            self.has_region = false;
-        }
-        let hole = Rect {
-            left: hole_screen.left - self.x,
-            top: hole_screen.top - self.y,
-            right: hole_screen.right - self.x,
-            bottom: hole_screen.bottom - self.y,
-        };
-        // 任务栏区域置为全透明（不压暗），与区域模式保持一致
-        let bars: Vec<Rect> = taskbar_rects()
-            .into_iter()
-            .filter(|b| {
-                !(b.left == hole_screen.left
-                    && b.top == hole_screen.top
-                    && b.right == hole_screen.right
-                    && b.bottom == hole_screen.bottom)
-            })
-            .collect();
-
-        let buf = std::slice::from_raw_parts_mut(self.bits, (w as usize) * (h as usize));
-        for row in 0..h {
-            let line = &mut buf[(row as usize) * (w as usize)..(row as usize + 1) * (w as usize)];
-            Self::paint_row(line, row, &hole, radius, alpha);
-        }
-
-        for b in bars.iter() {
-            let x0 = (b.left - self.x).max(0).min(w);
-            let x1 = (b.right - self.x).max(0).min(w);
-            let y0 = (b.top - self.y).max(0).min(h);
-            let y1 = (b.bottom - self.y).max(0).min(h);
-            if x1 > x0 {
-                for y in y0..y1 {
-                    let row = &mut buf[(y as usize) * (w as usize)..(y as usize + 1) * (w as usize)];
-                    row[x0 as usize..x1 as usize].fill(0);
-                }
-            }
-        }
-
-        let pt_dst = Point { x: self.x, y: self.y };
-        let size = Size { cx: w, cy: h };
-        let pt_src = Point { x: 0, y: 0 };
-        let blend = BlendFunction {
-            blend_op: 0,
-            blend_flags: 0,
-            source_constant_alpha: 0,
-            alpha_format: 1,
-        };
-        let ok = UpdateLayeredWindow(
-            self.hwnd,
-            std::ptr::null_mut(),
-            &pt_dst,
-            &size,
-            self.mem_dc,
-            &pt_src,
-            0,
-            &blend,
-            ULW_ALPHA,
-        );
-        if ok == 0 {
-            // 逐像素这条路走不通（老显卡 / 远程桌面 / 经典主题 / 上面提到的 87）。
-            // 与其让遮罩整块不显示，不如就地回退到区域画法——用户至少还能用，
-            // 界面上会同时提示"高清圆角已自动降级"。
-            self.use_region = true;
-            self.mode = 1;
-            self.paint_region(hole_screen, radius, alpha);
-            return;
-        }
-        self.mode = 2;
-        if !self.shown {
-            let at = |x: i32, y: i32| -> u32 {
-                if x < 0 || y < 0 || x >= w || y >= h {
-                    return 0xFFFF_FFFF;
-                }
-                *self.bits.offset((y as isize) * (w as isize) + x as isize)
-            };
-            let cx = (hole.left + hole.right) / 2;
-            let cy = (hole.top + hole.bottom) / 2;
-            mlog(&format!(
-                "Smooth 首帧 ULW ok={} err={} size={}x{} alpha={} 洞=({},{},{},{}) 回读: 角={:#010X} 洞心={:#010X}",
-                ok, GetLastError(), w, h, alpha,
-                hole.left, hole.top, hole.right, hole.bottom,
-                at(0, 0), at(cx, cy)
-            ));
-            ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            self.shown = true;
         }
     }
 
@@ -1277,9 +955,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut monitor_sig: Vec<Rect> = Vec::new();
         let mut progress: f32 = 0.0; // 0 = 无遮罩，1 = 完全铺开
         let mut last_paint: Option<(Rect, u8, i32, i32)> = None;
-        // 上一帧的「高清圆角」开关。只在 false→true 的边沿给一次重试机会，
-        // 否则自动降级过后用户关一次再开也永远回到区域画法。
-        let mut last_smooth = ctl.smooth.load(Ordering::Relaxed);
+        // 最近一次真正重画的时刻。窗口在动 → 短周期紧跟；窗口静止 → 放长周期省 CPU
+        let mut last_paint_at = Instant::now();
         let mut last_tick = Instant::now();
         let mut hk_gen_done = 0u32;
         let mut logged_miss = false;
@@ -1293,6 +970,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut hole_painted: Option<Rect> = None;
         let mut followed_key: isize = 0;
         let mut last_diag = Instant::now();
+        // 帧率诊断（每秒结算一次）：重画次数 + 单次重画耗时
+        let mut stat_n = 0u32;
+        let mut stat_paint_us = 0u64;
+        let mut stat_t0 = Instant::now();
+        let mut stat_fps = 0u32;
+        let mut stat_paint_ms = 0f32;
+        // 循环频率：区分"画得慢"和"循环本身转得慢"
+        let mut stat_loop_n = 0u32;
+        let mut stat_loop = 0u32;
 
         loop {
             // ---- 生效判定（先算出来，消息泵和后面都共用同一个口径）----
@@ -1349,6 +1035,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let now = Instant::now();
             let dt = now.duration_since(last_tick).as_secs_f32().min(0.1);
             last_tick = now;
+            stat_loop_n += 1;
 
             // 预览到点自动收：预览只是"看一眼效果"，不该悄悄变成真开启
             let pv = ctl.preview_until.load(Ordering::Relaxed);
@@ -1367,7 +1054,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let radius = ctl.radius.load(Ordering::Relaxed).clamp(0, 120) as f32;
             let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 3000) as f32 / 1000.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
-            let smooth = ctl.smooth.load(Ordering::Relaxed);
 
             // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
             let gen = ctl.hk_gen.load(Ordering::Relaxed);
@@ -1508,9 +1194,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if last_diag.elapsed().as_millis() >= 500 {
                     last_diag = Instant::now();
                     let report = format!(
-                        "on={} painted=false 模式={}{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
+                        "on={} painted=false{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 洞=(0,0,0,0) 覆盖层=0 副屏={}",
                         on,
-                        if smooth { "逐像素圆角" } else { "区域挖洞" },
                         if follow_flag { " 跟随前台" } else { "" },
                         followed_key,
                         ctl.manual_hwnd.load(Ordering::Relaxed),
@@ -1594,41 +1279,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 publish_overlays(&overlays);
             }
 
-            // 画法切换（区域挖洞 ⇄ 逐像素）必须换新的分层窗口：
-            // 同一个 hwnd 上"先 SetWindowRgn / SetLayeredWindowAttributes，再 UpdateLayeredWindow"
-            // 会稳定失败，窗口就整块不显示。旧代码只改了标志位、没重建窗口，
-            // 于是"打开高清圆角 → 遮罩彻底消失"。
-            let want_mode = if smooth { 2u8 } else { 1u8 };
-            // 用户重新打开「高清圆角」= 想再试一次。降级结论是记在覆盖层上的，
-            // 不主动清掉的话，"关掉再打开"也永远停在区域画法上。
-            let retry_smooth = smooth && !last_smooth;
-            last_smooth = smooth;
-            // 已经降级过的覆盖层（use_region）不再算"画法不一致"。
-            // 不排除它就会死循环：ULW 失败 → mode=1 → 判成需要切换 → 重建 →
-            // use_region 被新窗口清回 false → 再试再失败 → 每帧重建一次全屏窗口。
-            let mode_changed = overlays
-                .iter()
-                .any(|o| Overlay::mode_mismatch(o.mode, want_mode, o.use_region));
-            if !overlays.is_empty() && (mode_changed || retry_smooth) {
-                for o in overlays.iter_mut() {
-                    o.destroy();
-                }
-                overlays.clear();
-                publish_overlays(&overlays);
-                for m in &mons {
-                    if let Some(o) = Overlay::new(&class, *m) {
-                        overlays.push(o);
-                    }
-                }
-                publish_overlays(&overlays);
-                last_paint = None;
-                mlog(&format!(
-                    "画法切换 → {}（已重建 {} 个覆盖层）",
-                    if smooth { "逐像素圆角" } else { "区域挖洞" },
-                    overlays.len()
-                ));
-            }
-
+            let t_paint = Instant::now();
             for (i, o) in overlays.iter_mut().enumerate() {
                 o.set_clickthrough(!block_click);
                 if !need {
@@ -1643,38 +1294,45 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     bottom: lerp(m.bottom as f32, hole_end.bottom as f32, e).round() as i32,
                 };
                 hole_painted = Some(hole);
-                if smooth && !o.use_region {
-                    o.paint_smooth(&hole, radius, alpha);
-                } else {
-                    o.paint_region(&hole, radius, alpha);
-                }
-            }
-            // 逐像素失败已经自动降级 → 让界面能提示出来，而不是让用户以为功能坏了
-            if smooth {
-                let fell_back = overlays.iter().any(|o| o.use_region);
-                if ctl.smooth_fail.load(Ordering::Relaxed) != fell_back {
-                    ctl.smooth_fail.store(fell_back, Ordering::Relaxed);
-                }
-            } else if ctl.smooth_fail.load(Ordering::Relaxed) {
-                ctl.smooth_fail.store(false, Ordering::Relaxed);
+                o.paint_region(&hole, radius, alpha);
             }
             if need {
                 ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
                 last_paint = Some(key);
+                last_paint_at = Instant::now();
+                // 帧率诊断：窗口快速拖动时"遮罩跟不上"到底是画得慢还是循环被别的事拖住，
+                // 只能靠这两个数说话（重画次数/秒 + 单次重画耗时）
+                stat_n += 1;
+                stat_paint_us += t_paint.elapsed().as_micros() as u64;
+            }
+            if stat_t0.elapsed().as_millis() >= 1000 {
+                stat_fps = stat_n;
+                stat_loop = stat_loop_n;
+                stat_paint_ms = if stat_n > 0 {
+                    stat_paint_us as f32 / stat_n as f32 / 1000.0
+                } else {
+                    0.0
+                };
+                stat_n = 0;
+                stat_loop_n = 0;
+                stat_paint_us = 0;
+                stat_t0 = Instant::now();
             }
 
-            // 置顶维持：**每一帧无条件重压**。
+            // 置顶维持：按 ~16ms 节流。
             // 桌面浮窗（lazytyper / 时钟 / 歌词条）会周期性把自己重新置顶，
-            // SetWindowPos 是"后调用者赢"，所以只有每帧都压才能把它按下去；
-            // 被抢的瞬间再补两次，确保从它抢到到我们压回之间不超过一帧。
-            let _ = last_top.elapsed(); // 保留计时器，避免未使用告警
-            for o in overlays.iter_mut() {
-                // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死
-                o.strip_topmost_above();
-                o.reassert();
-                if o.covered_by_others() {
+            // SetWindowPos 是"后调用者赢"，所以必须持续重压；但没必要每 2ms 压一次——
+            // 那时循环周期还是 16ms，节流到 16ms 与原行为等价，却能把跟随期间的 CPU 降下来。
+            if last_top.elapsed().as_millis() >= 15 {
+                last_top = Instant::now();
+                for o in overlays.iter_mut() {
+                    // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死
+                    o.strip_topmost_above();
                     o.reassert();
-                    o.reassert();
+                    if o.covered_by_others() {
+                        o.reassert();
+                        o.reassert();
+                    }
                 }
             }
 
@@ -1697,15 +1355,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={} 模式={}{}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} 洞=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={}{} 抬升={}/{} err={} 降级失败={}/{} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} fps={} 循环={}/s 单帧={:.1}ms 洞=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
-                    if smooth { "逐像素圆角" } else { "区域挖洞" },
-                    if smooth && ctl.smooth_fail.load(Ordering::Relaxed) {
-                        "(已自动降级)"
-                    } else {
-                        ""
-                    },
                     if follow { " 跟随前台" } else { "" },
                     RAISE_OK.load(Ordering::Relaxed),
                     RAISE_FAIL.load(Ordering::Relaxed),
@@ -1717,6 +1369,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     FOLLOW_OVERRIDE.load(Ordering::Relaxed),
                     progress,
                     alpha,
+                    stat_fps,
+                    stat_loop,
+                    stat_paint_ms,
                     hole_end.left,
                     hole_end.top,
                     hole_end.right,
@@ -1729,7 +1384,16 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
             }
 
-            thread::sleep(Duration::from_millis(16));
+            // 跟随周期：窗口在动时压到 2ms，遮罩最多落后一个周期——旧值 16ms 在快速
+            // 拖动下会明显拖影（窗口已经移开几十像素，遮罩还在原位）。
+            // 窗口静止 120ms 后放回 8ms：跟随精度对静止画面没有意义，把空转 CPU 让出去。
+            // 遮罩没开或没有目标时 40ms，几乎不占 CPU。
+            let tick_ms = if on && target.is_some() {
+                if last_paint_at.elapsed().as_millis() < 120 { 2 } else { 8 }
+            } else {
+                40
+            };
+            thread::sleep(Duration::from_millis(tick_ms));
         }
     });
 }
@@ -1805,87 +1469,4 @@ mod tests {
         assert_eq!(e, 1.0);
     }
 
-    /* ---------------- 逐像素圆角：抗锯齿到底有没有做 ---------------- */
-
-    const FULL: u32 = 255 << 24;
-
-    /// 半径 0 且边界是整像素：洞内全透、洞外全遮罩，不该有多余的中间值
-    #[test]
-    fn 无圆角时边界是硬边() {
-        let hole = r(10, 5, 40, 25);
-        let mut line = vec![0u32; 60];
-        Overlay::paint_row(&mut line, 15, &hole, 0.0, 255);
-        assert_eq!(line[5], FULL, "洞外应是满遮罩");
-        assert_eq!(line[10], 0, "洞内应全透明");
-        assert_eq!(line[39], 0, "洞内应全透明");
-        assert_eq!(line[40], FULL, "洞外应是满遮罩");
-        assert_eq!(line.iter().filter(|v| **v != 0 && **v != FULL).count(), 0);
-    }
-
-    /// 这是「高清圆角」名副其实的唯一证据：圆角行上，洞的左右边界落在半像素上，
-    /// 边界像素必须拿到 0<alpha<满 的过渡值。
-    /// 旧实现把边界 round 成整数、洞内填 0、洞外填满，全程只有两种值——
-    /// 那样和 CreateRoundRectRgn 的 1px 台阶没有区别，用户开着也看不出变化。
-    #[test]
-    fn 圆角边界产生过渡像素() {
-        let hole = r(0, 0, 100, 100);
-        let mut line = vec![0u32; 100];
-        Overlay::paint_row(&mut line, 0, &hole, 20.0, 255);
-        let soft: Vec<usize> = line
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| (**v >> 24) > 0 && (**v >> 24) < 255)
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(soft.len(), 2, "左右边界各应有一个过渡像素，实得 {:?}", soft);
-        assert_eq!(line[50], 0, "洞中心必须全透明");
-        // 过渡值要真的一半左右，而不是被量化成 0 或满
-        let a = line[soft[0]] >> 24;
-        assert!(a > 60 && a < 200, "边界像素应是明显过渡值，实得 {}", a);
-    }
-
-    /// 圆角必须真的把洞收窄：第一行明显比中间行窄，中间行不受圆角影响
-    #[test]
-    fn 圆角行比中间行窄() {
-        let hole = r(0, 0, 100, 100);
-        let (a0, b0) = Overlay::span_f(0, &hole, 20.0).unwrap();
-        let (a50, b50) = Overlay::span_f(50, &hole, 20.0).unwrap();
-        assert_eq!(a50, 0.0, "中间行不该被圆角收窄");
-        assert_eq!(b50, 100.0);
-        assert!(a0 > 10.0, "圆角首行的洞左边界应明显内收，实得 {}", a0);
-        assert!(b0 < 90.0, "圆角首行的洞右边界应明显内收，实得 {}", b0);
-    }
-
-    /// 圆角半径比洞本身还大时不能算出负数宽度、更不能越界写
-    #[test]
-    fn 半径大于洞尺寸也不越界() {
-        let hole = r(2, 2, 5, 5);
-        let mut line = vec![0u32; 20];
-        Overlay::paint_row(&mut line, 2, &hole, 20.0, 180);
-        assert_eq!(line.len(), 20);
-        assert!(line.iter().all(|v| (*v >> 24) <= 180));
-    }
-
-    /// 洞整块落在本屏之外（多显示器）：整行照旧遮住，不能露出一条缝
-    #[test]
-    fn 洞在窗口外时整行仍被遮住() {
-        let hole = r(500, 10, 600, 20);
-        let mut line = vec![0u32; 100];
-        Overlay::paint_row(&mut line, 15, &hole, 8.0, 120);
-        assert!(line.iter().all(|v| *v == 120 << 24), "洞不在这块屏时应整行遮住");
-    }
-
-    /// 降级过的覆盖层必须退出"画法切换"判断，否则会每帧重建全屏窗口
-    #[test]
-    fn 降级后不再触发重建() {
-        // mode=1 区域 + 已降级，即使想要逐像素也不该判成需要重建
-        assert!(!Overlay::mode_mismatch(1, 2, true), "降级后不该再判成画法不一致");
-        // 没降级时，两套画法互切都要重建
-        assert!(Overlay::mode_mismatch(1, 2, false), "区域 → 逐像素需要重建");
-        assert!(Overlay::mode_mismatch(2, 1, false), "逐像素 → 区域需要重建");
-        // 画法已经一致 / 还没画过：不用重建
-        assert!(!Overlay::mode_mismatch(2, 2, false));
-        assert!(!Overlay::mode_mismatch(1, 1, false));
-        assert!(!Overlay::mode_mismatch(0, 2, false), "新窗口还没画过，不用重建");
-    }
 }
