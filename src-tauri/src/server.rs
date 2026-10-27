@@ -307,10 +307,14 @@ fn percent_decode(s: &str) -> String {
 fn state_json(shared: &Shared) -> String {
     let cfg = shared.config();
     let now = sched::now_local();
-    let rules: Vec<serde_json::Value> = cfg
-        .lists
+    // 关键：判定口径必须和 monitor.rs（真正在拦软件的那份）完全一致。
+    // 以前这里只看"规则自己的时间表"，把「自律时段接管」和「休息段整体暂停」漏掉了，
+    // 结果就是：自律时段里主程序在拦软件，插件却一条规则都收不到，
+    // 网站黑名单（抖音等）照常能看。
+    let dstate = crate::discipline::state(&cfg, &now);
+    let active = crate::discipline::active_rules(&cfg, &now, &dstate);
+    let rules: Vec<serde_json::Value> = active
         .iter()
-        .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
         .map(|l| {
             json!({
                 "name": l.name,
@@ -324,6 +328,9 @@ fn state_json(shared: &Shared) -> String {
         "active": !rules.is_empty(),
         "maskOn": false,
         "rules": rules,
+        // 自律时段接管中：插件据此知道"现在不是按规则自己的时间表在拦"
+        "clockOn": dstate.clock_on,
+        "clockBreak": dstate.clock_break,
         // 插件据此决定：只关标签页，还是连整个浏览器窗口一起关
         "siteCloseBrowser": cfg.settings.site_close_browser,
         "serverTime": chrono::Local::now().timestamp(),

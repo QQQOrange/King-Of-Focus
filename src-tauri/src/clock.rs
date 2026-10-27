@@ -58,7 +58,14 @@ pub fn plan_at(cfg: &Config, weekday: u32, hour: u32) -> Option<(u32, u32)> {
 
 /// 当前时刻的状态。未启用或当前小时没选中 → None
 pub fn state(cfg: &Config) -> Option<ClockState> {
-    let now = now_local();
+    state_at(cfg, now_local())
+}
+
+/// 与 `state` 一样，但可以指定"现在"。
+///
+/// 引擎（monitor）与插件服务端（server）必须用同一个"现在"来算自律状态，
+/// 否则两边会得出不同结论（插件收不到规则、黑名单形同虚设）。
+pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> {
     let weekday = now.weekday().num_days_from_monday();
     let hour = now.hour();
     let (work, brk) = plan_at(cfg, weekday, hour)?;

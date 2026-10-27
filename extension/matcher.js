@@ -45,14 +45,20 @@
     if (hashAt >= 0) p = p.slice(0, hashAt);
     if (!p) return null;
 
-    var hasPath = p.indexOf('/') >= 0;
+    // 「主机」部分：去掉 query 与结尾斜杠。
+    // 用户常常直接粘贴整条网址（https://www.douyin.com/），如果不归一化，
+    // 它会被当成"带路径的精确匹配"，于是裸域 douyin.com、少了斜杠的写法
+    // 全都拦不住——这正是"加了黑名单还能照常看"的一大原因。
+    var core = p.split('?')[0].replace(/\/+$/, '');
+    if (!core) return null;
     // 开头的 "*." 是「该域含子域」的常见写法，等价于写裸域，按域名规则处理
-    if (!hasPath && p.slice(0, 2) === '*.') p = p.slice(2);
-    var hasWild = p.indexOf('*') >= 0;
+    if (core.slice(0, 2) === '*.') core = core.slice(2);
+    var hasPath = core.indexOf('/') >= 0;
+    var hasWild = core.indexOf('*') >= 0;
 
     // 纯域名 → 该域及其所有子域（youtube.com 命中 m.youtube.com）
     if (!hasPath && !hasWild) {
-      var d = p.replace(/^\./, '').replace(/^www\./, '');
+      var d = core.replace(/^\./, '').replace(/^www\./, '');
       var colon = d.indexOf(':');
       if (colon >= 0) d = d.slice(0, colon);
       if (!d) return null;

@@ -126,3 +126,8 @@ fn html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+/// 供外部拼提示文案时转义 HTML
+pub fn esc(s: &str) -> String {
+    html(s)
+}

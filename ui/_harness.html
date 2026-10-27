@@ -53,12 +53,19 @@ const ccDay = (from, to, work, brk) => Array.from({ length: 24 }, (_, h) => ({
 const STATE = {
   config: {
     version: 2,
-    lists: [],
+    lists: [{
+      id: 'seed-study', name: '自律时间', enabled: true, mode: 'blacklist',
+      apps: [], sites: [{ id: 's1', pattern: 'www.douyin.com', label: 'www.douyin.com' }],
+      exceptions: [], schedule: [[], [], [], [], [], [], []],
+      lock: { kind: 'none', until: 0, password: '', chars: 20 },
+      color: '#ff9f43', extraProtected: [], brk: { kind: 'none', workMin: 25, breakMin: 5 },
+      hard: true,
+    }],
     settings: {
       pollMs: 1000, dryRun: false, guardBrowser: true, graceSecs: 90,
       browserGuard: { enabled: true, notify: true, graceMs: 1200, detectOnStart: true },
       port: 27315, autostart: false, runAsAdmin: false, closeToTray: true, softClose: true,
-      siteCloseBrowser: true, protected: [], theme: 'dark',
+      siteCloseBrowser: true, blockTaskmgr: true, protected: [], theme: 'dark',
       mask: { opacity: 88, margin: 0, radius: 28, durationMs: 420, follow: true, smooth: false,
         blockClick: false, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
         hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
@@ -82,7 +89,7 @@ const STATE = {
   runtime: { active: [], disciplineOn: true, blockedApps: 0, blockedSites: 0, nextChange: 3800,
     events: [], hb: 0, hbBrowser: '', locked: false, lockUntil: 0, lockUntilText: '', lockNames: [],
     breakOn: false, breakAny: false, breakLeft: 2280, notice: null, celebrate: null,
-    clockInWindow: true, clockWeekday: 2, clockBreak: false, clockOn: true, clockHour: 9, clockLeft: 2280,
+    clockInWindow: true, clockWeekday: 2, clockBreak: false, clockOn: false, clockHour: 9, clockLeft: 2280,
     clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00' },
   mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1,
     opacity: 88, margin: 0, radius: 28, duration: 420, blockClick: false, smooth: false,
@@ -181,6 +188,15 @@ window.__audit = async (view) => {
   pre.textContent = JSON.stringify(out);
   document.body.appendChild(pre);
   return out;
+};
+
+/* ---- 假后端：改运行态 / 重新拉一次 ---- */
+window.__patch = async (patch) => {
+  Object.assign(STATE.runtime, patch || {});
+  if (patch && 'testMode' in patch) STATE.testMode = patch.testMode;
+  await pull();
+  render();
+  return S.data;
 };
 
 /* ---- 交互回归：模拟拖选 / 单击 / 右键菜单，把断言结果写进 DOM ---- */
@@ -333,6 +349,48 @@ window.__itest = async () => {
   out.push(['不勾选则只改本片', (() => { const p = fc().days[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
   out.push(['不勾选不动通用值', fc().defWork === 30 && fc().defBrk === 5]);
 
+  // 10. 自律时段生效中：与纪律相关的入口必须被锁住（测试模式除外）
+  await Act.nav('clock');
+  await window.__patch({ clockOn: true });
+  await wait(200);
+  out.push(['自律时段生效中：总开关置灰', document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
+  out.push(['自律时段生效中：清空按钮禁用', document.querySelector('[data-act="clock-clear"]').disabled === true]);
+  await Act.clockEnable();
+  await wait(200);
+  out.push(['自律时段生效中：总开关关不掉', fc().enabled === true]);
+  const onCount = fc().days.reduce((n, d) => n + d.filter((p) => p.on).length, 0);
+  await Act.clockCommitRect(2, 2, 2, 2, 'sub');
+  await wait(200);
+  out.push(['自律时段生效中：不能取消已选时段', fc().days.reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
+  await Act.nav('rules');
+  await wait(200);
+  out.push(['自律时段生效中：规则开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  await Act.toggleRule('seed-study');
+  await wait(200);
+  out.push(['自律时段生效中：规则关不掉', S.data.config.lists[0].enabled === true]);
+
+  // 11. 设置页：任务管理器开关
+  await Act.nav('settings');
+  await wait(200);
+  const tm = document.querySelector('[data-act="cfg-switch"][data-k="blockTaskmgr"]');
+  out.push(['设置里有任务管理器开关', !!tm]);
+  out.push(['任务管理器开关默认开', !!(tm && tm.querySelector('input').checked)]);
+  if (tm) {
+    tm.click();
+    await wait(250);
+    out.push(['任务管理器开关可切换并保存', S.data.config.settings.blockTaskmgr === false]);
+    document.querySelector('[data-act="cfg-switch"][data-k="blockTaskmgr"]').click();
+    await wait(250);
+    out.push(['再点一次恢复开启', S.data.config.settings.blockTaskmgr === true]);
+  }
+
+  // 12. 测试模式：自律时段生效中也不该锁（测试模式的意义就是随时开关）
+  await window.__patch({ clockOn: true, testMode: true });
+  await Act.nav('clock');
+  await wait(200);
+  out.push(['测试模式下不锁总开关', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
+  await window.__patch({ testMode: false });
+
   const pre = document.createElement('pre');
   pre.id = 'itest';
   pre.textContent = JSON.stringify(out);
@@ -348,7 +406,13 @@ window.__itest = async () => {
   // 等 boot 跑完 render
   await new Promise((r) => setTimeout(r, 700));
   if (window.Act && Act.nav) {
-    try { await Act.nav(view); } catch (e) {}
+    try { await Act.nav(view); }
+    catch (e) {
+      const pre = document.createElement('pre');
+      pre.id = 'boot-err';
+      pre.textContent = String((e && (e.stack || e.message)) || e);
+      document.body.appendChild(pre);
+    }
   }
   await new Promise((r) => setTimeout(r, 500));
   // 无头截图与 dump-dom 的滚动基准拉齐，便于像素级核对
@@ -377,7 +441,16 @@ window.__itest = async () => {
     }
     return;
   }
-  if (q.get('itest')) { await window.__itest(); return; }
+  if (q.get('itest')) {
+    try { await window.__itest(); }
+    catch (e) {
+      const pre = document.createElement('pre');
+      pre.id = 'itest-err';
+      pre.textContent = String((e && (e.stack || e.message)) || e);
+      document.body.appendChild(pre);
+    }
+    return;
+  }
   await window.__audit(view);
 })();
 </script>

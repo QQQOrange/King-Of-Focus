@@ -81,13 +81,17 @@ function condOf(pattern) {
     return { urlFilter: '*', resourceTypes: ['main_frame'] };
   }
   const bare = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  // 主机部分：去掉 query 与结尾斜杠。
+  // 用户常常直接粘贴整条网址（https://www.douyin.com/），不归一化的话它会变成
+  // "带路径的精确匹配"，裸域 douyin.com 反而拦不住——DNR 与 JS 判定必须一致。
+  const core = bare.split('?')[0].replace(/\/+$/, '');
   const hostOnly = (h) => ({
     requestDomains: [h.replace(/^\./, '').replace(/^www\./, '')],
     resourceTypes: ['main_frame'],
   });
-  if (!bare.includes('/')) {
-    if (bare.slice(0, 2) === '*.') return hostOnly(bare.slice(2)); // 含裸域 + 子域
-    if (!bare.includes('*')) return hostOnly(bare);
+  if (core && !core.includes('/')) {
+    if (core.slice(0, 2) === '*.') return hostOnly(core.slice(2)); // 含裸域 + 子域
+    if (!core.includes('*')) return hostOnly(core);
   }
   const body = bare.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
   try {

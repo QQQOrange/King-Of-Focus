@@ -84,6 +84,34 @@ function toast(msg, kind) {
   setTimeout(() => el.remove(), 3200);
 }
 
+/* ---------------- 自律权限 ----------------
+ *
+ * 非测试模式下，自律时段（专注段）生效时，"关掉自律"这件事本身要被拦住：
+ * 不能关规则、不能关「自律时段」总开关、不能取消已选时段。
+ * 界面先置灰一道，后端 save_config 再拦一道——直接调命令也绕不过去。
+ */
+function settingsFrozen() {
+  const d = S.data;
+  if (!d) return false;
+  if (d.testMode) return false;        // 测试模式的意义就是"随时开关"
+  const rt = d.runtime || {};
+  return !!(rt.clockOn || rt.locked);
+}
+
+/** 自律时段（专注段）正在生效 */
+function clockRunning() {
+  const d = S.data;
+  if (!d || d.testMode) return false;
+  return !!(d.runtime && d.runtime.clockOn);
+}
+
+/** 界面层拦一道：返回 true 表示"这次操作被拒绝了" */
+function guardDiscipline(what) {
+  if (!settingsFrozen()) return false;
+  toast(`自律时段生效中，${what || '这个设置'}改不了；等这一段结束再改`, 'err');
+  return true;
+}
+
 /* ---------------- 主题 ---------------- */
 const themeMedia = window.matchMedia('(prefers-color-scheme: light)');
 
@@ -317,7 +345,8 @@ function viewRules() {
   if (!d) return '';
   const lists = d.config.lists;
   const activeNames = new Set((d.runtime.active || []).map((a) => a.name));
-  const locked = !!d.runtime.locked;
+  const hardLocked = !!d.runtime.locked;
+  const locked = settingsFrozen();      // 固化中 或 自律时段生效中
   const cards = lists.length
     ? lists.map((l) => `
       <div class="rule-card ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
@@ -335,9 +364,9 @@ function viewRules() {
             <span class="muted">${esc(schedSummary(l.schedule))}</span></div>
         </div>
         <div class="rule-actions">
-          <div class="switch" data-act="toggle-rule" data-id="${l.id}"
+          <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
                style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
-               title="${locked ? '自律固化中，开关已锁定' : '启用 / 停用'}">
+               title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，不能关闭规则') : '启用 / 停用'}">
             <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
           </div>
           <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}"
@@ -346,17 +375,24 @@ function viewRules() {
       </div>`).join('')
     : '<div class="empty">还没有规则。点右上角「新建规则」开始。</div>';
 
-  return `
-  ${locked ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
+  const banner = hardLocked
+    ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
     <b style="color:var(--red)">🔒 自律固化中</b>：${esc((d.runtime.lockNames || []).join('、'))} 正在生效，
     <b>${esc(d.runtime.lockUntilText || '时段结束')}</b> 之前所有开关都已置灰，改不了也关不掉。
-  </div>` : ''}
+  </div>`
+    : (clockRunning() ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
+    <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间不能关闭或删除规则，
+    也不能关掉「自律时段」本身——等这一段结束（或用积分解锁）之后才能改。
+  </div>` : '');
+
+  return `
+  ${banner}
   <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:16px">
     <div class="hint" style="max-width:640px">
       一条规则 = 一个黑名单（或白名单）+ 一张周时间表。<b>只有落在时间表里的时段，规则才会生效</b>；
       时间表全空表示 7×24 小时生效。软件与网站分别维护，互不影响。
     </div>
-    <button class="btn btn-primary" data-act="new-rule" ${locked ? 'disabled' : ''}>+ 新建规则</button>
+    <button class="btn btn-primary" data-act="new-rule" ${hardLocked ? 'disabled' : ''}>+ 新建规则</button>
   </div>
   <div style="display:flex;flex-direction:column;gap:10px">${cards}</div>`;
 }
@@ -753,6 +789,11 @@ function viewClock() {
   const hourNow = new Date().getHours();
   const n = clockCountOn(fc);
 
+  // 自律时段生效中（且非测试模式）：与纪律相关的控件置灰
+  const frozen = settingsFrozen();
+  // 「时段内让规则立即生效」只有"关掉"是削弱纪律，"打开"是加强 → 只在已打开时置灰
+  const applyFrozen = frozen && fc.applyRules;
+
   // 当前状态一句话
   let stateTxt = '当前不在生效时段';
   let stateCls = '';
@@ -807,8 +848,14 @@ function viewClock() {
           规则里的黑白名单、浏览器巡检、专注遮罩都会跟着这段状态走。
         </div>
       </div>
-      <div class="switch" data-act="clock-enable"><input type="checkbox" ${fc.enabled ? 'checked' : ''}><i></i></div>
+      <div class="switch${frozen ? ' locked' : ''}" data-act="clock-enable"
+           title="${frozen ? '自律时段生效中，不能关闭' : '启用 / 停用自律时段'}"><input type="checkbox" ${fc.enabled ? 'checked' : ''}><i></i></div>
     </div>
+
+    ${frozen ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin:14px 0 0">
+      <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间不能关掉「自律时段」本身、不能取消已选中的时段、
+      也不能改这一小时的专注 / 休息时长；其它时段照常可以安排。等这一段结束（或用积分解锁）之后再改。
+    </div>` : ''}
 
     <div class="clock-state ${stateCls}">
       <span class="cs-dot"></span>
@@ -832,7 +879,7 @@ function viewClock() {
     </div>
     <div class="tl-legend">
       <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长</b>。</span>
-      <button class="btn btn-sm" data-act="clock-clear">清空全部</button>
+      <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
     </div>
     <div class="tl-range">已选：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
   </div>
@@ -850,7 +897,8 @@ function viewClock() {
           <div style="font-size:12.5px">时段内让已启用的规则立即生效</div>
           <div class="hint" style="margin-top:4px">关掉后，自律时段只负责"进入自律状态"（遮罩 / HUD / 积分 / 成绩），规则仍按自己的时段拦截。</div>
         </div>
-        <div class="switch" data-act="clock-apply-rules"><input type="checkbox" ${fc.applyRules ? 'checked' : ''}><i></i></div>
+        <div class="switch${applyFrozen ? ' locked' : ''}" data-act="clock-apply-rules"
+             title="${applyFrozen ? '自律时段生效中，不能关掉' : '切换'}"><input type="checkbox" ${fc.applyRules ? 'checked' : ''}><i></i></div>
       </div>
       <div style="margin-top:12px" class="hint">
         优先级（从高到低）：<b>休息段</b>（一律放行） &gt; 自律时段 / 规则时段 &gt; 手动开关。<br>
@@ -1767,6 +1815,7 @@ function viewSettings() {
     ${sw('softClose', st.softClose, '先温和关闭', '先给程序发关闭信号，0.7 秒不退再强制结束，能保住一部分现场')}
     ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中黑名单网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
     ${sw('guardBrowser', st.guardBrowser, '浏览器守护', '要拦网页时，如果插件失联，直接关掉浏览器（需先装插件）')}
+    ${sw('blockTaskmgr', st.blockTaskmgr !== false, '自律期间禁止打开任务管理器', '自律模式生效时（自律时段专注段 / 规则生效中），一发现任务管理器就关掉；「固化」锁定期间无论如何都会关')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
       <div><div style="font-size:12.5px">扫描间隔</div><div class="hint" style="margin-top:3px">越小越灵敏，占用也越高</div></div>
       <div class="row" style="align-items:center;gap:8px">
@@ -2114,6 +2163,8 @@ const Act = window.Act = {
     const l = S.data.config.lists.find((x) => x.id === id);
     if (!l) return;
     if (l.lock && l.lock.kind !== 'none' && l.enabled) { toast('这条规则已锁定，不能直接关闭', 'err'); render(); return; }
+    // 自律时段生效中：不能把已经生效的规则关掉（打开新规则不受限制）
+    if (l.enabled && settingsFrozen()) { guardDiscipline('关掉规则'); render(); return; }
     l.enabled = !l.enabled;
     await saveConfig();
     render();
@@ -2123,6 +2174,7 @@ const Act = window.Act = {
     const l = S.data.config.lists.find((x) => x.id === id);
     if (!l) return;
     if (l.lock && l.lock.kind !== 'none') { toast('已锁定的规则不能删除', 'err'); return; }
+    if (settingsFrozen()) { guardDiscipline('删除规则'); return; }
     if (!confirm(`确定删除规则「${l.name}」？`)) return;
     S.data.config.lists = S.data.config.lists.filter((x) => x.id !== id);
     await saveConfig();
@@ -2847,6 +2899,8 @@ const Act = window.Act = {
   /* ---- 自律时段（24 段） ---- */
   async clockEnable() {
     const fc = clockCfg();
+    // 自律时段生效中：不能把总开关关掉（重新打开是加强，不拦）
+    if (fc.enabled && settingsFrozen()) { guardDiscipline('关闭「自律时段」'); render(); return; }
     fc.enabled = !fc.enabled;
     await saveConfig();
     render();
@@ -2860,6 +2914,8 @@ const Act = window.Act = {
 
   async clockApplyRules() {
     const fc = clockCfg();
+    // 生效中不能关掉"时段内让规则立即生效"（打开是加强，不拦）
+    if (fc.applyRules && settingsFrozen()) { guardDiscipline('关闭「时段内让规则立即生效」'); render(); return; }
     fc.applyRules = !fc.applyRules;
     await saveConfig();
     render();
@@ -2868,6 +2924,7 @@ const Act = window.Act = {
 
   async clockClear() {
     const fc = clockCfg();
+    if (settingsFrozen()) { guardDiscipline('清空已选时段'); return; }
     let n = 0;
     fc.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; n++; } }));
     await saveConfig();
@@ -2878,6 +2935,8 @@ const Act = window.Act = {
   /** 提交一次框选：矩形区域 [d0..d1]×[h0..h1] 整体选中（add）或取消（sub） */
   async clockCommitRect(d0, d1, h0, h1, mode) {
     const fc = clockCfg();
+    // 生效中不能取消已选中的时段（新增时段是加强，不拦）
+    if (mode === 'sub' && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
     const on = mode === 'add';
     let n = 0;
     for (let d = d0; d <= d1; d++) {
@@ -2898,6 +2957,13 @@ const Act = window.Act = {
    *  defToo = 同时把这一套更新成「通用」时长，之后新选的时段沿用 */
   async clockSetWB(d0, d1, h0, h1, w, b, defToo) {
     const fc = clockCfg();
+    // 生效中不能改"正在跑的这一小时"的时长（否则等于用改时长逃逸）
+    const wdNow = (new Date().getDay() + 6) % 7;
+    const hourNow = new Date().getHours();
+    if (settingsFrozen() && d0 <= wdNow && wdNow <= d1 && h0 <= hourNow && hourNow <= h1) {
+      guardDiscipline('改这一小时的专注 / 休息时长');
+      return;
+    }
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
@@ -2912,8 +2978,6 @@ const Act = window.Act = {
     await saveConfig();
     render();
     // 改到了「正在进行中的时段」：它会立刻按新时长重新划分专注 / 休息，提醒一句
-    const wdNow = (new Date().getDay() + 6) % 7;
-    const hourNow = new Date().getHours();
     const liveTip = (d0 <= wdNow && wdNow <= d1 && h0 <= hourNow && hourNow <= h1)
       ? '；当前进行中的时段会立即按新时长重新划分'
       : '';
@@ -2932,14 +2996,8 @@ const Act = window.Act = {
     fc.defBrk = b;
     await saveConfig();
     render();
-    // 如果当前正处在某个选中时段里，提醒一句：这个时段会立刻按新时长重新划分
-    const wdNow = (new Date().getDay() + 6) % 7;
-    const hourNow = new Date().getHours();
-    const cur = fc.days[wdNow] && fc.days[wdNow][hourNow];
-    const liveTip = cur && cur.on
-      ? `；当前时段会立即按新时长重新划分（本小时 ${pad(hourNow)}:00–${pad(w)} 专注${b ? `、${pad(hourNow)}:${pad(w)}–${pad(w + b)} 休息` : ''}）`
-      : '';
-    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用${liveTip}`, 'ok');
+    // 通用时长只作用于"之后新选的时段"；已经选中的时段保留各自的时长
+    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用（已选中的时段保持原样）`, 'ok');
   },
 
   /* ---- 自动更新 ---- */

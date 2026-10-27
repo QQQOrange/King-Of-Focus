@@ -179,6 +179,12 @@ pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(),
             if info.until_text.is_empty() { "本时段".to_string() } else { info.until_text }
         ));
     }
+    // 自律时段内：拒绝"削弱纪律"的改动（关规则、关自律时段、取消已选时段……）
+    // 界面上的开关虽然已经置灰，但真正把关的是这一层——直接调命令也绕不过去。
+    let old = shared.config();
+    if let Some(why) = crate::guard::discipline_violation(&old, &config) {
+        return Err(why);
+    }
     let mut c = config;
     cfg::sanitize(&mut c);
     c.updated_at = chrono::Local::now().timestamp();
@@ -774,8 +780,9 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
-    if crate::guard::is_locked(&shared) {
-        return Err("自律固化中，结束前无法退出".into());
+    // 自律时段内不能退出：拦截并给出原因，不跳转到主页面
+    if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
+        return Err(why);
     }
     crate::guard::stop_guard();
     app.exit(0);
@@ -800,7 +807,9 @@ pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Val
     let info = crate::guard::lock_info(&c);
     if !info.locked {
         let now = crate::sched::now_local();
-        let running = c.lists.iter().any(|l| l.enabled && crate::sched::is_active(&l.schedule, &now));
+        let d = crate::discipline::state(&c, &now);
+        // 自律时段（专注段）也算"正在进行"，口径与引擎保持一致
+        let running = d.clock_on || !crate::discipline::active_rules(&c, &now, &d).is_empty();
         if !running {
             return Err("当前没有正在进行的自律时段，不需要解锁".into());
         }

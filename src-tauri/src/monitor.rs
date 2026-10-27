@@ -68,41 +68,18 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             // ---- 「自律时段」：0–24 点的 24 段计划 ----
             // 它和规则时段不是二选一：时钟选中且 applyRules 打开时，规则直接生效
             // （忽略规则自己的时段），时钟的休息段则把拦截整体暂停。
-            let clock = crate::clock::state(&cfg);
-            let clock_in = clock.map(|c| c.in_window).unwrap_or(false);
-            let clock_break = clock.map(|c| c.in_break).unwrap_or(false);
-            let clock_on = clock.map(|c| c.focusing()).unwrap_or(false);
-            let clock_all = clock_in && !clock_break && cfg.settings.focus_clock.apply_rules;
-            let hard_pause = clock_break && cfg.settings.focus_clock.apply_rules;
+            // 判定统一放在 discipline 模块，插件服务端（server.rs）用的是同一份，
+            // 否则会出现"主程序在拦软件、插件却收不到规则"的黑名单失效。
+            let dstate = crate::discipline::state(&cfg, &now);
+            let clock_in = dstate.clock_in;
+            let clock_break = dstate.clock_break;
+            let clock_on = dstate.clock_on;
 
             // ---- 生效中的规则（休息段内的规则暂时放行）----
-            let active: Vec<RuleList> = if hard_pause {
-                Vec::new()
-            } else {
-                cfg
-                    .lists
-                    .iter()
-                    .filter(|l| {
-                        if !l.enabled {
-                            return false;
-                        }
-                        if clock_all {
-                            return true;
-                        }
-                        sched::is_active(&l.schedule, &now)
-                            && !sched::is_break_now(&l.schedule, &l.brk, &now)
-                    })
-                    .cloned()
-                    .collect()
-            };
+            let active: Vec<RuleList> = crate::discipline::active_rules(&cfg, &now, &dstate);
 
             // 当前是否有规则处于「休息」
-            let on_break = clock_break
-                || cfg.lists.iter().any(|l| {
-                    l.enabled
-                        && sched::is_active(&l.schedule, &now)
-                        && sched::is_break_now(&l.schedule, &l.brk, &now)
-                });
+            let on_break = dstate.on_break;
 
             let next_change = cfg
                 .lists
@@ -114,15 +91,16 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 .unwrap_or(0);
 
             // 番茄阶段（优先用小时段的计划，其次是第一条带番茄的生效规则）
-            let (break_now, break_left) = match clock {
-                Some(c) => (c.in_break, c.left),
-                None => cfg
+            let (break_now, break_left) = if dstate.clock_in {
+                (dstate.clock_break, dstate.clock_left)
+            } else {
+                cfg
                     .lists
                     .iter()
                     .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
                     .map(|l| sched::pomodoro_state(&l.schedule, &l.brk, &now))
                     .next()
-                    .unwrap_or((false, 0)),
+                    .unwrap_or((false, 0))
             };
 
             let mut just_finished = false;
@@ -146,9 +124,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     rt.clock_in_window = clock_in;
                     rt.clock_break = clock_break;
                     rt.clock_on = clock_on;
-                    rt.clock_weekday = clock.map(|c| c.weekday).unwrap_or(7);
-                    rt.clock_hour = clock.map(|c| c.hour).unwrap_or(24);
-                    rt.clock_left = clock.map(|c| c.left).unwrap_or(0);
+                    rt.clock_weekday = dstate.clock_weekday;
+                    rt.clock_hour = dstate.clock_hour;
+                    rt.clock_left = dstate.clock_left;
                     let now_ts = chrono::Local::now().timestamp();
                     let running = !active.is_empty() || lock.locked || clock_on;
                     if running && rt.since == 0 {
@@ -280,7 +258,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             pending.retain(|_, t| t.elapsed().as_secs() < 45);
             logged.retain(|_, t| t.elapsed().as_secs() < 20);
 
-            if !active.is_empty() || lock.locked {
+            // 自律模式是否正在生效：规则生效中 / 时段专注中 / 固化锁定中
+            let discipline_on = !active.is_empty() || lock.locked || clock_on;
+
+            if discipline_on {
                 let apps = proc::screen_apps();
 
                 // 1) 锁定期间：封杀任务管理器一类的"逃生工具"
@@ -301,6 +282,37 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                                     format!("{} — {}", a.name, a.title),
                                     "自律固化".into(),
                                     "锁定期间禁止打开此类工具".into(),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // 1b) 自律期间：按设置封杀任务管理器（用户可在「设置」里关掉这一项）
+                //     固化锁定时无论如何都封（上面那段），这里管的是普通自律时段。
+                if !lock.locked && cfg.settings.block_taskmgr {
+                    for a in apps.iter() {
+                        if a.pid == self_pid {
+                            continue;
+                        }
+                        if a.name != "taskmgr" {
+                            continue;
+                        }
+                        let first = logged
+                            .get(&a.pid)
+                            .map(|t| t.elapsed().as_secs() >= 20)
+                            .unwrap_or(true);
+                        proc::terminate(a.pid);
+                        if first {
+                            logged.insert(a.pid, Instant::now());
+                            let label = format!("{} — {}", a.name, a.title);
+                            crate::notify::blocked_app(&app, &label, "任务管理器");
+                            if !cfg.settings.dry_run {
+                                shared.log(
+                                    "app",
+                                    label,
+                                    "任务管理器".into(),
+                                    "自律期间禁止打开任务管理器".into(),
                                 );
                             }
                         }

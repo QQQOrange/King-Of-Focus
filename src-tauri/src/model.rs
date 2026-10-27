@@ -517,6 +517,8 @@ pub struct Settings {
     pub soft_close: bool,
     /// 网页命中黑名单时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
     pub site_close_browser: bool,
+    /// 自律模式生效期间是否禁止打开任务管理器（固化锁定时始终禁止，与本开关无关）
+    pub block_taskmgr: bool,
     /// 全局保护进程名（强制模式不拦截）
     pub protected: Vec<String>,
     /// 外观：system | dark | light
@@ -553,6 +555,7 @@ impl Default for Settings {
             close_to_tray: true,
             soft_close: true,
             site_close_browser: true,
+            block_taskmgr: true,
             protected: default_protected(),
             theme: "system".into(),
             mask: MaskCfg::default(),

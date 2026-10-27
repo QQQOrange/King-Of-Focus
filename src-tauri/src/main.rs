@@ -5,6 +5,7 @@ mod browsers;
 mod cfg;
 mod clock;
 mod cmds;
+mod discipline;
 mod guard;
 mod mask;
 mod matcher;
@@ -136,15 +137,22 @@ fn main() {
                         }
                     }
                     "quit" => {
-                        if crate::guard::lock_info(&sh_menu.config()).locked {
-                            sh_menu.say("自律固化中，结束前无法退出");
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                        match crate::guard::exit_blocked(&sh_menu.config()) {
+                            Some(why) => {
+                                // 自律时段内：拦截退出。
+                                // 以前这里是"提示 + 把主界面拉到前面"，用户点了退出却
+                                // 看到界面自己跳出来——现在只弹一张不抢焦点的提示卡。
+                                let body = format!(
+                                    "<b>{}</b><br>这段时间是自律时段，结束前程序不能退出。",
+                                    crate::notify::esc(&why)
+                                );
+                                crate::notify::toast(&app, "app", "现在不能退出", &body, "自律模式", 5);
+                                sh_menu.say(why);
                             }
-                        } else {
-                            crate::guard::stop_guard();
-                            app.exit(0);
+                            None => {
+                                crate::guard::stop_guard();
+                                app.exit(0);
+                            }
                         }
                     }
                     _ => {}
@@ -171,6 +179,7 @@ fn main() {
             if let Some(win) = app.get_webview_window("main") {
                 let sh = shared.clone();
                 let w2 = win.clone();
+                let app_h = win.app_handle().clone();
                 win.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         if sh.mask.on.load(Ordering::Relaxed) {
@@ -180,6 +189,15 @@ fn main() {
                         if sh.config().settings.close_to_tray {
                             api.prevent_close();
                             let _ = w2.hide();
+                        } else if let Some(why) = crate::guard::exit_blocked(&sh.config()) {
+                            // 自律时段内：连"关窗口"这条退路也不给。
+                            // 窗口保持打开，只弹一张不抢焦点的提示卡说明原因。
+                            api.prevent_close();
+                            let body = format!(
+                                "<b>{}</b><br>这段时间是自律时段，结束前程序不能退出。",
+                                crate::notify::esc(&why)
+                            );
+                            crate::notify::toast(&app_h, "app", "现在不能退出", &body, "自律模式", 5);
                         }
                     }
                 });
