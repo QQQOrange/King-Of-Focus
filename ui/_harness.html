@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>KOF UI harness</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><img src="logo.png" alt="KOF" /></div>
+      <div class="brand-text">
+        <div class="brand-name">King of Focus</div>
+        <div class="brand-sub">专注由你掌控</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav">
+      <button class="nav-item" data-view="overview"><span class="ico">◎</span>总览</button>
+      <button class="nav-item" data-view="rules"><span class="ico">☰</span>规则</button>
+      <button class="nav-item" data-view="clock"><span class="ico">◷</span>自律时段</button>
+      <button class="nav-item" data-view="mask"><span class="ico">▣</span>专注遮罩</button>
+      <button class="nav-item" data-view="browsers"><span class="ico">▤</span>浏览器插件</button>
+      <button class="nav-item" data-view="settings"><span class="ico">⚙</span>设置</button>
+    </nav>
+    <div class="side-foot">
+      <div id="sideStatus" class="side-status"></div>
+      <div class="side-version" id="sideVersion">v1.0.0</div>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="pageTitle">总览</div>
+      <div class="topbar-right">
+        <button class="btn btn-sm" data-act="cycle-theme" id="themeBtn" title="切换外观">◐ 跟随系统</button>
+        <div class="pill" id="statePill">—</div>
+        <div class="clock" id="clock">--:--</div>
+      </div>
+    </header>
+    <div class="test-banner hidden" id="testBanner"></div>
+    <section class="content" id="content"></section>
+  </main>
+</div>
+<div class="modal-root" id="modalRoot"></div>
+<div class="toast-root" id="toastRoot"></div>
+
+<script>
+/* ---- 假 Tauri：只回放一份固定的 get_state，用来量布局 ---- */
+/* 一周七天的自律计划：工作日 8–12 点，周六 9–11 点，周日全休 */
+const ccDay = (from, to, work, brk) => Array.from({ length: 24 }, (_, h) => ({
+  on: h >= from && h < to, work, brk,
+}));
+const STATE = {
+  config: {
+    version: 2,
+    lists: [],
+    settings: {
+      pollMs: 1000, dryRun: false, guardBrowser: true, graceSecs: 90,
+      browserGuard: { enabled: true, notify: true, graceMs: 1200, detectOnStart: true },
+      port: 27315, autostart: false, runAsAdmin: false, closeToTray: true, softClose: true,
+      siteCloseBrowser: true, protected: [], theme: 'dark',
+      mask: { opacity: 88, margin: 0, radius: 28, durationMs: 420, follow: true, smooth: false,
+        blockClick: false, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
+        hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
+      focusClock: {
+        enabled: true, applyRules: true,
+        days: [ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10),
+          ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(9, 11, 45, 15), ccDay(0, 0, 50, 10)],
+      },
+      stats: { enabled: true, countIdle: false, autoDaily: true, autoWeekly: true,
+        autoMonthly: true, autoYearly: true, customDays: 0, customAnchor: '', retentionDays: 400 },
+      sync: { enabled: false, url: '', username: '', password: '', auto: true, autoMinutes: 30,
+        remoteFile: 'kof.json', device: 'PC', lastSync: 0, lastError: '', lastResult: '' },
+      update: { enabled: true, repo: 'x/y', token: '', skippedVersion: '', lastCheck: 0 },
+      hud: { enabled: true, quoteMinutes: 60, offsetX: 20, offsetY: 20 },
+      notify: { enabled: true, workBefore: 5, breakBefore: 2, breakNotify: true, focusWindow: false },
+      backup: { password: '', autoOnStart: false },
+    },
+    updatedAt: 0,
+    points: { balance: 12, totalEarned: 40, unlockUntil: 0, unlockCountToday: 0, day: '' },
+  },
+  runtime: { active: [], disciplineOn: true, blockedApps: 0, blockedSites: 0, nextChange: 3800,
+    events: [], hb: 0, hbBrowser: '', locked: false, lockUntil: 0, lockUntilText: '', lockNames: [],
+    breakOn: false, breakAny: false, breakLeft: 2280, notice: null, celebrate: null,
+    clockInWindow: true, clockWeekday: 2, clockBreak: false, clockOn: true, clockHour: 9, clockLeft: 2280,
+    clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00' },
+  mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1,
+    opacity: 88, margin: 0, radius: 28, duration: 420, blockClick: false, smooth: false,
+    smoothFallback: false, follow: true, hotkey: 'Ctrl+Alt+K', hotkeyOk: true,
+    followSchedule: true, previewLeft: 0, notice: null },
+  admin: true, testMode: false, dataDir: 'D:\\x', browsers: [], browserGuard: {},
+  extFolder: 'D:\\software\\myself\\extension',
+  extInfo: { path: 'D:\\software\\myself\\extension', exists: true,
+    crx: 'D:\\software\\myself\\KingOfFocus-Extension.crx', exeDir: 'D:\\software\\myself',
+    source: '程序同级 extension' },
+  pid: 1, points: { balance: 12, earned: 40, unlockUntil: 0, count: 0, price: 15 },
+  version: '0.0.1', buildDate: '2026-10-27', developer: 'QQQOrange',
+  repoUrl: 'https://github.com/QQQOrange/King-Of-Focus', tokenDocUrl: '',
+  appName: 'King of Focus', hasToken: false, configPath: 'D:\\x\\config.json',
+  dataPath: 'D:\\x', now: '2026-10-27 09:00', weekday: '1',
+};
+window.__TAURI__ = {
+  core: { invoke: async (cmd, args) => {
+    if (cmd === 'get_state') return JSON.parse(JSON.stringify(STATE));
+    // 让假后端真的"记住"配置，save_config → pull 闭环，便于交互回归
+    if (cmd === 'save_config') { STATE.config = JSON.parse(JSON.stringify(args.config)); return null; }
+    if (cmd === 'browsers_scan') return { list: [], installed: 0, broken: 0 };
+    if (cmd === 'browser_ext_info') return STATE.extInfo;
+    if (cmd === 'mask_diag') return 'on=true painted=true 模式=区域挖洞';
+    if (cmd === 'browser_open_ext') return '已打开 Microsoft Edge 的扩展管理页';
+    if (cmd === 'browser_open_folder') return '已打开扩展目录';
+    if (cmd === 'update_quota') return { ok: false };
+    if (cmd === 'report_list') return [];
+    if (cmd === 'backup_list') return [];
+    if (cmd === 'update_check') return { ok: true, newer: false, current: '0.0.1', latest: '0.0.1' };
+    return null;
+  } },
+  event: { listen: async () => () => {} },
+};
+
+/* ---- 布局审计：把结果写进 DOM，供 --dump-dom 抓取 ---- */
+window.__audit = async (view) => {
+  const out = { view, w: innerWidth, overflow: [], overlap: [], cells: 0, issues: [] };
+  const content = document.querySelector('#content');
+  if (content.scrollWidth > content.clientWidth + 1) {
+    out.overflow.push(`#content ${content.scrollWidth}>${content.clientWidth}`);
+  }
+  document.querySelectorAll('.card,.hrow,.tl,.cc,.mask-hero,.ext-box,.brow,.clock-state,.cc-legend').forEach((el) => {
+    if (el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0) {
+      out.overflow.push((el.className || el.tagName) + ` ${el.scrollWidth}>${el.clientWidth}`);
+    }
+  });
+  // 自律时段柱状图：7 列 × 24 行
+  const cells = [...document.querySelectorAll('.cc-cell')];
+  out.cells = cells.length;
+  out.days = document.querySelectorAll('.cc-dh').length;
+  out.hours = document.querySelectorAll('.cc-hlab').length;
+  const rs = cells.map((c) => c.getBoundingClientRect());
+  for (let i = 0; i < rs.length; i++) {
+    if (rs[i].width < 6) out.issues.push(`cell ${i} width=${rs[i].width.toFixed(1)}`);
+    if (rs[i].height < 8) out.issues.push(`cell ${i} height=${rs[i].height.toFixed(1)}`);
+  }
+  // 同一行（top 相同）内，左右相邻格子不应互相覆盖
+  const byRow = new Map();
+  rs.forEach((r, i) => {
+    const key = Math.round(r.top);
+    if (!byRow.has(key)) byRow.set(key, []);
+    byRow.get(key).push(i);
+  });
+  out.rows = byRow.size;
+  byRow.forEach((idxs) => {
+    idxs.sort((a, b) => rs[a].left - rs[b].left);
+    for (let k = 1; k < idxs.length; k++) {
+      if (rs[idxs[k]].left < rs[idxs[k - 1]].right - 0.6) out.overlap.push(`cell ${idxs[k - 1]}/${idxs[k]}`);
+    }
+  });
+  // 网格几何：供截图像素级核对（网格位置 + 格子尺寸 + 每列 x）
+  if (rs.length) {
+    const g = document.querySelector('#ccGrid').getBoundingClientRect();
+    out.grid = {
+      x: +g.left.toFixed(1), y: +g.top.toFixed(1), w: +g.width.toFixed(1), h: +g.height.toFixed(1),
+      cellW: +rs[0].width.toFixed(1), cellH: +rs[0].height.toFixed(1),
+      cols: [...new Set(rs.map((r) => Math.round(r.left)))].sort((a, b) => a - b),
+    };
+  }
+  // 通用：同层兄弟元素垂直方向不应互相覆盖
+  document.querySelectorAll('.card').forEach((card, ci) => {
+    const kids = [...card.children].filter((k) => k.offsetHeight > 0);
+    for (let i = 1; i < kids.length; i++) {
+      const a = kids[i - 1].getBoundingClientRect();
+      const b = kids[i].getBoundingClientRect();
+      if (b.top < a.bottom - 1.5) {
+        out.overlap.push(`card${ci} ${kids[i - 1].className || kids[i - 1].tagName} over ${kids[i].className || kids[i].tagName}`);
+      }
+    }
+  });
+  const pre = document.createElement('pre');
+  pre.id = 'audit';
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+  return out;
+};
+
+/* ---- 交互回归：模拟拖选 / 单击 / 右键菜单，把断言结果写进 DOM ---- */
+window.__itest = async () => {
+  const out = [];
+  const cell = (d, h) => document.querySelector(`.cc-cell[data-d="${d}"][data-h="${h}"]`);
+  const fire = (type, el, opts = {}) =>
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
+  const fc = () => S.data.config.settings.focusClock;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 1. 二维拖选：周三 13 点 → 周五 15 点（3 天 × 3 小时 = 9 段，原本全关）
+  fire('mousedown', cell(2, 13));
+  fire('mouseover', cell(2, 14));
+  fire('mouseover', cell(4, 15));
+  const liveDuringDrag = $('#clockLive').textContent;
+  fire('mouseup', document);
+  await wait(250);
+  out.push(['拖选 9 段全开', fc().days.slice(2, 5).every((day) => [13, 14, 15].every((h) => day[h].on))]);
+  out.push(['拖选不碰区外', !fc().days[1][13].on && !fc().days[5][13].on && !fc().days[2][12].on && !fc().days[2][16].on]);
+  out.push(['区外原有保留', fc().days[0][8].on === true]);
+  out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
+
+  // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）
+  fire('contextmenu', cell(3, 14), { clientX: 420, clientY: 420 });
+  await wait(120);
+  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent, '周三 – 周五 13:00 – 16:00']);
+  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, '9']);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+
+  // 2. 单击关格：周一 8 点（原本开着）→ 关
+  fire('mousedown', cell(0, 8));
+  fire('mouseup', document);
+  await wait(250);
+  out.push(['单击关闭单格', fc().days[0][8].on === false]);
+  out.push(['单击不影响同列其它格', fc().days[0][9].on === true]);
+
+  // 3. 右键菜单：周六 14 点（原本关）→ 设为 45/15
+  fire('contextmenu', cell(5, 14), { clientX: 420, clientY: 420 });
+  await wait(120);
+  const menu = document.querySelector('.cc-menu');
+  out.push(['右键弹出菜单', !!menu]);
+  if (menu) {
+    out.push(['目标默认这一格', $('#ccTgt').textContent, '周六 14:00 – 15:00']);
+    $('#ccW').value = '45';
+    $('#ccB').value = '15';
+    $('#ccApply').click();
+    await wait(250);
+  }
+  out.push(['右键设置生效', (() => { const p = fc().days[5][14]; return p.on && p.work === 45 && p.brk === 15; })()]);
+  out.push(['应用后菜单关闭', !document.querySelector('.cc-menu')]);
+
+  // 4. 右键 + "这一列"：周日 20 点 → 60/0 套用到周日全天
+  fire('contextmenu', cell(6, 20), { clientX: 420, clientY: 420 });
+  await wait(120);
+  document.querySelector('[data-scope="col"]').click();
+  out.push(['整列目标文案', $('#ccTgt').textContent, '周日 00:00 – 24:00']);
+  $('#ccW').value = '60';
+  $('#ccB').value = '0';
+  $('#ccApply').click();
+  await wait(250);
+  out.push(['周日整列 24 段全开且不休息', fc().days[6].every((p) => p.on && p.work === 60 && p.brk === 0)]);
+
+  // 5. 快捷预设按钮 + work+brk 超限夹紧
+  fire('contextmenu', cell(3, 6), { clientX: 420, clientY: 420 });
+  await wait(120);
+  document.querySelector('[data-wb="25,5"]').click();
+  out.push(['快捷预设填入', $('#ccW').value, '25']);
+  $('#ccW').value = '58';
+  $('#ccB').value = '30';
+  $('#ccApply').click();
+  await wait(250);
+  const p36 = fc().days[3][6];
+  out.push(['work+brk 夹紧到 60', p36.work + p36.brk === 60 && p36.work === 58 && p36.brk === 2]);
+
+  // 6. Escape 关菜单
+  fire('contextmenu', cell(1, 6), { clientX: 420, clientY: 420 });
+  await wait(120);
+  out.push(['Escape 前菜单在', !!document.querySelector('.cc-menu')]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+  out.push(['Escape 后菜单关', !document.querySelector('.cc-menu')]);
+
+  // 7. 清空全部
+  document.querySelector('[data-act="clock-clear"]').click();
+  await wait(250);
+  out.push(['清空全部', fc().days.every((day) => day.every((p) => !p.on))]);
+  out.push(['清空后摘要', $('#clockLive').textContent, '未选择任何时段']);
+
+  const pre = document.createElement('pre');
+  pre.id = 'itest';
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+  return out;
+};
+</script>
+<script src="app.js"></script>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const view = q.get('view') || 'clock';
+  // 等 boot 跑完 render
+  await new Promise((r) => setTimeout(r, 700));
+  if (window.Act && Act.nav) {
+    try { await Act.nav(view); } catch (e) {}
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  // 截图辅助：?openmenu=d,h 打开某一格的右键菜单后停住
+  const om = q.get('openmenu');
+  if (om) {
+    const [d, h] = om.split(',').map(Number);
+    const c = document.querySelector(`.cc-cell[data-d="${d}"][data-h="${h}"]`);
+    if (c) c.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 500 }));
+    const m = document.querySelector('.cc-menu');
+    if (m) {
+      const r = m.getBoundingClientRect();
+      const btn = document.querySelector('#ccApply');
+      const br = btn ? btn.getBoundingClientRect() : null;
+      const cs = btn ? getComputedStyle(btn).backgroundImage : '';
+      const pre = document.createElement('pre');
+      pre.id = 'menugeo';
+      pre.textContent = JSON.stringify({
+        menu: [r.left, r.top, r.width, r.height],
+        btn: br ? [br.left, br.top, br.width, br.height] : null,
+        btnBg: cs.slice(0, 80),
+        innerHeight: window.innerHeight, innerWidth: window.innerWidth,
+      });
+      document.body.appendChild(pre);
+    }
+    return;
+  }
+  if (q.get('itest')) { await window.__itest(); return; }
+  await window.__audit(view);
+})();
+</script>
+</body>
+</html>

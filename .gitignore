@@ -1,0 +1,28 @@
+# 构建产物
+/target
+/src-tauri/target
+/src-tauri/gen
+
+# 依赖
+node_modules
+dist
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 本地配置与数据（不要提交）
+config.json
+*.log
+shot*.png
+
+# 安装包
+*.msi
+*.nsis.zip
+
+# 扩展签名私钥（泄露会被人冒名重签扩展，按需再强制纳入）
+tools/extension_key.pem

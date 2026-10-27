@@ -1,0 +1,33 @@
+[package]
+name = "king-of-focus"
+version = "0.0.1"
+description = "King of Focus - 专注与自律守护工具"
+authors = ["QQQOrange"]
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tiny_http = "0.12"
+# ureq 2.12 里 TLS 由 `tls`(rustls) 特性控制，只开 native-tls 会导致
+# 运行时 "no TLS backend is configured"，所有 HTTPS 请求全部失败。
+ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "gzip", "json"] }
+
+# 备份加密（参考 Quick search 的成熟选型）：
+#   AES-256-GCM 带认证、有 AES-NI 加速；Argon2id 抗暴力破解。
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "rand_core", "getrandom"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

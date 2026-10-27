@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>King of Focus</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><img src="logo.png" alt="King of Focus" /></div>
+      <div class="brand-text">
+        <div class="brand-name">King of Focus</div>
+        <div class="brand-sub">专注由你掌控</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item" data-view="overview"><span class="ico">◎</span>总览</button>
+      <button class="nav-item" data-view="rules"><span class="ico">☰</span>规则</button>
+      <button class="nav-item" data-view="clock"><span class="ico">◷</span>自律时段</button>
+      <button class="nav-item" data-view="mask"><span class="ico">▣</span>专注遮罩</button>
+      <button class="nav-item" data-view="browsers"><span class="ico">▤</span>浏览器插件</button>
+      <button class="nav-item" data-view="stats"><span class="ico">◔</span>时长统计</button>
+      <button class="nav-item" data-view="reports"><span class="ico">▤</span>统计报告</button>
+      <button class="nav-item" data-view="sync"><span class="ico">☁</span>云同步</button>
+      <button class="nav-item" data-view="settings"><span class="ico">⚙</span>设置</button>
+      <button class="nav-item" data-view="help"><span class="ico">?</span>帮助</button>
+      <button class="nav-item" data-view="about"><span class="ico">ⓘ</span>关于</button>
+    </nav>
+
+    <div class="side-foot">
+      <div id="sideStatus" class="side-status"></div>
+      <div class="side-version" id="sideVersion">v1.0.0</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="pageTitle">总览</div>
+      <div class="topbar-right">
+        <button class="btn btn-sm" data-act="cycle-theme" id="themeBtn" title="切换外观">◐ 跟随系统</button>
+        <div class="pill" id="statePill">—</div>
+        <div class="clock" id="clock">--:--</div>
+      </div>
+    </header>
+    <div class="test-banner hidden" id="testBanner">
+      <div class="tb-left">
+        <span class="tb-dot"></span>
+        <b>测试模式</b>
+        <span class="tb-sub">所有功能真实生效，数据写在独立目录，不影响正式成绩</span>
+      </div>
+      <div class="row" style="gap:8px">
+        <button class="btn btn-sm" data-act="test-exit-keep">退出并保留</button>
+        <button class="btn btn-sm btn-danger" data-act="test-exit-discard">退出并丢弃</button>
+      </div>
+    </div>
+    <section class="content" id="content"></section>
+  </main>
+</div>
+
+<div class="modal-root" id="modalRoot"></div>
+<div class="toast-root" id="toastRoot"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1209 @@
+use crate::cfg;
+use crate::model::Config;
+use crate::shared::Shared;
+use serde_json::{json, Value};
+use std::os::windows::process::CommandExt;
+use std::process::Command;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[link(name = "shell32")]
+extern "system" {
+    fn IsUserAnAdmin() -> i32;
+    fn ShellExecuteW(
+        hwnd: *mut core::ffi::c_void,
+        op: *const u16,
+        file: *const u16,
+        params: *const u16,
+        dir: *const u16,
+        show: i32,
+    ) -> isize;
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+pub fn is_admin() -> bool {
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+/// 积分解锁的每分钟单价（每天第 n 次解锁 ×1.4 递增）
+pub fn unlock_price(cfg: &Config) -> i64 {
+    let base = 15f64;
+    let mult = 1.4f64.powi(cfg.points.unlock_count_today.min(12) as i32);
+    (base * mult).round() as i64
+}
+
+#[tauri::command]
+pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
+    // 跨天重置解锁次数
+    let today = crate::sched::now_local().format("%Y-%m-%d").to_string();
+    {
+        let mut c = shared.config();
+        if c.points.day != today {
+            c.points.day = today.clone();
+            c.points.unlock_count_today = 0;
+            let _ = cfg::save(&c);
+            if let Ok(mut w) = shared.cfg.write() {
+                *w = c;
+            }
+        }
+    }
+    let config = shared.config();
+    let now = crate::sched::now_local();
+    let (runtime, notice) = {
+        let mut rt = shared.rt.lock().unwrap();
+        let celebrate = rt
+            .celebrate
+            .take()
+            .map(|(secs, names)| json!({"secs": secs, "rules": names}));
+        // 提示只弹一次：取走即清空
+        let m = shared
+            .mask
+            .notice
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take());
+        let app_notice = shared.notice.lock().ok().and_then(|mut g| g.take());
+        (
+            json!({
+                "active": rt.active.iter().map(|(n, m)| json!({"name": n, "mode": m})).collect::<Vec<_>>(),
+                "disciplineOn": !rt.active.is_empty() || rt.locked || rt.clock_on,
+                "blockedApps": rt.blocked_apps,
+                "blockedSites": rt.blocked_sites,
+                "nextChange": rt.next_change,
+                "events": rt.events,
+                "hb": rt.hb_ts,
+                "hbBrowser": rt.hb_browser,
+                "siteUrl": rt.site_url,
+                "siteTitle": rt.site_title,
+                "locked": rt.locked,
+                "lockUntil": rt.lock_until,
+                "lockUntilText": rt.lock_until_text,
+                "lockNames": rt.lock_names,
+                "breakOn": rt.in_break,
+                "breakAny": rt.on_break,
+                "breakLeft": rt.break_left,
+                "clockInWindow": rt.clock_in_window,
+                "clockWeekday": rt.clock_weekday,
+                "clockBreak": rt.clock_break,
+                "clockOn": rt.clock_on,
+                "clockHour": rt.clock_hour,
+                "clockLeft": rt.clock_left,
+                "clockSummary": crate::clock::summary(&config),
+                "notice": app_notice,
+                "celebrate": celebrate,
+            }),
+            m,
+        )
+    };
+    let mask = &*shared.mask;
+    let preview_left = {
+        let until = mask.preview_until.load(Ordering::Relaxed);
+        (until - chrono::Local::now().timestamp()).max(0)
+    };
+    let user_on = mask.on.load(Ordering::Relaxed);
+    let schedule_on = mask.schedule_on.load(Ordering::Relaxed);
+    let auto_on = config.settings.mask.follow_schedule && schedule_on;
+    json!({
+        "config": config,
+        "runtime": runtime,
+        "mask": {
+            // on = 最终生效（用户意向 OR 自律接管）；userOn = 用户意向；autoOn = 自律接管
+            "on": user_on || auto_on,
+            "userOn": user_on,
+            "autoOn": auto_on,
+            "scheduleOn": schedule_on,
+            "painted": mask.painted.load(Ordering::Relaxed),
+            "targetPid": mask.target_pid.load(Ordering::Relaxed),
+            "opacity": mask.opacity.load(Ordering::Relaxed),
+            "margin": mask.margin.load(Ordering::Relaxed),
+            "radius": mask.radius.load(Ordering::Relaxed),
+            "duration": mask.duration.load(Ordering::Relaxed),
+            "blockClick": mask.block_click.load(Ordering::Relaxed),
+            "smooth": mask.smooth.load(Ordering::Relaxed),
+            // 逐像素画法失败已自动降级成区域画法：界面要如实告诉用户
+            "smoothFallback": mask.smooth_fail.load(Ordering::Relaxed),
+            "follow": mask.follow.load(Ordering::Relaxed),
+            "hotkey": config.settings.mask.hotkey,
+            "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
+            "followSchedule": config.settings.mask.follow_schedule,
+            "previewLeft": preview_left,
+            "notice": notice,
+        },
+        "admin": is_admin(),
+        "testMode": crate::testmode::on(),
+        "dataDir": cfg::data_dir().to_string_lossy(),
+        "browsers": crate::browsers::snapshot(),
+        "browserGuard": config.settings.browser_guard,
+        "extFolder": crate::browsers::ext_dir().map(|p| p.to_string_lossy().to_string()),
+        "extInfo": ext_info_json(),
+        "pid": std::process::id(),
+        "points": {
+            "balance": config.points.balance,
+            "earned": config.points.total_earned,
+            "unlockUntil": config.points.unlock_until,
+            "count": config.points.unlock_count_today,
+            "price": unlock_price(&config),
+        },
+        "version": crate::version::VERSION,
+        "buildDate": crate::version::BUILD_DATE,
+        "developer": crate::version::DEVELOPER,
+        "repoUrl": crate::version::REPO_URL,
+        "tokenDocUrl": crate::version::TOKEN_DOC_URL,
+        "appName": crate::version::APP_NAME,
+        // 只告诉前端"有没有设置"，任何片段都不外发——令牌不该出现在界面上
+        "hasToken": !config.settings.update.token.trim().is_empty(),
+        "configPath": cfg::config_path().to_string_lossy(),
+        "dataPath": cfg::data_dir().to_string_lossy(),
+        "now": now.format("%Y-%m-%d %H:%M").to_string(),
+        "weekday": now.format("%u").to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(), String> {
+    if crate::guard::is_locked(&shared) {
+        let info = crate::guard::lock_info(&shared.config());
+        return Err(format!(
+            "自律固化中（{} 结束），现在改不了设置",
+            if info.until_text.is_empty() { "本时段".to_string() } else { info.until_text }
+        ));
+    }
+    let mut c = config;
+    cfg::sanitize(&mut c);
+    c.updated_at = chrono::Local::now().timestamp();
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+/// 只露头尾的掩码，用于界面展示
+fn ext_info_json() -> Value {
+    let loc = crate::browsers::ext_location();
+    json!({
+        "path": loc.path,
+        "exists": loc.exists,
+        "crx": loc.crx,
+        "exeDir": loc.exe_dir,
+        "source": loc.source,
+    })
+}
+
+fn mask_secret(s: &str) -> String {
+    let t = s.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let n = t.chars().count();
+    if n <= 8 {
+        return "••••••••".into();
+    }
+    let head: String = t.chars().take(4).collect();
+    let tail: String = t.chars().skip(n - 4).collect();
+    format!("{head}••••••••{tail}")
+}
+
+/// 当前所有有可见窗口的程序（给"选择目标窗口 / 添加应用"用）
+/// 和 browsers_scan 同理：枚举窗口 + 读进程名是阻塞操作，不能放在 UI 线程上
+#[tauri::command]
+pub async fn list_windows() -> Vec<Value> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut seen = std::collections::HashSet::new();
+        crate::proc::screen_apps()
+            .into_iter()
+            .filter(|a| seen.insert(a.pid))
+            .map(|a| {
+                json!({
+                    "pid": a.pid,
+                    "name": a.name,
+                    "title": a.title,
+                    "path": a.path,
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn pick_path(app: AppHandle, kind: String) -> Option<String> {
+    if kind == "dir" {
+        app.dialog()
+            .file()
+            .set_title("选择文件夹（该文件夹下所有程序都会被拦截）")
+            .blocking_pick_folder()
+            .map(|p| p.to_string())
+    } else {
+        app.dialog()
+            .file()
+            .set_title("选择程序")
+            .add_filter("程序", &["exe", "lnk"])
+            .blocking_pick_file()
+            .map(|p| p.to_string())
+    }
+}
+
+
+/// 把配置灌进运行态（启动时和切换测试模式后都要走这一遍）
+pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
+    let config = shared.config();
+    let m = &*shared.mask;
+    m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
+    m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
+    m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
+    m.smooth.store(config.settings.mask.smooth, Ordering::Relaxed);
+    m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
+    m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
+    m.duration
+        .store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
+    if let Some((md, vk)) = crate::mask::parse_hotkey(&config.settings.mask.hotkey) {
+        m.hk_mod.store(md, Ordering::Relaxed);
+        m.hk_vk.store(vk, Ordering::Relaxed);
+        m.hk_gen.fetch_add(1, Ordering::Relaxed);
+    }
+    m.auto_follow
+        .store(config.settings.mask.follow_schedule, Ordering::Relaxed);
+    m.target_pid
+        .store(config.settings.mask.target_pid, Ordering::Relaxed);
+}
+
+/// 进入测试模式：换到独立数据目录，所有功能照常生效，但自律模式可以随时开关
+#[tauri::command]
+pub fn test_mode_enter(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    test_mode_enter_impl(&shared)
+}
+
+pub fn test_mode_enter_impl(shared: &Arc<Shared>) -> Result<Value, String> {
+    if crate::testmode::on() {
+        return Ok(json!({"on": true}));
+    }
+    // 先把正式数据落盘，避免切换时丢当前累计
+    crate::stats::flush(shared);
+    crate::testmode::enter()?;
+    let c = cfg::load();
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    crate::stats::reload_today(shared);
+    apply_runtime_cfg(shared);
+    Ok(json!({
+        "on": true,
+        "dataDir": cfg::data_dir().to_string_lossy(),
+        "configPath": cfg::config_path().to_string_lossy(),
+    }))
+}
+
+/// 退出测试模式。keep=true 保留测试期间的设置与数据（合并进正式环境），false 全部丢弃。
+#[tauri::command]
+pub fn test_mode_exit(shared: State<'_, Arc<Shared>>, keep: bool) -> Result<Value, String> {
+    test_mode_exit_impl(&shared, keep)
+}
+
+pub fn test_mode_exit_impl(shared: &Arc<Shared>, keep: bool) -> Result<Value, String> {
+    if !crate::testmode::on() {
+        return Ok(json!({"on": false}));
+    }
+    crate::stats::flush(shared);
+    crate::testmode::exit(keep)?;
+    let c = cfg::load();
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    crate::stats::reload_today(shared);
+    apply_runtime_cfg(shared);
+    Ok(json!({
+        "on": false,
+        "kept": keep,
+        "dataDir": cfg::data_dir().to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+pub fn test_mode_status() -> Value {
+    json!({
+        "on": crate::testmode::on(),
+        "dataDir": cfg::data_dir().to_string_lossy(),
+        "prodDir": cfg::prod_data_dir().to_string_lossy(),
+    })
+}
+
+
+/// 重新探测已安装的浏览器与插件状态（用户点「重新检测」/ 启动时调用）
+///
+/// async + spawn_blocking：这条命令要枚举窗口、读各浏览器的 Preferences，
+/// 全是阻塞 IO/系统调用。同步命令跑在 UI 线程上，一旦某个窗口无响应就会把界面顶死。
+#[tauri::command]
+pub async fn browsers_scan() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        let list = crate::browsers::scan(true);
+        let installed = list.iter().filter(|b| b.installed).count();
+        let broken = list
+            .iter()
+            .filter(|b| b.installed && (b.ext == "notInstalled" || b.ext == "disabled"))
+            .count();
+        json!({
+            "list": list,
+            "installed": installed,
+            "broken": broken,
+            "extFolder": crate::browsers::ext_dir().map(|p| p.to_string_lossy().to_string()),
+        })
+    })
+    .await
+    .unwrap_or_else(|e| json!({"list": [], "error": format!("扫描失败：{e}")}))
+}
+
+/// 打开某个浏览器的扩展管理页（安装流程第一步），并给 10 分钟保护期
+///
+/// 一定要 async：同步命令是在 **UI 线程**上执行的，而 `CreateProcessW` 在
+/// "Edge/Chrome 是 AppX 执行别名 / 杀软正在扫描 / 已有实例要交接"这几种情况下
+/// 会阻塞几百毫秒到几十秒。那一整段时间 WebView 的消息循环停摆，
+/// 表现出来的就是"点安装插件 → 整个界面卡死"。
+/// 改成 async 之后它跑在异步运行时的阻塞线程池里，界面永远能继续响应。
+#[tauri::command]
+pub async fn browser_open_ext(key: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::browsers::open_ext_page(&key))
+        .await
+        .map_err(|e| format!("启动进程失败：{e}"))?
+}
+
+/// 扩展目录信息（路径 / 是否存在 / CRX / 程序目录 / 来源），供安装引导展示与复制
+#[tauri::command]
+pub fn browser_ext_info() -> Value {
+    let loc = crate::browsers::ext_location();
+    json!({
+        "path": loc.path,
+        "exists": loc.exists,
+        "crx": loc.crx,
+        "exeDir": loc.exe_dir,
+        "source": loc.source,
+    })
+}
+
+/// 在资源管理器里打开 extension 目录（"加载已解压的扩展程序"要用）
+/// 同样必须 async：explorer.exe 从提权进程里拉起来时也可能卡上一会儿
+#[tauri::command]
+pub async fn browser_open_folder() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(crate::browsers::open_ext_folder)
+        .await
+        .map_err(|e| format!("启动资源管理器失败：{e}"))?
+}
+
+#[tauri::command]
+pub fn mask_start(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    pid: u32,
+    title: String,
+) -> Result<(), String> {
+    let hwnd = crate::proc::find_window_by_pid(pid)
+        .ok_or_else(|| "找不到该窗口，它可能已经关闭了".to_string())?;
+    let m = &*shared.mask;
+    m.target.store(hwnd as isize, Ordering::Relaxed);
+    m.target_pid.store(pid, Ordering::Relaxed);
+    // 手动选中了这个窗口 → 立刻锁定它，不再被"跟随前台"抢走
+    m.manual_hwnd.store(hwnd as isize, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(true, Ordering::Relaxed);
+
+    // 主窗口不再强制置顶（保持正常窗口层级，可以被别的窗口盖住/最小化）
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_always_on_top(false);
+    }
+    let mut c = shared.config();
+    c.settings.mask.target_pid = pid;
+    c.settings.mask.target_title = title;
+    let _ = crate::cfg::save(&c);
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
+    shared.mask.on.store(false, Ordering::Relaxed);
+    shared.mask.manual_hwnd.store(0, Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_always_on_top(false);
+    }
+}
+
+#[tauri::command]
+pub fn mask_set(
+    shared: State<'_, Arc<Shared>>,
+    opacity: Option<u8>,
+    margin: Option<i32>,
+    radius: Option<i32>,
+    duration_ms: Option<u32>,
+    block_click: Option<bool>,
+    smooth: Option<bool>,
+    follow: Option<bool>,
+    follow_schedule: Option<bool>,
+) {
+    let m = &*shared.mask;
+    if let Some(o) = opacity {
+        m.opacity.store(o.min(100), Ordering::Relaxed);
+    }
+    if let Some(v) = margin {
+        m.margin.store(v.clamp(0, 200), Ordering::Relaxed);
+    }
+    if let Some(v) = radius {
+        m.radius.store(v.clamp(0, 120), Ordering::Relaxed);
+    }
+    if let Some(v) = duration_ms {
+        m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
+    }
+    if let Some(v) = smooth {
+        m.smooth.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = follow {
+        // 只管"遮罩范围"：跟随当前窗口 / 固定目标。绝不顺手开关遮罩——
+        // 开关承载别的含义，正是之前"以为关了其实开着"的根源。
+        m.follow.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = follow_schedule {
+        m.auto_follow.store(v, Ordering::Relaxed);
+    }
+    if let Some(b) = block_click {
+        m.block_click.store(b, Ordering::Relaxed);
+    }
+}
+
+/// 设置全局快捷键（带冲突检测：注册失败会回滚到原来的组合）
+#[tauri::command]
+pub fn mask_hotkey(shared: State<'_, Arc<Shared>>, combo: String) -> Result<(), String> {
+    let m = &*shared.mask;
+    let trimmed = combo.trim().to_string();
+    let parsed = if trimmed.is_empty() {
+        None
+    } else {
+        match crate::mask::parse_hotkey(&trimmed) {
+            Some(v) => Some(v),
+            None => return Err("格式不对，需要至少一个修饰键加一个键，例如 Ctrl+Alt+K".into()),
+        }
+    };
+
+    let (prev_md, prev_vk) = (
+        m.hk_mod.load(Ordering::Relaxed),
+        m.hk_vk.load(Ordering::Relaxed),
+    );
+    match parsed {
+        Some((md, vk)) => {
+            m.hk_mod.store(md, Ordering::Relaxed);
+            m.hk_vk.store(vk, Ordering::Relaxed);
+        }
+        None => m.hk_vk.store(0, Ordering::Relaxed),
+    }
+    m.hk_gen.fetch_add(1, Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(260));
+    let ok = m.hk_ok.load(Ordering::Relaxed);
+
+    if !trimmed.is_empty() && !ok {
+        // 被别的程序占用 → 回滚，别把用户原来的热键搞丢
+        m.hk_mod.store(prev_md, Ordering::Relaxed);
+        m.hk_vk.store(prev_vk, Ordering::Relaxed);
+        m.hk_gen.fetch_add(1, Ordering::Relaxed);
+        return Err(format!("{trimmed} 已被其他程序占用，换一个组合再试"));
+    }
+
+    let mut c = shared.config();
+    c.settings.mask.hotkey = trimmed.clone();
+    c.settings.mask.hotkey_label = trimmed;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+/// 主开关：只改"用户意向"。真正是否生效由遮罩线程算：
+/// 生效 = on OR (跟随自律 AND 自律模式生效)，见 mask.rs 注释。
+#[tauri::command]
+pub fn mask_set_on(shared: State<'_, Arc<Shared>>, on: bool) -> Result<(), String> {
+    let m = &*shared.mask;
+    let auto_hold = m.auto_follow.load(Ordering::Relaxed) && m.schedule_on.load(Ordering::Relaxed);
+    if auto_hold && !on {
+        // 自律接管期间不允许手动关：否则遮罩线程下一帧又会按自律状态打开，
+        // 界面就会出现"关了又自己开"的鬼畜效果
+        return Err("自律模式生效中，遮罩由自律模式接管；等这一段时间结束就会自动恢复".into());
+    }
+    m.preview_until.store(0, Ordering::Relaxed);
+    m.test_lock.store(false, Ordering::Relaxed);
+    m.manual_hwnd.store(0, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(on, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 预览效果：临时打开 5 秒就自动收，不会把主开关改成"已启用"
+#[tauri::command]
+pub fn mask_preview(shared: State<'_, Arc<Shared>>) -> i64 {
+    let m = &*shared.mask;
+    let now = chrono::Local::now().timestamp();
+    if m.preview_until.load(Ordering::Relaxed) > now {
+        // 正在预览 → 再点一次提前结束
+        m.preview_until.store(0, Ordering::Relaxed);
+        m.test_lock.store(false, Ordering::Relaxed);
+        m.on.store(false, Ordering::Relaxed);
+        return 0;
+    }
+    m.test_lock.store(true, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(true, Ordering::Relaxed);
+    m.preview_until.store(now + 5, Ordering::Relaxed);
+    5
+}
+
+/// 遮罩跟随自律模式
+#[tauri::command]
+pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    let m = &*shared.mask;
+    m.auto_follow.store(enabled, Ordering::Relaxed);
+    let mut c = shared.config();
+    c.settings.mask.follow_schedule = enabled;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+/// 遮罩自查：返回遮罩线程最后一帧的真实状态，方便判断「没生效」卡在哪一步
+#[tauri::command]
+pub fn mask_diag() -> String {
+    crate::mask::DIAG
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| "（无数据：遮罩还没启动过）".into())
+}
+
+/// 一键测试：立刻以本程序主窗口为目标，用 150ms 动画跑一遍，方便反复调参
+#[tauri::command]
+pub fn mask_test(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<bool, String> {
+    mask_test_inner(&app, &shared)
+}
+
+/// 供命令行/调试接口复用，UI 与自动化测试走同一条代码路径。
+///
+/// 语义是「预览」而不是「开启」：固定高亮本程序窗口，5 秒后自动收起，
+/// 期间主开关的意向不会被改写——这样界面上永远不会出现
+/// "我只是想看下效果，结果遮罩一直开着"的情况。
+pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, String> {
+    let m = &*shared.mask;
+    let now = chrono::Local::now().timestamp();
+    if m.preview_until.load(Ordering::Relaxed) > now {
+        m.preview_until.store(0, Ordering::Relaxed);
+        m.test_lock.store(false, Ordering::Relaxed);
+        m.on.store(false, Ordering::Relaxed);
+        return Ok(false);
+    }
+
+    let self_pid = std::process::id();
+    let hwnd = match app.get_webview_window("main") {
+        Some(w) => match w.hwnd() {
+            Ok(h) => h.0 as isize,
+            Err(_) => crate::proc::find_window_by_pid(self_pid).map(|x| x as isize).unwrap_or(0),
+        },
+        None => return Err("找不到主窗口".into()),
+    };
+    if hwnd == 0 {
+        return Err("找不到主窗口句柄".into());
+    }
+    // 记住主窗口：跟随前台时若前台是本程序，遮罩要盖的就是这个窗口
+    crate::mask::SELF_MAIN.store(hwnd, Ordering::Relaxed);
+
+    m.duration
+        .store(shared.config().settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
+    m.target.store(hwnd, Ordering::Relaxed);
+    m.target_pid.store(self_pid, Ordering::Relaxed);
+    m.test_lock.store(true, Ordering::Relaxed);
+    m.painted.store(false, Ordering::Relaxed);
+    m.on.store(true, Ordering::Relaxed);
+    m.preview_until.store(now + 5, Ordering::Relaxed);
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn open_path(path: String) {    let _ = Command::new("explorer")
+        .arg(path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
+#[tauri::command]
+pub fn open_config_dir() {
+    open_path(cfg::data_dir().to_string_lossy().to_string());
+}
+
+/// 在若干候选位置里找插件目录
+pub fn extension_dir() -> Option<std::path::PathBuf> {
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        let mut p = exe.clone();
+        for _ in 0..4 {
+            p.pop();
+            cands.push(p.join("extension"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        cands.push(cwd.join("extension"));
+        cands.push(cwd.join("../extension"));
+    }
+    cands.into_iter().find(|p| p.join("manifest.json").exists())
+}
+
+#[tauri::command]
+pub fn open_extension_dir() -> Result<(), String> {
+    match extension_dir() {
+        Some(p) => {
+            open_path(p.to_string_lossy().to_string());
+            Ok(())
+        }
+        None => Err("找不到 plugin 目录，请手动打开项目的 extension 文件夹".into()),
+    }
+}
+
+#[tauri::command]
+pub fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let op = wide("runas");
+    let file = wide(&exe.to_string_lossy());
+    let dir = exe
+        .parent()
+        .map(|p| wide(&p.to_string_lossy()))
+        .unwrap_or_else(|| wide(""));
+
+    // 直接走 ShellExecuteW("runas")：返回值 <= 32 就是失败，
+    // 能区分"用户点了 UAC 的否"和"真的没权限"。
+    // 以前用隐藏窗口拉 PowerShell，用户取消 UAC 时宿主进程照样 exit，
+    // 表现就是"点了按钮，程序直接消失、什么也没发生"。
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            dir.as_ptr(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r as usize <= 32 {
+        let why = match r as usize {
+            5 => "你在 UAC 弹窗里点了「否」，或者当前账户没有管理员权限".to_string(),
+            2 => "找不到程序文件".to_string(),
+            31 => "系统无法启动提权进程".to_string(),
+            n => format!("ShellExecute 返回 {n}"),
+        };
+        return Err(format!("提权失败：{why}"));
+    }
+    // 提权后的新实例已经起来了，这个进程让位
+    app.exit(0);
+    Ok(())
+}
+
+/// 打开"总是以管理员身份运行"。开启后立刻提权重启一次（UAC 确认后生效）。
+#[tauri::command]
+pub fn set_run_as_admin(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    let before = c.settings.run_as_admin;
+    c.settings.run_as_admin = enabled;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    if enabled && !is_admin() {
+        if let Err(e) = restart_as_admin(app) {
+            // 没提权成功就把开关退回去，避免"界面显示已开启、实际没生效"
+            c.settings.run_as_admin = before;
+            let _ = cfg::save(&c);
+            if let Ok(mut w) = shared.cfg.write() {
+                *w = c;
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    if enabled {
+        Command::new("reg")
+            .args([
+                "add",
+                key,
+                "/v",
+                "KingOfFocus",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &format!("\"{}\"", exe.to_string_lossy()),
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| e.to_string())?;
+    } else {
+        Command::new("reg")
+            .args(["delete", key, "/v", "KingOfFocus", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    if crate::guard::is_locked(&shared) {
+        return Err("自律固化中，结束前无法退出".into());
+    }
+    crate::guard::stop_guard();
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_main(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 用积分强行解锁
+#[tauri::command]
+pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Value, String> {
+    let minutes = minutes.clamp(1, 120);
+    let mut c = shared.config();
+    // 没有在进行中的自律时段时不允许兑换，避免白花积分
+    let info = crate::guard::lock_info(&c);
+    if !info.locked {
+        let now = crate::sched::now_local();
+        let running = c.lists.iter().any(|l| l.enabled && crate::sched::is_active(&l.schedule, &now));
+        if !running {
+            return Err("当前没有正在进行的自律时段，不需要解锁".into());
+        }
+    }
+    let price = unlock_price(&c) * minutes as i64;
+    if c.points.balance < price {
+        return Err(format!(
+            "积分不够：需要 {price} 分，你现在有 {} 分",
+            c.points.balance
+        ));
+    }
+    c.points.balance -= price;
+    c.points.unlock_count_today += 1;
+    c.points.unlock_until = chrono::Local::now().timestamp() + (minutes as i64) * 60;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    crate::guard::stop_guard();
+    Ok(json!({
+        "ok": true,
+        "spent": price,
+        "balance": c.points.balance,
+        "until": c.points.unlock_until,
+    }))
+}
+
+/// 桌面 HUD 的数据源（1 秒轮询）
+#[tauri::command]
+pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
+    let now = chrono::Local::now().timestamp();
+    let (on, locked, elapsed, remaining, until_text, break_on, break_left, quote, quote_from) = {
+        match shared.rt.lock() {
+            Ok(rt) => (
+                !rt.active.is_empty() || rt.locked,
+                rt.locked,
+                if rt.since > 0 { (now - rt.since).max(0) } else { 0 },
+                if rt.lock_until > 0 { (rt.lock_until - now).max(0) } else { 0 },
+                rt.lock_until_text.clone(),
+                rt.in_break,
+                rt.break_left,
+                rt.quote.clone(),
+                rt.quote_from.clone(),
+            ),
+            Err(_) => (false, false, 0, 0, String::new(), false, 0, String::new(), String::new()),
+        }
+    };
+    let cfg = shared.config();
+    let warn = if !cfg.settings.notify.enabled {
+        false
+    } else if break_on {
+        cfg.settings.notify.break_notify && break_left > 0
+            && break_left as i64 <= cfg.settings.notify.break_before.min(120) as i64 * 60
+    } else {
+        break_left > 0 && break_left as i64 <= cfg.settings.notify.work_before.min(120) as i64 * 60
+    };
+    json!({
+        "on": on,
+        "locked": locked,
+        "elapsed": elapsed,
+        "remaining": remaining,
+        "untilText": until_text,
+        "breakOn": break_on,
+        "breakLeft": break_left,
+        "warn": warn,
+        "quote": quote,
+        "quoteFrom": quote_from,
+        "theme": cfg.settings.theme,
+        "hudEnabled": cfg.settings.hud.enabled,
+    })
+}
+
+#[tauri::command]
+pub fn notify_save(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+    work_before: u32,
+    break_before: u32,
+    break_notify: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.notify.enabled = enabled;
+    c.settings.notify.work_before = work_before.min(120);
+    c.settings.notify.break_before = break_before.min(120);
+    c.settings.notify.break_notify = break_notify;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hud_save(shared: State<'_, Arc<Shared>>, enabled: bool, quote_minutes: u32) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.hud.enabled = enabled;
+    c.settings.hud.quote_minutes = quote_minutes.clamp(5, 1440);
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+}
+
+// ---------------- 使用时长统计 ----------------
+
+#[tauri::command]
+pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -> Value {
+    let agg = crate::stats::aggregate(&shared, &start, &end);
+    let on_secs: u64 = agg.on.iter().map(|s| s.secs).sum();
+    let off_secs: u64 = agg.off.iter().map(|s| s.secs).sum();
+    json!({
+        "start": start,
+        "end": end,
+        "on": agg.on,
+        "off": agg.off,
+        "onSecs": on_secs,
+        "offSecs": off_secs,
+        "onHourly": agg.on_hourly.to_vec(),
+        "offHourly": agg.off_hourly.to_vec(),
+    })
+}
+
+#[tauri::command]
+pub fn report_list() -> Value {
+    json!(crate::stats::list_reports())
+}
+
+#[tauri::command]
+pub fn report_get(id: String) -> Value {
+    match crate::stats::read_report(&id) {
+        Some(r) => json!(r),
+        None => Value::Null,
+    }
+}
+
+#[tauri::command]
+pub fn report_generate(
+    shared: State<'_, Arc<Shared>>,
+    period: String,
+    start: String,
+    end: String,
+) -> Result<Value, String> {
+    crate::stats::generate(&shared, &period, &start, &end).map(|r| json!(r))
+}
+
+#[tauri::command]
+pub fn report_delete(id: String) -> Result<(), String> {
+    crate::stats::delete_report(&id)
+}
+
+#[tauri::command]
+pub fn stats_dir_path() -> String {
+    crate::stats::stats_dir().to_string_lossy().to_string()
+}
+
+#[tauri::command]
+pub fn stats_flush(shared: State<'_, Arc<Shared>>) {
+    crate::stats::flush(&shared);
+}
+
+// ---------------- 云同步 ----------------
+
+fn after_sync(shared: &Shared, r: Result<String, String>) -> Result<String, String> {
+    let mut c = shared.config();
+    c.settings.sync.last_sync = chrono::Local::now().timestamp();
+    match &r {
+        Ok(m) => {
+            c.settings.sync.last_result = m.clone();
+            c.settings.sync.last_error.clear();
+        }
+        Err(e) => c.settings.sync.last_error = e.clone(),
+    }
+    let _ = cfg::save(&c);
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    r
+}
+
+#[tauri::command]
+pub fn sync_save(
+    shared: State<'_, Arc<Shared>>,
+    url: String,
+    username: String,
+    password: String,
+    auto: bool,
+    auto_minutes: u32,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.sync.url = url.trim().to_string();
+    c.settings.sync.username = username;
+    c.settings.sync.password = password;
+    c.settings.sync.auto = auto;
+    c.settings.sync.auto_minutes = auto_minutes.clamp(5, 1440);
+    c.settings.sync.enabled = enabled;
+    if c.settings.sync.device.trim().is_empty() {
+        c.settings.sync.device = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "我的电脑".into());
+    }
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_now(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = crate::sync::smart(&shared);
+        after_sync(&shared, r)
+    })
+    .await
+    .map_err(|_| "同步线程异常退出".to_string())?
+}
+
+#[tauri::command]
+pub async fn sync_upload(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = crate::sync::upload(&shared);
+        after_sync(&shared, r)
+    })
+    .await
+    .map_err(|_| "同步线程异常退出".to_string())?
+}
+
+#[tauri::command]
+pub async fn sync_download(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = crate::sync::download(&shared);
+        after_sync(&shared, r)
+    })
+    .await
+    .map_err(|_| "同步线程异常退出".to_string())?
+}
+
+// ---------------- 自动更新 ----------------
+
+// 注意：以下命令都碰网络，必须是 async + spawn_blocking。
+// 同步命令跑在 Tauri 主线程上，网络一慢就把整个界面冻住（点哪都没反应），
+// 启动时的自动更新检查就踩过这个坑。
+#[tauri::command]
+pub async fn update_check(
+    shared: State<'_, Arc<Shared>>,
+    token: Option<String>,
+) -> Result<Value, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut c = shared.config();
+        // 用户可能刚把令牌粘进输入框就点了「立即检查」：先用上它，别逼他先去保存
+        if let Some(t) = token {
+            let t = t.trim().to_string();
+            if !t.is_empty() && t != c.settings.update.token {
+                c.settings.update.token = t;
+                let _ = cfg::save(&c);
+                if let Ok(mut w) = shared.cfg.write() {
+                    *w = c.clone();
+                }
+            }
+        }
+        let v = crate::update::check(&c.settings.update);
+        let mut c2 = c.clone();
+        c2.settings.update.last_check = chrono::Local::now().timestamp();
+        let _ = cfg::save(&c2);
+        if let Ok(mut w) = shared.cfg.write() {
+            *w = c2;
+        }
+        v
+    })
+    .await
+    .map_err(|_| "更新检查线程异常退出".to_string())
+}
+
+#[tauri::command]
+pub async fn update_quota(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = shared.config();
+        match crate::update::quota(&c.settings.update.token) {
+            Ok((rem, lim)) => json!({ "ok": true, "remaining": rem, "limit": lim }),
+            Err(e) => json!({ "ok": false, "error": e }),
+        }
+    })
+    .await
+    .map_err(|_| "额度查询线程异常退出".to_string())
+}
+
+#[tauri::command]
+pub fn update_save(
+    shared: State<'_, Arc<Shared>>,
+    token: Option<String>,
+    enabled: Option<bool>,
+    skip: Option<String>,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    if let Some(t) = token {
+        c.settings.update.token = t.trim().to_string();
+    }
+    if let Some(e) = enabled {
+        c.settings.update.enabled = e;
+    }
+    if let Some(s) = skip {
+        c.settings.update.skipped_version = s;
+    }
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_download(app: AppHandle, url: String, name: String) -> Result<String, String> {
+    // 下载是阻塞 IO，放阻塞线程池，别占着异步运行时
+    tauri::async_runtime::spawn_blocking(move || crate::update::download(&app, &url, &name))
+        .await
+        .map_err(|_| "下载线程异常退出".to_string())?
+}
+
+#[tauri::command]
+pub fn update_apply(app: AppHandle, installer: String) -> Result<(), String> {
+    crate::update::apply(&app, &installer)
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let u = url.trim();
+    if !(u.starts_with("https://") || u.starts_with("http://")) {
+        return Err("只支持 http / https 链接".into());
+    }
+    Command::new("cmd")
+        .args(["/C", "start", "", u])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------- 备份 ----------------
+
+#[tauri::command]
+pub fn backup_make(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    crate::backup::make(&shared)
+}
+
+#[tauri::command]
+pub fn backup_list() -> Value {
+    json!(crate::backup::list())
+}
+
+#[tauri::command]
+pub fn backup_restore(shared: State<'_, Arc<Shared>>, path: String) -> Result<String, String> {
+    crate::backup::restore_local(&shared, &path)
+}
+
+#[tauri::command]
+pub fn backup_delete(path: String) -> Result<(), String> {
+    crate::backup::delete_file(&path)
+}
+
+#[tauri::command]
+pub fn backup_open_dir() {
+    open_path(crate::backup::dir().to_string_lossy().to_string());
+}
+
+#[tauri::command]
+pub fn backup_save(
+    shared: State<'_, Arc<Shared>>,
+    password: String,
+    auto_on_start: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.backup.password = password;
+    c.settings.backup.auto_on_start = auto_on_start;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn backup_cloud_list(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    crate::backup::cloud_list(&shared).map(|v| json!(v))
+}
+
+#[tauri::command]
+pub fn backup_cloud_upload(shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    crate::backup::cloud_upload(&shared)
+}
+
+#[tauri::command]
+pub fn backup_cloud_restore(shared: State<'_, Arc<Shared>>, name: String) -> Result<String, String> {
+    crate::backup::cloud_restore(&shared, &name)
+}
