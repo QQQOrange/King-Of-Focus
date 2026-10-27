@@ -189,21 +189,11 @@ where
 pub struct MaskCfg {
     /// 遮罩不透明度 0-100
     pub opacity: u8,
-    /// 目标窗口四周留出的可见边距（像素）
-    pub margin: i32,
-    /// 遮罩口袋的圆角半径（像素）。
-    ///
-    /// 这个值同时也是"口袋向外撑开的宽度"——圆角必须画在窗口外侧，
-    /// 所以 0 才是"严丝合缝贴住窗口、窗口 100% 可见"的推荐值；
-    /// 调大后窗口四周会留出一圈圆角留白，能看到背后的内容。
-    pub radius: i32,
-    /// 扩散 / 收起动画时长（毫秒，0 = 瞬间）
+    /// 淡入 / 淡出时长（毫秒，0 = 瞬间）。
+    /// 只影响遮罩整体透明度的过渡，不影响窗口位置——遮罩是静止的，没有可插值的东西。
     pub duration_ms: u32,
-    /// 跟随当前最上层窗口（洞口自动跟着前台窗口）
+    /// 跟随当前最上层窗口（遮罩焦点自动跟着前台窗口）
     pub follow: bool,
-    /// 渲染方式：true = 覆盖（遮罩静止铺满全屏，选中窗口置顶浮在遮罩之上）；
-    /// false = 挖洞（遮罩开一个口袋让目标窗口露出来，支持圆角/留白）
-    pub cover: bool,
     /// 是否屏蔽鼠标点击（遮罩吃掉点击，防止手滑去点别的窗口）
     pub block_click: bool,
     /// 上次使用的目标窗口
@@ -225,11 +215,8 @@ impl Default for MaskCfg {
     fn default() -> Self {
         MaskCfg {
             opacity: 88,
-            margin: 0,
-            radius: 0,
             duration_ms: 420,
             follow: true,
-            cover: true,
             block_click: true,
             target_pid: 0,
             target_title: String::new(),

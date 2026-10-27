@@ -1090,8 +1090,7 @@ function viewMask() {
   if (!d) return '';
   const m = d.mask;
   const target = d.config.settings.mask.targetTitle || '';
-  const op = m.opacity, mg = m.margin;
-  const rad = m.radius == null ? 28 : m.radius;
+  const op = m.opacity;
   const dur = m.duration == null ? 420 : m.duration;
   const rt = d.runtime;
   // on  = 最终生效（用户意向 OR 自律接管）
@@ -1159,22 +1158,11 @@ function viewMask() {
           <div>
             <div style="font-size:12.5px">跟随当前窗口</div>
             <div class="hint" style="margin-top:4px">
-              决定"哪一块留出来"：只留当前最上层（正在用）的窗口，其他全部压暗。切换窗口时高亮会平滑移过去，拖动窗口时实时跟随。
+              决定"哪一个窗口浮在遮罩上面"：只让当前最上层（正在用）的窗口可见，其他全部压暗。
+              切换窗口时焦点会立刻换过去，拖动窗口时完全跟手。
             </div>
           </div>
           <div class="switch" data-act="toggle-follow"><input type="checkbox" ${m.follow ? 'checked' : ''}><i></i></div>
-        </div>
-        <div class="row" style="align-items:center;justify-content:space-between;gap:14px;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
-          <div>
-            <div style="font-size:12.5px">覆盖式遮罩（推荐）</div>
-            <div class="hint" style="margin-top:4px">
-              <b>开</b>：遮罩是静止的一整块，压住全屏；选中的窗口被浮到遮罩之上。
-              遮罩全程不重绘，所以快速拖动、缩放、切换时都是零延迟，窗口永远完整可见。<br>
-              <b>关</b>：遮罩改成"开一个口子"让窗口露出来，这种模式可以用圆角半径/边缘留白，
-              但遮罩要跟着窗口重画，极限拖动下会有一帧的落后。
-            </div>
-          </div>
-          <div class="switch" data-act="toggle-cover"><input type="checkbox" ${m.cover ? 'checked' : ''}><i></i></div>
         </div>
       </div>
     </div>
@@ -1182,7 +1170,7 @@ function viewMask() {
     <div class="mask-preview">
       <div class="screen"></div>
       <div class="dim" id="previewDim" style="opacity:${op / 100};transition-duration:${dur}ms"></div>
-      <div class="hole" id="previewHole" style="border-radius:${Math.max(2, Math.round(rad / 3))}px">当前窗口</div>
+      <div class="hole" id="previewHole">当前窗口</div>
     </div>
   </div>
 
@@ -1207,17 +1195,7 @@ function viewMask() {
       <span class="val" id="opVal">${op}%</span>
     </div>
     <div class="slider-row">
-      <span class="lab">边缘留白（0=紧贴）</span>
-      <input type="range" min="0" max="60" step="1" value="${mg}" id="mgRange" />
-      <span class="val" id="mgVal">${mg}px</span>
-    </div>
-    <div class="slider-row">
-      <span class="lab">圆角半径（0=紧贴窗口）</span>
-      <input type="range" min="0" max="80" step="1" value="${rad}" id="radRange" />
-      <span class="val" id="radVal">${rad}px</span>
-    </div>
-    <div class="slider-row">
-      <span class="lab">动画速度</span>
+      <span class="lab">淡入淡出（0=瞬间）</span>
       <input type="range" min="0" max="3000" step="20" value="${dur}" id="durRange" />
       <span class="val" id="durVal">${dur}ms</span>
     </div>
@@ -2512,16 +2490,6 @@ const Act = window.Act = {
     if (dim) dim.style.opacity = v / 100;
     await invoke('mask_set', { opacity: +v });
   },
-  async setMargin(v) {
-    $('#mgVal').textContent = v + 'px';
-    await invoke('mask_set', { margin: +v });
-  },
-  async setRadius(v) {
-    $('#radVal').textContent = v + 'px';
-    const h = $('#previewHole');
-    if (h) h.style.borderRadius = Math.max(2, Math.round(v / 3)) + 'px';
-    await invoke('mask_set', { radius: +v });
-  },
   async setDuration(v) {
     $('#durVal').textContent = v + 'ms';
     // 预览框的过渡时长跟着速度走：速度 0 → 预览也是瞬时，两边语义一致
@@ -2533,8 +2501,6 @@ const Act = window.Act = {
     const m = S.data.config.settings.mask;
     const cur = S.data.mask;
     m.opacity = cur.opacity;
-    m.margin = cur.margin;
-    m.radius = cur.radius;
     m.durationMs = cur.duration;
     m.blockClick = cur.blockClick;
     m.follow = !!cur.follow;
@@ -2641,20 +2607,6 @@ const Act = window.Act = {
     await pull();
     render();
     toast(on ? '已开启跟随：遮罩会跟着当前最上层窗口走' : '已关闭跟随', 'ok');
-  },
-
-  async toggleCover() {
-    const on = !S.data.mask.cover;
-    await invoke('mask_set', { cover: on });
-    // 后端切换时会把渲染方式落盘，拉一次让两边对齐
-    await pull();
-    render();
-    toast(
-      on
-        ? '已切到覆盖式：遮罩静止，选中窗口浮在上面，拖动零延迟'
-        : '已切回挖洞式：可以用圆角和留白，但遮罩要跟着窗口重画',
-      'ok'
-    );
   },
 
   async toggleClick() {
@@ -3671,7 +3623,6 @@ document.addEventListener('click', async (e) => {
   if (act === 'mask-preview') { await Act.maskPreview(); return; }
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
-  if (act === 'toggle-cover') { await Act.toggleCover(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
   if (act === 'test-enter') { await Act.enterTestMode(); return; }
   if (act === 'test-exit-keep') { await Act.askExitTest(true); return; }
@@ -3961,8 +3912,6 @@ document.addEventListener('keydown', (e) => {
 /* 遮罩滑块：实时预览 */
 document.addEventListener('input', async (e) => {
   if (e.target.id === 'opRange') await Act.setOpacity(e.target.value);
-  if (e.target.id === 'mgRange') await Act.setMargin(e.target.value);
-  if (e.target.id === 'radRange') await Act.setRadius(e.target.value);
   if (e.target.id === 'durRange') await Act.setDuration(e.target.value);
 });
 

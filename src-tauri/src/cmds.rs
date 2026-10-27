@@ -209,11 +209,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "painted": mask.painted.load(Ordering::Relaxed),
             "targetPid": mask.target_pid.load(Ordering::Relaxed),
             "opacity": mask.opacity.load(Ordering::Relaxed),
-            "margin": mask.margin.load(Ordering::Relaxed),
-            "radius": mask.radius.load(Ordering::Relaxed),
             "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
-            "cover": mask.cover.load(Ordering::Relaxed),
             "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
@@ -349,11 +346,8 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     let config = shared.config();
     let m = &*shared.mask;
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
-    m.margin.store(config.settings.mask.margin.clamp(0, 200), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
-    m.cover.store(config.settings.mask.cover, Ordering::Relaxed);
     m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
-    m.radius.store(config.settings.mask.radius.clamp(0, 120), Ordering::Relaxed);
     m.duration
         .store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     if let Some((md, vk)) = crate::mask::parse_hotkey(&config.settings.mask.hotkey) {
@@ -538,23 +532,14 @@ pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
 pub fn mask_set(
     shared: State<'_, Arc<Shared>>,
     opacity: Option<u8>,
-    margin: Option<i32>,
-    radius: Option<i32>,
     duration_ms: Option<u32>,
     block_click: Option<bool>,
-    cover: Option<bool>,
     follow: Option<bool>,
     follow_schedule: Option<bool>,
 ) {
     let m = &*shared.mask;
     if let Some(o) = opacity {
         m.opacity.store(o.min(100), Ordering::Relaxed);
-    }
-    if let Some(v) = margin {
-        m.margin.store(v.clamp(0, 200), Ordering::Relaxed);
-    }
-    if let Some(v) = radius {
-        m.radius.store(v.clamp(0, 120), Ordering::Relaxed);
     }
     if let Some(v) = duration_ms {
         m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
@@ -569,21 +554,6 @@ pub fn mask_set(
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
-    }
-    if let Some(c) = cover {
-        let changed = m.cover.swap(c, Ordering::Relaxed) != c;
-        // 渲染方式是"整个遮罩怎么工作"，丢了最容易被当成功能坏了，顺手落盘
-        if changed {
-            let mut cfg_now = shared.config();
-            if cfg_now.settings.mask.cover != c {
-                cfg_now.settings.mask.cover = c;
-                if crate::cfg::save(&cfg_now).is_ok() {
-                    if let Ok(mut w) = shared.cfg.write() {
-                        *w = cfg_now;
-                    }
-                }
-            }
-        }
     }
 }
 

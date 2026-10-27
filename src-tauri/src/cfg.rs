@@ -60,7 +60,6 @@ pub fn load() -> Config {
                 if c.version < 2 {
                     c.version = 2;
                     c.settings.mask.follow = true;
-                    c.settings.mask.margin = 0;
                 }
                 sanitize(&mut c);
                 c
@@ -110,7 +109,6 @@ pub fn sanitize(c: &mut Config) {
     if c.settings.mask.opacity > 100 {
         c.settings.mask.opacity = 100;
     }
-    c.settings.mask.margin = c.settings.mask.margin.clamp(0, 200);
     // 自律时段：多套「星期时段」方案，每套都是 7 天 × 24 段，
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);

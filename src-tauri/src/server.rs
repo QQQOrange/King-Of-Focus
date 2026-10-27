@@ -201,16 +201,8 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 if let Some(v) = q("follow=") {
                     m.follow.store(v != 0, std::sync::atomic::Ordering::Relaxed);
                 }
-                // 半径 + 边距，验收圆角和跟随紧密度要用
-                if let Some(v) = q("radius=") {
-                    m.radius.store(v.clamp(0, 120) as i32, std::sync::atomic::Ordering::Relaxed);
-                }
-                if let Some(v) = q("margin=") {
-                    m.margin.store(v.clamp(0, 200) as i32, std::sync::atomic::Ordering::Relaxed);
-                }
-                // 渲染方式：0 = 挖洞，1 = 覆盖
-                if let Some(v) = q("cover=") {
-                    m.cover.store(v != 0, std::sync::atomic::Ordering::Relaxed);
+                if let Some(v) = q("blockclick=") {
+                    m.block_click.store(v != 0, std::sync::atomic::Ordering::Relaxed);
                 }
                 reply(
                     req,
@@ -219,9 +211,8 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         "ok": true,
                         "duration": m.duration.load(std::sync::atomic::Ordering::Relaxed),
                         "opacity": m.opacity.load(std::sync::atomic::Ordering::Relaxed),
-                        "radius": m.radius.load(std::sync::atomic::Ordering::Relaxed),
-                        "margin": m.margin.load(std::sync::atomic::Ordering::Relaxed),
-                        "cover": m.cover.load(std::sync::atomic::Ordering::Relaxed),
+                        "follow": m.follow.load(std::sync::atomic::Ordering::Relaxed),
+                        "blockClick": m.block_click.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .to_string(),
                 )
