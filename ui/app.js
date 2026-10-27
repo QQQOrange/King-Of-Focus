@@ -1765,7 +1765,7 @@ function showCelebrate(c) {
 /* ---------------- 视图：帮助 ---------------- */
 function viewHelp() {
   const d = S.data;
-  const v = d ? d.version : '0.0.1';
+  const v = d ? d.version : '0.0.2';
   const dt = d ? d.buildDate : '';
   const sec = (t, body) => `<div class="card">
       <div class="card-title">${t}</div>
