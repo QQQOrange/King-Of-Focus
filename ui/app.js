@@ -731,6 +731,19 @@ function ccRectText(d0, d1, h0, h1) {
   return `${days} ${pad(h0)}:00 – ${pad(h1 + 1)}:00`;
 }
 
+/** 从当前时刻起，下一个被选中的时段（含本周稍后与下周），没有则返回 '' */
+function ccNextSlotText(fc, wdNow, hourNow) {
+  for (let step = 0; step < 7 * 24; step++) {
+    const d = (wdNow + Math.floor((hourNow + step) / 24)) % 7;
+    const h = (hourNow + step) % 24;
+    if (fc.days[d] && fc.days[d][h] && fc.days[d][h].on) {
+      const when = step < 24 ? (step === 0 ? '本小时' : `${step} 小时后`) : `${Math.floor(step / 24)} 天后`;
+      return `，下一个选中时段：${WD[d]} ${pad(h)}:00（${when}）`;
+    }
+  }
+  return '';
+}
+
 function viewClock() {
   const d = S.data;
   if (!d) return '';
@@ -750,19 +763,23 @@ function viewClock() {
       stateTxt = `休息中 · 还剩 ${mm} 分 ${pad(ss)} 秒（这段时间不拦截、不遮罩）`;
       stateCls = 'gold';
     } else {
-      stateTxt = `专注中 · 还剩 ${mm} 分 ${pad(ss)} 秒`;
+      stateTxt = `专注中 · 还剩 ${mm} 分 ${pad(ss)} 秒（规则正在生效，应用 / 网页会被关闭）`;
       stateCls = 'green';
     }
   } else if (!fc.enabled) {
     stateTxt = '未启用：下面选中的时段不会生效';
   } else if (!n) {
     stateTxt = '还没有选择任何时段';
+  } else if (rt.clockInWindow === undefined || rt.clockInWindow === null) {
+    stateTxt = '正在读取时钟状态…';
+  } else {
+    stateTxt = `当前不在生效时段：这段时间规则不拦截${ccNextSlotText(fc, wdNow, hourNow)}`;
   }
 
-  // 柱状图：第 1 行星期表头，下面 24 行小时格（自上而下 23 → 0，左上角标 24）
-  let grid = `<div class="cc-corner">24</div>` + WD.map((w, i) =>
+  // 柱状图：第 1 行星期表头，下面 24 行小时格（自上而下 0 → 23，左上角标 0）
+  let grid = `<div class="cc-corner">0</div>` + WD.map((w, i) =>
     `<div class="cc-dh${i === wdNow ? ' today' : ''}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
-  for (let h = 23; h >= 0; h--) {
+  for (let h = 0; h < 24; h++) {
     grid += `<div class="cc-hlab">${h}</div>`;
     for (let dd = 0; dd < 7; dd++) {
       const p = fc.days[dd][h];
@@ -2894,7 +2911,13 @@ const Act = window.Act = {
     if (defToo) { fc.defWork = w; fc.defBrk = b; }
     await saveConfig();
     render();
-    toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}`, 'ok');
+    // 改到了「正在进行中的时段」：它会立刻按新时长重新划分专注 / 休息，提醒一句
+    const wdNow = (new Date().getDay() + 6) % 7;
+    const hourNow = new Date().getHours();
+    const liveTip = (d0 <= wdNow && wdNow <= d1 && h0 <= hourNow && hourNow <= h1)
+      ? '；当前进行中的时段会立即按新时长重新划分'
+      : '';
+    toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}${liveTip}`, 'ok');
   },
 
   /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息 */
@@ -2909,7 +2932,14 @@ const Act = window.Act = {
     fc.defBrk = b;
     await saveConfig();
     render();
-    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用`, 'ok');
+    // 如果当前正处在某个选中时段里，提醒一句：这个时段会立刻按新时长重新划分
+    const wdNow = (new Date().getDay() + 6) % 7;
+    const hourNow = new Date().getHours();
+    const cur = fc.days[wdNow] && fc.days[wdNow][hourNow];
+    const liveTip = cur && cur.on
+      ? `；当前时段会立即按新时长重新划分（本小时 ${pad(hourNow)}:00–${pad(w)} 专注${b ? `、${pad(hourNow)}:${pad(w)}–${pad(w + b)} 休息` : ''}）`
+      : '';
+    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用${liveTip}`, 'ok');
   },
 
   /* ---- 自动更新 ---- */

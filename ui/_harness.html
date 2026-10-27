@@ -196,6 +196,18 @@ window.__itest = async () => {
     return ['jt', 'jb', 'jl', 'jr'].filter((k) => c.classList.contains(k)).join(' ');
   };
 
+  // 0a. 小时标签正序：从上到下 0 → 23，左上角标 0
+  const hlabs = [...document.querySelectorAll('.cc-hlab')].map((e) => e.textContent.trim());
+  out.push(['小时标签正序 0→23', hlabs.join(','), Array.from({ length: 24 }, (_, i) => String(i)).join(',')]);
+  out.push(['左上角标 0', (document.querySelector('.cc-corner') || {}).textContent, '0']);
+  // 正序下「当前小时」金框落在本地时间对应的格子（.now 用本地时间算）
+  const nowW = (new Date().getDay() + 6) % 7, nowH = new Date().getHours();
+  out.push(['当前小时高亮跟随本地时间', cell(nowW, nowH).classList.contains('now'), true]);
+  // 正序实证：第一个小时标签（0）与 (周一,0) 格同一行
+  const rH = document.querySelector('.cc-hlab').getBoundingClientRect();
+  const rC = cell(0, 0).getBoundingClientRect();
+  out.push(['0 点标签与 (周一,0) 同行', Math.abs(rH.top - rC.top) < 2, true]);
+
   // 0. 连通类名：连在一起的选中时段，格子按相邻边带上连通标记（供 CSS 抹接缝）
   out.push(['连通：周一 8 点 jt+jr', cls(0, 8), 'jt jr']);
   out.push(['连通：周一 9 点 jt+jb+jr', cls(0, 9), 'jt jb jr']);
