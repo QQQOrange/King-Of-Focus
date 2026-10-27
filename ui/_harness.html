@@ -70,9 +70,19 @@ const STATE = {
         blockClick: false, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
         hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
       focusClock: {
-        enabled: true, applyRules: true, defWork: 45, defBrk: 15,
-        days: [ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10),
-          ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(9, 11, 45, 15), ccDay(0, 0, 50, 10)],
+        enabled: true, applyRules: true, active: 'p1',
+        profiles: [
+          {
+            id: 'p1', name: '工作日强化', defWork: 45, defBrk: 15,
+            days: [ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10),
+              ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(9, 11, 45, 15), ccDay(0, 0, 50, 10)],
+          },
+          {
+            id: 'p2', name: '周末轻松', defWork: 25, defBrk: 5,
+            days: [ccDay(0, 0, 25, 5), ccDay(0, 0, 25, 5), ccDay(0, 0, 25, 5),
+              ccDay(0, 0, 25, 5), ccDay(0, 0, 25, 5), ccDay(10, 12, 25, 5), ccDay(15, 17, 25, 5)],
+          },
+        ],
       },
       stats: { enabled: true, countIdle: false, autoDaily: true, autoWeekly: true,
         autoMonthly: true, autoYearly: true, customDays: 0, customAnchor: '', retentionDays: 400 },
@@ -89,7 +99,7 @@ const STATE = {
   runtime: { active: [], disciplineOn: true, blockedApps: 0, blockedSites: 0, nextChange: 3800,
     events: [], hb: 0, hbBrowser: '', locked: false, lockUntil: 0, lockUntilText: '', lockNames: [],
     breakOn: false, breakAny: false, breakLeft: 2280, notice: null, celebrate: null,
-    clockInWindow: true, clockWeekday: 2, clockBreak: false, clockOn: false, clockHour: 9, clockLeft: 2280,
+    clockInWindow: false, clockWeekday: 2, clockBreak: false, clockOn: false, clockHour: 9, clockLeft: 2280,
     clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00' },
   mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1,
     opacity: 88, margin: 0, radius: 28, duration: 420, blockClick: false, smooth: false,
@@ -222,16 +232,18 @@ window.__itest = async () => {
   const fire = (type, el, opts = {}) =>
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
   const fc = () => S.data.config.settings.focusClock;
+  /** 当前生效方案 */
+  const prof = () => { const c = fc(); return c.profiles.find((p) => p.id === c.active) || c.profiles[0]; };
+  /** 当前方案的排班表 */
+  const pd = () => prof().days;
+  const runs = (d) => [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)];
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-  const cls = (d, h) => {
-    const c = cell(d, h);
-    return ['jt', 'jb', 'jl', 'jr'].filter((k) => c.classList.contains(k)).join(' ');
-  };
 
-  // 0a. 小时标签正序：从上到下 0 → 23，左上角标 0
+  // 0a. 小时标签正序：从上到下 0 → 23；左上角是纵轴单位，不能又是一个 0
   const hlabs = [...document.querySelectorAll('.cc-hlab')].map((e) => e.textContent.trim());
   out.push(['小时标签正序 0→23', hlabs.join(','), Array.from({ length: 24 }, (_, i) => String(i)).join(',')]);
-  out.push(['左上角标 0', (document.querySelector('.cc-corner') || {}).textContent, '0']);
+  out.push(['左上角标的是单位而不是 0', (document.querySelector('.cc-corner') || {}).textContent, '时']);
+  out.push(['纵轴只有一个 0', hlabs.filter((t) => t === '0').length, 1]);
   // 正序下「当前小时」金框落在本地时间对应的格子（.now 用本地时间算）
   const nowW = (new Date().getDay() + 6) % 7, nowH = new Date().getHours();
   out.push(['当前小时高亮跟随本地时间', cell(nowW, nowH).classList.contains('now'), true]);
@@ -240,14 +252,24 @@ window.__itest = async () => {
   const rC = cell(0, 0).getBoundingClientRect();
   out.push(['0 点标签与 (周一,0) 同行', Math.abs(rH.top - rC.top) < 2, true]);
 
-  // 0. 连通类名：连在一起的选中时段，格子按相邻边带上连通标记（供 CSS 抹接缝）
-  out.push(['连通：周一 8 点 jt+jr', cls(0, 8), 'jt jr']);
-  out.push(['连通：周一 9 点 jt+jb+jr', cls(0, 9), 'jt jb jr']);
-  out.push(['连通：周一 11 点 jb+jr', cls(0, 11), 'jb jr']);
-  out.push(['连通：周五–周六跨天相连（周六 9 点 jt+jl）', cls(5, 9), 'jt jl']);
-  out.push(['连通：周六 10 点 jb+jl', cls(5, 10), 'jb jl']);
-  out.push(['未选格无连通类', cls(0, 7), '']);
-  out.push(['未选格无连通类（周日）', cls(6, 9), '']);
+  // 0. 连续时段合并：周一 8–12 点必须是**一个**整块，高度正好盖住 4 格 + 3 道缝
+  out.push(['周一 8–12 合并成一个块', runs(0).length, 1]);
+  out.push(['合并块的起止小时', runs(0)[0] ? `${runs(0)[0].dataset.h0}-${runs(0)[0].dataset.h1}` : '(无)', '8-11']);
+  const rc8 = cell(0, 8).getBoundingClientRect(), rc11 = cell(0, 11).getBoundingClientRect();
+  const run0 = runs(0)[0] ? runs(0)[0].getBoundingClientRect() : null;
+  out.push(['整块高度 = 4 格 + 3 道缝', run0 ? Math.abs(run0.height - (rc11.bottom - rc8.top)) < 1.5 : false, true]);
+  out.push(['周一–周五 同一时段合并成一条整带', run0 ? Math.abs(run0.width - (cell(4, 8).getBoundingClientRect().right - rc8.left)) < 1.5 : false, true]);
+  // 周六只有 9–11 两格，也应是一个块；周日没选 → 一个块都没有
+  out.push(['周六 9–11 一个块', runs(5).length, 1]);
+  out.push(['周六块覆盖 2 格', runs(5)[0] ? Math.abs(runs(5)[0].getBoundingClientRect().height - (cell(5, 10).getBoundingClientRect().bottom - cell(5, 9).getBoundingClientRect().top)) < 1.5 : false, true]);
+  out.push(['没选中的一天没有块', runs(6).length, 0]);
+  // 选中格本身不再自带底色，视觉全部来自整块
+  out.push(['选中格底色交给整块（::before 已移除）', getComputedStyle(cell(0, 9), '::before').content, 'none']);
+
+  // 0c. 多方案：两条方案 chip，当前生效的那条高亮
+  out.push(['方案 chip 数量', document.querySelectorAll('.cc-prof').length, 2]);
+  out.push(['当前方案是工作日强化', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '工作日强化']);
+  out.push(['方案 chip 显示段数', [...document.querySelectorAll('.cc-prof .n')].map((e) => e.textContent).join('|'), '22 段|4 段']);
 
   // 1. 二维拖选：周三 13 点 → 周五 15 点（3 天 × 3 小时 = 9 段，原本全关）
   fire('mousedown', cell(2, 13));
@@ -256,14 +278,14 @@ window.__itest = async () => {
   const liveDuringDrag = $('#clockLive').textContent;
   fire('mouseup', document);
   await wait(250);
-  out.push(['拖选 9 段全开', fc().days.slice(2, 5).every((day) => [13, 14, 15].every((h) => day[h].on))]);
-  out.push(['拖选不碰区外', !fc().days[1][13].on && !fc().days[5][13].on && !fc().days[2][12].on && !fc().days[2][16].on]);
-  out.push(['区外原有保留', fc().days[0][8].on === true]);
-  out.push(['新选时段沿用通用时长 45/15', (() => { const p = fc().days[3][14]; return p.work === 45 && p.brk === 15; })()]);
-  out.push(['原有选中保留自定义值', fc().days[0][8].work === 50 && fc().days[0][8].brk === 10]);
-  out.push(['拖选后连通类名（周三 13 点 jt+jr）', cls(2, 13), 'jt jr']);
-  out.push(['拖选后连通类名（周四 13 点 jt+jl+jr）', cls(3, 13), 'jt jl jr']);
-  out.push(['拖选后连通类名（周四 14 点 jt+jb+jl+jr）', cls(3, 14), 'jt jb jl jr']);
+  out.push(['拖选 9 段全开', pd().slice(2, 5).every((day) => [13, 14, 15].every((h) => day[h].on))]);
+  out.push(['拖选不碰区外', !pd()[1][13].on && !pd()[5][13].on && !pd()[2][12].on && !pd()[2][16].on]);
+  out.push(['区外原有保留', pd()[0][8].on === true]);
+  out.push(['新选时段沿用通用时长 45/15', (() => { const p = pd()[3][14]; return p.work === 45 && p.brk === 15; })()]);
+  out.push(['原有选中保留自定义值', pd()[0][8].work === 50 && pd()[0][8].brk === 10]);
+  // 拖选出来的 3×3 也必须是每列一个整块（周三/周四/周五各一块）
+  const dragRun = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.h0 === '13' && r.dataset.h1 === '15');
+  out.push(['拖选 3 天 × 3 小时 = 一整块', dragRun ? `${dragRun.dataset.d}-${dragRun.dataset.d1}` : '(无)', '2-4']);
   out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
 
   // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）
@@ -278,8 +300,8 @@ window.__itest = async () => {
   fire('mousedown', cell(0, 8));
   fire('mouseup', document);
   await wait(250);
-  out.push(['单击关闭单格', fc().days[0][8].on === false]);
-  out.push(['单击不影响同列其它格', fc().days[0][9].on === true]);
+  out.push(['单击关闭单格', pd()[0][8].on === false]);
+  out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
 
   // 2b. 右键已选中的单格：预填这一格自身的时长（50/10），而不是通用值
   fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
@@ -301,7 +323,7 @@ window.__itest = async () => {
     $('#ccApply').click();
     await wait(250);
   }
-  out.push(['右键设置生效', (() => { const p = fc().days[5][14]; return p.on && p.work === 45 && p.brk === 15; })()]);
+  out.push(['右键设置生效', (() => { const p = pd()[5][14]; return p.on && p.work === 45 && p.brk === 15; })()]);
   out.push(['应用后菜单关闭', !document.querySelector('.cc-menu')]);
 
   // 4. 右键 + "这一列"：周日 20 点 → 60/0 套用到周日全天
@@ -313,7 +335,7 @@ window.__itest = async () => {
   $('#ccB').value = '0';
   $('#ccApply').click();
   await wait(250);
-  out.push(['周日整列 24 段全开且不休息', fc().days[6].every((p) => p.on && p.work === 60 && p.brk === 0)]);
+  out.push(['周日整列 24 段全开且不休息', pd()[6].every((p) => p.on && p.work === 60 && p.brk === 0)]);
 
   // 5. 快捷预设按钮 + work+brk 超限夹紧
   fire('contextmenu', cell(3, 6), { clientX: 420, clientY: 420 });
@@ -324,9 +346,9 @@ window.__itest = async () => {
   $('#ccB').value = '30';
   $('#ccApply').click();
   await wait(250);
-  const p36 = fc().days[3][6];
+  const p36 = pd()[3][6];
   out.push(['work+brk 夹紧到 60', p36.work + p36.brk === 60 && p36.work === 58 && p36.brk === 2]);
-  out.push(['勾选后同步为通用时长', fc().defWork === 58 && fc().defBrk === 2]);
+  out.push(['勾选后同步为通用时长', prof().defWork === 58 && prof().defBrk === 2]);
 
   // 6. Escape 关菜单
   fire('contextmenu', cell(1, 6), { clientX: 420, clientY: 420 });
@@ -339,7 +361,7 @@ window.__itest = async () => {
   // 7. 清空全部
   document.querySelector('[data-act="clock-clear"]').click();
   await wait(250);
-  out.push(['清空全部', fc().days.every((day) => day.every((p) => !p.on))]);
+  out.push(['清空全部', pd().every((day) => day.every((p) => !p.on))]);
   out.push(['清空后摘要', $('#clockLive').textContent, '未选择任何时段']);
 
   // 8. 通用时长：卡片行保存 → 之后新选中的时段沿用
@@ -347,12 +369,12 @@ window.__itest = async () => {
   $('#defB').value = '5';
   document.querySelector('[data-act="clock-def-save"]').click();
   await wait(250);
-  out.push(['通用时长保存生效', fc().defWork === 30 && fc().defBrk === 5]);
+  out.push(['通用时长保存生效', prof().defWork === 30 && prof().defBrk === 5]);
   out.push(['保存后输入框回显新值', $('#defW').value === '30' && $('#defB').value === '5']);
   fire('mousedown', cell(2, 2));
   fire('mouseup', document);
   await wait(250);
-  out.push(['保存后新单击选中沿用 30/5', (() => { const p = fc().days[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
+  out.push(['保存后新单击选中沿用 30/5', (() => { const p = pd()[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
 
   // 9. 不勾「同时设为通用」→ 只改这一片，通用值不动
   fire('contextmenu', cell(4, 22), { clientX: 420, clientY: 420 });
@@ -362,28 +384,105 @@ window.__itest = async () => {
   $('#ccDefToo').checked = false;
   $('#ccApply').click();
   await wait(250);
-  out.push(['不勾选则只改本片', (() => { const p = fc().days[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
-  out.push(['不勾选不动通用值', fc().defWork === 30 && fc().defBrk === 5]);
+  out.push(['不勾选则只改本片', (() => { const p = pd()[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
+  out.push(['不勾选不动通用值', prof().defWork === 30 && prof().defBrk === 5]);
 
   // 10. 自律时段生效中：与纪律相关的入口必须被锁住（测试模式除外）
   await Act.nav('clock');
-  await window.__patch({ clockOn: true });
+  await window.__patch({ clockOn: true, clockInWindow: true, testMode: false });
   await wait(200);
   out.push(['自律时段生效中：总开关置灰', document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
   out.push(['自律时段生效中：清空按钮禁用', document.querySelector('[data-act="clock-clear"]').disabled === true]);
+  out.push(['自律时段生效中：方案 chip 置灰', (document.querySelector('.cc-prof') || {}).classList ? document.querySelector('.cc-prof').classList.contains('locked') : false]);
+  out.push(['自律时段生效中：新建方案按钮禁用', document.querySelector('[data-act="clock-prof-new"]').disabled === true]);
   await Act.clockEnable();
   await wait(200);
   out.push(['自律时段生效中：总开关关不掉', fc().enabled === true]);
-  const onCount = fc().days.reduce((n, d) => n + d.filter((p) => p.on).length, 0);
+  const activeBefore = fc().active;
+  await Act.clockProfSwitch('p2');
+  await wait(200);
+  out.push(['自律时段生效中：不能切方案', fc().active, activeBefore]);
+  const onCount = pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0);
   await Act.clockCommitRect(2, 2, 2, 2, 'sub');
   await wait(200);
-  out.push(['自律时段生效中：不能取消已选时段', fc().days.reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
+  out.push(['自律时段生效中：不能取消已选时段', pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
   await Act.nav('rules');
   await wait(200);
   out.push(['自律时段生效中：规则开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
   await Act.toggleRule('seed-study');
   await wait(200);
   out.push(['自律时段生效中：规则关不掉', S.data.config.lists[0].enabled === true]);
+
+  // 10b. 休息段（clockInWindow=true、clockOn=false）：同样锁死，不能"趁休息改"
+  await window.__patch({ clockOn: false, clockInWindow: true, clockBreak: true });
+  await Act.nav('clock');
+  await wait(200);
+  out.push(['休息段：总开关同样置灰', document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
+  await Act.clockEnable();
+  await wait(200);
+  out.push(['休息段：总开关也关不掉', fc().enabled === true]);
+  await Act.nav('rules');
+  await wait(200);
+  out.push(['休息段：规则开关同样置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  await Act.toggleRule('seed-study');
+  await wait(200);
+  out.push(['休息段：规则开关也动不了', S.data.config.lists[0].enabled === true]);
+  // 时段外才恢复可点
+  await window.__patch({ clockOn: false, clockInWindow: false, clockBreak: false });
+  await Act.nav('clock');
+  await wait(200);
+  out.push(['时段外：总开关恢复可点', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
+
+  // 10c. 多方案：切换 / 新建 / 重命名 / 复制 / 删除
+  await Act.clockProfSwitch('p2');
+  await wait(250);
+  out.push(['切换方案后 active 变了', fc().active, 'p2']);
+  out.push(['切换后图表跟着换（周一 8 点不再选中）', cell(0, 8).classList.contains('on'), false]);
+  out.push(['切换后图表跟着换（周六 10 点选中）', cell(5, 10).classList.contains('on'), true]);
+  out.push(['切换后摘要是新方案的', $('#clockLive').textContent, '周六 10:00–12:00；周日 15:00–17:00']);
+  out.push(['切换后高亮的是新 chip', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '周末轻松']);
+
+  const beforeNew = fc().profiles.length;
+  await Act.clockProfNew('假期');
+  await wait(250);
+  out.push(['新建方案后数量 +1', fc().profiles.length, beforeNew + 1]);
+  out.push(['新建后自动切到新方案', prof().name, '假期']);
+  out.push(['新方案排班是空的', pd().every((day) => day.every((p) => !p.on)), true]);
+  out.push(['新方案没有块', document.querySelectorAll('.cc-run').length, 0]);
+  out.push(['新方案沿用上一套的通用时长', `${prof().defWork}/${prof().defBrk}`, '25/5']);
+
+  await Act.clockProfRename('假期模式');
+  await wait(250);
+  out.push(['重命名生效', prof().name, '假期模式']);
+  out.push(['重命名后 chip 文案跟着变', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '假期模式']);
+
+  await Act.clockProfDup();
+  await wait(250);
+  out.push(['复制方案后数量再 +1', fc().profiles.length, beforeNew + 2]);
+  out.push(['复制出来的名字带副本', prof().name, '假期模式 副本']);
+
+  const origConfirm = window.confirm;
+  window.confirm = () => true;
+  const beforeDel = fc().profiles.length;
+  await Act.clockProfDel();
+  window.confirm = origConfirm;
+  await wait(250);
+  out.push(['删除方案后数量 -1', fc().profiles.length, beforeDel - 1]);
+  out.push(['删除后自动切到剩下的一套', fc().active, fc().profiles[0].id]);
+  // 只剩一套时必须拒绝再删（临时把方案裁到 1 套来验守卫，验完还原）
+  const savedFc = JSON.parse(JSON.stringify(fc()));
+  fc().profiles = fc().profiles.slice(0, 1);
+  fc().active = fc().profiles[0].id;
+  await Act.clockProfDel();
+  await wait(120);
+  out.push(['只剩一套时拒绝再删', fc().profiles.length, 1]);
+  S.data.config.settings.focusClock = savedFc;
+  await pull(); render();
+  await wait(120);
+  // 回到最初那套，后面的断言按它来
+  await Act.clockProfSwitch('p1');
+  await wait(250);
+  out.push(['切回原方案可用', fc().active, 'p1']);
 
   // 11. 设置页：任务管理器开关
   await Act.nav('settings');

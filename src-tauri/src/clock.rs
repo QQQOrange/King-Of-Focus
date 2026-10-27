@@ -44,12 +44,14 @@ impl ClockState {
 }
 
 /// 某天某小时的计划（未启用 / 未选中 → None）
+///
+/// 只认「当前生效的那套方案」：别的方案存着但不参与任何判定。
 pub fn plan_at(cfg: &Config, weekday: u32, hour: u32) -> Option<(u32, u32)> {
     let c = &cfg.settings.focus_clock;
     if !c.enabled {
         return None;
     }
-    let p = c.days.get(weekday as usize)?.get(hour as usize)?;
+    let p = c.active_days()?.get(weekday as usize)?.get(hour as usize)?;
     if !p.on {
         return None;
     }
@@ -116,7 +118,8 @@ pub fn seconds_until_change(cfg: &Config) -> Option<i64> {
     if !c.enabled {
         return None;
     }
-    if c.days.iter().flatten().all(|h| !h.on) {
+    let days = c.active_days()?;
+    if days.iter().flatten().all(|h| !h.on) {
         return None;
     }
     let now = now_local();
@@ -163,18 +166,32 @@ fn day_ranges(day: &[crate::model::HourPlan]) -> Vec<String> {
 /// 人类可读的时段摘要。
 /// 一周七天完全一样 → "每天 08:00–12:00、14:00–18:00"；
 /// 否则逐天列出有选中的日子 → "周三 08:00–12:00；周六 09:00–11:00"。
+///
+/// 存了多套方案时前面带上方案名——不然界面上根本分不清说的是哪一套。
 pub fn summary(cfg: &Config) -> String {
     let c = &cfg.settings.focus_clock;
-    if c.days.is_empty() {
+    let Some(p) = c.active_profile() else {
+        return "未选择任何时段".into();
+    };
+    let body = days_summary(&p.days);
+    if c.profiles.len() > 1 {
+        format!("「{}」{}", p.name, body)
+    } else {
+        body
+    }
+}
+
+fn days_summary(days: &[Vec<crate::model::HourPlan>]) -> String {
+    if days.is_empty() {
         return "未选择任何时段".into();
     }
     // 七天都相同 → 压缩成"每天"
-    let first = day_ranges(&c.days[0]);
-    if !first.is_empty() && c.days.iter().all(|d| day_ranges(d) == first) {
+    let first = day_ranges(&days[0]);
+    if !first.is_empty() && days.iter().all(|d| day_ranges(d) == first) {
         return format!("每天 {}", first.join("、"));
     }
     let mut parts: Vec<String> = Vec::new();
-    for (w, day) in c.days.iter().enumerate() {
+    for (w, day) in days.iter().enumerate() {
         let ranges = day_ranges(day);
         if ranges.is_empty() {
             continue;
@@ -192,18 +209,11 @@ pub fn summary(cfg: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClockCfg, Config, HourPlan};
+    use crate::model::{ClockCfg, ClockProfile, Config, HourPlan};
 
     fn cfg_with(days: Vec<Vec<HourPlan>>, enabled: bool) -> Config {
         let mut c = Config::default();
-        c.settings.focus_clock = ClockCfg {
-            enabled,
-            apply_rules: true,
-            days,
-            hours: Vec::new(),
-            def_work: 50,
-            def_brk: 10,
-        };
+        c.settings.focus_clock = ClockCfg::with_days(enabled, days);
         c
     }
 
@@ -336,5 +346,71 @@ mod tests {
         assert_eq!(WEEKDAY_NAMES.len(), 7);
         assert_eq!(WEEKDAY_NAMES[0], "周一");
         assert_eq!(WEEKDAY_NAMES[6], "周日");
+    }
+
+    /// 多套方案：只有 active 指定的那一套参与判定
+    fn two_profiles() -> Config {
+        let mut a = ClockProfile::default();
+        a.id = "work".into();
+        a.name = "工作日".into();
+        let mut b = ClockProfile::default();
+        b.id = "rest".into();
+        b.name = "周末".into();
+        for h in 8..12 {
+            a.days[0][h] = HourPlan { on: true, work: 50, brk: 10 };
+            b.days[0][h] = HourPlan { on: true, work: 25, brk: 5 };
+        }
+        let mut c = Config::default();
+        c.settings.focus_clock = ClockCfg {
+            enabled: true,
+            profiles: vec![a, b],
+            active: "work".into(),
+            ..ClockCfg::default()
+        };
+        c
+    }
+
+    #[test]
+    fn plan_at_follows_active_profile() {
+        let mut c = two_profiles();
+        assert_eq!(plan_at(&c, 0, 8), Some((50, 10)));
+        c.settings.focus_clock.active = "rest".into();
+        assert_eq!(plan_at(&c, 0, 8), Some((25, 5)), "切换方案后应按新方案判定");
+        c.settings.focus_clock.enabled = false;
+        assert!(plan_at(&c, 0, 8).is_none(), "总开关关掉后哪套都不生效");
+    }
+
+    #[test]
+    fn active_falls_back_to_first_when_id_missing() {
+        let mut c = two_profiles();
+        c.settings.focus_clock.active = "已经删掉的方案".into();
+        assert_eq!(
+            c.settings.focus_clock.active_profile().map(|p| p.id.as_str()),
+            Some("work"),
+            "active 失效时退回第一套"
+        );
+        assert_eq!(plan_at(&c, 0, 8), Some((50, 10)));
+    }
+
+    #[test]
+    fn summary_prefixes_profile_name_when_multiple() {
+        let mut c = two_profiles();
+        assert_eq!(summary(&c), "「工作日」周一 08:00–12:00");
+        c.settings.focus_clock.active = "rest".into();
+        assert_eq!(summary(&c), "「周末」周一 08:00–12:00");
+        // 只有一套时不加前缀，保持旧文案
+        c.settings.focus_clock.profiles.truncate(1);
+        c.settings.focus_clock.active = "work".into();
+        assert_eq!(summary(&c), "周一 08:00–12:00");
+    }
+
+    #[test]
+    fn seconds_until_change_uses_active_profile() {
+        let mut c = two_profiles();
+        c.settings.focus_clock.active = "rest".into();
+        // 两套都在周一 8–12 点，翻转点一致；关键是不能因为另一套而算错
+        assert!(seconds_until_change(&c).is_some());
+        c.settings.focus_clock.profiles.truncate(1);
+        assert!(seconds_until_change(&c).is_some());
     }
 }

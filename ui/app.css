@@ -599,46 +599,76 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   background: var(--cell-bg); border: 1px solid transparent;
   cursor: pointer;
   transition: background .1s;
+  z-index: 1;
 }
 .cc-cell:hover { background: var(--hover-bg); border-color: var(--line-2); }
-/* 选中态：底色与边框全部交给 ::before 画，便于相邻格连成一片 */
-.cc-cell.on { background: transparent; border-width: 0; }
-.cc-cell.on::before {
-  content: ''; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+/* 选中态不画在格子上：格子之间 3px 间距，半透明底叠两次会留下一条亮缝，
+ * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
+.cc-cell.on { background: transparent; border-width: 0; z-index: 3; }
+.cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
+/* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距 */
+.cc-run {
+  position: relative; z-index: 2; pointer-events: none;
+  display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 4px;
   background: linear-gradient(180deg, rgba(125, 176, 255, .26), rgba(47, 109, 240, .16));
-  border-radius: 3px; pointer-events: none;
-  transition: background .12s;
+  box-shadow: inset 0 0 0 1px rgba(125, 176, 255, .16);
 }
-.cc-cell.on:hover::before { background: rgba(125, 176, 255, .34); }
-/* 与相邻选中格连通的那一侧：外探 3px 抹平格间距，并去掉该侧圆角 */
-.cc-cell.on.jt::before { top: -3px; border-top-left-radius: 0; border-top-right-radius: 0; }
-.cc-cell.on.jb::before { bottom: -3px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.cc-cell.on.jl::before { left: -3px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
-.cc-cell.on.jr::before { right: -3px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-/* 选中块边缘金框 / 当前小时金框：用 ::after 画，连通侧收边 */
-.cc-cell.edge::after,
+.cc-run i { display: block; width: 100%; }
+.cc-run .w { background: rgba(77, 141, 255, .78); }
+.cc-run .b { background: rgba(56, 189, 248, .45); }
+.cc-run .t { background: rgba(77, 141, 255, .22); }
+/* 框选预览：整片范围画一个金色虚线框，比逐格描边清楚得多 */
+.cc-drag {
+  position: relative; z-index: 4; pointer-events: none;
+  border: 1px dashed var(--gold); border-radius: 4px;
+  background: rgba(255, 200, 90, .07);
+}
+/* 当前小时金框：选中块盖在格子上，所以给 .now 抬一层，边框才看得见 */
+.cc-cell.now { z-index: 5; }
 .cc-cell.now::after {
   content: ''; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
-  border: 1px solid var(--gold); border-radius: inherit;
+  border: 1px solid var(--gold); border-radius: 3px;
   opacity: .9; pointer-events: none;
 }
-.cc-cell.on.jt.edge::after, .cc-cell.on.jt.now::after { border-top-width: 0; }
-.cc-cell.on.jb.edge::after, .cc-cell.on.jb.now::after { border-bottom-width: 0; }
-.cc-cell.on.jl.edge::after, .cc-cell.on.jl.now::after { border-left-width: 0; }
-.cc-cell.on.jr.edge::after, .cc-cell.on.jr.now::after { border-right-width: 0; }
-/* 格内的专注 / 休息 / 尾段：随连通边一起延伸，圆角继承格子 */
-.cc-bar {
-  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
-  display: flex; flex-direction: column; border-radius: inherit;
+
+/* 星期时段（方案）切换条 */
+.cc-profiles {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
 }
-.cc-cell.on.jt .cc-bar { top: -3px; }
-.cc-cell.on.jb .cc-bar { bottom: -3px; }
-.cc-cell.on.jl .cc-bar { left: -3px; }
-.cc-cell.on.jr .cc-bar { right: -3px; }
-.cc-bar i { display: block; width: 100%; }
-.cc-bar .w { background: rgba(77, 141, 255, .78); }
-.cc-bar .b { background: rgba(56, 189, 248, .45); }
-.cc-bar .t { background: rgba(77, 141, 255, .22); }
+.cc-prof-lab { font-size: 11.5px; color: var(--text-3); margin-right: 2px; }
+.cc-prof {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 11px; border-radius: 9px; cursor: pointer;
+  background: var(--cell-bg); border: 1px solid var(--line);
+  color: var(--text-2); font-size: 12.5px; font-family: inherit;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.cc-prof:hover { border-color: var(--line-2); color: var(--text); }
+.cc-prof .n {
+  font-size: 10.5px; color: var(--text-3);
+  background: rgba(127, 127, 127, .12); padding: 1px 5px; border-radius: 5px;
+}
+.cc-prof.active {
+  color: var(--text); border-color: rgba(77, 141, 255, .65);
+  background: rgba(77, 141, 255, .14);
+  box-shadow: 0 0 0 1px rgba(77, 141, 255, .18) inset;
+}
+.cc-prof.active .n { color: #9dc0ff; background: rgba(77, 141, 255, .18); }
+.cc-prof.locked { opacity: .45; pointer-events: none; }
+.cc-prof-add {
+  padding: 6px 11px; border-radius: 9px; cursor: pointer;
+  background: transparent; border: 1px dashed var(--line-2);
+  color: var(--text-3); font-size: 12.5px; font-family: inherit;
+}
+.cc-prof-add:hover:not(:disabled) { color: var(--text); border-color: var(--gold); }
+.cc-prof-add:disabled { opacity: .4; cursor: not-allowed; }
+.cc-prof-ops {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 9px; font-size: 11.5px; color: var(--text-3);
+}
+.cc-prof-ops .hint { margin-left: 2px; }
 
 .cc-legend {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;

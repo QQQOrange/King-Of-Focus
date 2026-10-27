@@ -108,14 +108,7 @@ mod tests {
     fn clock_on(cfg: &mut Config, weekday: u32, hour: u32, work: u32, brk: u32) {
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[weekday as usize][hour as usize] = HourPlan { on: true, work, brk };
-        cfg.settings.focus_clock = ClockCfg {
-            enabled: true,
-            apply_rules: true,
-            days,
-            hours: Vec::new(),
-            def_work: 50,
-            def_brk: 10,
-        };
+        cfg.settings.focus_clock = ClockCfg::with_days(true, days);
     }
 
     #[test]
@@ -150,14 +143,7 @@ mod tests {
         // 时段没选中 → 不接管
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[0][3] = HourPlan { on: true, work: 60, brk: 0 };
-        c.settings.focus_clock = ClockCfg {
-            enabled: true,
-            apply_rules: true,
-            days,
-            hours: Vec::new(),
-            def_work: 50,
-            def_brk: 10,
-        };
+        c.settings.focus_clock = ClockCfg::with_days(true, days);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(!d.clock_all);

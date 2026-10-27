@@ -109,11 +109,16 @@ pub fn is_locked(shared: &crate::shared::Shared) -> bool {
 /// 自律时段内：拒绝"削弱纪律"的设置改动。
 ///
 /// 只拦真正会让**当前这段自律**失效的改动：
-///   · 关掉「自律时段」总开关
+///   · 关掉 / 打开「自律时段」总开关（时段内两个方向都锁死）
 ///   · 关掉「时段内让已启用规则立即生效」
+///   · 切换 / 删除正在生效的那套「星期时段」方案
 ///   · 取消已经选中的时段（含"清空全部"）
 ///   · 改掉正在生效的这一小时的专注 / 休息时长（防止"改时长"逃逸）
-///   · 关掉 / 删除已启用的规则
+///   · 动任何一条规则的启用开关（开、关都不行）、删掉已启用的规则
+///
+/// 门槛用 `clock_in`（含休息段）而不是 `clock_on`：
+/// 一个 50/10 的小时段里每分钟都在开关状态之间跳，
+/// 只在专注段锁定等于"每小时给你 10 分钟随便改"。
 ///
 /// 其它设置（外观、统计、提醒……）照常可改——固化锁定之外不该把软件变成石头。
 /// 测试模式下随时可调（测试模式的意义本来就是"随时开关"）。
@@ -131,29 +136,41 @@ pub fn discipline_violation_at(
     now: chrono::NaiveDateTime,
 ) -> Option<String> {
     let d = crate::discipline::state(old, &now);
-    if !d.clock_on {
-        return None; // 不在自律时段（专注段）内 → 随便改
+    if !d.clock_in {
+        return None; // 不在自律时段内 → 随便改
     }
 
     let oc = &old.settings.focus_clock;
     let nc = &new.settings.focus_clock;
 
-    // 1) 总开关不能关
-    if oc.enabled && !nc.enabled {
-        return Some("自律时段生效中，不能关闭「自律时段」总开关".into());
+    // 1) 总开关两个方向都不能动（时段内它只能保持"开"）
+    if oc.enabled != nc.enabled {
+        return Some(if nc.enabled {
+            "自律时段生效中，总开关已锁定，等这一段结束再改".into()
+        } else {
+            "自律时段生效中，不能关闭「自律时段」总开关".into()
+        });
     }
     // 2) "时段内让规则立即生效"不能关
     if oc.apply_rules && !nc.apply_rules {
         return Some("自律时段生效中，不能关闭「时段内让已启用的规则立即生效」".into());
     }
-    // 3) 已选中的时段不能取消
-    for (d_i, day) in oc.days.iter().enumerate() {
+    // 3) 正在生效的那套方案不能被切走 / 删掉
+    let old_id = oc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
+    let new_id = nc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
+    if old_id != new_id {
+        return Some("自律时段生效中，不能切换「星期时段」方案".into());
+    }
+    let (Some(od), Some(nd)) = (oc.active_days(), nc.active_days()) else {
+        return Some("自律时段生效中，不能删除正在生效的「星期时段」方案".into());
+    };
+    // 4) 已选中的时段不能取消
+    for (d_i, day) in od.iter().enumerate() {
         for (h_i, p) in day.iter().enumerate() {
             if !p.on {
                 continue;
             }
-            let still_on = nc
-                .days
+            let still_on = nd
                 .get(d_i)
                 .and_then(|d2| d2.get(h_i))
                 .map(|p2| p2.on)
@@ -167,10 +184,10 @@ pub fn discipline_violation_at(
             }
         }
     }
-    // 4) 正在生效的这一小时，专注 / 休息时长不能改（否则等于用"改时长"逃逸）
-    if d.clock_in && d.clock_weekday < 7 && d.clock_hour < 24 {
-        let op = oc.days.get(d.clock_weekday as usize).and_then(|x| x.get(d.clock_hour as usize));
-        let np = nc.days.get(d.clock_weekday as usize).and_then(|x| x.get(d.clock_hour as usize));
+    // 5) 正在生效的这一小时，专注 / 休息时长不能改（否则等于用"改时长"逃逸）
+    if d.clock_weekday < 7 && d.clock_hour < 24 {
+        let op = od.get(d.clock_weekday as usize).and_then(|x| x.get(d.clock_hour as usize));
+        let np = nd.get(d.clock_weekday as usize).and_then(|x| x.get(d.clock_hour as usize));
         if let (Some(op), Some(np)) = (op, np) {
             if (op.work, op.brk) != (np.work, np.brk) {
                 return Some(format!(
@@ -181,15 +198,20 @@ pub fn discipline_violation_at(
             }
         }
     }
-    // 5) 已启用的规则不能关、不能删
+    // 6) 规则的启用开关：时段内一律锁死（开、关都不行）
     for l in &old.lists {
-        if !l.enabled {
-            continue;
-        }
         match new.lists.iter().find(|x| x.id == l.id) {
-            None => return Some(format!("自律时段生效中，不能删除规则「{}」", l.name)),
-            Some(nl) if !nl.enabled => {
-                return Some(format!("自律时段生效中，不能关闭规则「{}」", l.name))
+            None => {
+                if l.enabled {
+                    return Some(format!("自律时段生效中，不能删除规则「{}」", l.name));
+                }
+            }
+            Some(nl) if nl.enabled != l.enabled => {
+                return Some(if l.enabled {
+                    format!("自律时段生效中，不能关闭规则「{}」", l.name)
+                } else {
+                    format!("自律时段生效中，规则开关已锁定，不能开启规则「{}」", l.name)
+                });
             }
             _ => {}
         }
@@ -399,14 +421,7 @@ mod tests {
         let mut c = Config::default();
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[2][10] = HourPlan { on: true, work: 60, brk: 0 };
-        c.settings.focus_clock = ClockCfg {
-            enabled: true,
-            apply_rules: true,
-            days,
-            hours: Vec::new(),
-            def_work: 50,
-            def_brk: 10,
-        };
+        c.settings.focus_clock = ClockCfg::with_days(true, days);
         c.lists = vec![RuleList {
             id: "r1".into(),
             name: "测试规则".into(),
@@ -427,6 +442,107 @@ mod tests {
     }
 
     #[test]
+    fn in_window_clock_switch_is_exactly_locked() {
+        // 时段内总开关只有"保持不变"这一个合法状态
+        let old = cfg_with_clock();
+        let now = now_at(2, 10, 30);
+        let mut same = old.clone();
+        same.settings.focus_clock.enabled = true;
+        assert!(
+            discipline_violation_at(&old, &same, now).is_none(),
+            "值没变 → 不算改动"
+        );
+        let mut off = old.clone();
+        off.settings.focus_clock.enabled = false;
+        assert!(
+            discipline_violation_at(&old, &off, now).is_some(),
+            "关掉总开关必须被拒"
+        );
+    }
+
+    #[test]
+    fn break_segment_is_locked_too() {
+        // 50/10 的小时段：10 分休息段内同样不许动开关，
+        // 否则"每小时有 10 分钟可以随便改"等于没锁
+        let mut c = Config::default();
+        let mut days = vec![vec![HourPlan::default(); 24]; 7];
+        days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
+        c.settings.focus_clock = ClockCfg::with_days(true, days);
+        c.lists = vec![RuleList {
+            id: "r1".into(),
+            name: "测试规则".into(),
+            enabled: true,
+            ..RuleList::default()
+        }];
+        let now = now_at(2, 10, 45); // 40 分专注已过 → 休息段
+        assert!(!crate::discipline::state(&c, &now).clock_on, "确实是休息段");
+        let mut off = c.clone();
+        off.settings.focus_clock.enabled = false;
+        assert!(
+            discipline_violation_at(&c, &off, now).is_some(),
+            "休息段内也不能关总开关"
+        );
+        let mut rule_off = c.clone();
+        rule_off.lists[0].enabled = false;
+        assert!(
+            discipline_violation_at(&c, &rule_off, now).is_some(),
+            "休息段内也不能关规则"
+        );
+    }
+
+    #[test]
+    fn in_window_cannot_switch_or_delete_profile() {
+        let mut old = cfg_with_clock();
+        // 加第二套方案，当前仍用第一套
+        let mut other = crate::model::ClockProfile::default();
+        other.id = "p2".into();
+        other.name = "另一套".into();
+        other.days[2][10] = HourPlan { on: true, work: 60, brk: 0 };
+        old.settings.focus_clock.profiles.push(other);
+
+        let now = now_at(2, 10, 30);
+        let mut sw = old.clone();
+        sw.settings.focus_clock.active = "p2".into();
+        assert!(
+            discipline_violation_at(&old, &sw, now).is_some(),
+            "时段内不能切走正在生效的方案"
+        );
+
+        let mut del = old.clone();
+        del.settings.focus_clock.profiles.remove(0);
+        del.settings.focus_clock.active = "p2".into();
+        assert!(
+            discipline_violation_at(&old, &del, now).is_some(),
+            "时段内不能删掉正在生效的方案"
+        );
+
+        // 改另一套（不生效的那套）不受影响
+        let mut edit_other = old.clone();
+        edit_other.settings.focus_clock.profiles[1].days[4][20].on = true;
+        assert!(
+            discipline_violation_at(&old, &edit_other, now).is_none(),
+            "改没生效的那套方案不该被拦"
+        );
+    }
+
+    #[test]
+    fn in_window_cannot_toggle_rule_switch() {
+        let old = cfg_with_clock();
+        let now = now_at(2, 10, 30);
+        let mut off = old.clone();
+        off.lists[0].enabled = false;
+        assert!(discipline_violation_at(&old, &off, now).is_some(), "不能关");
+
+        let mut off_old = old.clone();
+        off_old.lists[0].enabled = false;
+        let mut on_new = off_old.clone();
+        on_new.lists[0].enabled = true;
+        let v = discipline_violation_at(&off_old, &on_new, now);
+        assert!(v.is_some(), "时段内连「打开规则」也锁死（开关整体不可动）");
+        assert!(v.unwrap().contains("锁定"));
+    }
+
+    #[test]
     fn in_window_cannot_disable_apply_rules() {
         let old = cfg_with_clock();
         let mut new = old.clone();
@@ -438,7 +554,7 @@ mod tests {
     fn in_window_cannot_clear_selected_slots() {
         let old = cfg_with_clock();
         let mut new = old.clone();
-        new.settings.focus_clock.days[2][10].on = false;
+        new.settings.focus_clock.profiles[0].days[2][10].on = false;
         assert!(discipline_violation_at(&old, &new, now_at(2, 10, 30)).is_some());
     }
 
@@ -446,7 +562,7 @@ mod tests {
     fn in_window_cannot_change_running_hour_duration() {
         let old = cfg_with_clock();
         let mut new = old.clone();
-        new.settings.focus_clock.days[2][10].work = 5;
+        new.settings.focus_clock.profiles[0].days[2][10].work = 5;
         assert!(discipline_violation_at(&old, &new, now_at(2, 10, 30)).is_some());
     }
 
@@ -532,7 +648,7 @@ mod tests {
     #[test]
     fn exit_allowed_during_break_segment() {
         let mut c = cfg_with_clock();
-        c.settings.focus_clock.days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
+        c.settings.focus_clock.profiles[0].days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
         assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_none(), "休息段可以退出");
     }
 

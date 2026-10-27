@@ -86,16 +86,19 @@ function toast(msg, kind) {
 
 /* ---------------- 自律权限 ----------------
  *
- * 非测试模式下，自律时段（专注段）生效时，"关掉自律"这件事本身要被拦住：
- * 不能关规则、不能关「自律时段」总开关、不能取消已选时段。
- * 界面先置灰一道，后端 save_config 再拦一道——直接调命令也绕不过去。
+ * 非测试模式下，只要处在自律时段里（含休息段），就不许动纪律相关的开关：
+ * 不能关规则、不能切换规则开关、不能关「自律时段」总开关、不能切/删方案、
+ * 不能取消已选时段。界面先置灰一道，后端 save_config 再拦一道——直接调命令也绕不过去。
+ *
+ * 门槛用 clockInWindow 而不是 clockOn：50/10 的小时段里，
+ * 只在专注段锁定等于"每小时送你 10 分钟随便改"。
  */
 function settingsFrozen() {
   const d = S.data;
   if (!d) return false;
   if (d.testMode) return false;        // 测试模式的意义就是"随时开关"
   const rt = d.runtime || {};
-  return !!(rt.clockOn || rt.locked);
+  return !!(rt.clockOn || rt.clockInWindow || rt.locked);
 }
 
 /** 自律时段（专注段）正在生效 */
@@ -366,7 +369,7 @@ function viewRules() {
         <div class="rule-actions">
           <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
                style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
-               title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，不能关闭规则') : '启用 / 停用'}">
+               title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，开关已锁定') : '启用 / 停用'}">
             <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
           </div>
           <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}"
@@ -381,8 +384,8 @@ function viewRules() {
     <b>${esc(d.runtime.lockUntilText || '时段结束')}</b> 之前所有开关都已置灰，改不了也关不掉。
   </div>`
     : (clockRunning() ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
-    <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间不能关闭或删除规则，
-    也不能关掉「自律时段」本身——等这一段结束（或用积分解锁）之后才能改。
+    <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间规则开关整体锁定（开、关都不行），也不能删除规则、
+    不能关掉「自律时段」本身——等这一段结束（或用积分解锁）之后才能改。
   </div>` : '');
 
   return `
@@ -660,76 +663,187 @@ function paintSchedule() {
 /* ---------------- 视图：自律时段（7 列 × 24 小时柱状图） ---------------- */
 const WD = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const CC_DEF_W = 50, CC_DEF_B = 10; // 配置里没有通用时长时的兜底值
+const CC_MAX_PROFILES = 12;         // 与后端 model::MAX_CLOCK_PROFILES 对齐
 
-/** 归一化 focusClock：7 天 × 24 小时（兼容旧版"全周共用 24 段"的 hours） */
-function clockCfg() {
-  const s = S.data && S.data.config && S.data.config.settings;
-  if (!s) return { enabled: false, applyRules: true, days: [], defWork: CC_DEF_W, defBrk: CC_DEF_B };
-  if (!s.focusClock) s.focusClock = { enabled: false, applyRules: true, days: [] };
-  const fc = s.focusClock;
-  if (!Array.isArray(fc.days)) fc.days = [];
-  // 通用默认时长：新框选/单击选中的时段沿用这套专注/休息（右键菜单可更新）
-  fc.defWork = Math.max(1, Math.min(60, Math.round(fc.defWork || CC_DEF_W)));
-  fc.defBrk = Math.max(0, Math.min(60, Math.round(fc.defBrk || CC_DEF_B)));
-  if (fc.defBrk > 0 && fc.defWork + fc.defBrk > 60) fc.defBrk = 60 - fc.defWork;
-  // 新时段的默认值跟着通用时长走
-  const fresh = () => ({ on: false, work: fc.defWork, brk: fc.defBrk });
-  // 旧结构迁移：hours（全周共用）→ 复制到 7 天（后端 sanitize 也会做，这里兜底）
-  if (!fc.days.length && Array.isArray(fc.hours) && fc.hours.length) {
-    const legacy = [];
-    for (let h = 0; h < 24; h++) {
-      const p = fc.hours[h] || {};
-      legacy.push({ on: !!p.on, work: +(p.work || CC_DEF_W), brk: +(p.brk || CC_DEF_B) });
-    }
-    fc.days = Array.from({ length: 7 }, () => legacy.map((p) => ({ ...p })));
-  }
-  while (fc.days.length < 7) fc.days.push(Array.from({ length: 24 }, fresh));
-  fc.days.length = 7;
-  fc.days.forEach((day, d) => {
-    if (!Array.isArray(day)) fc.days[d] = Array.from({ length: 24 }, fresh);
-    const dd = fc.days[d];
+/** 归一化一套方案：7 天 × 24 小时 + 时长夹紧 */
+function ccNormProfile(p, idx) {
+  if (!p || typeof p !== 'object') p = {};
+  if (!p.id) p.id = `p${idx + 1}`;
+  if (!p.name) p.name = `方案 ${idx + 1}`;
+  // 通用时长：新框选/单击选中的时段沿用（右键菜单可更新）
+  p.defWork = Math.max(1, Math.min(60, Math.round(p.defWork || CC_DEF_W)));
+  p.defBrk = Math.max(0, Math.min(60, Math.round(p.defBrk || CC_DEF_B)));
+  if (p.defBrk > 0 && p.defWork + p.defBrk > 60) p.defBrk = 60 - p.defWork;
+  const fresh = () => ({ on: false, work: p.defWork, brk: p.defBrk });
+  if (!Array.isArray(p.days)) p.days = [];
+  while (p.days.length < 7) p.days.push(Array.from({ length: 24 }, fresh));
+  p.days.length = 7;
+  p.days.forEach((day, d) => {
+    if (!Array.isArray(day)) p.days[d] = Array.from({ length: 24 }, fresh);
+    const dd = p.days[d];
     while (dd.length < 24) dd.push(fresh());
     dd.length = 24;
-    for (const p of dd) {
-      p.work = Math.max(0, Math.min(60, Math.round(p.work || 0)));
-      p.brk = Math.max(0, Math.min(60, Math.round(p.brk || 0)));
-      if (p.brk > 0) {
-        p.work = Math.max(1, Math.min(59, p.work));
-        if (p.work + p.brk > 60) p.brk = 60 - p.work;
+    for (const h of dd) {
+      h.work = Math.max(0, Math.min(60, Math.round(h.work || 0)));
+      h.brk = Math.max(0, Math.min(60, Math.round(h.brk || 0)));
+      if (h.brk > 0) {
+        h.work = Math.max(1, Math.min(59, h.work));
+        if (h.work + h.brk > 60) h.brk = 60 - h.work;
       }
     }
   });
+  return p;
+}
+
+/** 归一化 focusClock：多套「星期时段」方案（兼容旧版单套 days / 更旧的 hours） */
+function clockCfg() {
+  const s = S.data && S.data.config && S.data.config.settings;
+  if (!s) return { enabled: false, applyRules: true, active: 'p1', profiles: [] };
+  if (!s.focusClock) s.focusClock = { enabled: false, applyRules: true, active: 'p1', profiles: [] };
+  const fc = s.focusClock;
+  if (!Array.isArray(fc.profiles)) fc.profiles = [];
+  // 旧版迁移：单套方案摊在 focusClock.days（更旧的是 hours）上，搬进第一套
+  if (!fc.profiles.length) {
+    let legacyDays = null;
+    if (Array.isArray(fc.days) && fc.days.length) {
+      legacyDays = fc.days;
+    } else if (Array.isArray(fc.hours) && fc.hours.length) {
+      const one = [];
+      for (let h = 0; h < 24; h++) {
+        const p = fc.hours[h] || {};
+        one.push({ on: !!p.on, work: +(p.work || CC_DEF_W), brk: +(p.brk || CC_DEF_B) });
+      }
+      legacyDays = Array.from({ length: 7 }, () => one.map((p) => ({ ...p })));
+    }
+    fc.profiles.push({
+      id: 'p1',
+      name: '默认时段',
+      days: legacyDays || [],
+      defWork: fc.defWork,
+      defBrk: fc.defBrk,
+    });
+    fc.active = 'p1';
+  }
+  fc.profiles.forEach((p, i) => ccNormProfile(p, i));
+  if (!fc.profiles.some((p) => p.id === fc.active)) fc.active = fc.profiles[0].id;
+  // 旧字段不再参与任何逻辑，留着只会造成"两份真相"
+  delete fc.days;
   delete fc.hours;
+  delete fc.defWork;
+  delete fc.defBrk;
   return fc;
 }
 
-/** 连通判定：格子 (d,h) 的上下左右有选中的邻居，那条边就不画接缝，
- * 于是一片连在一起的选中时段在柱状图上看起来就是连成一片的。 */
-function ccJoins(fc, d, h) {
-  const on = (dd, hh) => !!(fc.days[dd] && fc.days[dd][hh] && fc.days[dd][hh].on);
-  return { jt: on(d, h + 1), jb: on(d, h - 1), jl: on(d - 1, h), jr: on(d + 1, h) };
-}
-
-/** 把连通类名写到 DOM 上（渲染和拖选预览共用） */
-function ccApplyJoins(root) {
+/** 当前生效的那套方案 */
+function clockProfile() {
   const fc = clockCfg();
-  const onCells = new Set();
-  root.querySelectorAll('.cc-cell').forEach((c) => {
-    if (c.classList.contains('on')) onCells.add(`${+c.dataset.d},${+c.dataset.h}`);
-  });
-  const isOn = (d, h) => onCells.has(`${d},${h}`);
-  root.querySelectorAll('.cc-cell').forEach((c) => {
-    const d = +c.dataset.d, h = +c.dataset.h, on = isOn(d, h);
-    c.classList.toggle('jt', on && isOn(d, h + 1));
-    c.classList.toggle('jb', on && isOn(d, h - 1));
-    c.classList.toggle('jl', on && isOn(d - 1, h));
-    c.classList.toggle('jr', on && isOn(d + 1, h));
-  });
+  return fc.profiles.find((p) => p.id === fc.active) || fc.profiles[0];
 }
 
-/** 已选时段总数（小时数） */
+/** 把 DOM 里 `.cc-cell.on` 的选中态按「每列连续小时」画成整块覆盖层。
+ *
+ * 为什么不在格子上画：格子之间有 3px 间距，半透明底色在间距里叠两次会
+ * 变成一条亮缝，几个连续小时看起来就像几块独立的小方块。
+ * 这里改成用 grid 跨行跨列的覆盖层——一个连续段就是**一个**圆角块，
+ * 中间没有任何接缝；格子仍然负责命中、hover 与右键。
+ *
+ * `dragRect` 传入时额外画一个金色虚线框，作为框选预览。 */
+function ccRenderRuns(root, dragRect) {
+  const host = root || document;
+  const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
+  if (!grid) return;
+  grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => el.remove());
+  const fc = clockProfile();
+
+  // 按列收集选中小时（以 DOM 为准：拖选预览用的是同一套 DOM 状态）
+  const cols = new Map();
+  grid.querySelectorAll('.cc-cell.on').forEach((c) => {
+    const d = +c.dataset.d, h = +c.dataset.h;
+    if (!cols.has(d)) cols.set(d, new Set());
+    cols.get(d).add(h);
+  });
+
+  const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
+  // 1) 每列先算出连续段，并记录这一段的「专注/休息配方」——
+  //    配方不同的两天不能横向合并，否则色带会画错。
+  const segs = [];
+  cols.forEach((hs, d) => {
+    let h = 0;
+    while (h < 24) {
+      if (!hs.has(h)) { h++; continue; }
+      const from = h;
+      while (h + 1 < 24 && hs.has(h + 1)) h++;
+      const to = h;
+      const mins = [];
+      for (let i = from; i <= to; i++) {
+        const p = fc.days[d][i];
+        const w = p.on ? clampW(p.work) : clampW(fc.defWork);
+        const b = p.on ? Math.max(0, Math.min(60 - w, clampW(p.brk))) : Math.min(clampW(fc.defBrk), 60 - w);
+        mins.push(`${w}/${b}`);
+      }
+      segs.push({ d, h0: from, h1: to, sig: mins.join(',') });
+      h++;
+    }
+  });
+
+  // 2) 相邻日 + 同一小时区间 + 同一配方 → 合并成一条横跨的整带
+  //    （「周一–周五 8–12 点」应该是一条，而不是五块拼在一起）
+  const groups = new Map();
+  for (const s of segs) {
+    const k = `${s.h0}-${s.h1}|${s.sig}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+
+  const addBlock = (d0, d1, h0, h1, sig) => {
+    const n = h1 - h0 + 1;
+    const unit = 100 / n / 60; // 1 分钟占整块高度的百分比
+    let bands = '';
+    for (const one of sig.split(',')) {
+      const [w, b] = one.split('/').map(Number);
+      const t = Math.max(0, 60 - w - b);
+      if (w) bands += `<i class="w" style="flex:0 0 ${(w * unit).toFixed(3)}%"></i>`;
+      if (b) bands += `<i class="b" style="flex:0 0 ${(b * unit).toFixed(3)}%"></i>`;
+      if (t) bands += `<i class="t" style="flex:0 0 ${(t * unit).toFixed(3)}%"></i>`;
+    }
+    const run = document.createElement('div');
+    run.className = 'cc-run';
+    run.dataset.d = String(d0);
+    run.dataset.d1 = String(d1);
+    run.dataset.h0 = String(h0);
+    run.dataset.h1 = String(h1);
+    // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始
+    run.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
+    run.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
+    run.innerHTML = bands;
+    grid.appendChild(run);
+  };
+
+  groups.forEach((arr) => {
+    arr.sort((a, b) => a.d - b.d);
+    let i = 0;
+    while (i < arr.length) {
+      let j = i;
+      while (j + 1 < arr.length && arr[j + 1].d === arr[j].d + 1) j++;
+      addBlock(arr[i].d, arr[j].d, arr[i].h0, arr[i].h1, arr[i].sig);
+      i = j + 1;
+    }
+  });
+
+  if (dragRect) {
+    const { d0, d1, h0, h1 } = dragRect;
+    const box = document.createElement('div');
+    box.className = 'cc-drag';
+    box.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
+    box.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
+    grid.appendChild(box);
+  }
+}
+
+/** 已选时段总数（小时数）——只算当前生效的那套方案 */
 function clockCountOn(fc) {
-  return (fc || clockCfg()).days.reduce((n, day) => n + day.filter((p) => p.on).length, 0);
+  const p = fc ? (fc.profiles.find((x) => x.id === fc.active) || fc.profiles[0]) : clockProfile();
+  return p.days.reduce((n, day) => n + day.filter((h) => h.on).length, 0);
 }
 
 /** 一天里选中的小时合并成区间文案 */
@@ -749,12 +863,13 @@ function ccDayRanges(day) {
 /** 已选摘要：七天一样 → "每天 …"，否则逐天列（与后端 summary 口径一致） */
 function clockRangeText(fc) {
   const c = fc || clockCfg();
-  const first = ccDayRanges(c.days[0]);
-  if (first.length && c.days.every((d) => ccDayRanges(d).join('|') === first.join('|'))) {
+  const p = c.profiles.find((x) => x.id === c.active) || c.profiles[0];
+  const first = ccDayRanges(p.days[0]);
+  if (first.length && p.days.every((d) => ccDayRanges(d).join('|') === first.join('|'))) {
     return `每天 ${first.join('、')}`;
   }
   const parts = [];
-  c.days.forEach((day, d) => {
+  p.days.forEach((day, d) => {
     const r = ccDayRanges(day);
     if (r.length) parts.push(`${WD[d]} ${r.join('、')}`);
   });
@@ -769,10 +884,11 @@ function ccRectText(d0, d1, h0, h1) {
 
 /** 从当前时刻起，下一个被选中的时段（含本周稍后与下周），没有则返回 '' */
 function ccNextSlotText(fc, wdNow, hourNow) {
+  const p = fc.profiles.find((x) => x.id === fc.active) || fc.profiles[0];
   for (let step = 0; step < 7 * 24; step++) {
     const d = (wdNow + Math.floor((hourNow + step) / 24)) % 7;
     const h = (hourNow + step) % 24;
-    if (fc.days[d] && fc.days[d][h] && fc.days[d][h].on) {
+    if (p.days[d] && p.days[d][h] && p.days[d][h].on) {
       const when = step < 24 ? (step === 0 ? '本小时' : `${step} 小时后`) : `${Math.floor(step / 24)} 天后`;
       return `，下一个选中时段：${WD[d]} ${pad(h)}:00（${when}）`;
     }
@@ -780,14 +896,49 @@ function ccNextSlotText(fc, wdNow, hourNow) {
   return '';
 }
 
+/** 方案命名弹层：新建时给个「方案 N」的默认名，重命名时带出原名。
+ *  WebView 里 window.prompt 不可靠，统一走项目自己的 modal。 */
+function ccNameDialog(mode) {
+  const fc = clockCfg();
+  const p = clockProfile();
+  const isNew = mode === 'new';
+  const val = isNew ? `方案 ${fc.profiles.length + 1}` : p.name;
+  $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal" style="max-width:430px">
+        <div class="modal-hd">
+          <h3>${isNew ? '新建星期时段方案' : '重命名方案'}</h3>
+          <button class="close-x" data-act="close-modal">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="add-row"><input type="text" id="ccNameInput" maxlength="30" value="${esc(val)}"
+            placeholder="例如：工作日强化 / 周末轻松 / 考试冲刺"></div>
+          <div class="hint" style="margin-top:8px">
+            名字只用于区分方案，不影响判定。${isNew
+              ? '新建后会自动切到这套，排班表是空的，拖出要自律的时段即可。'
+              : '重命名不改排班，也不会影响正在生效的那套。'}
+          </div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn" data-act="close-modal">取消</button>
+          <button class="btn btn-primary" data-act="cc-name-ok" data-mode="${mode}">${isNew ? '创建' : '保存'}</button>
+        </div>
+      </div>
+    </div>`;
+  const inp = $('#ccNameInput');
+  if (inp) { inp.focus(); inp.select(); }
+}
+
 function viewClock() {
   const d = S.data;
   if (!d) return '';
   const fc = clockCfg();
+  const prof = clockProfile();
   const rt = d.runtime || {};
   const wdNow = (new Date().getDay() + 6) % 7; // 0=周一
   const hourNow = new Date().getHours();
   const n = clockCountOn(fc);
+  const multi = fc.profiles.length > 1;
 
   // 自律时段生效中（且非测试模式）：与纪律相关的控件置灰
   const frozen = settingsFrozen();
@@ -817,24 +968,32 @@ function viewClock() {
     stateTxt = `当前不在生效时段：这段时间规则不拦截${ccNextSlotText(fc, wdNow, hourNow)}`;
   }
 
-  // 柱状图：第 1 行星期表头，下面 24 行小时格（自上而下 0 → 23，左上角标 0）
-  let grid = `<div class="cc-corner">0</div>` + WD.map((w, i) =>
-    `<div class="cc-dh${i === wdNow ? ' today' : ''}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
+  // 方案切换条：同一时刻只有一套在生效，切过去立刻按新方案判定
+  const chips = fc.profiles.map((p) => {
+    const on = p.id === fc.active;
+    const cnt = p.days.reduce((m, day) => m + day.filter((h) => h.on).length, 0);
+    return `<button class="cc-prof${on ? ' active' : ''}${frozen ? ' locked' : ''}" data-act="clock-prof" data-id="${esc(p.id)}"
+      title="${frozen ? '自律时段生效中，不能切换方案' : `切换到「${esc(p.name)}」`}">
+      <span class="nm">${esc(p.name)}</span><span class="n">${cnt} 段</span></button>`;
+  }).join('');
+
+  // 柱状图：第 1 行星期表头，下面 24 行小时格（自上而下 0 → 23）。
+  // 所有格子都**显式定位**：连续时段的整块是按行号覆盖上去的，
+  // 只要格子还是自动流，自动布局就会绕开被覆盖块占住的位置，整张表会错行。
+  // 左上角是「纵轴单位」，不再重复标一个 0（第一个小时标签已经是 0 了）。
+  let grid = `<div class="cc-corner" style="grid-row:1;grid-column:1">时</div>` + WD.map((w, i) =>
+    `<div class="cc-dh${i === wdNow ? ' today' : ''}" style="grid-row:1;grid-column:${i + 2}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
   for (let h = 0; h < 24; h++) {
-    grid += `<div class="cc-hlab">${h}</div>`;
+    grid += `<div class="cc-hlab" style="grid-row:${h + 2};grid-column:1">${h}</div>`;
     for (let dd = 0; dd < 7; dd++) {
-      const p = fc.days[dd][h];
+      const p = prof.days[dd][h];
       const w = Math.max(0, Math.min(60, p.work || 0));
       const b = Math.max(0, Math.min(60 - w, p.brk || 0));
       const t = Math.max(0, 60 - w - b); // 没排满的尾段，引擎里算继续专注
-      const bar = p.on
-        ? `<span class="cc-bar"><i class="w" style="height:${Math.round((w / 60) * 100)}%"></i><i class="b" style="height:${Math.round((b / 60) * 100)}%"></i><i class="t" style="height:${Math.round((t / 60) * 100)}%"></i></span>`
-        : '';
-      // 连在一起的选中时段：有选中邻居的那几条边去掉接缝，视觉上连成一片
-      const j = p.on ? ccJoins(fc, dd, h) : {};
-      const jc = ['jt', 'jb', 'jl', 'jr'].filter((k) => j[k]).map((k) => ' ' + k).join('');
-      grid += `<div class="cc-cell${p.on ? ' on' : ''}${jc}${dd === wdNow && h === hourNow ? ' now' : ''}" data-d="${dd}" data-h="${h}"
-        title="${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}">${bar}</div>`;
+      // 选中态的底色由 ccRenderRuns 画成整块；格子只留命中区与 hover
+      grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}"
+        style="grid-row:${h + 2};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
+        title="${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}"></div>`;
     }
   }
 
@@ -846,16 +1005,33 @@ function viewClock() {
         <div class="card-sub">
           一周七天各一根柱子，纵轴 0–24 点。哪几天、哪几段要自律，拖出来就行；到点自动进入自律模式，到点自动退出；
           规则里的黑白名单、浏览器巡检、专注遮罩都会跟着这段状态走。
+          需要多套排班时，做成几套「星期时段」方案，随时切到要用的那一套。
         </div>
       </div>
       <div class="switch${frozen ? ' locked' : ''}" data-act="clock-enable"
-           title="${frozen ? '自律时段生效中，不能关闭' : '启用 / 停用自律时段'}"><input type="checkbox" ${fc.enabled ? 'checked' : ''}><i></i></div>
+           title="${frozen ? '自律时段生效中，开关已锁定' : '启用 / 停用自律时段'}"><input type="checkbox" ${fc.enabled ? 'checked' : ''}><i></i></div>
     </div>
 
     ${frozen ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin:14px 0 0">
-      <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间不能关掉「自律时段」本身、不能取消已选中的时段、
-      也不能改这一小时的专注 / 休息时长；其它时段照常可以安排。等这一段结束（或用积分解锁）之后再改。
+      <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间「自律时段」开关和「规则」开关都点不动，
+      不能切换 / 删除方案，也不能取消已选中的时段或改这一小时的专注 / 休息时长；
+      其它时段照常可以安排。等这一段结束（或用积分解锁）之后再改。
     </div>` : ''}
+
+    <div class="cc-profiles">
+      <span class="cc-prof-lab">星期时段</span>
+      ${chips}
+      <button class="cc-prof-add" data-act="clock-prof-new"
+        ${frozen || fc.profiles.length >= CC_MAX_PROFILES ? 'disabled' : ''}
+        title="${frozen ? '自律时段生效中，不能新建方案' : fc.profiles.length >= CC_MAX_PROFILES ? `最多 ${CC_MAX_PROFILES} 套方案` : '再排一套星期时段'}">+ 新建</button>
+    </div>
+    <div class="cc-prof-ops">
+      <button class="btn btn-sm" data-act="clock-prof-rename" ${frozen ? 'disabled' : ''}>重命名</button>
+      <button class="btn btn-sm" data-act="clock-prof-dup" ${frozen || fc.profiles.length >= CC_MAX_PROFILES ? 'disabled' : ''}>复制这套</button>
+      <button class="btn btn-sm btn-danger" data-act="clock-prof-del" ${frozen || !multi ? 'disabled' : ''}>删除这套</button>
+      <span class="hint">同一时刻只有一套在生效；卡片顶部的开关管的是「自律时段」整体，与选哪套无关。</span>
+    </div>
+
 
     <div class="clock-state ${stateCls}">
       <span class="cs-dot"></span>
@@ -868,20 +1044,20 @@ function viewClock() {
       <span><i class="sw w"></i>专注</span>
       <span><i class="sw b"></i>休息</span>
       <span><i class="sw t"></i>继续专注（时段没排满的尾段）</span>
-      <span class="hint">连在一起的选中时段会连成一片显示</span>
+      <span class="hint">连续的小时数会自动合并成一整块</span>
     </div>
     <div class="cc-def">
       <span class="cc-def-lab">通用时长</span>
-      <label>专注 <input type="number" id="defW" min="1" max="60" step="1" value="${fc.defWork}"> 分</label>
-      <label>休息 <input type="number" id="defB" min="0" max="60" step="1" value="${fc.defBrk}"> 分</label>
+      <label>专注 <input type="number" id="defW" min="1" max="60" step="1" value="${prof.defWork}"> 分</label>
+      <label>休息 <input type="number" id="defB" min="0" max="60" step="1" value="${prof.defBrk}"> 分</label>
       <button class="btn btn-sm" data-act="clock-def-save">保存</button>
-      <span class="hint">之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
+      <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
     <div class="tl-legend">
       <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长</b>。</span>
       <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
     </div>
-    <div class="tl-range">已选：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
+    <div class="tl-range">已选${multi ? `（${esc(prof.name)}）` : ''}：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
   </div>
 
   <div class="card">
@@ -2035,6 +2211,9 @@ function render() {
   if (S.view === 'about') html = viewAbout();
   $('#content').innerHTML = html;
 
+  // 连续时段要画成整块：格子是静态的，覆盖层得在 DOM 落地后再算
+  if (S.view === 'clock') ccRenderRuns();
+
   if (S.view === 'stats') {
     const cur = currentSlices();
     drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
@@ -2164,8 +2343,8 @@ const Act = window.Act = {
     const l = S.data.config.lists.find((x) => x.id === id);
     if (!l) return;
     if (l.lock && l.lock.kind !== 'none' && l.enabled) { toast('这条规则已锁定，不能直接关闭', 'err'); render(); return; }
-    // 自律时段生效中：不能把已经生效的规则关掉（打开新规则不受限制）
-    if (l.enabled && settingsFrozen()) { guardDiscipline('关掉规则'); render(); return; }
+    // 时段进行中（含休息段）：规则开关整体锁死，开、关都不许动
+    if (settingsFrozen()) { guardDiscipline('切换规则开关'); render(); return; }
     l.enabled = !l.enabled;
     await saveConfig();
     render();
@@ -2924,11 +3103,11 @@ const Act = window.Act = {
     toast(`关闭前宽限已设为 ${v}ms`, 'ok');
   },
 
-  /* ---- 自律时段（24 段） ---- */
+  /* ---- 自律时段（多套「星期时段」方案 × 24 段） ---- */
   async clockEnable() {
     const fc = clockCfg();
-    // 自律时段生效中：不能把总开关关掉（重新打开是加强，不拦）
-    if (fc.enabled && settingsFrozen()) { guardDiscipline('关闭「自律时段」'); render(); return; }
+    // 时段进行中（含休息段）：开关整体锁死，两个方向都不许动
+    if (settingsFrozen()) { guardDiscipline('切换「自律时段」开关'); render(); return; }
     fc.enabled = !fc.enabled;
     await saveConfig();
     render();
@@ -2951,10 +3130,10 @@ const Act = window.Act = {
   },
 
   async clockClear() {
-    const fc = clockCfg();
+    const prof = clockProfile();
     if (settingsFrozen()) { guardDiscipline('清空已选时段'); return; }
     let n = 0;
-    fc.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; n++; } }));
+    prof.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; n++; } }));
     await saveConfig();
     render();
     toast(n ? `已清空 ${n} 个小时段` : '当前没有已选时段', n ? 'ok' : 'err');
@@ -2962,29 +3141,29 @@ const Act = window.Act = {
 
   /** 提交一次框选：矩形区域 [d0..d1]×[h0..h1] 整体选中（add）或取消（sub） */
   async clockCommitRect(d0, d1, h0, h1, mode) {
-    const fc = clockCfg();
+    const prof = clockProfile();
     // 生效中不能取消已选中的时段（新增时段是加强，不拦）
     if (mode === 'sub' && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
     const on = mode === 'add';
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
-        const p = fc.days[d][h];
+        const p = prof.days[d][h];
         if (p.on !== on) n++;
         // 新选中的时段沿用「通用」专注/休息；已选中的保留原值，不冲掉自定义
-        if (on && !p.on) { p.work = fc.defWork; p.brk = fc.defBrk; }
+        if (on && !p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
         p.on = on;
       }
     }
     await saveConfig();
     render();
-    if (n) toast(on ? `已选上 ${n} 个小时段（专注 ${fc.defWork} 分 / 休息 ${fc.defBrk} 分）` : `已取消 ${n} 个小时段`, 'ok');
+    if (n) toast(on ? `已选上 ${n} 个小时段（专注 ${prof.defWork} 分 / 休息 ${prof.defBrk} 分）` : `已取消 ${n} 个小时段`, 'ok');
   },
 
   /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段）。
    *  defToo = 同时把这一套更新成「通用」时长，之后新选的时段沿用 */
   async clockSetWB(d0, d1, h0, h1, w, b, defToo) {
-    const fc = clockCfg();
+    const prof = clockProfile();
     // 生效中不能改"正在跑的这一小时"的时长（否则等于用改时长逃逸）
     const wdNow = (new Date().getDay() + 6) % 7;
     const hourNow = new Date().getHours();
@@ -2995,14 +3174,14 @@ const Act = window.Act = {
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
-        const p = fc.days[d][h];
+        const p = prof.days[d][h];
         p.on = true;
         p.work = w;
         p.brk = b;
         n++;
       }
     }
-    if (defToo) { fc.defWork = w; fc.defBrk = b; }
+    if (defToo) { prof.defWork = w; prof.defBrk = b; }
     await saveConfig();
     render();
     // 改到了「正在进行中的时段」：它会立刻按新时长重新划分专注 / 休息，提醒一句
@@ -3012,20 +3191,93 @@ const Act = window.Act = {
     toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}${liveTip}`, 'ok');
   },
 
-  /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息 */
+  /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息（只作用于当前方案） */
   async clockDefSave() {
-    const fc = clockCfg();
+    const prof = clockProfile();
     let w = Math.round(Number($('#defW').value) || 0);
     let b = Math.round(Number($('#defB').value) || 0);
     w = Math.max(1, Math.min(60, w));
     b = Math.max(0, Math.min(60, b));
     if (b > 0 && w + b > 60) b = 60 - w;
-    fc.defWork = w;
-    fc.defBrk = b;
+    prof.defWork = w;
+    prof.defBrk = b;
     await saveConfig();
     render();
     // 通用时长只作用于"之后新选的时段"；已经选中的时段保留各自的时长
     toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用（已选中的时段保持原样）`, 'ok');
+  },
+
+  /* ---- 多套「星期时段」方案 ---- */
+  /** 切换生效方案（时段进行中不许切：切到更松的一套等于当场放行） */
+  async clockProfSwitch(id) {
+    const fc = clockCfg();
+    if (settingsFrozen()) { guardDiscipline('切换「星期时段」方案'); render(); return; }
+    if (!fc.profiles.some((p) => p.id === id) || fc.active === id) return;
+    fc.active = id;
+    await saveConfig();
+    render();
+    const p = clockProfile();
+    toast(`已切换到「${p.name}」：从现在起按这套时段判定`, 'ok');
+  },
+
+  /** 新建一套空白方案并立刻切过去 */
+  async clockProfNew(name) {
+    const fc = clockCfg();
+    if (settingsFrozen()) { guardDiscipline('新建「星期时段」方案'); render(); return; }
+    if (fc.profiles.length >= CC_MAX_PROFILES) { toast(`最多 ${CC_MAX_PROFILES} 套方案`, 'err'); return; }
+    const cur = clockProfile();
+    const id = `p${Date.now().toString(36)}`;
+    fc.profiles.push({
+      id,
+      name,
+      days: [],                       // 空表：由归一化补成 7×24 全灰
+      defWork: cur.defWork,
+      defBrk: cur.defBrk,
+    });
+    fc.active = id;
+    await saveConfig();
+    render();
+    toast(`已新建「${name}」并切到这套：在下面拖出要自律的时段`, 'ok');
+  },
+
+  /** 重命名当前方案 */
+  async clockProfRename(name) {
+    if (settingsFrozen()) { guardDiscipline('重命名「星期时段」方案'); render(); return; }
+    const p = clockProfile();
+    p.name = name;
+    await saveConfig();
+    render();
+    toast(`已重命名为「${name}」`, 'ok');
+  },
+
+  /** 复制当前方案（排班 + 通用时长一起复制） */
+  async clockProfDup() {
+    const fc = clockCfg();
+    if (settingsFrozen()) { guardDiscipline('复制「星期时段」方案'); render(); return; }
+    if (fc.profiles.length >= CC_MAX_PROFILES) { toast(`最多 ${CC_MAX_PROFILES} 套方案`, 'err'); return; }
+    const cur = clockProfile();
+    const copy = JSON.parse(JSON.stringify(cur));
+    copy.id = `p${Date.now().toString(36)}`;
+    copy.name = `${cur.name} 副本`.slice(0, 30);
+    fc.profiles.push(copy);
+    fc.active = copy.id;
+    await saveConfig();
+    render();
+    toast(`已复制出「${copy.name}」并切过去`, 'ok');
+  },
+
+  /** 删除当前方案（至少留一套；时段进行中不许删） */
+  async clockProfDel() {
+    const fc = clockCfg();
+    if (settingsFrozen()) { guardDiscipline('删除「星期时段」方案'); render(); return; }
+    if (fc.profiles.length <= 1) { toast('至少要留一套方案', 'err'); return; }
+    const cur = clockProfile();
+    if (!confirm(`确定删除方案「${cur.name}」？这套排班会被一起删掉。`)) return;
+    fc.profiles = fc.profiles.filter((p) => p.id !== cur.id);
+    fc.active = fc.profiles[0].id;
+    await saveConfig();
+    render();
+    toast(`已删除「${cur.name}」，现在用的是「${clockProfile().name}」`, 'ok');
   },
 
   /* ---- 自动更新 ---- */
@@ -3388,6 +3640,20 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-apply-rules') { await Act.clockApplyRules(); return; }
   if (act === 'clock-clear') { await Act.clockClear(); return; }
   if (act === 'clock-def-save') { await Act.clockDefSave(); return; }
+  if (act === 'clock-prof') { await Act.clockProfSwitch(el.dataset.id); return; }
+  if (act === 'clock-prof-new') { ccNameDialog('new'); return; }
+  if (act === 'clock-prof-rename') { ccNameDialog('rename'); return; }
+  if (act === 'clock-prof-dup') { await Act.clockProfDup(); return; }
+  if (act === 'clock-prof-del') { await Act.clockProfDel(); return; }
+  if (act === 'cc-name-ok') {
+    const inp = $('#ccNameInput');
+    const name = ((inp && inp.value) || '').trim().slice(0, 30);
+    if (!name) { toast('方案名不能为空', 'err'); if (inp) inp.focus(); return; }
+    closeModal();
+    if (el.dataset.mode === 'new') await Act.clockProfNew(name);
+    else await Act.clockProfRename(name);
+    return;
+  }
   if (act === 'mask-diag') { await Act.maskDiag(); return; }
   if (act === 'mask-preview') { await Act.maskPreview(); return; }
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
@@ -3503,18 +3769,16 @@ document.addEventListener('mouseup', () => {
 function paintCcDrag() {
   const dg = S.ccDrag;
   if (!dg) return;
-  const fc = clockCfg();
+  const fc = clockProfile();
   const d0 = Math.min(dg.d0, dg.d1), d1 = Math.max(dg.d0, dg.d1);
   const h0 = Math.min(dg.h0, dg.h1), h1 = Math.max(dg.h0, dg.h1);
   document.querySelectorAll('.cc-cell').forEach((c) => {
     const d = +c.dataset.d, h = +c.dataset.h;
     const inRect = d >= d0 && d <= d1 && h >= h0 && h <= h1;
-    const on = inRect ? dg.mode === 'add' : !!fc.days[d][h].on;
-    c.classList.toggle('on', on);
-    c.classList.toggle('edge', dg.moved && inRect && (d === d0 || d === d1 || h === h0 || h === h1));
+    c.classList.toggle('on', inRect ? dg.mode === 'add' : !!fc.days[d][h].on);
   });
-  // 预览态也要重算连通类名，否则拖过的接缝擦不干净
-  ccApplyJoins(document);
+  // 预览也走"整块"渲染：拖过的接缝不会留残影
+  ccRenderRuns(document, { d0, d1, h0, h1 });
   const lab = $('#clockLive');
   if (lab) lab.textContent = ccRectText(d0, d1, h0, h1);
 }
@@ -3561,7 +3825,7 @@ function ccCloseMenu() {
 
 function ccOpenMenu(d, h, x, y) {
   ccCloseMenu();
-  const fc = clockCfg();
+  const fc = clockProfile();
   const r = S.ccRect;
   const hasRect = !!r;
   // 默认目标：这一格在上次框选的矩形里 → 整个矩形；否则只作用这一格
@@ -3575,8 +3839,7 @@ function ccOpenMenu(d, h, x, y) {
   const prefill = (single) => {
     const one = single && p.on;
     return { w: one ? (p.work || CC_DEF_W) : fc.defWork, b: one ? (p.brk || CC_DEF_B) : fc.defBrk };
-  };
-  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
+  };  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
   const el = document.createElement('div');
   el.className = 'cc-menu';
   el.innerHTML = `
@@ -3674,6 +3937,11 @@ document.addEventListener('keydown', (e) => {
     if (e.target.id === 'siteInput') { e.preventDefault(); Act.addSite(); }
     if (e.target.id === 'excInput') { e.preventDefault(); Act.addExc(); }
     if (e.target.id === 'ruleName') { e.preventDefault(); Act.saveEditor(); }
+    if (e.target.id === 'ccNameInput') {
+      e.preventDefault();
+      const btn = document.querySelector('[data-act="cc-name-ok"]');
+      if (btn) btn.click();
+    }
   }
 });
 

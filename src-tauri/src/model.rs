@@ -258,12 +258,61 @@ impl Default for HourPlan {
     }
 }
 
-/// 「自律模式生效时间段」：把一周切成 7 天，每天再切成 24 段。
+/// 第一套方案的固定 id（旧配置迁移、默认配置都用它）
+pub const DEFAULT_CLOCK_PROFILE_ID: &str = "p1";
+/// 最多同时保存几套「星期时段」方案（防止误点「新建」堆出上百套）
+pub const MAX_CLOCK_PROFILES: usize = 12;
+
+/// 一套「星期时段」方案：7 天 × 24 小时。
 ///
-/// 新版用 `days`（外层索引 = 星期，0=周一 … 6=周日；内层索引 = 小时 0–23），
-/// 可以给周一到周五、周末分别排不同的自律计划。
-/// `hours` 是旧版"全周共用 24 段"的字段，加载时若 `days` 为空会由它迁移而来，
-/// 迁移完即清空，不再参与任何逻辑。
+/// 「自律时段」可以同时存多套方案（工作日强化 / 周末轻松 / 假期……），
+/// 同一时刻只有 `ClockCfg::active` 指向的那一套在生效——
+/// 换排班不必把原来那张表擦掉重画，切回来就能用。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClockProfile {
+    /// 稳定 id：前端增删改、切换生效方案都靠它定位
+    pub id: String,
+    /// 显示名（只用于区分，不参与判定）
+    pub name: String,
+    /// 7 天 × 24 小时；`days[weekday][hour]`，weekday 0=周一 … 6=周日
+    pub days: Vec<Vec<HourPlan>>,
+    /// 这套方案的通用默认时长：新框选 / 单击选中的时段沿用这套「专注 / 休息」，
+    /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
+    pub def_work: u32,
+    pub def_brk: u32,
+}
+
+impl Default for ClockProfile {
+    fn default() -> Self {
+        ClockProfile {
+            id: DEFAULT_CLOCK_PROFILE_ID.into(),
+            name: "默认时段".into(),
+            days: vec![vec![HourPlan::default(); 24]; 7],
+            def_work: 50,
+            def_brk: 10,
+        }
+    }
+}
+
+impl ClockProfile {
+    /// 一周里选中了多少个小时段
+    pub fn count_on(&self) -> usize {
+        self.days.iter().flatten().filter(|h| h.on).count()
+    }
+
+    /// 一个时段都没选
+    pub fn is_empty(&self) -> bool {
+        self.days.iter().flatten().all(|h| !h.on)
+    }
+}
+
+/// 「自律模式生效时间段」：多套方案，每套都是"把一周切成 7 天、每天再切成 24 段"。
+///
+/// `profiles` 存所有方案，`active` 指向当前生效的那一套。
+/// `days` / `hours` / `def_work` / `def_brk` 是旧版"只有一套方案"时摊在
+/// ClockCfg 上的字段，只用于一次性迁移：加载时若 `profiles` 为空，会把它们
+/// 搬进第一套方案并清空，之后不再参与任何逻辑。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ClockCfg {
@@ -271,33 +320,65 @@ pub struct ClockCfg {
     /// 时段内让所有「已启用」的规则立刻生效（忽略各规则自己的时段）
     #[serde(default = "default_true")]
     pub apply_rules: bool,
-    /// 7 天 × 24 小时；`days[weekday][hour]`，weekday 0=周一 … 6=周日
+    /// 所有「星期时段」方案
     #[serde(default)]
+    pub profiles: Vec<ClockProfile>,
+    /// 当前生效的方案 id；空 / 找不到 → 退回第一套
+    #[serde(default)]
+    pub active: String,
+    /// 旧字段：单套方案的 7×24。仅用于一次性迁移，迁移后清空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub days: Vec<Vec<HourPlan>>,
-    /// 旧字段：全周共用的 24 段。仅用于一次性迁移，sanitize 后清空
+    /// 旧字段：全周共用的 24 段。仅用于一次性迁移，迁移后清空
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hours: Vec<HourPlan>,
-    /// 通用默认时长：新框选 / 单击选中的时段沿用这套「专注 / 休息」，
-    /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
-    #[serde(default = "default_def_work")]
+    /// 旧字段：通用默认时长（已搬到每套方案里）
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub def_work: u32,
-    #[serde(default = "default_def_brk")]
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub def_brk: u32,
 }
 
 fn default_true() -> bool { true }
-fn default_def_work() -> u32 { 50 }
-fn default_def_brk() -> u32 { 10 }
+fn is_zero_u32(v: &u32) -> bool { *v == 0 }
+
+impl ClockCfg {
+    /// 当前生效的那套方案（`active` 找不到时退回第一套）
+    pub fn active_profile(&self) -> Option<&ClockProfile> {
+        if let Some(p) = self.profiles.iter().find(|p| p.id == self.active) {
+            return Some(p);
+        }
+        self.profiles.first()
+    }
+
+    /// 当前生效方案的一周排班表
+    pub fn active_days(&self) -> Option<&Vec<Vec<HourPlan>>> {
+        self.active_profile().map(|p| &p.days)
+    }
+
+    /// 用一套 7×24 的排班表构造配置（旧配置迁移与测试用）
+    pub fn with_days(enabled: bool, days: Vec<Vec<HourPlan>>) -> Self {
+        let mut c = ClockCfg::default();
+        c.enabled = enabled;
+        if let Some(p) = c.profiles.first_mut() {
+            p.days = days;
+        }
+        c
+    }
+}
 
 impl Default for ClockCfg {
     fn default() -> Self {
+        let p = ClockProfile::default();
         ClockCfg {
             enabled: false,
             apply_rules: true,
-            days: vec![vec![HourPlan::default(); 24]; 7],
+            active: p.id.clone(),
+            profiles: vec![p],
+            days: Vec::new(),
             hours: Vec::new(),
-            def_work: 50,
-            def_brk: 10,
+            def_work: 0,
+            def_brk: 0,
         }
     }
 }
