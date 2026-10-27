@@ -231,8 +231,22 @@ fn main() {
                         }
                     }
                     "mask" => {
-                        let on = sh_menu.mask.on.load(Ordering::Relaxed);
-                        sh_menu.mask.on.store(!on, Ordering::Relaxed);
+                        // 自律接管期间，遮罩的开关由自律状态决定：
+                        // 这里再翻一次"用户意向"只会让界面显示和实际不一致。
+                        // 和被占用的热键一样，给一句提示说明为什么点了没反应。
+                        let m = &*sh_menu.mask;
+                        let auto_hold = m.auto_follow.load(Ordering::Relaxed)
+                            && m.schedule_on.load(Ordering::Relaxed);
+                        if auto_hold {
+                            if let Ok(mut n) = m.notice.lock() {
+                                *n = Some(
+                                    "自律模式生效中，遮罩由自律模式接管；结束时会自动恢复".into(),
+                                );
+                            }
+                        } else {
+                            let on = m.on.load(Ordering::Relaxed);
+                            m.on.store(!on, Ordering::Relaxed);
+                        }
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.set_always_on_top(false);
                             let _ = w.show();

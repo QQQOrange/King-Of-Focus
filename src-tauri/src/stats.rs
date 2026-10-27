@@ -255,10 +255,14 @@ fn sample(shared: &Shared, cfg: &Config) {
         label = if name.is_empty() { ident } else { name };
     }
 
+    // 「自律模式是否开启」必须和其它模块同一个口径：
+    // 规则生效 / 自律时段专注 / 固化锁定，三者任一成立都算。
+    // 早期这里只判断 rt.active，导致"只用自律时段、没配规则"时
+    // 明明在专注，时长却全被记到 off 那一档。
     let state_on = shared
         .rt
         .lock()
-        .map(|rt| !rt.active.is_empty())
+        .map(|rt| !rt.active.is_empty() || rt.clock_on || rt.locked)
         .unwrap_or(false);
     let hour = now.hour() as usize;
 

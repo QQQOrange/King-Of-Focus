@@ -1913,7 +1913,7 @@ function viewSettings() {
       </div>
       ${d.testMode
         ? '<div class="row" style="gap:8px"><button class="btn btn-sm" data-act="test-exit-keep">退出并保留</button><button class="btn btn-sm btn-danger" data-act="test-exit-discard">退出并丢弃</button></div>'
-        : '<button class="btn btn-sm btn-primary" data-act="test-enter">进入测试模式</button>'}
+        : `<button class="btn btn-sm btn-primary" data-act="test-enter" ${settingsFrozen() ? 'disabled title="自律时段生效中，不能进入测试模式"' : ''}>进入测试模式</button>`}
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div>
@@ -1924,9 +1924,10 @@ function viewSettings() {
           打开后会弹 UAC 并重启成管理员。管理员权限下，遮罩可以<b>摘掉其他置顶浮窗的“总在最前”属性</b>，
           像 lazytyper 那种小横条会被一次性盖住，不再来回闪。
           同时也能拦住以管理员运行的程序。
+          ${settingsFrozen() && !d.admin ? '<br><b>自律时段生效中：切换要重启程序，先等这段结束。</b>' : ''}
         </div>
       </div>
-      <div class="switch" data-act="cfg-switch" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
+      <div class="switch${settingsFrozen() && !d.admin ? ' locked' : ''}" data-act="cfg-switch" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
     </div>
     ${sw('closeToTray', st.closeToTray, '关闭窗口时收进托盘', '拦截引擎在托盘里继续工作')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
@@ -2197,7 +2198,13 @@ const Act = window.Act = {
     const lists = S.data.config.lists;
     const i = lists.findIndex((x) => x.id === r.id);
     if (i >= 0) lists[i] = r; else lists.push(r);
-    await saveConfig();
+    const ok = await saveConfig();
+    if (!ok) {
+      // 后端拒绝了（多为自律时段里删了已生效的条目）。
+      // 保留编辑器不关，用户看得到提示、也能把改动改回去。
+      render();
+      return;
+    }
     S.editing = null;
     closeModal();
     render();
@@ -2412,7 +2419,7 @@ const Act = window.Act = {
       const r = await invoke('test_mode_enter');
       await pull(); await loadReports(); render();
       toast('已进入测试模式：数据写在 ' + (r.dataDir || '独立目录') + '，自律开关可随时切换', 'ok');
-    } catch (e) { toast(String(e), 'err'); }
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
 
   async exitTestMode(keep) {
@@ -2630,11 +2637,23 @@ const Act = window.Act = {
       await pull(); render(); return;
     }
     if (k === 'runAsAdmin') {
-      st.runAsAdmin = !st.runAsAdmin;
+      const turningOn = !st.runAsAdmin;
+      // 开启要重启进程 = 退出程序。自律时段里这条路必须堵死，
+      // 否则"点一下开关"就成了绕过「自律期间不能退出」的后门。
+      if (turningOn && settingsFrozen() && !S.data.admin) {
+        toast('自律时段生效中，切换管理员模式要重启程序，先等这段结束', 'err');
+        return;
+      }
+      st.runAsAdmin = turningOn;
       try {
         await invoke('set_run_as_admin', { enabled: st.runAsAdmin });
       } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); return; }
       if (st.runAsAdmin) {
+        if (S.data.admin) {
+          // 已经是管理员 → 后端不会重启，别骗用户说"正在重启"
+          toast('已开启：当前已经是管理员，下次启动同样以管理员运行', 'ok');
+          await pull(); render(); return;
+        }
         // 后端已经落盘 + 拉起了提权副本，本进程 350ms 后退出。
         // 这里不要再 saveConfig / pull —— 进程随时会走，调用会失败并弹红条。
         toast('已保存，正在以管理员身份重启…', 'ok');
@@ -3090,13 +3109,18 @@ const Act = window.Act = {
   },
 };
 
+/** 保存整份配置。返回 true 表示后端真的接受了（自律时段内可能被拒绝） */
 async function saveConfig() {
+  let ok = true;
   try {
     await invoke('save_config', { config: S.data.config });
   } catch (e) {
+    ok = false;
     toast(String(e).replace(/^Error:\s*/, ''), 'err');
   }
+  // 无论成败都拉一次：失败时用服务端的真实状态把界面上的改动冲掉
   await pull();
+  return ok;
 }
 
 async function loadStats() {

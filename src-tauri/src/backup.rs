@@ -286,6 +286,11 @@ fn apply(shared: &Shared, envelope: &str) -> Result<String, String> {
     remote.settings.theme = c.settings.theme.clone();
     remote.updated_at = chrono::Local::now().timestamp();
     crate::cfg::sanitize(&mut remote);
+    // 恢复备份 = 整份配置覆盖，必须和 save_config 走同一套纪律校验，
+    // 否则自律时段里恢复一份"规则关闭"的旧备份就能绕过限制。
+    if let Some(why) = crate::guard::config_replace_blocked(&c, &remote) {
+        return Err(why);
+    }
     crate::cfg::save(&remote)?;
     let n = remote.lists.len();
     if let Ok(mut w) = shared.cfg.write() {

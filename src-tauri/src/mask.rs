@@ -1240,7 +1240,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut progress: f32 = 0.0; // 0 = 无遮罩，1 = 完全铺开
         let mut last_paint: Option<(Rect, u8, i32, i32)> = None;
         let mut last_tick = Instant::now();
-        let mut was_on = false;
         let mut hk_gen_done = 0u32;
         let mut logged_miss = false;
         let mut lost: Option<Instant> = None;
@@ -1438,7 +1437,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     }
                 }
             };
-            was_on = on;
 
             // ---- 动画进度 ----
             let step = if duration <= 0.001 { 1.0 } else { dt / duration };

@@ -359,7 +359,8 @@ fn state_json(shared: &Shared) -> String {
         .collect();
     json!({
         "active": !rules.is_empty(),
-        "maskOn": false,
+        // 遮罩是否真的开着：以前这里写死 false，插件/脚本读到的永远是"没开"
+        "maskOn": shared.mask.on.load(std::sync::atomic::Ordering::Relaxed),
         "rules": rules,
         // 自律时段接管中：插件据此知道"现在不是按规则自己的时间表在拦"
         "clockOn": dstate.clock_on,
@@ -369,4 +370,34 @@ fn state_json(shared: &Shared) -> String {
         "serverTime": chrono::Local::now().timestamp(),
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Config;
+
+    /// `/api/state` 里的 maskOn 必须反映真实运行态。
+    /// 早期这里写死 `false`，插件/脚本永远读到"遮罩没开"。
+    #[test]
+    fn state_reports_real_mask_switch() {
+        let shared = Shared::new(Config::default());
+
+        shared.mask.on.store(false, std::sync::atomic::Ordering::Relaxed);
+        let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
+        assert_eq!(v["maskOn"], serde_json::json!(false));
+
+        shared.mask.on.store(true, std::sync::atomic::Ordering::Relaxed);
+        let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
+        assert_eq!(v["maskOn"], serde_json::json!(true));
+    }
+
+    /// 没配任何规则时段时，插件应该收到 active=false（否则会误拦全站）
+    #[test]
+    fn state_inactive_without_rules() {
+        let shared = Shared::new(Config::default());
+        let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
+        assert_eq!(v["active"], serde_json::json!(false));
+        assert_eq!(v["rules"].as_array().map(|a| a.len()), Some(0));
+    }
 }

@@ -411,6 +411,9 @@ pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("启动安装程序失败：{e}"))?;
 
+    // 安装脚本会 taskkill 本进程；守护进程如果还活着会把旧版本又拉起来，
+    // 和安装程序打架。先让它走。
+    crate::guard::stop_guard();
     app.exit(0);
     Ok(())
 }

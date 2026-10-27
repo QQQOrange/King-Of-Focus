@@ -100,6 +100,11 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     remote.settings.sync.password = c.settings.sync.password.clone();
     remote.updated_at = v.get("updatedAt").and_then(|x| x.as_i64()).unwrap_or(remote.updated_at);
     cfg::sanitize(&mut remote);
+    // 下载 = 整份配置覆盖，必须过纪律校验：
+    // 自律时段里自动同步拉到"规则已关闭"的云端配置，等于悄悄把纪律关掉。
+    if let Some(why) = crate::guard::config_replace_blocked(&c, &remote) {
+        return Err(why);
+    }
     let _ = cfg::save(&remote);
     let n = remote.lists.len();
     if let Ok(mut w) = shared.cfg.write() {

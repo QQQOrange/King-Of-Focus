@@ -194,7 +194,62 @@ pub fn discipline_violation_at(
             _ => {}
         }
     }
+    // 6) 名单内容也不能偷偷删：删掉一条黑名单 = 放行一个软件 / 一个网站，
+    //    再加一条"网站例外" = 同样放行。只挡删，不挡加（加条目是加强纪律）。
+    for l in &old.lists {
+        if !l.enabled {
+            continue;
+        }
+        let Some(nl) = new.lists.iter().find(|x| x.id == l.id) else {
+            continue; // 整条规则被删，上面第 5 条已经拦过
+        };
+        for a in &l.apps {
+            if !nl.apps.iter().any(|x| x.id == a.id) {
+                let name = if a.label.is_empty() { &a.value } else { &a.label };
+                return Some(format!(
+                    "自律时段生效中，不能从规则「{}」里删掉软件「{}」",
+                    l.name, name
+                ));
+            }
+        }
+        for s in &l.sites {
+            if !nl.sites.iter().any(|x| x.id == s.id) {
+                let name = if s.label.is_empty() { &s.pattern } else { &s.label };
+                return Some(format!(
+                    "自律时段生效中，不能从规则「{}」里删掉网站「{}」",
+                    l.name, name
+                ));
+            }
+        }
+        for e in &nl.exceptions {
+            if !l.exceptions.iter().any(|x| x.eq_ignore_ascii_case(e)) {
+                return Some(format!(
+                    "自律时段生效中，不能给规则「{}」新增网站例外「{}」",
+                    l.name, e
+                ));
+            }
+        }
+    }
     None
+}
+
+/// 整份配置被"外部来源"覆盖时的守卫（备份恢复 / 云同步下载）。
+///
+/// 这两个入口以前是直接 `cfg::save`，完全绕过 `save_config` 的校验：
+/// 自律时段里恢复一份「规则已关闭」的旧备份、或者自动同步拉到别的设备上
+/// 那份还没开规则的配置，等于一键绕过纪律。现在统一走这里判断。
+pub fn config_replace_blocked(old: &Config, new: &Config) -> Option<String> {
+    if crate::testmode::on() {
+        return None;
+    }
+    let info = lock_info(old);
+    if info.locked {
+        return Some(format!(
+            "自律固化中（{} 结束），现在不能整份覆盖配置",
+            if info.until_text.is_empty() { "本时段".to_string() } else { info.until_text }
+        ));
+    }
+    discipline_violation(old, new)
 }
 
 /// 现在能不能退出程序。
@@ -407,6 +462,49 @@ mod tests {
     }
 
     #[test]
+    fn in_window_cannot_remove_entries_from_active_rule() {
+        use crate::model::{AppEntry, SiteEntry};
+        let mut old = cfg_with_clock();
+        old.lists[0].apps = vec![AppEntry {
+            id: "a1".into(),
+            kind: "name".into(),
+            value: "douyin".into(),
+            label: "抖音".into(),
+        }];
+        old.lists[0].sites = vec![SiteEntry {
+            id: "s1".into(),
+            pattern: "douyin.com".into(),
+            label: "抖音".into(),
+        }];
+        let now = now_at(2, 10, 30);
+
+        // 删软件
+        let mut n1 = old.clone();
+        n1.lists[0].apps.clear();
+        let v = discipline_violation_at(&old, &n1, now).expect("删软件应被拒绝");
+        assert!(v.contains("抖音"), "{v}");
+
+        // 删网站
+        let mut n2 = old.clone();
+        n2.lists[0].sites.clear();
+        assert!(discipline_violation_at(&old, &n2, now).is_some(), "删网站应被拒绝");
+
+        // 加网站例外
+        let mut n3 = old.clone();
+        n3.lists[0].exceptions.push("douyin.com".into());
+        assert!(discipline_violation_at(&old, &n3, now).is_some(), "新增例外应被拒绝");
+
+        // 只加不减 → 放行（加条目是加强纪律）
+        let mut n4 = old.clone();
+        n4.lists[0].sites.push(SiteEntry {
+            id: "s2".into(),
+            pattern: "bilibili.com".into(),
+            label: "B站".into(),
+        });
+        assert!(discipline_violation_at(&old, &n4, now).is_none(), "新增条目不该被拦");
+    }
+
+    #[test]
     fn outside_window_all_changes_allowed() {
         let old = cfg_with_clock();
         let mut new = old.clone();
@@ -436,5 +534,29 @@ mod tests {
         let mut c = cfg_with_clock();
         c.settings.focus_clock.days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
         assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_none(), "休息段可以退出");
+    }
+
+    /// `config_replace_blocked`（备份恢复 / 云同步下载）复用同一套判定，
+    /// 这里锁住它依赖的两条语义：时段内不许削弱、时段外放行。
+    #[test]
+    fn weakening_config_rejected_inside_window() {
+        let old = cfg_with_clock();
+        let mut weakened = old.clone();
+        weakened.lists[0].enabled = false;
+        let now = now_at(2, 10, 30); // 周三 10:30，自律时段内
+        assert!(
+            discipline_violation_at(&old, &weakened, now).is_some(),
+            "覆盖成'规则已关闭'的配置应被拒绝"
+        );
+    }
+
+    #[test]
+    fn equivalent_config_allowed_outside_window() {
+        let old = cfg_with_clock();
+        let now = now_at(2, 11, 30); // 时段外
+        assert!(
+            discipline_violation_at(&old, &old.clone(), now).is_none(),
+            "同样的配置在时段外应放行"
+        );
     }
 }

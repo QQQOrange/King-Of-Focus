@@ -207,6 +207,9 @@ window.__audit = async (view) => {
 window.__patch = async (patch) => {
   Object.assign(STATE.runtime, patch || {});
   if (patch && 'testMode' in patch) STATE.testMode = patch.testMode;
+  // 管理员身份也允许在测试里切：用来验证"自律时段里不允许重启成管理员"
+  if (patch && 'admin' in patch) STATE.admin = patch.admin;
+  if (patch && 'runAsAdmin' in patch) STATE.config.settings.runAsAdmin = patch.runAsAdmin;
   await pull();
   render();
   return S.data;
@@ -436,6 +439,30 @@ window.__itest = async () => {
     out.push(['管理员开关已切到开启', S.data.config.settings.runAsAdmin, !before]);
     out.push(['界面显示当前是管理员', !document.querySelector('#sideStatus').textContent.includes('未以管理员身份运行')]);
   }
+
+  // 15. 自律时段生效中：会重启进程的两个入口必须堵住
+  //     （进入测试模式 = 换一份配置；切管理员 = 真退出再起来。两者都是"退出后门"）
+  await window.__patch({ clockOn: true, testMode: false, admin: false, runAsAdmin: false });
+  await Act.nav('settings');
+  await wait(250);
+  const te = document.querySelector('[data-act="test-enter"]');
+  out.push(['自律时段生效中：进入测试模式按钮禁用', te ? te.disabled === true : '(无按钮)']);
+  const adminSw2 = document.querySelector('[data-act="cfg-switch"][data-k="runAsAdmin"]');
+  out.push(['自律时段生效中：管理员开关置灰', !!adminSw2 && adminSw2.classList.contains('locked')]);
+  if (adminSw2) {
+    adminSw2.click();
+    await wait(300);
+    out.push(['自律时段生效中：打开管理员被拒绝', S.data.config.settings.runAsAdmin, false]);
+  }
+  // 时段外恢复可用
+  await window.__patch({ clockOn: false, admin: false });
+  await Act.nav('settings');
+  await wait(250);
+  const te2 = document.querySelector('[data-act="test-enter"]');
+  out.push(['时段外：进入测试模式按钮可用', !!te2 && te2.disabled === false]);
+  const adminSw3 = document.querySelector('[data-act="cfg-switch"][data-k="runAsAdmin"]');
+  out.push(['时段外：管理员开关不置灰', !!adminSw3 && !adminSw3.classList.contains('locked')]);
+  await window.__patch({ admin: true, runAsAdmin: true });
 
   const pre = document.createElement('pre');
   pre.id = 'itest';

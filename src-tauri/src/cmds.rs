@@ -379,6 +379,12 @@ pub fn test_mode_enter_impl(shared: &Arc<Shared>) -> Result<Value, String> {
     if crate::testmode::on() {
         return Ok(json!({"on": true}));
     }
+    // 进入测试模式会切到独立的数据目录，等于把正式环境的规则整份"换掉"，
+    // 而 testmode::on() 还会让固化锁定与纪律校验全部短路。
+    // 所以它是比"关规则"更彻底的逃逸口，必须和退出程序一样挡住。
+    if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
+        return Err(format!("{why}；测试模式请等这一段结束后再进"));
+    }
     // 先把正式数据落盘，避免切换时丢当前累计
     crate::stats::flush(shared);
     crate::testmode::enter()?;
@@ -765,24 +771,36 @@ pub fn open_extension_dir() -> Result<(), String> {
     }
 }
 
-/// 提权重启：拉起一个带 `--elevated` 标记的新实例，本进程让位退出。
+/// 提权重启的公共实现（命令入口与"开关管理员模式"共用）。
 ///
-/// 关键点：必须把 `--elevated` 和 `--wait-pid` 传给新实例。
-/// - 没有 `--elevated`：新实例走普通启动路径，会被单实例互斥体判定为
+/// 拉起一个带 `--elevated` 标记的新实例，本进程让位退出。关键点：
+/// - 必须把 `--elevated` 和 `--wait-pid` 传给新实例。
+///   没有 `--elevated`：新实例走普通启动路径，会被单实例互斥体判定为
 ///   "重复启动"直接退出 —— 表现就是"点了没反应 / 闪退"。
-/// - 没有 `--wait-pid`：新实例一起来就抢锁，而本进程还活着 → 抢不到锁，
+///   没有 `--wait-pid`：新实例一起来就抢锁，而本进程还活着 → 抢不到锁，
 ///   只能轮询等待，接管会慢好几秒。
-#[tauri::command]
-pub fn restart_as_admin(app: AppHandle) -> Result<(), String> {
+/// - 退出前要过 `exit_blocked`：这条路和托盘退出没有区别，不能当后门用。
+fn restart_as_admin_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), String> {
+    // 这条路会真的退出本进程 → 与托盘退出同等对待
+    if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
+        return Err(format!("{why}；重启会中断自律，请等这一段结束后再操作"));
+    }
     spawn_elevated_self()?;
     // 延迟一小会儿再退出：让当前这次 invoke 的响应先发回前端，
     // 否则界面会先弹一个"调用失败"的红色提示，然后才重启。
     let h = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(350));
+        // 别把守护进程留下来：它会以为主进程死了，又拉起一个旧权限的实例
+        crate::guard::stop_guard();
         h.exit(0);
     });
     Ok(())
+}
+
+#[tauri::command]
+pub fn restart_as_admin(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    restart_as_admin_inner(&app, &shared)
 }
 
 /// 打开"总是以管理员身份运行"。开启后立刻提权重启一次（UAC 确认后生效）。
@@ -794,13 +812,20 @@ pub fn set_run_as_admin(
 ) -> Result<(), String> {
     let mut c = shared.config();
     let before = c.settings.run_as_admin;
+    let need_restart = enabled && !is_admin();
+    // 只有"需要真重启"时才拦；单纯把开关关掉不重启，不该被纪律限制挡住
+    if need_restart {
+        if let Some(why) = crate::guard::exit_blocked(&c) {
+            return Err(format!("{why}；切换管理员模式要重启程序，请等这一段结束后再操作"));
+        }
+    }
     c.settings.run_as_admin = enabled;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
         *w = c.clone();
     }
-    if enabled && !is_admin() {
-        if let Err(e) = restart_as_admin(app) {
+    if need_restart {
+        if let Err(e) = restart_as_admin_inner(&app, &shared) {
             // 没提权成功就把开关退回去，避免"界面显示已开启、实际没生效"
             c.settings.run_as_admin = before;
             let _ = cfg::save(&c);
@@ -1206,7 +1231,16 @@ pub async fn update_download(app: AppHandle, url: String, name: String) -> Resul
 }
 
 #[tauri::command]
-pub fn update_apply(app: AppHandle, installer: String) -> Result<(), String> {
+pub fn update_apply(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    installer: String,
+) -> Result<(), String> {
+    // 自动更新会退出进程并让安装脚本 taskkill 掉它 → 同样不能绕过"自律期间不许退出"。
+    // 而且守护进程会在安装期间不断把旧版本拉起来，装上又被打断，两头都不落好。
+    if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
+        return Err(format!("{why}；更新需要退出程序，请等这一段结束后再更新"));
+    }
     crate::update::apply(&app, &installer)
 }
 
