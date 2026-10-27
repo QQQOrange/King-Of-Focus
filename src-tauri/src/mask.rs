@@ -11,11 +11,11 @@
 //! 连续形变；逐像素方案在 2600x1440 上单帧填充约 3ms，静止时不重绘。
 
 use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering,
+    AtomicBool, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 type Handle = *mut core::ffi::c_void;
 type Hwnd = *mut core::ffi::c_void;
@@ -36,6 +36,24 @@ const RGN_DIFF: i32 = 4;
 const BLACK_BRUSH: i32 = 4;
 
 const PM_REMOVE: u32 = 0x0001;
+/// MsgWaitForMultipleObjects 的唤醒掩码。
+/// 只等"投递类消息"（WinEvent 就走这条路），**不含 QS_INPUT**——
+/// 鼠标键盘活动会不停把 QS_ALLINPUT 唤醒，等于白转。
+const QS_POSTMESSAGE: u32 = 0x0008;
+const QS_SENDMESSAGE: u32 = 0x0040;
+/// 事件钩子：把回调投递到注册线程的消息队列（跨进程，不需要注入 DLL）
+const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
+/// 事件钩子：跳过本进程自己的窗口事件，避免自我唤醒
+const WINEVENT_SKIPOWNPROCESS: u32 = 0x0002;
+/// 前台窗口换了
+const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
+/// 窗口最小化 / 还原：目标可能因此失效
+const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
+const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
+/// 我们自己动过窗口之后，这段时间内的事件一律忽略。
+/// 不设这个静默窗口，我们自己的 SetWindowPos 会回头触发事件 → 唤醒 → 再 SetWindowPos，
+/// 形成自激，CPU 直接飙起来。
+const SELF_SETTLE_MS: u64 = 60;
 const WM_QUIT: u32 = 0x0012;
 const WM_HOTKEY: u32 = 0x0312;
 const MOD_ALT: u32 = 0x0001;
@@ -69,12 +87,191 @@ pub static RAISE_ERR: AtomicU32 = AtomicU32::new(0);
 /// 因为压在遮罩上面而被摘掉 TOPMOST 的窗口次数（lazytyper 那类浮窗）
 pub static RAISE_DROP: AtomicU64 = AtomicU64::new(0);
 
+/// 收到过多少次窗口事件（前台切换 / 最小化 / z 序变化）。
+/// 事件驱动是否真的在工作，看这个数就知道——不涨说明钩子没生效。
+pub static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+/// 我们自己最后一次动窗口的时刻（GetTickCount64）。
+/// 用来在回调里屏蔽自激事件：我们的 SetWindowPos 也会产生 REORDER。
+static SELF_ACTION_AT: AtomicU64 = AtomicU64::new(0);
+/// 最近一次被外部抢位/切目标的时刻，用来决定兜底超时该多激进
+static DISTURBED_AT: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    unsafe { GetTickCount64() }
+}
+
+unsafe extern "system" fn win_event_proc(
+    _hook: *mut std::ffi::c_void,
+    _event: u32,
+    _hwnd: Hwnd,
+    _id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    // 静默窗口内的事件是我们自己造成的，丢掉
+    if now_ms().saturating_sub(SELF_ACTION_AT.load(Ordering::Relaxed)) < SELF_SETTLE_MS {
+        return;
+    }
+    EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    DISTURBED_AT.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 等一个窗口事件；超时返回。没事件时线程真正阻塞，不占 CPU。
+unsafe fn wait_event(timeout_ms: u32) {
+    MsgWaitForMultipleObjects(
+        0,
+        std::ptr::null(),
+        0,
+        timeout_ms,
+        QS_POSTMESSAGE | QS_SENDMESSAGE,
+    );
+}
+
+/// 标记"我们刚动过窗口"，让接下来 SELF_SETTLE_MS 内的 REORDER 事件被忽略
+fn mark_self_action() {
+    SELF_ACTION_AT.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 被我们摘掉 TOPMOST 的窗口。
+///
+/// 遮罩关闭时必须还回去：那些是用户自己的程序（播放器、便签、输入法候选框……），
+/// 不还原的话它们会永久掉到普通层级，用户会以为被我们弄坏了。
+static DEMOTED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+fn remember_demoted(h: Hwnd) {
+    let v = h as isize;
+    if let Ok(mut g) = DEMOTED.lock() {
+        if !g.contains(&v) {
+            g.push(v);
+        }
+    }
+}
+
+unsafe fn restore_demoted() {
+    let list: Vec<isize> = match DEMOTED.lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(_) => return,
+    };
+    for p in list {
+        let h = p as Hwnd;
+        if h.is_null() || IsWindow(h) == 0 {
+            continue;
+        }
+        let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+        SetWindowLongW(h, GWL_EXSTYLE, (ex | WS_EX_TOPMOST_FLAG) as i32);
+        SetWindowPos(
+            h,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+}
+
 /// 覆盖层窗口句柄（遮罩线程写，置顶守护线程读）
 static OVERLAY_HWNDS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
-/// 覆盖模式下"应该待在遮罩上面"的窗口（选中窗口 + 它的弹窗）。
-/// 置顶守护线程在另一个线程里跑，拿不到主循环的局部状态，只能走这个口子。
-static RAISE_EXCEPT: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+/// 覆盖模式下"应该待在遮罩上面"的窗口（选中窗口 + 它的弹窗 + 放行程序的窗口）。
+///
+/// 这里**故意用无锁的原子数组，不用 Mutex**。上一版用 `try_lock`，守护线程
+/// 250Hz 抢锁、主循环每帧写锁，竞争失败时只能退化成"空豁免名单"——
+/// 那一刻遮罩就会把目标窗口当外人压下去，正是闪烁的来源之一。
+/// 8 个槽位：1 个选中窗口 + 3 个弹窗 + 4 个放行程序窗口，绰绰有余。
+pub static EXCEPT_HWNDS: [AtomicIsize; 8] = [
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+    AtomicIsize::new(0),
+];
+
+/// 当前锚点（被选中的窗口）。守护线程靠它把遮罩锚到"正下方"。
+pub static ANCHOR_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// 放行名单：这些程序的所有可见窗口都不参与遮罩，始终浮在最上面。
+///
+/// 为什么放行而不是压制：lazytyper 的语音识别弹条是"用户正在输入"的即时反馈，
+/// 把它盖住等于让人看不到自己说的话，反而破坏专注。这类窗口属于"输入通道"，
+/// 遮罩应该让路。
+///
+/// 匹配规则是**进程名子串**（小写、不含 .exe），大小写和完整路径都不影响。
+/// 要加别的程序，往这里加一项即可。
+const PASS_THROUGH_PROCS: &[&str] = &["lazytyper"];
+
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+/// 取进程可执行文件名（小写，不含扩展名）。取不到返回空串。
+unsafe fn process_stem(pid: u32) -> String {
+    if pid == 0 {
+        return String::new();
+    }
+    let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if h.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 512];
+    let mut size = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut size);
+    CloseHandle(h);
+    if ok == 0 || size == 0 {
+        return String::new();
+    }
+    let full = String::from_utf16_lossy(&buf[..size as usize]);
+    let name = full.rsplit('\\').next().unwrap_or(&full);
+    name.trim_end_matches(".exe").to_lowercase()
+}
+
+fn is_pass_through(pid: u32) -> bool {
+    let stem = unsafe { process_stem(pid) };
+    if stem.is_empty() {
+        return false;
+    }
+    PASS_THROUGH_PROCS.iter().any(|p| stem.contains(p))
+}
+
+struct PassCtx {
+    out: Vec<Hwnd>,
+}
+
+unsafe extern "system" fn pass_through_cb(h: Hwnd, data: isize) -> i32 {
+    let ctx = &mut *(data as *mut PassCtx);
+    if IsWindowVisible(h) == 0 || is_mask_class(h) {
+        return 1;
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(h, &mut pid);
+    if pid != 0 && is_pass_through(pid) {
+        ctx.out.push(h);
+    }
+    1
+}
+
+/// 收集放行程序的全部可见顶层窗口
+unsafe fn collect_pass_through() -> Vec<Hwnd> {
+    let mut ctx = PassCtx { out: Vec::new() };
+    EnumWindows(Some(pass_through_cb), &mut ctx as *mut _ as isize);
+    ctx.out
+}
+
+fn set_except(list: &[Hwnd]) {
+    for i in 0..EXCEPT_HWNDS.len() {
+        let v = list.get(i).map(|h| *h as isize).unwrap_or(0);
+        EXCEPT_HWNDS[i].store(v, Ordering::Relaxed);
+    }
+}
+
+fn clear_except() {
+    for slot in EXCEPT_HWNDS.iter() {
+        slot.store(0, Ordering::Relaxed);
+    }
+}
 
 /// 诊断快照（遮罩线程写，UI 读）——用于界面上的「自查」
 pub static DIAG: Mutex<String> = Mutex::new(String::new());
@@ -172,6 +369,33 @@ extern "system" {
     ) -> i32;
     fn GetMonitorInfoW(m: Hmonitor, mi: *mut MonitorInfo) -> i32;
     fn PeekMessageW(m: *mut Msg, h: Hwnd, min: u32, max: u32, remove: u32) -> i32;
+    /// 等消息/事件，替代 sleep 轮询：没有事发生就安静睡着，有事立刻醒
+    fn MsgWaitForMultipleObjects(
+        count: u32,
+        handles: *const *mut std::ffi::c_void,
+        wait_all: i32,
+        millis: u32,
+        wake_mask: u32,
+    ) -> u32;
+    /// 系统级窗口事件钩子（前台切换、最小化等）。回调投递到注册它的线程。
+    fn SetWinEventHook(
+        event_min: u32,
+        event_max: u32,
+        hmod: *mut std::ffi::c_void,
+        proc: Option<unsafe extern "system" fn(*mut std::ffi::c_void, u32, Hwnd, i32, i32, u32, u32)>,
+        pid: u32,
+        thread: u32,
+        flags: u32,
+    ) -> *mut std::ffi::c_void;
+    fn GetTickCount64() -> u64;
+    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+    fn QueryFullProcessImageNameW(
+        h: *mut std::ffi::c_void,
+        flags: u32,
+        buf: *mut u16,
+        size: *mut u32,
+    ) -> i32;
+    fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
     fn TranslateMessage(m: *const Msg) -> i32;
     fn DispatchMessageW(m: *const Msg) -> isize;
     fn RegisterHotKey(h: Hwnd, id: i32, modifiers: u32, vk: u32) -> i32;
@@ -209,8 +433,6 @@ pub fn mlog(msg: &str) {
 // 置顶守护看起来"每 16ms 才压一次"，浮窗就能在中间露出来。
 #[link(name = "kernel32")]
 extern "system" {
-    fn GetCurrentThread() -> Handle;
-    fn SetThreadPriority(h: Handle, p: i32) -> i32;
 }
 
 #[link(name = "winmm")]
@@ -243,8 +465,6 @@ pub struct MaskCtl {
     pub target: AtomicIsize,
     pub target_pid: AtomicU32,
     pub opacity: AtomicU8,
-    /// 淡入 / 淡出时长（毫秒）
-    pub duration: AtomicI32,
     pub block_click: AtomicBool,
     /// 热键：修饰键位掩码 / 虚拟键码 / 注册代数 / 上次注册是否成功
     pub hk_mod: AtomicU32,
@@ -314,7 +534,6 @@ impl Default for MaskCtl {
             target: AtomicIsize::new(0),
             target_pid: AtomicU32::new(0),
             opacity: AtomicU8::new(88),
-            duration: AtomicI32::new(420),
             block_click: AtomicBool::new(true),
             hk_mod: AtomicU32::new(MOD_CONTROL | MOD_ALT),
             hk_vk: AtomicU32::new(VK_K),
@@ -334,12 +553,6 @@ impl Default for MaskCtl {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// 缓动：easeOutCubic
-fn ease_out(t: f32) -> f32 {
-    let u = 1.0 - t.clamp(0.0, 1.0);
-    1.0 - u * u * u
 }
 
 /// 每台显示器一块静止的遮罩层。
@@ -424,76 +637,6 @@ impl Overlay {
         SetWindowLongW(self.hwnd, GWL_EXSTYLE, ex as i32);
     }
 
-    /// 是否有"外部"窗口压在遮罩上面。
-    /// 桌面挂件（时钟、歌词条、下载悬浮窗）大多会周期性把自己重新置顶，
-    /// 它们每秒抢一次，而我们每 500ms 才压一次 → 用户看到的就是"间断地被遮住"。
-    unsafe fn covered_by_others(&self, except: &[Hwnd]) -> bool {
-        if !self.shown {
-            return false;
-        }
-        // 沿 z 序一路往上找：只要上面还有"别人家的可见窗口"，就算被盖。
-        // 之前只看紧邻的那一个，一旦中间夹着自己的通知卡片就会误判成"没被盖"，
-        // 于是重压被跳过，退化成 250ms 才压一次 —— 那就是间歇性漏遮的真凶。
-        let mut h = GetWindow(self.hwnd, GW_HWNDPREV);
-        let mut guard = 0;
-        while !h.is_null() && guard < 64 {
-            guard += 1;
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(h, &mut pid);
-            // except 里的窗口（覆盖模式下的选中窗口和它的弹窗）本来就该在上面，
-            // 不能算"被盖"——否则每一轮都会判定需要重提，白白烧掉大量 CPU，
-            // 还会和目标的置顶来回拉锯。
-            if pid != std::process::id()
-                && IsWindowVisible(h) != 0
-                && !except.iter().any(|e| *e == h)
-            {
-                return true;
-            }
-            h = GetWindow(h, GW_HWNDPREV);
-        }
-        false
-    }
-
-    /// 把压在遮罩上面的外部置顶窗口的 TOPMOST 属性摘掉。
-    ///
-    /// 这一步需要**高完整性级别**（管理员）才能对别人的窗口 SetWindowLong。
-    /// 摘掉之后对方就落在普通层级，遮罩一次就把它盖死，不会再来回抢——
-    /// 这正是"让 lazytyper 那条横条一次性被盖住"的关键。
-    ///
-    /// `except` 里的窗口不能碰：覆盖模式下选中窗口本来就该待在遮罩上面，
-    /// 把它的 TOPMOST 摘掉等于当场把用户正在用的窗口压到遮罩底下。
-    unsafe fn strip_topmost_above(&self, except: &[Hwnd]) {
-        if !IS_ADMIN.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut h = GetWindow(self.hwnd, GW_HWNDPREV);
-        let mut guard = 0;
-        while !h.is_null() && guard < 32 {
-            guard += 1;
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(h, &mut pid);
-            if pid != std::process::id()
-                && IsWindowVisible(h) != 0
-                && !is_shell_window(h)
-                && !except.iter().any(|e| *e == h)
-            {
-                let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
-                if (ex & WS_EX_TOPMOST_FLAG) != 0 {
-                    SetWindowLongW(h, GWL_EXSTYLE, (ex & !WS_EX_TOPMOST_FLAG) as i32);
-                    SetWindowPos(
-                        h,
-                        HWND_NOTOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-                    );
-                }
-            }
-            h = GetWindow(h, GW_HWNDPREV);
-        }
-    }
 
     /// 覆盖模式：整块铺满，遮罩全程静止。
     ///
@@ -551,12 +694,12 @@ impl Overlay {
         }
     }
 
-    /// 把遮罩重新顶到最上层，但放过 `except` 里的窗口（覆盖模式下的选中窗口）
-    unsafe fn reassert_except(&mut self, except: &[Hwnd]) {
+    /// 把遮罩锚定到选中窗口的正下方（三层结构见 `reassert_below`）
+    unsafe fn anchor_under(&mut self, anchor: Hwnd, except: &[Hwnd]) {
         if !self.shown {
             return;
         }
-        force_above_except(self.hwnd, except);
+        reassert_below(self.hwnd, anchor, except);
     }
 
     unsafe fn hide(&mut self) {
@@ -910,120 +1053,184 @@ unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     window_bounds(h)
 }
 
-/// 把窗口压到最上层，但**放过** `except` 里的窗口。
+/// 把遮罩**锚定**到 `anchor`（被选中的那个窗口）的正下方。
 ///
-/// 覆盖模式下遮罩和选中窗口都在置顶带里：遮罩定时重压是为了防浮窗盖住它，
-/// 但如果重压时把选中窗口也压下去，用户就会看到窗口一闪一闪地被遮罩吃掉。
-/// 所以重压前先看头顶是谁——是自己人就别动。
-unsafe fn force_above_except(hwnd: Hwnd, except: &[Hwnd]) {
+/// 这是三层结构的核心：
+///
+/// ```text
+///   最上  anchor（被点中的应用）   ← 最高优先级，永远不被遮罩盖住
+///         mask  （遮罩）          ← 紧贴锚点下方，压住其余一切
+///   最下  其他应用                 ← 普通层级，被遮罩直接盖掉
+/// ```
+///
+/// 关键在 `SetWindowPos(mask, anchor, …)`：`hWndInsertAfter` 传窗口句柄时，
+/// 语义是"把 mask 放到 anchor 后面（z 序更靠下）"。一次调用同时做到两件事——
+/// 提过所有别的窗口、又永远不越过 anchor。
+///
+/// 上一版用的是 `HWND_TOP`（提到置顶带最顶），那必然先越过 anchor，
+/// 再由主循环把 anchor 提回来；250Hz 的守护线程和主循环之间就形成稳定拉锯，
+/// 用户看到的是内容不停闪。改成锚定之后这个来回从结构上就不存在了。
+///
+/// 稳定态下（遮罩已贴着锚点、锚点上方也没浮窗）这个函数**不做任何窗口操作**，
+/// 只花两次 z 序查询，所以 250Hz 也没有开销压力。
+unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
     if hwnd.is_null() || IsWindow(hwnd) == 0 {
         return;
     }
     if IsWindowVisible(hwnd) == 0 {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
-    let mut h = GetWindow(hwnd, GW_HWNDPREV);
+
+    let anchor_ok = !anchor.is_null() && IsWindow(anchor) != 0 && IsWindowVisible(anchor) != 0;
+
+    // 遮罩正上方"第一个可见窗口"
+    let mut w = GetWindow(hwnd, GW_HWNDPREV);
     let mut guard = 0;
-    let mut covered_by_self = false;
-    let mut has_above = false;
-    let mut above: Hwnd = std::ptr::null_mut();
-    while !h.is_null() && guard < 256 {
+    let mut first_above: Hwnd = std::ptr::null_mut();
+    while !w.is_null() && guard < 64 {
         guard += 1;
-        if IsWindowVisible(h) != 0 {
-            has_above = true;
-            covered_by_self = except.iter().any(|e| *e == h);
-            above = h;
+        if IsWindowVisible(w) != 0 {
+            first_above = w;
             break;
         }
-        h = GetWindow(h, GW_HWNDPREV);
+        w = GetWindow(w, GW_HWNDPREV);
     }
-    // 头顶就是选中窗口（或它的弹窗）：这正是覆盖模式要的效果，别把它压回去
-    if covered_by_self || !has_above {
+
+    if !anchor_ok {
+        // 没有锚点（目标还没出现/已消失）：退回"抢最顶"，别让遮罩被浮窗盖住
+        if first_above.is_null() {
+            return;
+        }
+        let ok = SetWindowPos(
+            hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        if ok != 0 {
+            RAISE_OK.fetch_add(1, Ordering::Relaxed);
+            mark_self_action();
+        } else {
+            RAISE_FAIL.fetch_add(1, Ordering::Relaxed);
+            RAISE_ERR.store(GetLastError(), Ordering::Relaxed);
+        }
         return;
     }
-    // 头顶是外部置顶窗口（lazytyper 那种每隔几帧把自己重新置顶的横条）。
-    //
-    // 只把它压下去是没用的——它下一帧又抢回来，用户看到的就是一直闪。
-    // 所以这里顺手把它的 TOPMOST 属性摘掉：摘掉之后它落到普通层级，
-    // 我们的遮罩（还在置顶带里）从根上就盖住它，不需要每帧再抢。
-    // 这一步要管理员权限，摘不动就退化成"每帧压一次"。
-    if IS_ADMIN.load(Ordering::Relaxed) && !is_shell_window(above) {
-        let ex = GetWindowLongW(above, GWL_EXSTYLE) as u32;
-        if (ex & WS_EX_TOPMOST_FLAG) != 0 {
-            SetWindowLongW(above, GWL_EXSTYLE, (ex & !WS_EX_TOPMOST_FLAG) as i32);
-            SetWindowPos(
-                above,
-                HWND_NOTOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-            );
-            RAISE_DROP.fetch_add(1, Ordering::Relaxed);
+
+    // 锚点必须是置顶窗口，否则遮罩锚到它下面会一起掉出置顶带，
+    // 反过来被普通窗口盖住。
+    let aex = GetWindowLongW(anchor, GWL_EXSTYLE) as u32;
+    if (aex & WS_EX_TOPMOST_FLAG) == 0 {
+        SetWindowPos(
+            anchor,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+
+    // 已经紧贴锚点下方 → 不用动窗口，省掉一次 z 序重排（也就没有重绘抖动）
+    if first_above != anchor {
+        let ok = SetWindowPos(
+            hwnd,
+            anchor as isize,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        if ok != 0 {
+            RAISE_OK.fetch_add(1, Ordering::Relaxed);
+            mark_self_action();
+        } else {
+            RAISE_FAIL.fetch_add(1, Ordering::Relaxed);
+            RAISE_ERR.store(GetLastError(), Ordering::Relaxed);
         }
     }
-    let ok = SetWindowPos(
-        hwnd,
-        HWND_TOP,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-    );
-    if ok != 0 {
-        RAISE_OK.fetch_add(1, Ordering::Relaxed);
-    } else {
-        RAISE_FAIL.fetch_add(1, Ordering::Relaxed);
-        RAISE_ERR.store(GetLastError(), Ordering::Relaxed);
-    }
-}
 
-/// 置顶守护：独立线程以 ~250Hz 把覆盖层压到最上层。
-/// 有些浮窗（lazytyper、歌词条）每次动画都重新置顶，主循环 60Hz 压不过它的节奏，
-/// 这里用更高的频率专门做这一件事，把"漏遮"压到肉眼不可见。
-fn spawn_topmost_keeper(ctl: std::sync::Arc<MaskCtl>) {
-    thread::spawn(move || unsafe {
-        // 置顶守护对延迟很敏感：常规优先级下 1ms 的 sleep 实测会被拖到 5~15ms，
-        // 提到 HIGHEST 后能把"浮窗抢到我们前面"的时间窗压到一帧以内。
-        SetThreadPriority(GetCurrentThread(), 2); // THREAD_PRIORITY_HIGHEST
-        loop {
-            thread::sleep(Duration::from_millis(1));
-            if !ctl.on.load(Ordering::Relaxed) {
-                continue;
-            }
-            let hs: Vec<isize> = match OVERLAY_HWNDS.try_lock() {
-                Ok(v) => v.clone(),
-                Err(_) => continue,
-            };
-            // 覆盖模式下选中窗口就待在遮罩上面，守护线程必须放过它。
-            // 不放过的话，这里的 250Hz 会和主循环的目标置顶来回拉锯：
-            // 遮罩每 4ms 压上一次、主循环再提回来，用户看到的是窗口闪，
-            // 顺便白烧掉十几个点的 CPU。
-            let except: Vec<Hwnd> = match RAISE_EXCEPT.try_lock() {
-                Ok(v) => v.iter().map(|x| *x as Hwnd).collect(),
-                Err(_) => Vec::new(),
-            };
-            for h in hs {
-                if h != 0 {
-                    force_above_except(h as Hwnd, &except);
+    // 把**所有**压在遮罩上面的外部置顶窗口都摘出置顶带。
+    //
+    // 为什么要扫全部、而不是只看紧邻的那一个：
+    // 之前的写法遇到 `is_shell_window` 或自己人就 `break`，只要最上面先撞上
+    // 任务栏/输入法/别的浮窗，后面真正碍事的 lazytyper 那条横条就永远扫不到——
+    // 这就是"遮罩一直遮不住它"的直接原因。
+    //
+    // 遮罩本身是置顶窗口，所以它 z 序**上方**只剩置顶带里的窗口：
+    // 选中窗口（except，跳过）和那些抢置顶的浮窗（要摘）。普通窗口都在遮罩下面，
+    // 不会出现在这条链里，所以这个扫描范围是精确的、不会误伤普通窗口。
+    if IS_ADMIN.load(Ordering::Relaxed) {
+        let mut a = GetWindow(hwnd, GW_HWNDPREV);
+        let mut g2 = 0;
+        while !a.is_null() && g2 < 64 {
+            g2 += 1;
+            if IsWindowVisible(a) != 0
+                && !except.iter().any(|e| *e == a)
+                && !is_shell_window(a)
+                && !is_mask_class(a)
+            {
+                let ex = GetWindowLongW(a, GWL_EXSTYLE) as u32;
+                if (ex & WS_EX_TOPMOST_FLAG) != 0 {
+                    SetWindowLongW(a, GWL_EXSTYLE, (ex & !WS_EX_TOPMOST_FLAG) as i32);
+                    SetWindowPos(
+                        a,
+                        HWND_NOTOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                    );
+                    RAISE_DROP.fetch_add(1, Ordering::Relaxed);
+                    remember_demoted(a);
+                    // 抓到一次抢位 → 进入短时高频窗口，防止它马上又抢回来。
+                    // 这是"按需升频"，不是拿高频当常态：摘干净后 400ms 自动回落。
+                    DISTURBED_AT.store(now_ms(), Ordering::Relaxed);
                 }
             }
+            a = GetWindow(a, GW_HWNDPREV);
         }
-    });
+    }
 }
 
 pub fn start(ctl: std::sync::Arc<MaskCtl>) {
-    // 先提定时器精度，否则下面 2ms 的守护循环会被系统拉到 16ms
+    // 先提定时器精度：事件驱动之后不再靠高频轮询，但少数场景（刚被抢位后的
+    // 短促纠正窗口）仍需 8ms 级别的等待精度。
     unsafe {
         timeBeginPeriod(1);
     }
     IS_ADMIN.store(crate::cmds::is_admin(), Ordering::Relaxed);
-    spawn_topmost_keeper(ctl.clone());
     thread::spawn(move || unsafe {
         // 混合 DPI 下必须拿物理像素，否则洞和遮罩对不齐
         SetThreadDpiAwarenessContext(-4);
+
+        // 事件钩子：只在本线程（有消息泵）注册，回调也会投递到这里。
+        //
+        // 范围为什么是 FOREGROUND..MINIMIZEEND 而**不含 EVENT_OBJECT_REORDER**：
+        // 试过监听 REORDER（z 序变化），确实能第一时间发现浮窗抢位，但那个事件
+        // 在整个桌面范围里极其高频——任何窗口的位置/层级变动都会触发，结果就是
+        // 主循环被唤醒得比原来的定时轮询还勤（实测 237 次/秒，CPU 反而从 2% 涨到 6%）。
+        // 那不是"事件驱动"，是把轮询换了个马甲。
+        //
+        // 现在的分工：
+        //   · 前台切换 / 最小化 → 事件即时唤醒（这类事件本来就低频，且必须秒回）
+        //   · 浮窗抢置顶 → 由兜底检查发现，发现后进入短时高频压制（见 DISTURBED_AT）
+        let hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_MINIMIZEEND,
+            std::ptr::null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+        mlog(&format!("WinEvent 钩子 {:?}", hook));
 
         let class = wide("KofMaskV2");
         let inst = GetModuleHandleW(std::ptr::null());
@@ -1044,10 +1251,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
 
         let mut overlays: Vec<Overlay> = Vec::new();
         let mut monitor_sig: Vec<Rect> = Vec::new();
-        let mut progress: f32 = 0.0; // 0 = 无遮罩，1 = 完全铺开
-        // 最近一次真正重画的时刻。窗口在动 → 短周期紧跟；窗口静止 → 放长周期省 CPU
-        let mut last_paint_at = Instant::now();
-        let mut last_tick = Instant::now();
         let mut hk_gen_done = 0u32;
         let mut logged_miss = false;
         let mut lost: Option<Instant> = None;
@@ -1071,10 +1274,34 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut popups: Vec<Hwnd> = Vec::new();
         let mut popup_pid = 0u32;
         let mut popup_t = Instant::now();
+        // 放行程序（lazytyper 语音弹条等）的可见窗口，定期重收
+        let mut pass_wins: Vec<Hwnd> = Vec::new();
+        let mut pass_t = Instant::now();
         // 上一帧的选中窗口句柄：变了才说明"刚切换过目标"，需要短周期快速收敛
+        #[allow(unused_assignments)]
         let mut last_tgt: isize = 0;
 
         loop {
+            // ---- 先等，再干活 ----
+            // 事件驱动：前台切换 / 最小化 / z 序变化都会把我们从等待里叫醒，
+            // 没事件时线程真正阻塞（CPU≈0），不再靠固定频率轮询去"发现"变化。
+            // 兜底超时只在"确实有变化的余波期"缩短（8ms），平时 500ms 只是防止
+            // 极端情况下漏事件，不承担响应性——响应性由事件保证。
+            {
+                let disturbed =
+                    now_ms().saturating_sub(DISTURBED_AT.load(Ordering::Relaxed)) < 400;
+                let want_on =
+                    ctl.on.load(Ordering::Relaxed) || ctl.auto_follow.load(Ordering::Relaxed);
+                let t = if !want_on {
+                    1000
+                } else if disturbed {
+                    8
+                } else {
+                    500
+                };
+                wait_event(t);
+            }
+
             // ---- 生效判定（先算出来，消息泵和后面都共用同一个口径）----
             // 语义统一为：
             //   遮罩生效 = 用户意向(on)  OR  (跟随自律 AND 自律模式当前生效)
@@ -1126,9 +1353,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 DispatchMessageW(&msg);
             }
 
-            let now = Instant::now();
-            let dt = now.duration_since(last_tick).as_secs_f32().min(0.1);
-            last_tick = now;
             stat_loop_n += 1;
 
             // 预览到点自动收：预览只是"看一眼效果"，不该悄悄变成真开启
@@ -1144,7 +1368,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let follow_flag = ctl.follow.load(Ordering::Relaxed);
             let on = ctl.on.load(Ordering::Relaxed) || auto_hold;
             let opacity = ctl.opacity.load(Ordering::Relaxed).min(100) as f32 / 100.0;
-            let duration = ctl.duration.load(Ordering::Relaxed).clamp(0, 3000) as f32 / 1000.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
 
             // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
@@ -1249,35 +1472,18 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
             };
 
-            // ---- 动画进度 ----
-            let step = if duration <= 0.001 { 1.0 } else { dt / duration };
-            let animating;
-            if on && target.is_some() {
-                if progress < 1.0 {
-                    progress = (progress + step).min(1.0);
-                    animating = true;
-                } else {
-                    animating = false;
-                }
-            } else {
-                if progress > 0.0 {
-                    progress = (progress - step * 1.6).max(0.0);
-                    animating = true;
-                } else {
-                    animating = false;
-                }
-            }
-
-            if progress <= 0.001 || target.is_none() {
+            // 遮罩是瞬开瞬关：没有过渡、没有延时。on 且拿得到目标就是全亮，
+            // 否则整块收起。上一版残留的 progress 状态机已删除。
+            if !on || target.is_none() {
                 for o in overlays.iter_mut() {
                     o.hide();
                 }
                 // 遮罩收起 → 把之前临时提到最上层的窗口全部还原。
                 // 不做这一步，用户用过的窗口会一直挂在我们制造的 topmost 上。
                 release_raised(&mut raised, &[]);
-                if let Ok(mut g) = RAISE_EXCEPT.try_lock() {
-                    g.clear();
-                }
+                clear_except();
+                // 被我们摘掉置顶的外部窗口也要还回去，别留在普通层级
+                restore_demoted();
                 popups.clear();
                 popup_pid = 0;
                 ctl.painted.store(false, Ordering::Relaxed);
@@ -1285,7 +1491,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if last_diag.elapsed().as_millis() >= 500 {
                     last_diag = Instant::now();
                     let report = format!(
-                        "on={} painted=false{} 置顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress=0.00 窗口=(0,0,0,0) 覆盖层=0 副屏={}",
+                        "on={} painted=false{} 置顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} 窗口=(0,0,0,0) 覆盖层=0 副屏={}",
                         on,
                         if follow_flag { " 跟随前台" } else { "" },
                         raised.len(),
@@ -1298,26 +1504,19 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         *d = report;
                     }
                 }
-                if !animating {
-                    thread::sleep(Duration::from_millis(40));
-                }
                 continue;
             }
 
             let t = target.unwrap();
-            // 目标矩形（屏幕坐标）。只用于诊断展示与"选中窗口跑出本屏"的判断，
-            // 不影响渲染——遮罩不动，窗口自己浮上去。
+            // 目标矩形（屏幕坐标）。只用于诊断展示，不影响渲染——
+            // 遮罩不动，窗口自己浮上去。
             let hole_end = t;
-            // 透明度：前 35% 淡入
-            let fade = ease_out((progress / 0.35).min(1.0));
-            let alpha = (opacity * fade * 255.0).round().clamp(0.0, 255.0) as u8;
-
+            // 不透明度直接到位，没有任何淡入
+            let alpha = (opacity * 255.0).round().clamp(0.0, 255.0) as u8;
             if alpha == 0 {
                 for o in overlays.iter_mut() {
                     o.hide();
                 }
-                release_raised(&mut raised, &[]);
-                thread::sleep(Duration::from_millis(16));
                 continue;
             }
 
@@ -1366,6 +1565,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if tgt == 0 {
                     popups.clear();
                 }
+                // 放行程序的窗口（lazytyper 的语音识别弹条等）。
+                // 它们是"输入通道"，遮罩让路、始终可见，不做任何压制。
+                if pass_t.elapsed().as_millis() >= 500 {
+                    pass_t = Instant::now();
+                    pass_wins = collect_pass_through();
+                }
                 if tgt != 0 {
                     self_wins.push(tgt as Hwnd);
                 }
@@ -1374,8 +1579,13 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         self_wins.push(*h);
                     }
                 }
+                for h in pass_wins.iter() {
+                    if *h != tgt as Hwnd && !self_wins.iter().any(|x| x == h) {
+                        self_wins.push(*h);
+                    }
+                }
                 release_raised(&mut raised, &self_wins);
-                // 主窗口先提，弹窗后提 —— 后提的在上，菜单才会压在窗口之上
+                // 主窗口先提，弹窗/放行窗口后提 —— 后提的在上
                 if tgt != 0 {
                     ensure_above(tgt as Hwnd, &mut raised);
                 }
@@ -1384,25 +1594,22 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         ensure_above(*h, &mut raised);
                     }
                 }
-                ctl.painted.store(progress >= 1.0, Ordering::Relaxed);
+                for h in pass_wins.iter() {
+                    if *h != tgt as Hwnd {
+                        ensure_above(*h, &mut raised);
+                    }
+                }
+                ctl.painted.store(true, Ordering::Relaxed);
                 // 只有"换了目标"才算一次动作，用它驱动短周期；
                 // 否则每帧都刷新时间戳，短周期会永远生效、白烧 CPU。
-                if tgt != last_tgt {
-                    last_tgt = tgt;
-                    last_paint_at = Instant::now();
-                }
+                last_tgt = tgt;
                 // 遮罩本身不重绘，所以这里**不累加** stat_n：
                 // 自查里看到 fps=0 就说明"遮罩一帧都没画"，这正是零延迟的根据。
                 stat_paint_us += t_paint.elapsed().as_micros() as u64;
             }
-            // 把"自己人"告诉置顶守护线程。遮罩收起时 self_wins 为空，
-            // 这一步同时起到清空豁免的作用——不清的话守护线程会继续放行上一次的窗口。
-            if let Ok(mut g) = RAISE_EXCEPT.try_lock() {
-                if g.len() != self_wins.len() || g.iter().zip(self_wins.iter()).any(|(a, b)| *a != *b as isize) {
-                    g.clear();
-                    g.extend(self_wins.iter().map(|h| *h as isize));
-                }
-            }
+            // 把"自己人"和锚点告诉守护线程（无锁原子写，永远不会读不到）
+            set_except(&self_wins);
+            ANCHOR_HWND.store(last_tgt, Ordering::Relaxed);
 
             if stat_t0.elapsed().as_millis() >= 1000 {
                 stat_fps = stat_n;
@@ -1418,23 +1625,16 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 stat_t0 = Instant::now();
             }
 
-            // 置顶维持：按 ~16ms 节流。
-            // 桌面浮窗（lazytyper / 时钟 / 歌词条）会周期性把自己重新置顶，
-            // SetWindowPos 是"后调用者赢"，所以必须持续重压；但没必要每 2ms 压一次——
-            // 那时循环周期还是 16ms，节流到 16ms 与原行为等价，却能把跟随期间的 CPU 降下来。
-            // 遮罩本身不重绘，重压只为防浮窗抢位。
-            // 浮窗抢位是"每秒几次"级别的慢动作，50ms 压一次完全够用。
+            // 层级维持（三层结构的落地）。
+            // 遮罩锚在选中窗口正下方，浮窗抢位由守护线程高频处理；这里 50ms 兜一次。
+            // 注意：这里**不再**调用 strip_topmost_above —— 它会把选中窗口上方的
+            // 一切（包括锚点本身）都降级，和"被点击的应用最高优先级"直接冲突。
+            // 摘顶只对"压在锚点头上的那一个"做，逻辑收在 reassert_below 里。
             if last_top.elapsed().as_millis() >= 50 {
                 last_top = Instant::now();
+                let anchor = last_tgt as Hwnd;
                 for o in overlays.iter_mut() {
-                    // 管理员模式：把压在头上的浮窗降级到普通层级，一次性盖死。
-                    // self_wins 里的窗口不能碰——选中窗口本来就该在遮罩上面。
-                    o.strip_topmost_above(&self_wins);
-                    o.reassert_except(&self_wins);
-                    if o.covered_by_others(&self_wins) {
-                        o.reassert_except(&self_wins);
-                        o.reassert_except(&self_wins);
-                    }
+                    o.anchor_under(anchor, &self_wins);
                 }
             }
 
@@ -1457,7 +1657,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={}{} 抬升={}/{} err={} 摘顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} progress={:.2} alpha={} fps={} 循环={}/s 单帧={:.1}ms 置顶={} 窗口=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={}{} 抬升={}/{} err={} 摘顶={} 事件={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} alpha={} fps={} 循环={}/s 单帧={:.1}ms 置顶={} 窗口=({},{},{},{}) 覆盖层={} 副屏={}",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
                     if follow { " 跟随前台" } else { "" },
@@ -1465,10 +1665,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     RAISE_FAIL.load(Ordering::Relaxed),
                     RAISE_ERR.load(Ordering::Relaxed),
                     RAISE_DROP.load(Ordering::Relaxed),
+                    EVENT_COUNT.load(Ordering::Relaxed),
                     followed_key,
                     ctl.manual_hwnd.load(Ordering::Relaxed),
                     FOLLOW_OVERRIDE.load(Ordering::Relaxed),
-                    progress,
                     alpha,
                     stat_fps,
                     stat_loop,
@@ -1486,18 +1686,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
             }
 
-            // 跟随周期。遮罩根本不重绘，周期只影响"多快发现换了目标窗口"。
-            // 目标稳定时放到 15ms（够用且省 CPU），刚切换过则用 6ms 快速收敛。
-            let tick_ms = if on && target.is_some() {
-                if last_paint_at.elapsed().as_millis() < 400 {
-                    6
-                } else {
-                    15
-                }
-            } else {
-                40
-            };
-            thread::sleep(Duration::from_millis(tick_ms));
+            // 循环末尾不再 sleep：下一轮开头会 wait_event，
+            // 没有新事件就一直睡着。这里只把事件标志复位。
         }
     });
 }
@@ -1508,27 +1698,6 @@ mod tests {
 
     fn r(l: i32, t: i32, rr: i32, b: i32) -> Rect {
         Rect { left: l, top: t, right: rr, bottom: b }
-    }
-
-    /// 洞口从整屏收缩到目标窗口的主动画：speed=0 时进度必须一帧到 1.0
-    #[test]
-    fn 主动画速度为0时一帧到位() {
-        let duration = 0.0f32; // 0ms
-        let dt = 0.016f32; // 一帧
-        let step = if duration <= 0.001 { 1.0 } else { dt / duration };
-        assert_eq!(step, 1.0);
-        let progress = (0.0f32 + step).min(1.0);
-        assert_eq!(progress, 1.0, "speed=0 时扩散进度应一帧到顶");
-        // 淡入曲线：progress=1 时 fade 也应直接到 1（不残留过渡）
-        let fade = ease_out((progress / 0.35).min(1.0));
-        assert_eq!(fade, 1.0, "speed=0 时透明度不应有淡入残留");
-    }
-
-    /// 洞口收缩系数：progress=1 时 e=1，洞口已经是目标窗口
-    #[test]
-    fn 进度到顶时洞口完全展开() {
-        let e = ease_out(1.0);
-        assert_eq!(e, 1.0);
     }
 
 }

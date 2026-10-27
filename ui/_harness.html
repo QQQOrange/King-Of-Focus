@@ -503,24 +503,10 @@ window.__itest = async () => {
   out.push(['测试模式下不锁总开关', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
   await window.__patch({ testMode: false });
 
-  // 13. 遮罩：速度设为 0 必须"瞬间"，预览过渡时长要跟着走
+  // 13. 遮罩：动画已彻底移除，页面不应再有速度/过渡相关控件
   await Act.nav('mask');
   await wait(200);
-  const durRange = document.querySelector('#durRange');
-  out.push(['遮罩页有速度滑块', !!durRange]);
-  if (durRange) {
-    durRange.value = '0';
-    durRange.dispatchEvent(new Event('input', { bubbles: true }));
-    await wait(300);
-    out.push(['速度 0 显示为 0ms', document.querySelector('#durVal').textContent, '0ms']);
-    const pd = document.querySelector('#previewDim');
-    out.push(['速度 0 → 预览过渡时长 0ms', pd ? pd.style.transitionDuration : '(无预览元素)', '0ms']);
-    // 后端确实收到了 0（前端 S.data 要等下一次轮询才刷新，所以直接查假后端状态）
-    out.push(['速度 0 → 后端收到 0', STATE.mask.duration, 0]);
-    await pull();
-    out.push(['速度 0 → 轮询后界面状态也是 0', S.data.mask.duration, 0]);
-  }
-
+  out.push(['遮罩页不再有速度滑块', !document.querySelector('#durRange')]);
   // 14. 管理员开关：打开后走的是"后端落盘 + 拉起提权副本"，
   //     前端不能再去 saveConfig / pull（进程 350ms 后就退出，调用必失败）
   await Act.nav('settings');

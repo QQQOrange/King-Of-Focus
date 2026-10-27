@@ -1091,7 +1091,6 @@ function viewMask() {
   const m = d.mask;
   const target = d.config.settings.mask.targetTitle || '';
   const op = m.opacity;
-  const dur = m.duration == null ? 420 : m.duration;
   const rt = d.runtime;
   // on  = 最终生效（用户意向 OR 自律接管）
   // userOn = 用户自己按的开关；autoOn = 自律模式正在接管
@@ -1169,7 +1168,7 @@ function viewMask() {
 
     <div class="mask-preview">
       <div class="screen"></div>
-      <div class="dim" id="previewDim" style="opacity:${op / 100};transition-duration:${dur}ms"></div>
+      <div class="dim" id="previewDim" style="opacity:${op / 100}"></div>
       <div class="hole" id="previewHole">当前窗口</div>
     </div>
   </div>
@@ -1193,11 +1192,6 @@ function viewMask() {
       <span class="lab">不透明度</span>
       <input type="range" min="20" max="100" step="1" value="${op}" id="opRange" />
       <span class="val" id="opVal">${op}%</span>
-    </div>
-    <div class="slider-row">
-      <span class="lab">淡入淡出（0=瞬间）</span>
-      <input type="range" min="0" max="3000" step="20" value="${dur}" id="durRange" />
-      <span class="val" id="durVal">${dur}ms</span>
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
       <div>
@@ -2490,18 +2484,10 @@ const Act = window.Act = {
     if (dim) dim.style.opacity = v / 100;
     await invoke('mask_set', { opacity: +v });
   },
-  async setDuration(v) {
-    $('#durVal').textContent = v + 'ms';
-    // 预览框的过渡时长跟着速度走：速度 0 → 预览也是瞬时，两边语义一致
-    const dim = $('#previewDim');
-    if (dim) dim.style.transitionDuration = v + 'ms';
-    await invoke('mask_set', { durationMs: +v });
-  },
   async maskSave() {
     const m = S.data.config.settings.mask;
     const cur = S.data.mask;
     m.opacity = cur.opacity;
-    m.durationMs = cur.duration;
     m.blockClick = cur.blockClick;
     m.follow = !!cur.follow;
     try {
@@ -3912,7 +3898,6 @@ document.addEventListener('keydown', (e) => {
 /* 遮罩滑块：实时预览 */
 document.addEventListener('input', async (e) => {
   if (e.target.id === 'opRange') await Act.setOpacity(e.target.value);
-  if (e.target.id === 'durRange') await Act.setDuration(e.target.value);
 });
 
 /* 启动 */

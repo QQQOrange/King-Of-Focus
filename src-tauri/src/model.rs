@@ -189,9 +189,6 @@ where
 pub struct MaskCfg {
     /// 遮罩不透明度 0-100
     pub opacity: u8,
-    /// 淡入 / 淡出时长（毫秒，0 = 瞬间）。
-    /// 只影响遮罩整体透明度的过渡，不影响窗口位置——遮罩是静止的，没有可插值的东西。
-    pub duration_ms: u32,
     /// 跟随当前最上层窗口（遮罩焦点自动跟着前台窗口）
     pub follow: bool,
     /// 是否屏蔽鼠标点击（遮罩吃掉点击，防止手滑去点别的窗口）
@@ -215,7 +212,6 @@ impl Default for MaskCfg {
     fn default() -> Self {
         MaskCfg {
             opacity: 88,
-            duration_ms: 420,
             follow: true,
             block_click: true,
             target_pid: 0,

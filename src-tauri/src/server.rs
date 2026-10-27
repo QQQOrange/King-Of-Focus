@@ -192,9 +192,6 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         .and_then(|v| v.split('&').next())
                         .and_then(|v| v.parse::<i64>().ok())
                 };
-                if let Some(v) = q("duration=") {
-                    m.duration.store(v.clamp(0, 3000) as i32, std::sync::atomic::Ordering::Relaxed);
-                }
                 if let Some(v) = q("opacity=") {
                     m.opacity.store(v.clamp(0, 100) as u8, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -209,7 +206,6 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                     200,
                     json!({
                         "ok": true,
-                        "duration": m.duration.load(std::sync::atomic::Ordering::Relaxed),
                         "opacity": m.opacity.load(std::sync::atomic::Ordering::Relaxed),
                         "follow": m.follow.load(std::sync::atomic::Ordering::Relaxed),
                         "blockClick": m.block_click.load(std::sync::atomic::Ordering::Relaxed),

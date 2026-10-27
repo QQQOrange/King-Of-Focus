@@ -209,7 +209,6 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "painted": mask.painted.load(Ordering::Relaxed),
             "targetPid": mask.target_pid.load(Ordering::Relaxed),
             "opacity": mask.opacity.load(Ordering::Relaxed),
-            "duration": mask.duration.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
             "follow": mask.follow.load(Ordering::Relaxed),
             "hotkey": config.settings.mask.hotkey,
@@ -348,8 +347,6 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
     m.follow.store(config.settings.mask.follow, Ordering::Relaxed);
-    m.duration
-        .store(config.settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     if let Some((md, vk)) = crate::mask::parse_hotkey(&config.settings.mask.hotkey) {
         m.hk_mod.store(md, Ordering::Relaxed);
         m.hk_vk.store(vk, Ordering::Relaxed);
@@ -532,7 +529,6 @@ pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
 pub fn mask_set(
     shared: State<'_, Arc<Shared>>,
     opacity: Option<u8>,
-    duration_ms: Option<u32>,
     block_click: Option<bool>,
     follow: Option<bool>,
     follow_schedule: Option<bool>,
@@ -540,9 +536,6 @@ pub fn mask_set(
     let m = &*shared.mask;
     if let Some(o) = opacity {
         m.opacity.store(o.min(100), Ordering::Relaxed);
-    }
-    if let Some(v) = duration_ms {
-        m.duration.store(v.min(3000) as i32, Ordering::Relaxed);
     }
     if let Some(v) = follow {
         // 只管"遮罩范围"：跟随当前窗口 / 固定目标。绝不顺手开关遮罩——
@@ -700,8 +693,6 @@ pub fn mask_test_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<bool, St
     // 记住主窗口：跟随前台时若前台是本程序，遮罩要盖的就是这个窗口
     crate::mask::SELF_MAIN.store(hwnd, Ordering::Relaxed);
 
-    m.duration
-        .store(shared.config().settings.mask.duration_ms.min(3000) as i32, Ordering::Relaxed);
     m.target.store(hwnd, Ordering::Relaxed);
     m.target_pid.store(self_pid, Ordering::Relaxed);
     m.test_lock.store(true, Ordering::Relaxed);
