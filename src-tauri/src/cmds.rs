@@ -1195,6 +1195,69 @@ pub fn report_delete(id: String) -> Result<(), String> {
     crate::stats::delete_report(&id)
 }
 
+/// 把文件名里 Windows 不接受的字符换掉，并留一个兜底名。
+/// 报告标题会带日期和"日报"这类词，通常没问题，但自定义标题可能是任意文本。
+fn safe_file_name(title: &str, ext: &str) -> String {
+    let mut s: String = title
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    s = s.trim().trim_end_matches('.').to_string();
+    if s.chars().count() > 80 {
+        s = s.chars().take(80).collect();
+    }
+    if s.is_empty() {
+        s = "报告".into();
+    }
+    format!("{s}.{ext}")
+}
+
+/// 导出报告：Markdown / 纯文本 / Word。
+///
+/// 三种格式都由 `report_out::blocks` 这同一份结构渲染，
+/// 所以标题层级、段落、列表缩进一致；保存位置由用户在系统对话框里选。
+#[tauri::command]
+pub async fn report_export(app: AppHandle, id: String, format: String) -> Result<String, String> {
+    let r = crate::stats::read_report(&id).ok_or_else(|| "报告不存在，可能已被删除".to_string())?;
+    let (ext, label) = match format.as_str() {
+        "md" | "markdown" => ("md", "Markdown"),
+        "txt" | "text" => ("txt", "纯文本"),
+        "docx" | "word" => ("docx", "Word 文档"),
+        other => return Err(format!("不支持的导出格式：{other}")),
+    };
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("导出报告")
+        .set_file_name(&safe_file_name(&r.title, ext))
+        .add_filter(label, &[ext])
+        .blocking_save_file();
+    let path = picked.ok_or_else(|| "已取消导出".to_string())?;
+    let mut p = std::path::PathBuf::from(path.to_string());
+    // 用户可能手打了一个别的后缀（或没写），统一补成所选格式，
+    // 否则 .docx 会变成一个打不开的裸文件
+    let wrong = p
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| !s.eq_ignore_ascii_case(ext))
+        .unwrap_or(true);
+    if wrong {
+        p.set_extension(ext);
+    }
+    let bs = crate::report_out::blocks(&r);
+    let bytes = match ext {
+        "md" => crate::report_out::markdown(&bs).into_bytes(),
+        "txt" => crate::report_out::plain(&bs).into_bytes(),
+        _ => crate::report_out::docx(&bs),
+    };
+    std::fs::write(&p, bytes).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(p.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn stats_dir_path() -> String {
     crate::stats::stats_dir().to_string_lossy().to_string()

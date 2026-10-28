@@ -1091,10 +1091,11 @@ function clockProfile() {
  * 2. 选中窗口是分钟区间 [from,to)（右键或细分刻度设置），整块按**均匀分钟格**
  *    切片：与格子边界无关，所以 11:10–12:20 这种零碎时间也是一条整带，
  *    不会因为跨小时被切开。未选中的分钟用与格子同色的占位带让开。
- * 3. 专注 / 休息配方按分钟窗口重新切片，跨小时也不会断色。
+ * 3. 整块只用一种颜色：块里不再按 专注/休息 切出不同深浅的色带，
+ *    未选中的分钟用透明占位带让开（这是"没选满"，不是另一种颜色）。
  *
- * `dragRect` 传入时额外画一个金色虚线框，作为框选预览。 */
-function ccRenderRuns(root, dragRect, override) {
+ * `override(d,h)` 传入时，用它的返回值代替配置里的值（拖选预览用）。 */
+function ccRenderRuns(root, override) {
   const host = root || document;
   const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
   if (!grid) return;
@@ -1175,38 +1176,17 @@ function ccRenderRuns(root, dragRect, override) {
   const addBlock = (d0, d1, h0, h1, sig, f0, t1) => {
     const t1Min = t1;   // 尾小时的结束分钟，用于色块上的时长文字
     const n = h1 - h0 + 1;
-    // 块内统一按「分钟」切片：每个 <i> 都是一条等宽色带，
-    // 跨小时的零碎时间因此天然连续（11:10–12:20 = 70 分钟一条带）。
+    // 块内统一按「分钟」切片，但**每格只发一条同色带**：
+    // 以前把一小时拆成 专注/休息/尾段 三条不同颜色，块里就成了调色盘。
+    // 现在整块只有一种颜色（CSS 里 --cc-fill），起止分钟之外才是透明的"没选满"。
     const unit = 100 / (n * 60);
     let bands = '';
     for (let k = 0; k < n; k++) {
-      const [w, b] = sig.split(',')[k].split('/').map(Number);
       const f = k === 0 ? f0 : 0;      // 首小时的起始分钟
       const t = k === n - 1 ? t1 : 60; // 尾小时的结束分钟
-      if (k === 0 && f > 0) {
-        bands += `<i class="cc-gap" style="flex:0 0 ${(f * unit).toFixed(3)}%"></i>`;
-      }
-      if (f === 0 && t === 60) {
-        // 整小时：沿用旧画法，老配置零变化
-        if (w) bands += `<i class="w" style="flex:0 0 ${(w * unit).toFixed(3)}%"></i>`;
-        if (b) bands += `<i class="b" style="flex:0 0 ${(b * unit).toFixed(3)}%"></i>`;
-        if (60 - w - b > 0) bands += `<i class="t" style="flex:0 0 ${((60 - w - b) * unit).toFixed(3)}%"></i>`;
-      } else {
-        // 部分小时：只画窗口 [f,t) 里的 专注/休息 切片
-        const w1 = Math.max(0, Math.min(w, t) - f);
-        const bb = Math.max(0, Math.min(w + b, t) - Math.max(f, w));
-        const w2 = Math.max(0, t - Math.max(f, w + b));
-        if (bb > 0) {
-          if (w1) bands += `<i class="w" style="flex:0 0 ${(w1 * unit).toFixed(3)}%"></i>`;
-          bands += `<i class="b" style="flex:0 0 ${(bb * unit).toFixed(3)}%"></i>`;
-          if (w2) bands += `<i class="w" style="flex:0 0 ${(w2 * unit).toFixed(3)}%"></i>`;
-        } else if (t - f > 0) {
-          bands += `<i class="w" style="flex:0 0 ${((t - f) * unit).toFixed(3)}%"></i>`;
-        }
-      }
-      if (k === n - 1 && t < 60) {
-        bands += `<i class="cc-gap" style="flex:0 0 ${((60 - t) * unit).toFixed(3)}%"></i>`;
-      }
+      if (f > 0) bands += `<i class="cc-gap" style="flex:0 0 ${(f * unit).toFixed(3)}%"></i>`;
+      if (t > f) bands += `<i class="f" style="flex:0 0 ${((t - f) * unit).toFixed(3)}%"></i>`;
+      if (t < 60) bands += `<i class="cc-gap" style="flex:0 0 ${((60 - t) * unit).toFixed(3)}%"></i>`;
     }
     const run = document.createElement('div');
     run.className = 'cc-run';
@@ -1244,20 +1224,12 @@ function ccRenderRuns(root, dragRect, override) {
 
   ccStitchRuns(grid);
   // 同一天有多段时，如果每段都带完整圆角，看起来就是"一段一段的卡片"。
-  // 这里做两件事让它读起来是**一天的一条排班**：
-  //   1. 在整列后面铺一条极淡的"排班带"，从当天第一段的顶到最后一段的底；
-  //   2. 只有这一列最上 / 最下沿保留圆角，中间的边拉平。
-  ccDayLanes(grid, segs);
+  // 这里只做一件事：整列最上 / 最下沿保留圆角，中间的边拉平，
+  // 相邻段于是连成一条连续的排班。
+  //
+  // 以前还会在整列后面垫一条极淡的"排班带"（`.cc-lane`）把空档也铺上，
+  // 结果未选中的时间也被微微点亮——现在不铺了：没选中的地方必须是干净的。
   ccColumnRounds(grid);
-
-  if (dragRect) {
-    const { d0, d1, h0, h1 } = dragRect;
-    const box = document.createElement('div');
-    box.className = 'cc-drag';
-    box.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
-    box.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
-    grid.appendChild(box);
-  }
 }
 
 /** 缝合相邻的 `.cc-run`：只隔 3px 网格间距的两块，共享边去掉圆角和内描边，
@@ -1307,56 +1279,19 @@ function ccStitchRuns(grid) {
   }
 }
 
-/** 按"哪些边不外露"画圆角和内描边。
+/** 按"哪些边不外露"只画圆角。
  *  首小时从第 from 分钟才开始 / 尾小时到第 to 分钟就结束时，顶/底边落在
- *  没选中的占位带上，那一侧同样不外露——不能把高光画到空白里去。 */
+ *  没选中的占位带上，那一侧同样不外露——不能把圆角画到空白里去。
+ *
+ *  这里**不再画内描边**：色块内部/边缘一旦有亮线，多段拼起来就会看到
+ *  "分隔色"，而且浅色描边叠在蓝底上会显脏。整块只有填充色一种颜色。 */
 function ccRunEdges(el, up, down, left, right) {
   const openTop = up || +el.dataset.f0 > 0;
   const openBottom = down || +el.dataset.t1 < 60;
-  // 圆角跟 CSS 里的 .cc-run 保持一致（滴答清单那种圆润块）
   const r = 7;
   const c = (a, b) => (a || b ? 0 : r);
   el.style.borderRadius = `${c(openTop, left)}px ${c(openTop, right)}px ${c(openBottom, right)}px ${c(openBottom, left)}px`;
-  const ring = 'var(--cc-ring, rgba(125, 176, 255, .28))';
-  const sh = [];
-  if (!openTop) sh.push(`inset 0 1px 0 0 ${ring}`);
-  if (!openBottom) sh.push(`inset 0 -1px 0 0 ${ring}`);
-  if (!left) sh.push(`inset 1px 0 0 0 ${ring}`);
-  if (!right) sh.push(`inset -1px 0 0 0 ${ring}`);
-  el.style.boxShadow = sh.length ? sh.join(',') : 'none';
-}
-
-/** 每天一条"排班带"：把散落的几段串成一个整体，而不是几块互不相干的小卡片。
- *
- *  带子只覆盖"当天第一段开始 → 最后一段结束"这一段，中间的空档也淡淡铺着，
- *  所以一眼能看出"这一天大概几点到几点是自律窗口"。透明度压得很低，
- *  不会抢走实心色块的注意力。 */
-function ccDayLanes(grid, segs) {
-  const span = new Map();   // d → { from, to }（分钟）
-  for (const sg of segs) {
-    const from = sg.h0 * 60 + sg.f0;
-    const to = sg.h1 * 60 + Math.min(60, sg.t1);
-    const cur = span.get(sg.d);
-    if (!cur) span.set(sg.d, { from, to });
-    else { cur.from = Math.min(cur.from, from); cur.to = Math.max(cur.to, to); }
-  }
-  span.forEach(({ from, to }, d) => {
-    if (to <= from) return;
-    const hStart = Math.floor(from / 60);
-    const hEnd = Math.floor((to - 1) / 60);
-    const n = hEnd - hStart + 1;
-    const unit = 100 / (n * 60);
-    const lead = from - hStart * 60;
-    const trail = (hEnd + 1) * 60 - to;
-    const lane = document.createElement('div');
-    lane.className = 'cc-lane';
-    lane.style.gridColumn = `${d + 2}`;
-    lane.style.gridRow = `${hStart + 2} / ${hEnd + 3}`;
-    lane.innerHTML = `<i style="flex:0 0 ${(lead * unit).toFixed(3)}%"></i>`
-      + '<i class="f" style="flex:1"></i>'
-      + `<i style="flex:0 0 ${(trail * unit).toFixed(3)}%"></i>`;
-    grid.appendChild(lane);
-  });
+  el.style.boxShadow = 'none';
 }
 
 /** 一列里只有最上 / 最下那一段保留圆角，中间的上下边拉平 ——
@@ -1511,12 +1446,58 @@ function ccNameDialog(mode) {
  *
  * 为什么分成两级：
  *   一张 7×24 的日历占掉大半个屏幕，而这个页面还要放方案、绑定、通用时长……
- *   于是"看排班"这件事被挤到很下面。现在页面里只留一张**微缩概览**（不标坐标、
- *   不可交互，一眼看形状），想看细节就点开**完整页**：那里才有刻度、拖选、明细数据。
+ *   于是"看排班"这件事被挤到很下面。现在页面里只留一张**微缩概览**，
+ *   想看细节就点开**完整页**：那里才有刻度、拖选、明细数据。
  *   两处读的是同一份 `prof.days`，所以不会出现"微缩图和完整页不一致"。
+ *
+ * 微缩图不是"把主窗口按比例缩小"：那样只剩一团色块，什么也读不出来。
+ * 它由两部分组成——
+ *   · 左边/上面一条 7 列时间轴：只回答"哪天、大概几点到几点"（形状）
+ *   · 下面逐条列出每段的摘要：时间范围 + 节奏 + 番茄轮数 + 时长（内容）
+ * 概览的定位不变（不标坐标、不可交互、一眼看完），但读得懂"这一段是干什么的"。
  */
 
-/** 微缩周视图：只有形状，没有坐标 / 刻度 / 交互 */
+/** 把一天拆成若干"连续时段"，连同摘要需要的统计值一起算出来。
+ *  和 `ccDayRanges` 同一套连续性判据（上一小时排到整点、下一小时从整点开始）。 */
+function ccSegs(day) {
+  const out = [];
+  let i = 0;
+  while (i < 24) {
+    if (!day[i].on) { i++; continue; }
+    const start = i;
+    let end = i;
+    while (end + 1 < 24 && day[end + 1].on
+      && (day[end].to == null ? 60 : day[end].to) >= 60
+      && (day[end + 1].from || 0) <= 0) end++;
+    const f = Math.max(0, Math.min(59, day[start].from || 0));
+    const t = Math.max(1, Math.min(60, day[end].to == null ? 60 : day[end].to));
+    let mins = 0;
+    for (let h = start; h <= end; h++) {
+      const a = h === start ? f : 0;
+      const b = h === end ? t : 60;
+      mins += Math.max(0, b - a);
+    }
+    // 节奏取这一段的起点小时（同一段内通常一致）；番茄轮数按时长估算
+    const work = Math.max(1, Math.min(60, day[start].work || 50));
+    const brk = Math.max(0, Math.min(60 - work, day[start].brk || 0));
+    const rounds = Math.max(1, Math.floor(mins / Math.max(1, work + brk)));
+    const endH = t >= 60 ? end + 1 : end;
+    out.push({
+      h0: start, h1: end, f0: f, t1: t, mins, work, brk, rounds,
+      range: `${pad(start)}:${pad(f)}–${pad(endH)}:${t >= 60 ? '00' : pad(t)}`,
+    });
+    i = end + 1;
+  }
+  return out;
+}
+
+/** 一段的概括性内容：节奏 + 轮数 + 时长，一句话 */
+function ccSegBrief(sg) {
+  const rhythm = sg.brk ? `专注 ${sg.work} 分 / 休息 ${sg.brk} 分` : `连续专注 ${sg.work} 分`;
+  return `${rhythm} · ${sg.rounds} 个番茄 · ${ccMinText(0, sg.mins).dur}`;
+}
+
+/** 微缩周视图：时间轴（形状）+ 时段摘要（内容），都没有坐标 / 刻度 / 交互 */
 function ccMiniHtml(prof, wdNow) {
   const cols = prof.days.map((day, d) => {
     let bars = '';
@@ -1529,16 +1510,33 @@ function ccMiniHtml(prof, wdNow) {
     });
     return `<div class="cc-mini-col${d === wdNow ? ' today' : ''}">${bars}</div>`;
   }).join('');
+
+  // 逐段摘要：按周一到周日、按时间先后排
+  const rows = [];
+  prof.days.forEach((day, d) => {
+    for (const sg of ccSegs(day)) rows.push({ d, sg });
+  });
+  const CAP = 6;
+  const shown = rows.slice(0, CAP);
+  const rest = rows.length - shown.length;
+  const list = shown.map(({ d, sg }) => `
+      <div class="cc-mini-row${d === wdNow ? ' today' : ''}">
+        <span class="dw">${WD[d]}</span>
+        <span class="rg">${sg.range}</span>
+        <span class="br">${ccSegBrief(sg)}</span>
+      </div>`).join('') + (rest > 0
+    ? `<div class="cc-mini-row more">还有 ${rest} 段，点开完整图表查看</div>` : '');
+
   const total = prof.days.reduce((n, d) => n + ccDayMinutes(d), 0);
-  const segs = prof.days.reduce((n, d) => n + ccDayRanges(d).length, 0);
   const head = WD.map((w, i) => `<span class="${i === wdNow ? 'today' : ''}">${w.slice(1)}</span>`).join('');
   return `
     <div class="cc-mini" data-act="cc-open" role="button" tabindex="0" title="点击展开完整图表">
       <div class="cc-mini-hd">${head}</div>
       <div class="cc-mini-body">${cols}</div>
+      <div class="cc-mini-list">${rows.length ? list : '<div class="cc-mini-row more">还没排任何时段</div>'}</div>
       <div class="cc-mini-ft">
         <span class="nm">${esc(prof.name)}</span>
-        <span class="sum">${total ? `每周 ${ccMinText(0, total).dur} · ${segs} 段` : '还没排任何时段'}</span>
+        <span class="sum">${total ? `每周 ${ccMinText(0, total).dur} · ${rows.length} 段` : '还没排任何时段'}</span>
         <span class="go">展开完整图表 ›</span>
       </div>
     </div>`;
@@ -1609,10 +1607,8 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
       </div>
       <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px">${grid}</div></div>
       <div class="cc-legend">
-        <span><i class="sw w"></i>专注</span>
-        <span><i class="sw b"></i>休息</span>
-        <span><i class="sw t"></i>继续专注（时段没排满的尾段）</span>
-        <span class="hint">同一天的多段连成一条"排班带"，跨小时自动接成一整块</span>
+        <span><i class="sw"></i>已选中（整块同色）</span>
+        <span class="hint">同一天相邻的时段会连成一整块；块里的空白就是没选中的分钟</span>
       </div>
       <div class="cc-days">
         <div class="cc-days-hd"><span>每日时长</span><span>合计 ${ccMinText(0, totalMins).dur}</span></div>
@@ -2056,17 +2052,30 @@ function viewStats() {
 function viewReports() {
   const d = S.data;
   const s = d ? d.config.settings.stats : {};
+  // 报告类型用分段按钮，不用原生 <select>：原生下拉在深色界面里会掉出
+  // 一套系统配色（白底 / 系统蓝高亮），和整个页面完全不搭。
+  const PERIODS = [['daily', '日报'], ['weekly', '周报'], ['monthly', '月报'], ['yearly', '年报']];
+  const curP = S.genPeriod || 'daily';
+  const seg = `<div class="seg" id="genPeriod">${PERIODS.map(([v, t]) =>
+    `<button class="seg-btn${v === curP ? ' active' : ''}" data-act="gen-period" data-v="${v}">${t}</button>`).join('')}</div>`;
+
   const list = S.reports.length
-    ? S.reports.map((r) => `<div class="rep-item" data-act="open-report" data-id="${r.id}">
+    ? S.reports.map((r) => `<div class="rep-item" data-act="open-report" data-id="${esc(r.id)}">
         <span class="badge ${r.period === 'daily' ? 'gold' : r.period === 'weekly' ? 'blue' : 'green'}">${
           { daily: '日报', weekly: '周报', monthly: '月报', yearly: '年报', custom: '自定义' }[r.period] || r.period}</span>
-        <div style="flex:1">
+        <div class="rep-main">
           <div class="ttl">${esc(r.title)}</div>
           <div class="sub">${r.start} ~ ${r.end} · 生成于 ${new Date(r.created * 1000).toLocaleString()}</div>
         </div>
-        <div style="text-align:right">
-          <div class="tnum" style="font-size:13px">${fmtDur(r.onSecs + r.offSecs)}</div>
+        <div class="rep-stat">
+          <div class="tnum">${fmtDur(r.onSecs + r.offSecs)}</div>
           <div class="sub">开启 ${fmtDurShort(r.onSecs)} · 未开启 ${fmtDurShort(r.offSecs)}</div>
+        </div>
+        <div class="rep-ops">
+          <button class="btn btn-sm" data-act="report-export-open" data-id="${esc(r.id)}"
+            title="导出为 Markdown / 纯文本 / Word">导出</button>
+          <button class="btn btn-sm danger-ghost" data-act="report-del-ask" data-id="${esc(r.id)}"
+            title="删除这份报告（会先确认）">删除</button>
         </div>
       </div>`).join('')
     : '<div class="empty">还没有生成过报告。<br>开启下面的自动生成，或者点「立即生成」。</div>';
@@ -2102,23 +2111,18 @@ function viewReports() {
   </div>
 
   <div class="card">
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div class="rep-hd">
       <div>
         <div class="card-title" style="margin:0">历史报告</div>
-        <div class="hint" style="margin-top:4px">保留在本地，随时可以回看</div>
+        <div class="hint" style="margin-top:4px">保留在本地，可随时回看、导出或删除</div>
       </div>
-      <div class="row" style="gap:8px">
-        <select id="genPeriod">
-          <option value="daily">日报</option>
-          <option value="weekly">周报</option>
-          <option value="monthly">月报</option>
-          <option value="yearly">年报</option>
-        </select>
+      <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+        ${seg}
         <button class="btn btn-primary btn-sm" data-act="gen-report">立即生成</button>
         <button class="btn btn-sm" data-act="reports-refresh">刷新</button>
       </div>
     </div>
-    <div>${list}</div>
+    <div class="rep-list">${list}</div>
   </div>
 
   <div class="note" style="margin-top:14px">
@@ -3394,7 +3398,7 @@ const Act = window.Act = {
   async refreshStats() { await loadStats(); render(); },
 
   async genReport() {
-    const period = ($('#genPeriod') || {}).value || 'daily';
+    const period = S.genPeriod || 'daily';
     const now = new Date();
     let start, end;
     if (period === 'daily') { const y = addDays(now, -1); start = end = dateStr(y); }
@@ -3422,6 +3426,117 @@ const Act = window.Act = {
     if (!r) { toast('报告读取失败', 'err'); return; }
     S.reportView = r;
     renderReportModal();
+  },
+
+  /* ---- 历史报告：类型选择 / 导出 / 删除 ---- */
+
+  genPeriodSet(v) {
+    S.genPeriod = v;
+    render();
+  },
+
+  /** 打开导出面板：三种格式让用户选 */
+  repExportOpen(id) {
+    const r = S.reports.find((x) => x.id === id);
+    if (!r) { toast('报告不存在，可能已被删除', 'err'); return; }
+    S.repExport = id;
+    $('#modalRoot').innerHTML = `
+      <div class="modal-mask" data-act="close-modal-bg">
+        <div class="modal" style="width:520px">
+          <div class="modal-hd">
+            <h3>导出报告</h3>
+            <button class="close-x" data-act="close-modal">×</button>
+          </div>
+          <div class="modal-bd">
+            <div class="hint" style="margin-bottom:12px;line-height:1.7">
+              ${esc(r.title)}<br>${r.start} ~ ${r.end}
+            </div>
+            <div class="exp-fmts">
+              <button class="exp-fmt" data-act="report-export-do" data-f="md">
+                <span class="ic">M↓</span>
+                <span class="tx"><b>Markdown</b><i>.md · 标题与列表层级完整，适合笔记软件</i></span>
+              </button>
+              <button class="exp-fmt" data-act="report-export-do" data-f="txt">
+                <span class="ic">TXT</span>
+                <span class="tx"><b>纯文本</b><i>.txt · 无格式符号，任何设备都能打开</i></span>
+              </button>
+              <button class="exp-fmt" data-act="report-export-do" data-f="docx">
+                <span class="ic">W</span>
+                <span class="tx"><b>Word 文档</b><i>.docx · 带标题样式与两级项目符号，可直接打印</i></span>
+              </button>
+            </div>
+          </div>
+          <div class="modal-ft">
+            <button class="btn" data-act="close-modal">取消</button>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  async repExportDo(fmt) {
+    const id = S.repExport;
+    if (!id) return;
+    const btns = [...document.querySelectorAll('.exp-fmt')];
+    btns.forEach((b) => { b.disabled = true; });
+    const cur = document.querySelector(`.exp-fmt[data-f="${fmt}"]`);
+    if (cur) cur.classList.add('busy');
+    try {
+      const p = await invoke('report_export', { id, format: fmt });
+      closeModal();
+      toast(`已导出：${p}`, 'ok');
+    } catch (e) {
+      const msg = String(e || '');
+      // 用户在系统对话框里点了取消，不算失败
+      if (msg.includes('已取消')) toast('已取消导出', '');
+      else toast(`导出失败：${msg}`, 'err');
+      btns.forEach((b) => { b.disabled = false; });
+      if (cur) cur.classList.remove('busy');
+    }
+  },
+
+  /** 删除前二次确认：删的是报告，原始日数据不动 */
+  repDeleteAsk(id) {
+    const r = S.reports.find((x) => x.id === id);
+    if (!r) { toast('报告不存在，可能已被删除', 'err'); return; }
+    S.repDelete = id;
+    $('#modalRoot').innerHTML = `
+      <div class="modal-mask" data-act="close-modal-bg">
+        <div class="modal" style="width:460px">
+          <div class="modal-hd">
+            <h3>删除这份报告？</h3>
+            <button class="close-x" data-act="close-modal">×</button>
+          </div>
+          <div class="modal-bd">
+            <div style="font-size:13px;line-height:1.8">
+              <b>${esc(r.title)}</b><br>
+              <span class="hint">${r.start} ~ ${r.end} · 生成于 ${new Date(r.created * 1000).toLocaleString()}</span>
+            </div>
+            <div class="hint" style="margin-top:12px">删除后无法恢复。原始逐日统计数据不受影响，需要的话可以重新生成。</div>
+          </div>
+          <div class="modal-ft">
+            <button class="btn" data-act="close-modal">取消</button>
+            <button class="btn btn-danger" data-act="report-del-do">确认删除</button>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  async repDeleteDo() {
+    const id = S.repDelete;
+    if (!id) return;
+    const btn = document.querySelector('[data-act="report-del-do"]');
+    if (btn) { btn.disabled = true; btn.textContent = '正在删除…'; }
+    try {
+      await invoke('report_delete', { id });
+      S.repDelete = null;
+      closeModal();
+      await loadReports();
+      render();
+      toast('已删除该报告', 'ok');
+    } catch (e) {
+      toast(`删除失败：${String(e)}`, 'err');
+      if (btn) { btn.disabled = false; btn.textContent = '确认删除'; }
+    }
   },
 
   /* ---- 遮罩：快捷键 / 自动触发 ---- */
@@ -4603,14 +4718,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'range-apply') { await Act.applyRange(); return; }
   if (act === 'stats-refresh') { await Act.refreshStats(); return; }
   if (act === 'gen-report') { await Act.genReport(); return; }
+  if (act === 'gen-period') { await Act.genPeriodSet(el.dataset.v); return; }
   if (act === 'open-report') { await Act.openReport(el.dataset.id); return; }
   if (act === 'reports-refresh') { await loadReports(); render(); return; }
+  if (act === 'report-export-open') { Act.repExportOpen(el.dataset.id); return; }
+  if (act === 'report-export-do') { await Act.repExportDo(el.dataset.f); return; }
+  if (act === 'report-del-ask') { Act.repDeleteAsk(el.dataset.id); return; }
+  if (act === 'report-del-do') { await Act.repDeleteDo(); return; }
   if (act === 'save-custom-days') { await Act.saveCustomDays(); return; }
-  if (act === 'del-report') {
-    if (!confirm('删除这份报告？原始日数据不受影响。')) return;
-    await invoke('report_delete', { id: el.dataset.id });
-    closeModal(); await loadReports(); render(); return;
-  }
+  // 详情弹窗里的「删除这份报告」：同样走二次确认面板，不再用系统 confirm
+  if (act === 'del-report') { Act.repDeleteAsk(el.dataset.id); return; }
   if (act === 'stat-toggle') { await Act.statToggle(el.dataset.k); return; }
   if (act === 'cfg-switch') { await Act.cfgSwitch(el.dataset.k); return; }
   if (act === 'save-num') { await Act.saveNum(el.dataset.k); return; }
@@ -4794,7 +4911,7 @@ function paintCcDrag() {
   });
   // 整块也按同一份计算结果重画：预览的起止分钟 = 提交后写进去的值，
   // 所以松开时画面不会"跳一下"。
-  ccRenderRuns(document, null, (d, h) => (d === dg.d
+  ccRenderRuns(document, (d, h) => (d === dg.d
     ? ccHourResult(prof.days[d][h], h, lo, hi, dg.mode)
     : undefined));
 
@@ -5276,6 +5393,15 @@ function ccOpenMenu(d, h, x, y) {
     if (e.target.closest('[data-act="cc-close"]')) ccCloseMenu();
   }, { signal: window.__ccMenuCtrl.signal });
 }
+
+/* 全局屏蔽 WebView 自带的右键菜单。
+ *
+ * 那是浏览器内核的页面菜单（返回 / 刷新 / 另存为 / 打印 / 更多工具），
+ * 在一个桌面应用里既没用又难看，还会盖住我们自己画的右键菜单。
+ * 用 capture 阶段先拦一刀：只在"原生菜单要不要弹"这一层生效，
+ * 下面监听 contextmenu 的业务逻辑（时段格子）照常收到事件。
+ */
+document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
 
 document.addEventListener('contextmenu', (e) => {
   const cell = e.target.closest('.cc-cell');

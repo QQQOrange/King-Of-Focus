@@ -81,5 +81,8 @@ async function tick() {
   document.getElementById('from').textContent = s.quoteFrom ? `—— ${s.quoteFrom}` : '';
 }
 
+// HUD 是个桌面小挂件，右键不该弹出浏览器内核那套页面菜单
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
 tick();
 setInterval(tick, 1000);

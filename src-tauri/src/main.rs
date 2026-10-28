@@ -18,6 +18,7 @@ mod net;
 mod notify;
 mod proc;
 mod quotes;
+mod report_out;
 mod sched;
 mod server;
 mod shared;
@@ -422,6 +423,7 @@ fn main() {
             cmds::report_get,
             cmds::report_generate,
             cmds::report_delete,
+            cmds::report_export,
             cmds::sync_save,
             cmds::sync_now,
             cmds::sync_upload,

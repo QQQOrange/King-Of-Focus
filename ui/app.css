@@ -18,6 +18,8 @@
   --blue: #38bdf8;
   /* 警告色单独留一支琥珀，插件被停用 / 已降级这类"要注意"的徽标仍然醒目 */
   --warn: #f5a524;
+  /* 时段色块的唯一填充色：一块只有这一种颜色，不做渐变 / 描边 / 深浅分层 */
+  --cc-fill: #3f7cff;
 
   /* 深色 */
   --bg: #090b10;
@@ -80,6 +82,7 @@
   --green: #16a34a;
   --blue: #0284c7;
   --warn: #b45309;
+  --cc-fill: #2f6df0;
 
   --bg: #f5f6fa;
   --bg-soft: #ffffff;
@@ -717,8 +720,6 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   column-gap: 6px;
   user-select: none;
   touch-action: none;
-  /* 整块的内描边颜色：JS 缝合相邻块时按边取用（共享边不画） */
-  --cc-ring: rgba(125, 176, 255, .28);
 }
 .cc-corner, .cc-hlab {
   display: flex; align-items: flex-start; justify-content: flex-end;
@@ -755,11 +756,13 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 拖动中：整块日历不再响应文字选择，光标也切成"抓住" */
 .cc.dragging { cursor: ns-resize; user-select: none; }
 .cc.dragging .cc-cell { transition: none; }
-.cc-cell:hover { background: var(--hover-bg); }
-/* 选中态不画在格子上：格子之间 3px 间距，半透明底叠两次会留下一条亮缝，
+/* 悬停**不给任何底色**：未选中的时间不能因为鼠标划过就微微亮起来，
+ * 否则一眼看过去分不清"哪些真的选了"。光标已经足够提示"这里可以拖"。 */
+.cc-cell:hover { background: transparent; }
+/* 选中态不画在格子上：格子之间 6px 间距，半透明底叠两次会留下一条亮缝，
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-top-color: transparent; z-index: 3; }
-.cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
+.cc-cell.on:hover { background: transparent; }
 /* 细分刻度：每小时**自上而下**等分成若干格（15 分钟 4 格 / 10 分钟 6 格）。
  * top / height 由 JS 按粒度写成百分比，这里只负责样子。
  *
@@ -778,27 +781,26 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 每小时最上面那一格与整点线重合，不再重复画 */
 .cc-q[data-q="0"] { border-top-color: transparent; }
 .cc-cell:hover .cc-q, .cc-cell.qshow .cc-q { opacity: 1; }
-/* 已选中的格子：给一点点底，方便看清"这段是 15 还是 30 分钟" */
-.cc-q.on { background: rgba(125, 176, 255, .10); }
+/* 已选中的格子：**不给底色**。以前这里有一层 10% 的蓝，
+ * 和实心块叠在一起就成了"块里另一块颜色"，正是要消掉的杂色。 */
+.cc-q.on { background: transparent; }
 /* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距。
- * 圆角和内描边由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边不画），
- * 这里只留默认值：孤立的整块仍然是四角 4px + 一整圈描边。 */
+ * 圆角由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边拉平）。
+ *
+ * 容器本身透明、无描边：颜色全部来自内部那条唯一的同色带，
+ * 所以块里不会出现第二种颜色，也不会因为是半透明而在接缝处深浅不一。 */
 .cc-run {
   position: relative; z-index: 2; pointer-events: none;
   display: flex; flex-direction: column; overflow: hidden;
   border-radius: 7px;
-  background: rgba(47, 109, 240, .30);
-  box-shadow: inset 0 0 0 1px var(--cc-ring);
+  background: transparent;
+  box-shadow: none;
 }
 .cc-run i { display: block; width: 100%; }
-/* 起止分钟让出来的占位带：透明，看起来就是"这一小时没选满" */
+/* 起止分钟让出来的占位带：完全透明，就是"这一小时没选满"，不是另一种颜色 */
 .cc-run .cc-gap { background: transparent; }
-/* 专注段：实心蓝，日历里一眼能看出"这段时间被占了" */
-.cc-run .w { background: linear-gradient(180deg, #4d8dff, #3b74e8); }
-/* 番茄休息段：浅青，和专注明显区分 */
-.cc-run .b { background: rgba(56, 189, 248, .58); }
-/* 时段没排满的尾段：继续专注，颜色略淡 */
-.cc-run .t { background: rgba(77, 141, 255, .55); }
+/* 整块唯一的填充色。没有渐变、没有浅色尾段、没有休息段改色。 */
+.cc-run .f { background: var(--cc-fill); }
 /* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
 .cc-run-txt {
   position: absolute; top: 3px; left: 6px; right: 6px;
@@ -807,18 +809,14 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
-/* 框选预览：整片范围画一个金色虚线框，比逐格描边清楚得多 */
-.cc-drag {
-  position: relative; z-index: 4; pointer-events: none;
-  border: 1px dashed var(--gold); border-radius: 4px;
-  background: rgba(255, 200, 90, .07);
-}
-/* 当前小时金框：选中块盖在格子上，所以给 .now 抬一层，边框才看得见 */
+/* 当前小时：只给**未选中**的格子描一圈细框。
+ * 选中的格子上不画——那会在色块里多出第二种颜色（金框），
+ * 而色块必须是纯的。 */
 .cc-cell.now { z-index: 5; }
-.cc-cell.now::after {
+.cc-cell.now:not(.on)::after {
   content: ''; position: absolute; top: 0; right: 0; bottom: 0; left: 0;
   border: 1px solid var(--gold); border-radius: 3px;
-  opacity: .9; pointer-events: none;
+  opacity: .55; pointer-events: none;
 }
 
 /* 星期时段（方案）切换条 */
@@ -922,17 +920,41 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .cc-mini-hd span.today { color: var(--gold); font-weight: 700; }
 .cc-mini-body {
   display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px; height: 132px;
+  gap: 6px; height: 104px;
 }
+/* 每一列只是一条"时间轴轨道"：底色用中性灰，不带任何冷色微光，
+ * 否则未选中的日子看起来也像"亮着"。 */
 .cc-mini-col {
   position: relative; border-radius: 4px; overflow: hidden;
-  background: rgba(125, 176, 255, .05);
+  background: var(--cell-bg);
 }
-.cc-mini-col.today { background: rgba(245, 165, 36, .09); }
+.cc-mini-col.today { box-shadow: inset 0 0 0 1px rgba(77, 141, 255, .35); }
+/* 色条：和完整页同一个填充色，纯色、无渐变 —— 微缩图和完整页必须是一个颜色 */
 .cc-mini-col i {
   position: absolute; left: 0; right: 0; border-radius: 2px;
-  background: linear-gradient(180deg, #4d8dff, #3b74e8);
+  background: var(--cc-fill);
 }
+/* 时段摘要：微缩图的下半部分，逐条写"哪天 / 几点到几点 / 这一段在做什么" */
+.cc-mini-list {
+  margin-top: 8px; border-top: 1px solid var(--line); padding-top: 7px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.cc-mini-row {
+  display: grid; grid-template-columns: 34px 96px minmax(0, 1fr);
+  align-items: center; gap: 8px;
+  font-size: 11.5px; color: var(--text-2); line-height: 1.5;
+  padding: 1px 0;
+}
+.cc-mini-row .dw { color: var(--text-3); font-size: 11px; }
+.cc-mini-row.today .dw { color: var(--gold); font-weight: 700; }
+.cc-mini-row .rg {
+  color: var(--text); font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cc-mini-row .br {
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cc-mini-row.more { display: block; color: var(--text-3); font-size: 11px; padding-left: 42px; }
 .cc-mini-ft {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 8px; font-size: 11.5px; color: var(--text-3);
@@ -1003,10 +1025,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .cc-legend .sw {
   display: inline-block; width: 10px; height: 10px; border-radius: 2px;
   margin-right: 5px; vertical-align: -1px;
+  background: var(--cc-fill);
 }
-.cc-legend .sw.w { background: rgba(77, 141, 255, .78); }
-.cc-legend .sw.b { background: rgba(56, 189, 248, .45); }
-.cc-legend .sw.t { background: rgba(77, 141, 255, .22); border: 1px solid var(--line-2); }
 
 /* 「通用时长」行：之后新框选 / 单击选中的时段都沿用这套专注 / 休息 */
 .cc-def {
@@ -1240,19 +1260,74 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .tbl tbody tr { transition: background .13s; }
 .tbl tbody tr:hover { background: var(--hover-bg); }
 
+.rep-hd {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.rep-list { display: block; }
 .rep-item {
-  display: flex; align-items: center; gap: 15px;
-  padding: 15px 18px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px;
   background: var(--panel-a);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   cursor: pointer; margin-bottom: 10px;
-  transition: border-color .15s, background .15s, transform .15s;
+  transition: border-color .15s, background .15s;
   box-shadow: var(--sh-1);
 }
-.rep-item:hover { border-color: var(--line-2); background: var(--btn-bg-hover); transform: translateY(-1px); }
+.rep-item:hover { border-color: var(--line-2); background: var(--btn-bg-hover); }
+.rep-item .rep-main { flex: 1; min-width: 0; }
 .rep-item .ttl { font-size: 13px; font-weight: 650; }
 .rep-item .sub { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+.rep-item .rep-stat { text-align: right; flex: none; }
+.rep-item .rep-stat .tnum { font-size: 13px; }
+/* 操作按钮：平时不抢眼，鼠标落到这一条上才提亮，避免一屏都是按钮 */
+.rep-item .rep-ops { display: flex; gap: 6px; flex: none; opacity: .55; transition: opacity .15s; }
+.rep-item:hover .rep-ops, .rep-item:focus-within .rep-ops { opacity: 1; }
+.rep-item .rep-ops .btn { padding: 5px 10px; font-size: 11.5px; }
+.btn.danger-ghost { color: var(--red); border-color: rgba(255, 92, 92, .28); background: transparent; }
+.btn.danger-ghost:hover { background: rgba(255, 92, 92, .1); border-color: rgba(255, 92, 92, .5); }
+
+/* 分段选择器（报告类型）：替掉原生 <select>，配色跟着主题走 */
+.seg {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 3px; border-radius: var(--r-pill);
+  background: var(--cell-bg); border: 1px solid var(--line);
+}
+.seg-btn {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 12px; color: var(--text-2);
+  padding: 5px 13px; border-radius: var(--r-pill); line-height: 1.4;
+  transition: background .14s, color .14s;
+}
+.seg-btn:hover { color: var(--text); background: var(--btn-bg-hover); }
+.seg-btn.active {
+  color: #fff; background: var(--cc-fill);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+}
+[data-theme="light"] .seg-btn.active { color: #fff; }
+
+/* 导出格式选择：三张整行卡片，点哪儿都能选中 */
+.exp-fmts { display: flex; flex-direction: column; gap: 8px; }
+.exp-fmt {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 13px; text-align: left; cursor: pointer;
+  font-family: inherit; color: var(--text);
+  background: var(--cell-bg); border: 1px solid var(--line); border-radius: var(--r-sm);
+  transition: border-color .14s, background .14s;
+}
+.exp-fmt:hover { border-color: var(--line-2); background: var(--btn-bg-hover); }
+.exp-fmt:disabled { opacity: .55; cursor: default; }
+.exp-fmt.busy { border-color: var(--cc-fill); }
+.exp-fmt .ic {
+  flex: 0 0 42px; height: 30px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--cc-fill);
+  background: rgba(77, 141, 255, .12); border: 1px solid rgba(77, 141, 255, .22);
+}
+.exp-fmt .tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.exp-fmt .tx b { font-size: 12.5px; font-weight: 650; }
+.exp-fmt .tx i { font-style: normal; font-size: 11px; color: var(--text-3); }
 
 .note {
   background: var(--note-bg);

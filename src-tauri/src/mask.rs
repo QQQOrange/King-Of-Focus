@@ -375,14 +375,16 @@ fn is_shell_flyout_proc(stem: &str) -> bool {
 
 /// 当前前台是不是 Start 菜单 / 搜索 / 任务视图这类外壳浮层。
 ///
-/// 带 150ms 缓存：这段每 8~50ms 会被问一次，而 GetForegroundWindow + 查进程名
-/// 都要进内核，不缓存会白烧 CPU；150ms 对"用户手动开/关开始菜单"完全够快。
+/// 带 50ms 缓存：这个值现在同时决定**遮罩要不要把任务栏那条带也盖住**
+/// （见 `paint_cover`），缓存太慢就会在"开始菜单刚弹出来"的头十几帧里
+/// 露出旧区域，弹窗正好从那道缝里闪一下。50ms ≈ 主循环一拍，
+/// 代价只是一次 GetForegroundWindow + 一次进程名查询，可以忽略。
 fn shell_flyout_open() -> bool {
     static CACHE: AtomicU64 = AtomicU64::new(0);   // 高位 = 时刻，bit0 = 上次结果
     let now = now_ms();
     let packed = CACHE.load(Ordering::Relaxed);
     let at = packed >> 1;
-    if at != 0 && now.saturating_sub(at) < 150 {
+    if at != 0 && now.saturating_sub(at) < 50 {
         return (packed & 1) == 1;
     }
     let fg = unsafe { GetForegroundWindow() };
@@ -754,6 +756,9 @@ struct Overlay {
     cur_alpha: u8,
     /// 任务栏签名的校验和：只有在任务栏变化时才重建那块固定区域
     cover_sig: i64,
+    /// 上次建区域时"外壳浮层是否打开"。它一变就必须立刻重建区域：
+    /// 浮层开着时整屏覆盖（不挖任务栏），关掉后恢复挖洞。
+    cover_flyout: bool,
     /// 上次查任务栏的时间。任务栏枚举不便宜，没必要每帧做
     cover_t: Instant,
 }
@@ -796,6 +801,7 @@ impl Overlay {
             shown: false,
             cur_alpha: 255,
             cover_sig: i64::MIN,
+            cover_flyout: false,
             cover_t: Instant::now(),
         })
     }
@@ -824,9 +830,14 @@ impl Overlay {
 
     /// 覆盖模式：整块铺满，遮罩全程静止。
     ///
-    /// 只在"任务栏变化"时重建一次固定区域（任务栏要留出来，不能压暗），
+    /// 平时只在"任务栏变化"时重建一次固定区域（任务栏要留出来，不能压暗），
     /// 除此之外一帧都不碰窗口区域。这正是覆盖模式比挖洞跟手的根本原因：
     /// 窗口拖动时遮罩根本不需要重绘，视觉上完全由 DWM 合成，没有"迟到一帧"。
+    ///
+    /// **外壳浮层（开始菜单 / 搜索）打开时反过来**：把任务栏那条带也盖住。
+    /// 原因见 `shell_flyout_open` 的说明——被挖掉的那条带正好是开始菜单底边与
+    /// 任务栏之间的缝，放行程序（lazytyper）的弹窗就藏在那条缝下面，
+    /// 区域一挖开它就露出来。盖上以后它整块被遮罩压住，缝隙处什么都不显示。
     unsafe fn paint_cover(&mut self, alpha: u8) {
         if self.w <= 0 || self.h <= 0 {
             return;
@@ -834,13 +845,22 @@ impl Overlay {
         // 任务栏枚举（FindWindow + 取矩形）不便宜，而任务栏根本不会毫秒级变化。
         // 挖洞模式静止时靠 need 直接跳过这段，覆盖模式每帧都会走进来，
         // 所以这里必须自己节流——否则光查任务栏就能吃掉三四十个点单核。
-        if self.cover_t.elapsed().as_millis() >= 500 {
+        //
+        // 但"浮层开关"不能等这 500ms：开始菜单刚弹出来的头几帧如果还在用
+        // 旧的挖洞区域，那条缝就在，弹窗就会闪一下。所以状态一变立刻重建一次。
+        let flyout = shell_flyout_open();
+        let flip = flyout != self.cover_flyout;
+        if flip || self.cover_t.elapsed().as_millis() >= 500 || self.cover_sig == i64::MIN {
             self.cover_t = Instant::now();
-            let bars = taskbar_rects();
+            self.cover_flyout = flyout;
+            let bars = if flyout { Vec::new() } else { taskbar_rects() };
             let sig: i64 = bars
                 .iter()
                 .map(|r| r.left as i64 * 31 + r.top as i64 * 17 + r.right as i64 * 7 + r.bottom as i64)
-                .sum();
+                .sum::<i64>()
+                // 浮层开关也要进签名：否则区域只在"任务栏变了"时才重建，
+                // 浮层打开那一刻手上还是旧的挖洞区域，缝照样存在。
+                ^ if flyout { 0x5F_1F_00 } else { 0 };
             if sig != self.cover_sig {
                 self.cover_sig = sig;
                 let full = CreateRectRgn(0, 0, self.w, self.h);

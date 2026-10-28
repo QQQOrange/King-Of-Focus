@@ -311,9 +311,18 @@ window.__itest = async () => {
     const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
     out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]$/.test(txt.textContent.trim()) : false, true]);
     out.push(['色块时间不含非法的 :60', txt ? !/:60/.test(txt.textContent) : false, true]);
-    const wBand = anyRun ? anyRun.querySelector('i.w') : null;
-    out.push(['专注段是实心蓝（不是几乎透明）',
-      wBand ? getComputedStyle(wBand).backgroundImage.includes('gradient') : false, true]);
+    const wBand = anyRun ? anyRun.querySelector('i.f') : null;
+    out.push(['整块只用一种填充色（无渐变）',
+      wBand ? getComputedStyle(wBand).backgroundImage === 'none' : false, true]);
+    out.push(['填充色是不透明的纯色（无 alpha）',
+      wBand ? /^rgb\(\d+, \d+, \d+\)$/.test(getComputedStyle(wBand).backgroundColor) : '', true]);
+    // 块里不允许出现第二种颜色：旧版按 专注/休息/尾段 分三条不同颜色的带
+    out.push(['块里没有别的色带（w/b/t 已移除）',
+      anyRun ? anyRun.querySelectorAll('i.w, i.b, i.t').length : -1, 0]);
+    out.push(['块内没有内描边 / 阴影',
+      anyRun ? getComputedStyle(anyRun).boxShadow : '', 'none']);
+    out.push(['块容器本身透明（颜色只来自填充带）',
+      anyRun ? getComputedStyle(anyRun).backgroundColor : '', 'rgba(0, 0, 0, 0)']);
     out.push(['列间距 6px（每天一栏）',
       getComputedStyle(document.querySelector('#ccGrid')).columnGap, '6px']);
     out.push(['行间距 0（同一天连续不断开）',
@@ -655,7 +664,7 @@ window.__itest = async () => {
   out.push(['部分小时单独成块', !!run9 && run9.dataset.h1 === '9']);
   const gaps9 = run9 ? [...run9.querySelectorAll('.cc-gap')].map((g) => g.style.flexBasis) : [];
   out.push(['上下占位带各 25%', gaps9.length === 2 && gaps9[0] === '25%' && gaps9[1] === '25%']);
-  out.push(['部分小时不画顶/底描边', run9 ? (getComputedStyle(run9).boxShadow.match(/inset/g) || []).length : -1, 2]);
+  out.push(['部分小时也不画描边', run9 ? getComputedStyle(run9).boxShadow : '', 'none']);
   out.push(['格子标题显示真实窗口', cell(3, 9).title.indexOf('周四 09:15 – 09:45') >= 0]);
   out.push(['摘要带分钟', $('#clockLive').textContent.indexOf('09:15') >= 0]);
 
@@ -672,8 +681,7 @@ window.__itest = async () => {
   out.push(['后块负边距补上网格缝', rTue ? getComputedStyle(rTue).marginLeft : '', '-6px']);
   out.push(['前块只少右边的圆角', rMon ? getComputedStyle(rMon).borderRadius : '', '7px 0px 0px 7px']);
   out.push(['后块只少左边的圆角', rTue ? getComputedStyle(rTue).borderRadius : '', '0px 7px 7px 0px']);
-  out.push(['前块描边只剩 3 边', rMon ? (getComputedStyle(rMon).boxShadow.match(/inset/g) || []).length : -1, 3]);
-  out.push(['后块描边只剩 3 边', rTue ? (getComputedStyle(rTue).boxShadow.match(/inset/g) || []).length : -1, 3]);
+  out.push(['缝合后两块都没有描边', (rMon ? getComputedStyle(rMon).boxShadow : '') + '|' + (rTue ? getComputedStyle(rTue).boxShadow : ''), 'none|none']);
 
   // 9d. 孤立块保持原样：四角圆角 + 一整圈描边
   await Act.clockClear();
@@ -682,7 +690,7 @@ window.__itest = async () => {
   await wait(150);
   const rIso = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '3' && r.dataset.h0 === '8');
   out.push(['孤立块四角圆角', rIso ? getComputedStyle(rIso).borderRadius : '', '7px']);
-  out.push(['孤立块整圈描边', rIso ? (getComputedStyle(rIso).boxShadow.match(/inset/g) || []).length : -1, 4]);
+  out.push(['孤立块也没有描边', rIso ? getComputedStyle(rIso).boxShadow : '', 'none']);
   out.push(['孤立块不补缝', rIso ? getComputedStyle(rIso).marginLeft : '', '0px']);
   await Act.clockClear();
   await wait(150);
@@ -1123,6 +1131,18 @@ window.__itest = async () => {
     const sumTxt = (document.querySelector('.cc-mini-ft .sum') || {}).textContent || '';
     out.push(['微缩图摘要显示每周总时长', /每周.*小时|每周.*分钟/.test(sumTxt) || totalMin === 0, true]);
 
+    // 微缩图的下半部分：逐段写出"几点到几点 + 这一段在做什么"，
+    // 不是"把主窗口缩小的色块图"——信息要能直接读出来。
+    const miniRows = [...document.querySelectorAll('.cc-mini-row')].filter((r) => !r.classList.contains('more'));
+    const segN = prof().days.reduce((n, d) => n + ccSegs(d).length, 0);
+    out.push(['微缩图按段列出摘要（最多 6 条）', miniRows.length, Math.min(6, segN)]);
+    out.push(['摘要有时段范围', miniRows[0] ? /^\d\d:\d\d–\d\d:\d\d$/.test(miniRows[0].querySelector('.rg').textContent) : '', true]);
+    out.push(['摘要写了专注/休息节奏', miniRows[0] ? /专注 \d+ 分/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
+    out.push(['摘要写了番茄轮数', miniRows[0] ? /个番茄/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
+    out.push(['摘要写了这一段的总时长', miniRows[0] ? /小时|分钟/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
+    out.push(['微缩图色条是纯色（无渐变）',
+      getComputedStyle(document.querySelector('.cc-mini-col i')).backgroundImage, 'none']);
+
     // 点微缩图 → 完整页
     mini.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
     await wait(260);
@@ -1144,6 +1164,87 @@ window.__itest = async () => {
     out.push(['点返回到微缩图（完整页已收起）', document.querySelectorAll('#ccDetail').length, 0]);
     out.push(['返回后微缩图还在', !!document.querySelector('.cc-mini')]);
   }
+
+  // ---- 26b. 色块观感：只有选中的部分亮，未选中完全干净 ----
+  {
+    await openFull();
+    out.push(['不再有"排班带"垫底', document.querySelectorAll('.cc-lane').length, 0]);
+    out.push(['不再有金色虚线框选预览', document.querySelectorAll('.cc-drag').length, 0]);
+    const offCell = cell(6, 20);
+    out.push(['未选中格子底色透明', getComputedStyle(offCell).backgroundColor, 'rgba(0, 0, 0, 0)']);
+    const onQ = document.querySelector('.cc-q.on');
+    out.push(['格内细分刻度不另加底色', onQ ? getComputedStyle(onQ).backgroundColor : '', 'rgba(0, 0, 0, 0)']);
+    // 当前小时的框不能画到色块上（那会在块里多一种颜色）；未选中的格子仍然有
+    const nowOn = document.querySelector('.cc-cell.now.on');
+    out.push(['当前小时金框不压在色块上',
+      nowOn ? getComputedStyle(nowOn, '::after').content : 'none', 'none']);
+    // 色块里只有一种颜色：所有 i 的背景色去重后为 1 种（透明的占位带除外）
+    const fills = new Set();
+    document.querySelectorAll('.cc-run i.f').forEach((el) => fills.add(getComputedStyle(el).backgroundColor));
+    out.push(['所有色块的填充色只有一种', [...fills].length, 1]);
+  }
+
+  // ---- 26c. 统计报告：类型分段选择 + 每条可导出 / 可删除 ----
+  {
+    // 先切页（nav 里会 loadReports，把 S.reports 覆盖成桩数据），再塞样例再重绘
+    await Act.nav('reports');
+    await wait(220);
+    S.reports = [
+      { id: 'daily_2026-10-27_2026-10-27', period: 'daily', title: '2026-10-27 日报', start: '2026-10-27', end: '2026-10-27', created: 1761556800, onSecs: 11700, offSecs: 74700 },
+    ];
+    S.genPeriod = 'daily';
+    render();
+    await wait(220);
+    out.push(['报告类型是分段按钮而不是原生下拉', document.querySelectorAll('#genPeriod .seg-btn').length, 4]);
+    out.push(['原生 <select> 已移除', document.querySelectorAll('#genPeriod select').length, 0]);
+    out.push(['默认选中日报', (document.querySelector('#genPeriod .seg-btn.active') || {}).dataset?.v, 'daily']);
+    document.querySelector('[data-act="gen-period"][data-v="monthly"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(200);
+    out.push(['点月报 → 选中态跟着走', (document.querySelector('#genPeriod .seg-btn.active') || {}).dataset?.v, 'monthly']);
+    out.push(['每条报告都有导出按钮', document.querySelectorAll('.rep-item [data-act="report-export-open"]').length, 1]);
+    out.push(['每条报告都有删除按钮', document.querySelectorAll('.rep-item [data-act="report-del-ask"]').length, 1]);
+
+    // 导出面板：三种格式
+    document.querySelector('[data-act="report-export-open"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(160);
+    const fmts = [...document.querySelectorAll('.exp-fmt')].map((b) => b.dataset.f);
+    out.push(['导出面板给出三种格式', fmts.join(','), 'md,txt,docx']);
+    out.push(['Markdown 选项有说明文字',
+      /Markdown/.test(document.querySelector('.exp-fmt[data-f="md"]').textContent), true]);
+    closeModal();
+    await wait(120);
+
+    // 删除前必须二次确认：点删除只出确认框，不直接删
+    document.querySelector('[data-act="report-del-ask"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(160);
+    out.push(['删除先弹确认框', !!document.querySelector('[data-act="report-del-do"]'), true]);
+    out.push(['确认框说明了原始数据不受影响',
+      /原始逐日统计/.test(document.querySelector('.modal-bd').textContent), true]);
+    out.push(['此时列表还没被删', S.reports.length, 1]);
+    closeModal();
+    await wait(120);
+    S.genPeriod = 'daily';
+  }
+
+  // ---- 26d. 屏蔽 WebView 自带的右键菜单 ----
+  {
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(ev);
+    out.push(['右键不会弹出内核默认菜单', ev.defaultPrevented, true]);
+    // 时段格子的自定义菜单仍然要能弹（先回到完整日历）
+    await openFull();
+    const cellEv = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 400 });
+    cell(0, 8).dispatchEvent(cellEv);
+    await wait(120);
+    out.push(['时段格子的自有右键菜单仍照常', !!document.querySelector('.cc-modal'), true]);
+    closeModal();
+    ccCloseMenu();
+    await wait(120);
+  }
+
 
   // ---- 27. 专注计时弹窗（HUD）：四角可选 + 透明度可调 + 落盘 ----
   {
