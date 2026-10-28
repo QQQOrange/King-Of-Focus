@@ -4181,7 +4181,22 @@ function ccDaySegs(day) {
       && (day[j + 1].from || 0) <= 0) j++;
     const snap0 = ccSnapWin(day[i].from, day[i].to);
     const snap1 = ccSnapWin(day[j].from, day[j].to);
-    out.push({ h0: i, h1: j, from: snap0.f, to: snap1.t, work: day[i].work || CC_DEF_W, brk: day[i].brk || CC_DEF_B });
+    const work = day[i].work || CC_DEF_W;
+    const brk = day[i].brk || CC_DEF_B;
+    // 计算总时长（分钟）
+    const totalMin = (j - i) * 60 - snap0.f + snap1.t;
+    // 类型：有休息=番茄专注，无休息=纯专注
+    const kind = brk > 0 ? '番茄专注' : '纯专注';
+    // 备注
+    const notes = [];
+    if (brk > 0 && work + brk < 60) notes.push('尾段继续专注');
+    if (i === 0 && snap0.f === 0) notes.push('从 0 点开始');
+    if (j === 23 && snap1.t >= 60) notes.push('到 24 点结束');
+    if (j > i) notes.push(`跨 ${j - i + 1} 个小时`);
+    out.push({
+      h0: i, h1: j, from: snap0.f, to: snap1.t, work, brk,
+      totalMin, kind, notes,
+    });
     i = j + 1;
   }
   return out;
@@ -4275,8 +4290,9 @@ function ccOpenMenu(d, h, x, y) {
               <div class="cc-seg-row">
                 <span class="cc-seg-day">${WD[s.d]}</span>
                 <span class="cc-seg-time">${ccHourWinText(s.d, s.h0, s.from, s.to)}</span>
-                <span class="cc-seg-kind">专注 ${s.work} 分${s.brk ? ` / 休息 ${s.brk} 分` : '（不休息）'}</span>
-                <span class="cc-seg-note">${s.work + s.brk < 60 ? '尾段继续专注' : ''}</span>
+                <span class="cc-seg-dur">${s.totalMin} 分钟</span>
+                <span class="cc-seg-kind">${s.kind}${s.brk ? ` ${s.work}/${s.brk}` : ''}</span>
+                <span class="cc-seg-note">${s.notes.join(' · ')}</span>
               </div>`).join('') : '<div class="cc-seg-empty">暂无已选中时段</div>'}
           </div>
 

@@ -1048,14 +1048,19 @@ unsafe fn is_shell_window(h: Hwnd) -> bool {
             | "NotifyIconOverflowWindow"
             | "TopLevelWindowForOverflowXamlIsland"
             | "Windows.UI.Core.CoreWindow"
-            // Windows 11 开始菜单：这些都是 shell/系统外壳，
-            // 一旦被摘掉 TOPMOST 会被 DWM 强行加一圈边框，
+            // Windows 11 开始菜单 / 搜索 / 任务视图 / 输入法切换：
+            // 这些都是 shell/系统外壳，一旦被摘掉 TOPMOST 会被 DWM 强行加一圈边框，
             // 就是用户看到的"开始菜单与任务栏之间多出一条缝隙/闪烁"。
             | "LauncherTipWnd"
             | "MultitaskingViewFrame"
             | "XamlExplorerHostIslandWindow"
             | "Windows.Internal.Shell.TabProxyWindow"
             | "Shell_InputSwitchTopLevelWindow"
+            | "ShellInputSwitchWindow"
+            | "Windows.UI.Composition.DesktopWindowContentBridge"
+            | "Windows.Internal.Shell.StartMenuExperienceHost"
+            | "SearchPane"
+            | "TaskSwitcherWnd"
     )
 }
 
@@ -1318,10 +1323,19 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
         let mut g2 = 0;
         while !a.is_null() && g2 < 64 {
             g2 += 1;
+            // 放行程序（lazytyper 等）的窗口**永久豁免摘顶**——
+            // 这是"弹条闪烁"的根因：摘顶扫描把弹条当"碍事浮窗"摘掉 TOPMOST，
+            // 主循环 ensure_above 又顶回去，形成 8ms 级拉锯。
+            // 弹条本来就是要显示的，摘它毫无道理，直接跳过。
+            // 用 `is_pass_through` 按 pid 判定，不依赖 except 名单的时序。
+            let mut pid_a = 0u32;
+            GetWindowThreadProcessId(a, &mut pid_a);
+            let is_pass = pid_a != 0 && is_pass_through(pid_a);
             if IsWindowVisible(a) != 0
                 && !except.iter().any(|e| *e == a)
                 && !is_shell_window(a)
                 && !is_mask_class(a)
+                && !is_pass
             {
                 let ex = GetWindowLongW(a, GWL_EXSTYLE) as u32;
                 if (ex & WS_EX_TOPMOST_FLAG) != 0 {
