@@ -4152,11 +4152,60 @@ document.addEventListener('mouseup', async (e) => {
   await Act.clockCommitRect(d0, d1, h0, h1, qA, qB, mode);
 });
 
-/* ---- 自律时段：右键设置某片区域的专注 / 休息 ---- */
+/* ---- 自律时段：右键打开「时段设置」模态对话框 ---- */
 let ccMenu = null;
 
 function ccCloseMenu() {
-  if (ccMenu) { ccMenu.remove(); ccMenu = null; }
+  if (window.__ccMenuCtrl) { window.__ccMenuCtrl.abort(); window.__ccMenuCtrl = null; }
+  ccMenu = null;
+  closeModal();
+}
+
+/** 计算某小时当前的窗口文本（含起止分钟） */
+function ccHourWinText(d, h, fromMin, toMin) {
+  const pf = fromMin > 0 ? `:${pad(fromMin)}` : ':00';
+  const endH = (toMin == null ? 60 : toMin) >= 60 ? h + 1 : h;
+  const pt = (toMin == null ? 60 : toMin) >= 60 ? ':00' : `:${pad(toMin)}`;
+  return `${pad(h)}${pf} – ${pad(endH)}${pt}`;
+}
+
+/** 解析连续段（结构化）：把一列里相邻的、连续的小时合并成一段（含起止分钟窗口） */
+function ccDaySegs(day) {
+  const out = [];
+  let i = 0;
+  while (i < 24) {
+    if (!day[i] || !day[i].on) { i++; continue; }
+    let j = i;
+    while (j + 1 < 24 && day[j + 1] && day[j + 1].on
+      && (day[j].to == null ? 60 : day[j].to) >= 60
+      && (day[j + 1].from || 0) <= 0) j++;
+    const snap0 = ccSnapWin(day[i].from, day[i].to);
+    const snap1 = ccSnapWin(day[j].from, day[j].to);
+    out.push({ h0: i, h1: j, from: snap0.f, to: snap1.t, work: day[i].work || CC_DEF_W, brk: day[i].brk || CC_DEF_B });
+    i = j + 1;
+  }
+  return out;
+}
+
+/** 从上到下、垂直列出各时段（替代原来一条横条 4 段的布局） */
+function ccBuildSegRows(t) {
+  const rows = [];
+  for (let d = t.d0; d <= t.d1; d++) {
+    const day = clockProfile().days[d];
+    const ranges = ccDaySegs(day);
+    ranges.forEach((r) => {
+      // 只列出与目标范围有交集的段
+      if (r.h1 < t.h0 || r.h0 > t.h1) return;
+      rows.push({
+        d,
+        ...r,
+        // 与目标范围的交集小时
+        h0e: Math.max(r.h0, t.h0),
+        h1e: Math.min(r.h1, t.h1),
+      });
+    });
+  }
+  return rows;
 }
 
 function ccOpenMenu(d, h, x, y) {
@@ -4203,44 +4252,61 @@ function ccOpenMenu(d, h, x, y) {
   };
   const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
   const preW = prefillWin();
-  const el = document.createElement('div');
-  el.className = 'cc-menu';
-  el.innerHTML = `
-    <div class="cc-menu-hd">时段设置<b class="x" data-act="cc-close" title="关闭">×</b></div>
-    <div class="cc-menu-tgt">作用于 <b id="ccTgt">${esc(ccRectText(t.d0, t.d1, t.h0, t.h1, preW.f, preW.t))}</b>（共 <b id="ccCnt">${(t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1)}</b> 段）</div>
-    <div class="cc-menu-scope">
-      <button class="chip-btn${hasRect ? ' active' : ''}" data-scope="rect"${hasRect ? '' : ' disabled title="先拖动框选一片区域"'}>当前框选</button>
-      <button class="chip-btn${hasRect ? '' : ' active'}" data-scope="cell">这一格</button>
-      <button class="chip-btn" data-scope="col">这一列（一整天）</button>
-    </div>
-    <div class="cc-menu-row">
-      <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${pre.w}"> 分</label>
-      <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${pre.b}"> 分</label>
-    </div>
-    <div class="cc-menu-scope">
-      ${[[25, 5], [45, 15], [50, 10], [60, 0]].map(([w, b]) =>
-    `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
-    </div>
-    <div class="cc-menu-row win">
-      <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${preW.f}"> 到</label>
-      <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${preW.t}"> 分</label>
-    </div>
-    <div class="cc-menu-hint">起止分钟只改目标范围的<b>首 / 尾小时</b>：起始分钟改第一个小时从第几分钟开始，结束分钟改最后一个小时到第几分钟结束（填 0 和 60 = 整点）。比整小时更细的边界就这样设，比如 8:15–11:45。</div>
-    <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
-    <div class="cc-menu-hint">应用后会顺便开启这些时段；休息期间不拦截、不遮罩。排不满 60 分钟的尾段算继续专注。</div>
-    <div class="cc-menu-ft">
-      <button class="btn btn-sm" data-act="cc-close">取消</button>
-      <button class="btn btn-sm btn-primary" id="ccApply">应用</button>
-    </div>`;
-  document.body.appendChild(el);
-  // 定位，注意别溢出窗口
-  const w = el.offsetWidth, ht = el.offsetHeight;
-  el.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
-  el.style.top = Math.max(8, Math.min(y, window.innerHeight - ht - 8)) + 'px';
-  ccMenu = el;
+  const segs = ccBuildSegRows(t);
 
-  const tgt = $('#ccTgt', el);
-  const cnt = $('#ccCnt', el);
+  $('#modalRoot').innerHTML = `
+    <div class="modal-mask" data-act="close-modal-bg">
+      <div class="modal cc-modal">
+        <div class="modal-hd">
+          <h3>时段设置</h3>
+          <button class="close-x" data-act="close-modal">×</button>
+        </div>
+        <div class="modal-bd">
+          <div class="cc-menu-tgt">作用于 <b id="ccTgt">${esc(ccRectText(t.d0, t.d1, t.h0, t.h1, preW.f, preW.t))}</b>（共 <b id="ccCnt">${(t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1)}</b> 段）</div>
+          <div class="cc-menu-scope">
+            <button class="chip-btn${hasRect ? ' active' : ''}" data-scope="rect"${hasRect ? '' : ' disabled title="先拖动框选一片区域"'}>当前框选</button>
+            <button class="chip-btn${hasRect ? '' : ' active'}" data-scope="cell">这一格</button>
+            <button class="chip-btn" data-scope="col">这一列（一整天）</button>
+          </div>
+
+          <div class="cc-seg-list">
+            <div class="cc-seg-hd">当前时段明细（从上到下）</div>
+            ${segs.length ? segs.map((s) => `
+              <div class="cc-seg-row">
+                <span class="cc-seg-day">${WD[s.d]}</span>
+                <span class="cc-seg-time">${ccHourWinText(s.d, s.h0, s.from, s.to)}</span>
+                <span class="cc-seg-kind">专注 ${s.work} 分${s.brk ? ` / 休息 ${s.brk} 分` : '（不休息）'}</span>
+                <span class="cc-seg-note">${s.work + s.brk < 60 ? '尾段继续专注' : ''}</span>
+              </div>`).join('') : '<div class="cc-seg-empty">暂无已选中时段</div>'}
+          </div>
+
+          <div class="cc-menu-row">
+            <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${pre.w}"> 分</label>
+            <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${pre.b}"> 分</label>
+          </div>
+          <div class="cc-menu-scope">
+            ${[[25, 5], [45, 15], [50, 10], [60, 0]].map(([w, b]) =>
+    `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
+          </div>
+          <div class="cc-menu-row win">
+            <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${preW.f}"> 到</label>
+            <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${preW.t}"> 分</label>
+          </div>
+          <div class="cc-menu-hint">起止分钟只改目标范围的<b>首 / 尾小时</b>：起始分钟改第一个小时从第几分钟开始，结束分钟改最后一个小时到第几分钟结束（填 0 和 60 = 整点）。比整小时更细的边界就这样设，比如 8:15–11:45。</div>
+          <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
+          <div class="cc-menu-hint">应用后会顺便开启这些时段；休息期间不拦截、不遮罩。排不满 60 分钟的尾段算继续专注。</div>
+        </div>
+        <div class="modal-ft">
+          <button class="btn" data-act="cc-close">取消</button>
+          <button class="btn btn-primary" id="ccApply">应用</button>
+        </div>
+      </div>
+    </div>`;
+  ccMenu = $('#modalRoot');
+  $('#ccW') && $('#ccW').focus();
+
+  const tgt = $('#ccTgt');
+  const cnt = $('#ccCnt');
   const updTgt = (scope) => {
     if (scope === 'cell') t = { d0: d, d1: d, h0: h, h1: h };
     else if (scope === 'col') t = { d0: d, d1: d, h0: 0, h1: 23 };
@@ -4251,34 +4317,40 @@ function ccOpenMenu(d, h, x, y) {
     cnt.textContent = (t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1);
     // 目标范围变了，输入框也跟着换：单格看这一格的值，多格看通用时长
     const q = prefill(t.d0 === t.d1 && t.h0 === t.h1);
-    $('#ccW', el).value = q.w;
-    $('#ccB', el).value = q.b;
-    $('#ccFrom', el).value = qw.f;
-    $('#ccTo', el).value = qw.t;
+    $('#ccW').value = q.w;
+    $('#ccB').value = q.b;
+    $('#ccFrom').value = qw.f;
+    $('#ccTo').value = qw.t;
   };
 
-  el.addEventListener('click', async (e) => {
+  // 模态内部交互：scope / wb / apply / 关闭 全在这里处理。
+  // 用 AbortController 一次性委托，避免每次 ccOpenMenu 都 addEventListener 累积
+  // （#modalRoot 是常驻 DOM 节点，innerHTML 替换不会清掉挂在它身上的监听器）。
+  // 旧的 controller 在下次 ccOpenMenu / ccCloseMenu 时被 abort 掉。
+  if (window.__ccMenuCtrl) window.__ccMenuCtrl.abort();
+  window.__ccMenuCtrl = new AbortController();
+  $('#modalRoot').addEventListener('click', async (e) => {
     const sc = e.target.closest('[data-scope]');
     if (sc && !sc.disabled) {
-      el.querySelectorAll('[data-scope]').forEach((b) => b.classList.toggle('active', b === sc));
+      $('#modalRoot').querySelectorAll('[data-scope]').forEach((b) => b.classList.toggle('active', b === sc));
       updTgt(sc.dataset.scope);
       return;
     }
     const wb = e.target.closest('[data-wb]');
     if (wb) {
       const [w2, b2] = wb.dataset.wb.split(',').map(Number);
-      $('#ccW', el).value = w2;
-      $('#ccB', el).value = b2;
+      $('#ccW').value = w2;
+      $('#ccB').value = b2;
       return;
     }
     if (e.target.closest('#ccApply')) {
-      let w2 = Math.round(Number($('#ccW', el).value) || 0);
-      let b2 = Math.round(Number($('#ccB', el).value) || 0);
+      let w2 = Math.round(Number($('#ccW').value) || 0);
+      let b2 = Math.round(Number($('#ccB').value) || 0);
       w2 = Math.max(1, Math.min(60, w2));
       b2 = Math.max(0, Math.min(60, b2));
       if (b2 > 0 && w2 + b2 > 60) b2 = 60 - w2;
-      let f2 = Math.round(Number($('#ccFrom', el).value) || 0);
-      let t2 = Math.round(Number($('#ccTo', el).value) || 0);
+      let f2 = Math.round(Number($('#ccFrom').value) || 0);
+      let t2 = Math.round(Number($('#ccTo').value) || 0);
       // 对齐 15 分钟刻度（边界向下/向上取整，零碎时间才对得齐）
       const snap = ccSnapWin(f2, t2);
       f2 = snap.f; t2 = snap.t;
@@ -4287,7 +4359,7 @@ function ccOpenMenu(d, h, x, y) {
         toast('起始分钟要小于结束分钟', 'err');
         return;
       }
-      const ok = await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked, f2, t2);
+      const ok = await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo').checked, f2, t2);
       if (ok === false) {
         // 兜底：直连 Act 的非法起止（菜单里的校验被绕过时）也不改配置、不关菜单
         toast('起始分钟要小于结束分钟', 'err');
@@ -4297,8 +4369,7 @@ function ccOpenMenu(d, h, x, y) {
       return;
     }
     if (e.target.closest('[data-act="cc-close"]')) ccCloseMenu();
-  });
-  $('#ccW', el).focus();
+  }, { signal: window.__ccMenuCtrl.signal });
 }
 
 document.addEventListener('contextmenu', (e) => {
@@ -4308,9 +4379,9 @@ document.addEventListener('contextmenu', (e) => {
   ccOpenMenu(+cell.dataset.d, +cell.dataset.h, e.clientX, e.clientY);
 });
 
-// 点菜单外面 = 关菜单
+// 点模态外面 = 关菜单（模态自带 data-act="close-modal-bg"，这里兜底）
 document.addEventListener('mousedown', (e) => {
-  if (ccMenu && !e.target.closest('.cc-menu')) ccCloseMenu();
+  if (ccMenu && !e.target.closest('.cc-modal') && !e.target.closest('.cc-menu')) ccCloseMenu();
 });
 
 /* 输入框回车 */

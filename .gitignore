@@ -26,3 +26,7 @@ shot*.png
 
 # 扩展签名私钥（泄露会被人冒名重签扩展，按需再强制纳入）
 tools/extension_key.pem
+
+# 本地测试输出
+.harness_out.html
+.edge_ud/

@@ -377,8 +377,8 @@ window.__itest = async () => {
   // 3. 右键菜单：周六 14 点（原本关）→ 预填通用时长，手动设为 45/15
   fire('contextmenu', cell(5, 14), { clientX: 420, clientY: 420 });
   await wait(120);
-  const menu = document.querySelector('.cc-menu');
-  out.push(['右键弹出菜单', !!menu]);
+  const menu = document.querySelector('.cc-modal');
+  out.push(['右键弹出模态菜单', !!menu]);
   if (menu) {
     out.push(['目标默认这一格', $('#ccTgt').textContent, '周六 14:00 – 15:00']);
     out.push(['OFF 格预填通用时长 45/15', $('#ccW').value === '45' && $('#ccB').value === '15']);
@@ -388,7 +388,7 @@ window.__itest = async () => {
     await wait(250);
   }
   out.push(['右键设置生效', (() => { const p = pd()[5][14]; return p.on && p.work === 45 && p.brk === 15; })()]);
-  out.push(['应用后菜单关闭', !document.querySelector('.cc-menu')]);
+  out.push(['应用后菜单关闭', !document.querySelector('.cc-modal')]);
 
   // 4. 右键 + "这一列"：周日 20 点 → 60/0 套用到周日全天
   fire('contextmenu', cell(6, 20), { clientX: 420, clientY: 420 });
@@ -417,10 +417,10 @@ window.__itest = async () => {
   // 6. Escape 关菜单
   fire('contextmenu', cell(1, 6), { clientX: 420, clientY: 420 });
   await wait(120);
-  out.push(['Escape 前菜单在', !!document.querySelector('.cc-menu')]);
+  out.push(['Escape 前菜单在', !!document.querySelector('.cc-modal')]);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
-  out.push(['Escape 后菜单关', !document.querySelector('.cc-menu')]);
+  out.push(['Escape 后菜单关', !document.querySelector('.cc-modal')]);
 
   // 7. 清空全部
   document.querySelector('[data-act="clock-clear"]').click();
@@ -470,7 +470,25 @@ window.__itest = async () => {
   $('#ccApply').click();
   await wait(150);
   out.push(['起>=止被拦住', (() => { const p = pd()[1][10]; return p.from === 15 && p.to === 45; })()]);
-  out.push(['拦住后菜单不关', !!document.querySelector('.cc-menu')]);
+  out.push(['拦住后菜单不关', !!document.querySelector('.cc-modal')]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+
+  // 9a-2. 新模态：垂直列出各时段明细（从上到下），替代原来一条横条 4 段
+  await Act.clockClear();
+  await wait(150);
+  await Act.clockSetWB(0, 1, 8, 12, 50, 10, false, 0, 60); // 周一周二 8–13
+  await wait(150);
+  fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
+  await wait(150);
+  const segList = document.querySelector('.cc-seg-list');
+  out.push(['模态含垂直时段列表', !!segList]);
+  if (segList) {
+    const rows = segList.querySelectorAll('.cc-seg-row');
+    out.push(['时段列表有内容', rows.length >= 1]);
+    out.push(['时段列表首行显示起止', rows[0] ? rows[0].querySelector('.cc-seg-time').textContent.indexOf('08:00') >= 0 : false]);
+    out.push(['时段列表首行显示时长', rows[0] ? rows[0].querySelector('.cc-seg-kind').textContent.indexOf('专注 50') >= 0 : false]);
+  }
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
   // 多格应用：起止分钟只落首/尾小时，中间归一成整小时（边界吸附到 15 分钟刻度）
@@ -783,7 +801,7 @@ window.__itest = async () => {
     const [d, h] = om.split(',').map(Number);
     const c = document.querySelector(`.cc-cell[data-d="${d}"][data-h="${h}"]`);
     if (c) c.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 500, clientY: 500 }));
-    const m = document.querySelector('.cc-menu');
+    const m = document.querySelector('.cc-modal');
     if (m) {
       const r = m.getBoundingClientRect();
       const btn = document.querySelector('#ccApply');

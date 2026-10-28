@@ -155,11 +155,22 @@ unsafe extern "system" fn win_event_proc(
         if IsWindowVisible(hwnd) == 0 {
             return;
         }
+        // 系统外壳（任务栏 / 开始菜单 / 托盘浮出层）绝对不动：
+        // 一旦被摘/顶摘顶，DWM 会强制给它加边框，用户看到的就是
+        // "开始菜单与任务栏之间多一条缝/闪一下"。SHOW 事件里同样要跳过。
+        if is_shell_window(hwnd) {
+            return;
+        }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
         if pid == 0 || !is_pass_through(pid) {
             return;
         }
+        // 先标记"我们自己动的窗口"，再提。
+        // 不标记的话，这次 SetWindowPos 会反过来触发 REORDER/SHOW 事件，
+        // 主循环被自激唤醒 → 又跑一遍摘顶扫描，很容易和 lazytyper 的
+        // EVENT_OBJECT_SHOW 提升来回拉锯，弹条就在任务栏缝隙边上闪。
+        mark_self_action();
         SetWindowPos(
             hwnd,
             HWND_TOPMOST,
@@ -178,17 +189,20 @@ unsafe extern "system" fn win_event_proc(
     if now_ms().saturating_sub(SELF_ACTION_AT.load(Ordering::Relaxed)) < SELF_SETTLE_MS {
         return;
     }
-    EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-    DISTURBED_AT.store(now_ms(), Ordering::Relaxed);
     // 前台切换 / 最小化这类必须秒回：立刻叫醒主循环重算"让开哪个窗口"。
     // 少了这一下，主循环要等下一轮 wait_event 超时才醒，那段时间洞口还停在
     // 旧的前台窗口上 → 新的前台窗口先被遮住一下、随后才被让开——就是用户
     // 看到的"切换窗口时被遮罩盖一下又消失"的闪烁。注释里承诺的"事件即时唤醒"
     // 正是靠这里兑现的。
+    //
+    // 注意：只有这三类才 `wake()` + 记 DISTURBED_AT（短周期纠错）。
+    // 其他事件（比如 lazytyper 弹条自己的 SHOW/REORDER）不走 wake()，
+    // 否则主循环会被叫醒跑一遍摘顶扫描，又把弹条摘下来 → 拉锯闪烁。
     if event == EVENT_SYSTEM_FOREGROUND
         || event == EVENT_SYSTEM_MINIMIZESTART
         || event == EVENT_SYSTEM_MINIMIZEEND
     {
+        DISTURBED_AT.store(now_ms(), Ordering::Relaxed);
         wake();
     }
 }
@@ -1034,6 +1048,14 @@ unsafe fn is_shell_window(h: Hwnd) -> bool {
             | "NotifyIconOverflowWindow"
             | "TopLevelWindowForOverflowXamlIsland"
             | "Windows.UI.Core.CoreWindow"
+            // Windows 11 开始菜单：这些都是 shell/系统外壳，
+            // 一旦被摘掉 TOPMOST 会被 DWM 强行加一圈边框，
+            // 就是用户看到的"开始菜单与任务栏之间多出一条缝隙/闪烁"。
+            | "LauncherTipWnd"
+            | "MultitaskingViewFrame"
+            | "XamlExplorerHostIslandWindow"
+            | "Windows.Internal.Shell.TabProxyWindow"
+            | "Shell_InputSwitchTopLevelWindow"
     )
 }
 
@@ -1723,11 +1745,18 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if tgt == 0 {
                     popups.clear();
                 }
-                // 放行程序的窗口（lazytyper 的语音识别弹条等）。
-                // 它们是"输入通道"，遮罩让路、始终可见，不做任何压制。
+                // ---- 放行程序的窗口（lazytyper 的语音识别弹条等）----
+                // 500ms 定时 + SCAN_NOW（刚弹出来的那一刻）双触发。
+                // 拿到名单后，无论有没有变化都**立刻**把它们顶上去：
+                // 这是"弹条贴着任务栏缝隙被压下去又浮上来"的最后一道保险——
+                // 就算摘顶扫描 / show 钩子之间有几十毫秒的窗口，这里每 500ms
+                // 也会再兜一次，弹条不会再出现持续闪烁。
                 if pass_t.elapsed().as_millis() >= 500 || scan_now {
                     pass_t = Instant::now();
                     pass_wins = collect_pass_through();
+                    for h in pass_wins.iter() {
+                        ensure_above(*h, &mut raised);
+                    }
                 }
                 if tgt != 0 {
                     self_wins.push(tgt as Hwnd);
@@ -1758,6 +1787,11 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         ensure_above(*h, &mut raised);
                     }
                 }
+                // 放行程序的窗口：ensure_above 内部会跳过 z 序没被遮罩压住的窗口，
+                // 所以即使每轮都调一遍也不会造成多余 SetWindowPos。
+                // 刚才在重收 pass_wins 时已经立刻顶过一次，这里再兜一遍：
+                // 万一摘顶扫描在两轮之间把弹条摘下来了，最多 50ms 就会被捞回来，
+                // 而不是等下一次 500ms 定时扫描。
                 for h in pass_wins.iter() {
                     if *h != tgt as Hwnd {
                         ensure_above(*h, &mut raised);
@@ -1800,6 +1834,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 let anchor = last_tgt as Hwnd;
                 for o in overlays.iter_mut() {
                     o.anchor_under(anchor, &self_wins);
+                }
+                // 兜底再顶一次放行程序窗口：摘顶扫描和 anchor_under 有时序间隙，
+                // 弹条刚好在那几十毫秒里被摘下来的话，会在下次 pass_wins 重收前
+                // 持续闪烁。这里每 50ms 顺手 ensure_above 一次，代价极小。
+                for h in pass_wins.iter() {
+                    ensure_above(*h, &mut raised);
                 }
             }
 
