@@ -468,25 +468,62 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .ev .t { color: var(--text-3); font-size: 11px; width: 52px; flex: 0 0 52px; font-variant-numeric: tabular-nums; }
 .ev .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ══════════ 规则 ══════════ */
-.rule-card {
+/* ══════════ 规则：多列 / 多组 自律时段条目 ══════════ */
+.sl-group { margin-bottom: 22px; }
+.sl-group-hd {
+  display: flex; align-items: baseline; gap: 10px;
+  margin-bottom: 11px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.sl-group-title { font-size: 13px; font-weight: 650; letter-spacing: .3px; }
+.sl-group-hd .muted { font-size: 11.5px; }
+
+.sl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+.sl-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
   background: linear-gradient(180deg, var(--panel-a) 0%, var(--panel-b) 100%);
   border: 1px solid var(--line); border-radius: var(--r-lg);
-  padding: 17px 20px; display: flex; align-items: center; gap: 17px;
-  transition: border-color .16s, transform .16s, box-shadow .16s;
   cursor: pointer;
+  transition: border-color .16s, transform .16s, box-shadow .16s;
   box-shadow: var(--sh-1);
 }
-.rule-card:hover {
+.sl-item:hover {
   border-color: var(--line-2);
   transform: translateY(-1px);
   box-shadow: var(--sh-2);
 }
-.rule-card.active { border-color: var(--on-line); }
-.rule-bar { width: 4px; align-self: stretch; border-radius: var(--r-pill); background: var(--line-2); }
-.rule-name { font-size: 13.5px; font-weight: 650; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-.rule-meta { font-size: 11.5px; color: var(--text-3); margin-top: 6px; line-height: 1.7; }
-.rule-actions { display: flex; align-items: center; gap: 10px; }
+.sl-item.active { border-color: var(--on-line); }
+.sl-item-bar {
+  width: 4px; align-self: stretch; min-height: 52px;
+  border-radius: var(--r-pill);
+}
+.sl-item-main { flex: 1; min-width: 0; }
+.sl-item-name {
+  font-size: 13px; font-weight: 650;
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+.sl-item-range {
+  font-size: 12px; color: var(--text-2); margin-top: 5px;
+  line-height: 1.5; word-break: break-all;
+}
+.sl-item-meta { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+
+/* 条目里的迷你时间分布（7 列 = 周一~周日） */
+.sl-mini {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  gap: 3px; width: 92px; height: 52px; flex: none;
+  padding: 3px 4px;
+  background: var(--inset-bg); border-radius: var(--r-sm);
+}
+.sl-mini-col { position: relative; border-radius: 2px; background: var(--cell-bg); }
+.sl-mini-col i { position: absolute; left: 0; right: 0; border-radius: 2px; display: block; }
+
+.sl-item-act { display: flex; align-items: center; gap: 9px; flex: none; }
 
 /* ══════════ 编辑器 ══════════ */
 .tabs {
@@ -539,25 +576,98 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   border-radius: 5px; font-size: 11px; color: var(--gold);
 }
 
-/* ══════════ 时段表 ══════════ */
-.sched { display: flex; flex-direction: column; gap: 4px; user-select: none; }
-.sched-head { display: flex; gap: 4px; margin-left: 46px; font-size: 9.5px; color: var(--text-3); }
-.sched-head span { flex: 1; text-align: left; }
-.sched-row { display: flex; align-items: center; gap: 4px; }
-.sched-day { width: 42px; flex: 0 0 42px; font-size: 11.5px; color: var(--text-2); }
-.cells { flex: 1; display: flex; gap: 2px; }
-.cell {
-  flex: 1; height: 22px; border-radius: 5px;
+/* ══════════ 时段图表（滴答清单式：横轴周一~周日，纵轴 00:00~24:00） ══════════ */
+.tk-modal { width: 940px; }
+.tk-chart {
+  display: flex; gap: 10px;
+  padding: 14px 12px 10px;
+  background: var(--inset-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  user-select: none;
+}
+.tk-axis {
+  position: relative; width: 44px; flex: 0 0 44px; height: 420px;
+}
+.tk-axis span {
+  position: absolute; right: 6px; transform: translateY(-50%);
+  font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+.tk-cols {
+  flex: 1; display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+.tk-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tk-track {
+  position: relative; height: 420px;
   background: var(--cell-bg);
-  cursor: pointer; transition: background .1s;
+  border-radius: var(--r-sm);
+  cursor: crosshair;
+  overflow: hidden;
 }
-.cell:hover { background: var(--hover-bg); box-shadow: inset 0 0 0 1px var(--line-2); }
-.cell.on {
-  background: linear-gradient(180deg, #7fb0ff, #2f6df0);
-  box-shadow: 0 0 10px -2px rgba(60, 120, 240, .5);
+.tk-track::after {   /* 整点横线 */
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom, var(--line) 0 1px, transparent 1px calc(100% / 24));
+  opacity: .5;
 }
-.cell.on:hover { background: #94bcff; }
-.sched-tools { display: flex; gap: 9px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+.tk-seg {
+  position: absolute; left: 0; right: 0;
+  border-radius: 3px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  box-shadow: 0 1px 4px -1px rgba(0, 0, 0, .35);
+}
+.tk-seg em {
+  font-style: normal; font-size: 9.5px; color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+  white-space: nowrap; padding: 0 2px;
+}
+.tk-seg.break em { color: #063; text-shadow: none; }
+.tk-col-day { text-align: center; font-size: 11.5px; color: var(--text-2); }
+
+.tk-tools {
+  display: flex; gap: 9px; margin-top: 14px; flex-wrap: wrap; align-items: center;
+}
+.tk-legend {
+  display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
+  margin-top: 12px; font-size: 11.5px; color: var(--text-3);
+}
+.tk-legend i {
+  display: inline-block; width: 14px; height: 9px; border-radius: 2px;
+  vertical-align: middle; margin-right: 5px;
+}
+.tk-legend .lg-focus { background: #4d8dff; }
+.tk-legend .lg-break {
+  background: repeating-linear-gradient(135deg, rgba(53,208,127,.85) 0 4px, rgba(53,208,127,.5) 4px 8px);
+}
+
+.tk-slots { margin-top: 16px; }
+.tk-slots-hd { font-size: 12px; font-weight: 650; margin-bottom: 8px; }
+.tk-slot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-bottom: 5px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--panel-a);
+}
+.tk-slot-day { width: 44px; flex: 0 0 44px; font-size: 11.5px; color: var(--text-2); }
+.tk-slot select { flex: 1; min-width: 0; padding: 4px 6px; font-size: 12px; }
+.tk-time {
+  width: 68px; flex: 0 0 68px; padding: 4px 6px;
+  font-size: 12px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tk-info {
+  display: flex; gap: 22px; flex-wrap: wrap;
+  margin-top: 16px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--panel-a);
+  font-size: 12px; color: var(--text-2);
+}
+.tk-info b { font-size: 14px; color: var(--text); margin-right: 3px; }
+.sl-sum { font-size: 12px; color: var(--text-2); max-width: 320px; text-align: right; }
 
 /* ══════════ 自律时段（24 段时间轴） ══════════ */
 .clock-state {

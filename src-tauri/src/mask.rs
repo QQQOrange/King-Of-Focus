@@ -118,6 +118,21 @@ fn now_ms() -> u64 {
 /// 所以这里给状态变更单开一条唤醒通道：谁改了状态就 SetEvent 一下。
 static WAKE: AtomicIsize = AtomicIsize::new(0);
 
+/// 遮罩线程停止标志：强制退出时置位，遮罩线程下一轮就收尾退出。
+///
+/// 收尾要做三件事，缺一不可：
+///   · 销毁覆盖层窗口（不然会留一个黑色矩形在桌面上）
+///   · 注销热键（0xA1）
+///   · `timeEndPeriod(1)` 还回去（不然系统定时器精度一直被抬高）
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// 请求遮罩线程收尾退出（强制退出流程调用）
+pub fn request_stop() {
+    STOP.store(true, Ordering::Relaxed);
+    wake();
+}
+
+
 /// 通知遮罩线程"状态变了，立刻重算一帧"。任何改 MaskCtl 的地方都该调一下。
 pub fn wake() {
     let h = WAKE.load(Ordering::Relaxed);
@@ -538,6 +553,7 @@ extern "system" {
 #[link(name = "winmm")]
 extern "system" {
     fn timeBeginPeriod(period: u32) -> u32;
+    fn timeEndPeriod(period: u32) -> u32;
 }
 
 #[link(name = "dwmapi")]
@@ -1460,6 +1476,24 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut last_tgt: isize = 0;
 
         loop {
+            // ---- 强制退出收尾 ----
+            // 走到这里说明进程准备退出了：把该还的东西还回去，别在桌面上
+            // 留一个黑色覆盖层，也别占着系统定时器精度。
+            if STOP.load(Ordering::Relaxed) {
+                for o in overlays.iter_mut() {
+                    o.destroy();
+                }
+                overlays.clear();
+                publish_overlays(&overlays);
+                // 被我们临时提到置顶带上的窗口要还回去，
+                // 否则用户自己的播放器会永久挂在最上层。
+                release_raised(&mut raised, &[]);
+                restore_demoted();
+                UnregisterHotKey(std::ptr::null_mut(), 0xA1);
+                timeEndPeriod(1);
+                mlog("遮罩线程收到停止指令，已收尾退出");
+                return;
+            }
             // ---- 先等，再干活 ----
             // 事件驱动：前台切换 / 最小化 / 新窗口显示都会把我们从等待里叫醒，
             // 没事件时线程真正阻塞（CPU≈0），不再靠固定频率轮询去"发现"变化。

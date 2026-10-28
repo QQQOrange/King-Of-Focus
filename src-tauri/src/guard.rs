@@ -363,6 +363,12 @@ pub fn guard_main() {
     let mut restarts = 0u32;
     loop {
         thread::sleep(Duration::from_secs(2));
+        // 主进程主动退出（强制退出）→ 不复活
+        if quit_requested() {
+            let _ = std::fs::remove_file(pid_path());
+            let _ = std::fs::remove_file(hb_path());
+            return;
+        }
         let info = lock_info(&cfg::load());
         if !info.locked {
             break; // 时段结束 / 积分解锁 → 守护自己退出
@@ -392,17 +398,64 @@ pub fn guard_main() {
 /// 主进程是管理员时，守护也是管理员，普通拉起出来的新主进程同样是管理员。
 fn respawn_main() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe).spawn();
+        // 带 --respawn 标记：新实例据此知道"我是被守护拉起来的，不是用户启动的"，
+        // 于是不会清掉"别复活"哨兵（否则守护下一轮又能把它复活）。
+        let _ = Command::new(exe).arg("--respawn").spawn();
     }
 }
 
 /// 停止守护（解锁后调用）
+/// 强制退出哨兵：主进程准备退出时写下这个文件。
+///
+/// 为什么需要它：主进程杀掉守护进程和守护进程决定"要复活主进程"之间
+/// 存在一个时间差。守护每 2 秒查一次心跳，心跳文件一旦消失（主进程刚死）
+/// 它就可能正好在这一刻决定复活——用户看到的就是"强制退出之后程序又回来了"。
+/// 哨兵文件让守护在复活前先看一眼：这个退出是**故意的**，别复活。
+fn quit_sentinel_path() -> PathBuf {
+    cfg::data_dir().join("guard.quit")
+}
+
+/// 写哨兵：告诉守护"主进程是主动退出的，不要复活"
+pub fn mark_quitting() {
+    let _ = std::fs::write(quit_sentinel_path(), "1");
+    set_quitting();
+}
+
+/// 清除哨兵（正常启动时调用，避免上一次强制退出的残留影响本次运行）
+pub fn clear_quit_sentinel() {
+    let _ = std::fs::remove_file(quit_sentinel_path());
+}
+
+/// 守护是否被告知"不要复活"
+fn quit_requested() -> bool {
+    quit_sentinel_path().exists()
+}
+
 pub fn stop_guard() {
     let _ = std::fs::remove_file(hb_path());
     if let Some(p) = existing_guard() {
         proc::terminate(p);
     }
     let _ = std::fs::remove_file(pid_path());
+}
+
+/// 强制退出进行中：置位后不再写心跳、不再拉起守护。
+///
+/// 没有这个标志会有一个很典型的"按了强制退出，程序又回来了"：
+/// 强制退出会杀掉守护进程，但监控线程下一轮（poll 周期 300–5000ms）
+/// 发现"还在锁定中"→ 又 `ensure_guard()` 把守护拉起来 →
+/// 守护发现主进程心跳断了 → 又把主进程复活。
+/// 置位后监控线程不再喂心跳，守护自然会因为"时段结束/解锁"而退出。
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 标记：程序正在强制退出
+pub fn set_quitting() {
+    QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 是否正在强制退出
+pub fn quitting() -> bool {
+    QUITTING.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(test)]

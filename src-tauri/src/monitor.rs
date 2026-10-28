@@ -55,10 +55,16 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             // ---- 固化（硬锁）状态 ----
             let lock = guard::lock_info(&cfg);
             if lock.locked {
-                guard::write_heartbeat();
-                if !guard_running {
-                    guard::ensure_guard();
-                    guard_running = true;
+                // 强制退出进行中：不再喂心跳，也不再拉守护。
+                // 否则"杀掉守护 → 监控下一轮又 ensure_guard 拉起来 →
+                // 守护发现心跳断了 → 把主进程复活"，用户看到的现象是
+                // "按了强制退出，程序又回来了"。
+                if !guard::quitting() {
+                    guard::write_heartbeat();
+                    if !guard_running {
+                        guard::ensure_guard();
+                        guard_running = true;
+                    }
                 }
             } else if guard_running {
                 guard::stop_guard();

@@ -162,6 +162,7 @@ window.__TAURI__ = {
     }
     if (cmd === 'browser_open_folder') return '已打开扩展目录';
     if (cmd === 'update_quota') return { ok: false };
+    if (cmd === 'force_quit') { window.__forceQuit = (window.__forceQuit || 0) + 1; return null; }
     if (cmd === 'report_list') return [];
     if (cmd === 'backup_list') return [];
     if (cmd === 'update_check') return { ok: true, newer: false, current: '0.0.2', latest: '0.0.2' };
@@ -786,6 +787,98 @@ window.__itest = async () => {
     out.push(['快捷键卡片无浅蓝介绍框', hkCard.querySelectorAll('.note').length, 0]);
     out.push(['快捷键输入框保留', !!hkCard.querySelector('#hkInput')]);
   }
+
+  // 20. 规则页：多列/多组「自律时段」条目 + 点击弹独立图表弹窗
+  await Act.nav('rules');
+  await wait(300);
+  out.push(['规则页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
+  out.push(['条目用的是多列网格 .sl-grid', document.querySelectorAll('.sl-grid').length >= 1]);
+  out.push(['不再用旧的整块 .rule-card', document.querySelectorAll('.rule-card').length, 0]);
+  const item = document.querySelector('.sl-item');
+  out.push(['存在自律时段条目', !!item]);
+  if (item) {
+    out.push(['条目含时段名称', !!(item.querySelector('.sl-item-name') || {}).textContent]);
+    out.push(['条目含时间范围', !!(item.querySelector('.sl-item-range') || {}).textContent]);
+    out.push(['条目含迷你时间分布图', item.querySelectorAll('.sl-mini-col').length, 7]);
+  }
+  // 点击条目 → 打开独立弹窗（图表式）
+  if (item) {
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(250);
+  }
+  const modal = document.querySelector('#modalRoot .tk-modal');
+  out.push(['点击条目后打开独立弹窗', !!modal]);
+  out.push(['弹窗里是图表 .tk-chart', document.querySelectorAll('#modalRoot .tk-chart').length, 1]);
+  out.push(['图表横轴 7 天（周一~周日）', document.querySelectorAll('#modalRoot .tk-col').length, 7]);
+  const dayLbl = [...document.querySelectorAll('#modalRoot .tk-col-day')].map((e) => e.textContent.trim());
+  out.push(['横轴标签为周一~周日', dayLbl.join(','), '周一,周二,周三,周四,周五,周六,周日']);
+  out.push(['纵轴有 00:00~24:00 刻度', document.querySelectorAll('#modalRoot .tk-axis span').length, 9]);
+  out.push(['弹窗可编辑（拖动轨道）', document.querySelectorAll('#modalRoot .tk-track').length, 7]);
+  out.push(['弹窗有保存/取消', document.querySelectorAll('#modalRoot [data-act="save-slot"]').length
+    + document.querySelectorAll('#modalRoot [data-act="close-editor"]').length >= 2]);
+  out.push(['弹窗含时段明细列表', !!document.querySelector('#modalRoot .tk-slots')]);
+  // 拖动第 0 列 → 生成一个时段
+  const track0 = document.querySelector('#modalRoot .tk-track[data-day="0"]');
+  if (track0) {
+    const rc = track0.getBoundingClientRect();
+    const y = (m) => rc.top + (m / 1440) * rc.height;
+    const fire = (type, el, opts = {}) =>
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
+    fire('mousedown', track0, { clientY: y(540) });
+    fire('mousemove', track0, { clientY: y(720) });
+    fire('mouseup', track0, { clientY: y(720) });
+    await wait(250);
+  }
+  const segs0 = document.querySelectorAll('#modalRoot .tk-track[data-day="0"] .tk-seg');
+  out.push(['拖动后周一出现色块', segs0.length >= 1]);
+  const detail = [...document.querySelectorAll('#modalRoot .tk-slot')].map((e) => {
+    const ins = [...e.querySelectorAll('input.tk-time')].map((i) => i.value);
+    return ins.join('-');
+  });
+  out.push(['时段明细同步出现 09:00', detail.join('|').includes('09:00'), true]);
+  out.push(['色块落在 09:00-12:00 区间', (() => {
+    if (!segs0.length || !track0) return false;
+    const tr = track0.getBoundingClientRect();
+    // 该列可能本来就有别的时段，找**顶部落在 09:00 那个**色块，别只取第一个
+    return Array.from(segs0).some((sg) => {
+      const s = sg.getBoundingClientRect();
+      const topPct = (s.top - tr.top) / tr.height;
+      return Math.abs(topPct - 0.375) < 0.02;
+    });
+  })()]);
+  // 关闭弹窗
+  const cx = document.querySelector('#modalRoot .close-x');
+  if (cx) cx.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+  await wait(150);
+  out.push(['关闭后弹窗清空', document.querySelector('#modalRoot').innerHTML.trim() === '']);
+
+  // 21. 强制退出：设置页要有入口 + 快捷键说明，点了要真的调后端 force_quit
+  S.view = 'settings';
+  render();
+  await wait(120);
+  const fqBtn = document.querySelector('[data-act="force-quit"]');
+  out.push(['设置页有「立即强制退出」按钮', !!fqBtn]);
+  const fqCard = fqBtn ? fqBtn.closest('.row') : null;
+  out.push(['说明了 Ctrl+Alt+F4 快捷键', fqCard ? fqCard.textContent.includes('Ctrl + Alt + F4') : false]);
+  out.push(['说明了 Alt+F4 快捷键', fqCard ? fqCard.textContent.includes('Alt + F4') : false]);
+  // 假后端记录 force_quit 调用（confirm 被 stub 掉，直接走）
+  window.__forceQuit = 0;
+  const realConfirm = window.confirm;
+  window.confirm = () => true;
+  if (fqBtn) fqBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+  await wait(150);
+  window.confirm = realConfirm;
+  out.push(['点击后调用后端 force_quit', window.__forceQuit, 1]);
+
+  // 22. Alt+F4 前端兜底：在设置页按下 Alt+F4 也要触发 force_quit
+  //     （自律时段内、弹窗打开时，用户唯一能按的就是这个键）
+  window.__forceQuit = 0;
+  const ev = new KeyboardEvent('keydown', { key: 'F4', code: 'F4', altKey: true, bubbles: true, cancelable: true });
+  const target = document.querySelector('#ruleName') || document.body;
+  target.dispatchEvent(ev);
+  await wait(150);
+  out.push(['Alt+F4 触发后端 force_quit', window.__forceQuit, 1]);
+  out.push(['Alt+F4 被 preventDefault（不让 WebView 重复处理）', ev.defaultPrevented, true]);
 
   const pre = document.createElement('pre');
   pre.id = 'itest';

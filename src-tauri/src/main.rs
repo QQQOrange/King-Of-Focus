@@ -6,6 +6,7 @@ mod cfg;
 mod clock;
 mod cmds;
 mod discipline;
+mod forcequit;
 mod guard;
 mod mask;
 mod matcher;
@@ -126,6 +127,12 @@ fn main() {
     }
     // 提权副本标记：由 spawn_elevated("--elevated") 传入
     let elevated = args.iter().any(|a| a == "--elevated");
+    // 被守护拉起来的复活实例：不清"别复活"哨兵，
+    // 否则守护下一轮又能把它复活，"强制退出"就白按了。
+    let respawned = args.iter().any(|a| a == "--respawn");
+    if !respawned {
+        crate::guard::clear_quit_sentinel();
+    }
 
     // 提权副本：先等原进程真正退出（它退出会释放单实例互斥体），
     // 再去抢锁 —— 否则会一直拿到 ERROR_ALREADY_EXISTS。
@@ -299,6 +306,22 @@ fn main() {
                 let app_h = win.app_handle().clone();
                 win.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        // ---- Alt+F4 识别（关键）----
+                        // Alt+F4 和点右上角 X 在 Win32 层面是**同一条路**
+                        // （Alt+F4 → WM_SYSCOMMAND(SC_CLOSE) → WM_CLOSE → CloseRequested），
+                        // Tauri 报出来的事件完全一样，字段里没有任何东西能区分。
+                        // 唯一的区别是：按 Alt+F4 的那一刻用户的手还按在 Alt 上，
+                        // 点 X 时 Alt 一定是松开的。
+                        //
+                        // 所以这里必须单独判：Alt+F4 = 用户的"强制退出"意图，
+                        // 哪怕此刻正在自律时段里、哪怕设了"关闭窗口时收进托盘"，
+                        // 也要真的把程序停下来 —— 这正是"强制退出"的意义。
+                        // 反过来，点 X 仍然走原来的规则（收进托盘 / 时段内拦截）。
+                        if crate::forcequit::is_alt_f4_close() {
+                            api.prevent_close();
+                            crate::forcequit::force_quit(&app_h, &sh);
+                            return;
+                        }
                         if sh.mask.on.load(Ordering::Relaxed) {
                             sh.mask.on.store(false, Ordering::Relaxed);
                             let _ = w2.set_always_on_top(false);
@@ -322,6 +345,9 @@ fn main() {
 
             monitor::start(app.handle().clone(), shared.clone());
             server::start(app.handle().clone(), shared.clone());
+
+            // 强制退出监听：Ctrl+Alt+F4（任意前台）/ Alt+F4（本程序在前台）
+            crate::forcequit::start(app.handle().clone(), shared.clone());
 
             // 记住主窗口句柄：遮罩允许把洞挖在本程序身上（盖住 King of Focus 自己）
             if let Some(w) = app.get_webview_window("main") {
@@ -362,6 +388,7 @@ fn main() {
             cmds::browser_set_path,
             cmds::browser_check_path,
             cmds::quit_app,
+            cmds::force_quit,
             cmds::hide_window,
             cmds::show_main,
             cmds::points_unlock,

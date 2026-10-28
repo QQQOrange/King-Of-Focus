@@ -10,6 +10,7 @@ const S = {
   editing: null,
   editingNew: false,
   editorTab: 'apps',
+  modalMode: 'editor',   // 'editor' | 'slot'
   statsTab: 'on',
   range: 'today',
   customStart: '',
@@ -21,6 +22,8 @@ const S = {
   pickerFor: null,
   dragging: false,
   paint: null,
+  tkDrag: null,
+  tkBase: null,
   ccDrag: null,
   ccRect: null,
   ccHover: null,
@@ -334,14 +337,73 @@ function viewOverview() {
 }
 
 /* ---------------- 视图：规则 ---------------- */
-function schedSummary(sched) {
-  if (!sched || sched.every((d) => !d.length)) return '全天生效';
+/** 把一段 [a,b) 按番茄配置切成「专注 / 休息」交替的连续小段。
+ *  口径与后端 sched::pomodoro_state 一致：周期从时段起点开始算。 */
+function slSplit(r, a, b) {
+  const brk = (r && r.brk) || {};
+  const work = +brk.workMin || 0, rest = +brk.breakMin || 0;
+  const pomo = brk.kind === 'pomodoro' && work > 0 && rest > 0;
+  if (!pomo) return [{ a, b, type: 'focus' }];
+  const cycle = work + rest;
   const out = [];
-  sched.forEach((slots, i) => {
-    if (!slots.length) return;
-    out.push(DAYS[i] + slots.map((s) => `${mins(s.start)}-${mins(s.end)}`).join(','));
-  });
-  return out.join('  ');
+  let cur = a;
+  while (cur < b) {
+    const phase = (cur - a) % cycle;
+    const isBreak = phase >= work;
+    let nxt;
+    if (isBreak) nxt = cur + (cycle - phase);
+    else nxt = cur + (work - phase);
+    if (nxt > b) nxt = b;
+    out.push({ a: cur, b: nxt, type: isBreak ? 'break' : 'focus' });
+    cur = nxt;
+  }
+  return out;
+}
+/** 某一天的色块序列（跨夜时段算到次日 00:00 之前） */
+function slDaySegs(r, day) {
+  const slots = ((r && r.schedule) || [])[day] || [];
+  const out = [];
+  for (const s of slots) {
+    const end = s.end <= s.start ? 1440 : s.end;
+    for (const seg of slSplit(r, s.start, end)) out.push(seg);
+  }
+  out.sort((x, y) => x.a - y.a);
+  return out;
+}
+
+/* 把一周的时段压成「每天 / 工作日 / 周一」这类人话摘要 */
+function schedCompact(sched) {
+  if (!sched || sched.every((d) => !d || !d.length)) return '全天生效';
+  const groups = [];
+  for (let i = 0; i < 7; i++) {
+    const slots = (sched[i] || []).map((s) => `${mins(s.start)}-${mins(s.end)}`).join(',');
+    if (!slots) continue;
+    let g = groups.find((x) => x.slots === slots);
+    if (!g) { g = { slots, days: [] }; groups.push(g); }
+    g.days.push(i);
+  }
+  return groups.map((g) => {
+    let dn;
+    if (g.days.length === 7) dn = '每天';
+    else if (g.days.join() === '0,1,2,3,4') dn = '工作日';
+    else if (g.days.join() === '5,6') dn = '周末';
+    else dn = g.days.map((i) => DAYS[i]).join('/');
+    return `${dn} ${g.slots}`;
+  }).join('　');
+}
+
+/* 单条自律时段的迷你时间分布图（7 列 = 周一~周日，色块按专注/休息区分） */
+function slMini(r) {
+  const cols = DAYS.map((d, di) => {
+    const bs = slDaySegs(r, di).map((s) => {
+      const top = (s.a / 1440) * 100;
+      const h = Math.max(3, ((s.b - s.a) / 1440) * 100);
+      const bg = s.type === 'break' ? 'var(--green)' : (r.color || '#4d8dff');
+      return `<i style="top:${top.toFixed(2)}%;height:${h.toFixed(2)}%;background:${esc(bg)}"></i>`;
+    }).join('');
+    return `<div class="sl-mini-col" title="${DAYS[di]}">${bs}</div>`;
+  }).join('');
+  return `<div class="sl-mini">${cols}</div>`;
 }
 
 function viewRules() {
@@ -351,33 +413,45 @@ function viewRules() {
   const activeNames = new Set((d.runtime.active || []).map((a) => a.name));
   const hardLocked = !!d.runtime.locked;
   const locked = settingsFrozen();      // 固化中 或 自律时段生效中
-  const cards = lists.length
-    ? lists.map((l) => `
-      <div class="rule-card ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
-        <div class="rule-bar" style="background:${esc(l.color || '#4d8dff')}"></div>
-        <div style="flex:1;min-width:0">
-          <div class="rule-name">${esc(l.name)}
-            ${l.mode === 'whitelist'
-              ? '<span class="badge red">强制模式 · 只能开白名单</span>'
-              : '<span class="badge gold">黑名单 · 这些不能开</span>'}
-            ${l.hard ? '<span class="badge red">固化</span>' : ''}
-            ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
-            ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
-          </div>
-          <div class="rule-meta">${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外<br>
-            <span class="muted">${esc(schedSummary(l.schedule))}</span></div>
+
+  const item = (l) => `
+    <div class="sl-item ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
+      <div class="sl-item-bar" style="background:${esc(l.color || '#4d8dff')}"></div>
+      <div class="sl-item-main">
+        <div class="sl-item-name">${esc(l.name)}
+          ${l.mode === 'whitelist' ? '<span class="badge red">强制</span>' : ''}
+          ${l.hard ? '<span class="badge red">固化</span>' : ''}
+          ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
+          ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
         </div>
-        <div class="rule-actions">
-          <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
-               style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
-               title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，开关已锁定') : '启用 / 停用'}">
-            <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
-          </div>
-          <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}"
-            ${locked ? 'disabled' : ''}>删除</button>
+        <div class="sl-item-range">${esc(schedCompact(l.schedule))}</div>
+        <div class="sl-item-meta">${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外</div>
+      </div>
+      ${slMini(l)}
+      <div class="sl-item-act">
+        <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
+             style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
+             title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，开关已锁定') : '启用 / 停用'}">
+          <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
         </div>
-      </div>`).join('')
-    : '<div class="empty">还没有规则。点右上角「新建规则」开始。</div>';
+        <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}" ${locked ? 'disabled' : ''}>删除</button>
+      </div>
+    </div>`;
+
+  const groups = [];
+  const push = (title, note, arr) => {
+    if (!arr.length) return;
+    groups.push(`<div class="sl-group">
+      <div class="sl-group-hd"><span class="sl-group-title">${title}</span><span class="muted">${note}</span></div>
+      <div class="sl-grid">${arr.map(item).join('')}</div>
+    </div>`);
+  };
+  push('黑名单时段', '这些时段里，命中的软件 / 网站会被拦下', lists.filter((l) => l.mode !== 'whitelist'));
+  push('强制模式时段', '这些时段里，只有名单内的软件能打开', lists.filter((l) => l.mode === 'whitelist'));
+
+  const body = lists.length
+    ? groups.join('')
+    : '<div class="empty">还没有自律时段。点右上角「新建时段」开始。</div>';
 
   const banner = hardLocked
     ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
@@ -393,15 +467,66 @@ function viewRules() {
   ${banner}
   <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:16px">
     <div class="hint" style="max-width:640px">
-      一条规则 = 一个黑名单（或白名单）+ 一张周时间表。<b>只有落在时间表里的时段，规则才会生效</b>；
-      时间表全空表示 7×24 小时生效。软件与网站分别维护，互不影响。
+      一个<b>自律时段</b> = 一份名单 + 一张周时间表。<b>只有落在时间表里的时段，它才会生效</b>；
+      时间表全空表示 7×24 小时生效。点任意一条会打开独立弹窗，用图表方式查看和调整时间分布。
     </div>
-    <button class="btn btn-primary" data-act="new-rule" ${hardLocked ? 'disabled' : ''}>+ 新建规则</button>
+    <button class="btn btn-primary" data-act="new-rule" ${hardLocked ? 'disabled' : ''}>+ 新建时段</button>
   </div>
-  <div style="display:flex;flex-direction:column;gap:10px">${cards}</div>`;
+  ${body}`;
 }
 
 /* ---------------- 规则编辑器 ---------------- */
+/** 打开某条自律时段的独立弹窗（滴答清单图表式） */
+function openSlotModal(id) {
+  const d = S.data;
+  if (!d) return;
+  const src = d.config.lists.find((x) => x.id === id);
+  if (!src) return;
+  S.editing = JSON.parse(JSON.stringify(src));
+  S.editingNew = false;
+  S.editorTab = 'slot';
+  S.modalMode = 'slot';
+  renderSlotModal();
+}
+
+function renderSlotModal() {
+  const r = S.editing;
+  if (!r) return;
+  const html = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal wide tk-modal">
+      <div class="modal-hd">
+        <h3>自律时段
+          <span class="badge ${r.mode === 'whitelist' ? 'red' : 'gold'}">${r.mode === 'whitelist' ? '强制模式' : '黑名单'}</span>
+          ${r.hard ? '<span class="badge red">固化</span>' : ''}
+          ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
+          ${r.enabled ? '<span class="badge green">已启用</span>' : '<span class="badge">未启用</span>'}
+        </h3>
+        <button class="close-x" data-act="close-editor">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="row" style="gap:10px;margin-bottom:14px;align-items:center">
+          <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14.5px;font-weight:650" placeholder="时段名称，例如：晚自习" />
+          <div class="sl-sum">${esc(schedCompact(r.schedule))}</div>
+        </div>
+        ${tabChart(r)}
+        <div class="tk-info">
+          <div><b>${r.apps.length}</b> 个软件</div>
+          <div><b>${r.sites.length}</b> 个网站</div>
+          <div><b>${r.exceptions.length}</b> 条例外</div>
+          <div><b>${r.extraProtected && r.extraProtected.length ? r.extraProtected.length : 0}</b> 项额外保护</div>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button class="btn" data-act="slot-more">名单与更多设置…</button>
+        <button class="btn" data-act="close-editor">取消</button>
+        <button class="btn btn-primary" data-act="save-slot">保存</button>
+      </div>
+    </div>
+  </div>`;
+  $('#modalRoot').innerHTML = html;
+}
+
 function openEditor(id, isNew) {
   const d = S.data;
   if (!d) return;
@@ -428,17 +553,22 @@ function openEditor(id, isNew) {
   S.editing = rule;
   S.editingNew = !!isNew;
   S.editorTab = 'apps';
+  S.modalMode = 'editor';
   renderEditor();
 }
 
 function renderEditor() {
+  if (S.modalMode === 'slot') { renderSlotModal(); return; }
+  renderFullEditor();
+}
+
+function renderFullEditor() {
   const r = S.editing;
   if (!r) return;
   const tabs = [
     ['apps', `软件 (${r.apps.length})`],
     ['sites', `网站 (${r.sites.length})`],
     ['exceptions', `网站例外 (${r.exceptions.length})`],
-    ['schedule', '时间表'],
     ['break', '休息'],
     ['lock', '固化'],
   ];
@@ -447,20 +577,23 @@ function renderEditor() {
   if (S.editorTab === 'apps') body = tabApps(r);
   if (S.editorTab === 'sites') body = tabSites(r);
   if (S.editorTab === 'exceptions') body = tabExceptions(r);
-  if (S.editorTab === 'schedule') body = tabSchedule(r);
   if (S.editorTab === 'break') body = tabBreak(r);
   if (S.editorTab === 'lock') body = tabLock(r);
 
   const html = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal wide">
+    <div class="modal wide tk-modal">
       <div class="modal-hd">
-        <h3>${S.editingNew ? '新建规则' : '编辑规则'}</h3>
+        <h3>${S.editingNew ? '新建自律时段' : esc(r.name)}
+          <span class="badge ${r.mode === 'whitelist' ? 'red' : 'gold'}">${r.mode === 'whitelist' ? '强制模式' : '黑名单'}</span>
+          ${r.hard ? '<span class="badge red">固化</span>' : ''}
+          ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
+        </h3>
         <button class="close-x" data-act="close-editor">×</button>
       </div>
       <div class="modal-bd">
-        <div class="row" style="gap:10px;margin-bottom:16px;align-items:center">
-          <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14px;font-weight:600" placeholder="规则名称，例如：晚自习" />
+        <div class="row" style="gap:10px;margin-bottom:14px;align-items:center">
+          <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14px;font-weight:600" placeholder="时段名称，例如：晚自习" />
           <div class="seg">
             <button class="${r.mode === 'blacklist' ? 'active gold' : ''}" data-act="mode" data-mode="blacklist">黑名单</button>
             <button class="${r.mode === 'whitelist' ? 'active' : ''}" data-act="mode" data-mode="whitelist">强制模式（白名单）</button>
@@ -470,7 +603,8 @@ function renderEditor() {
           <b>强制模式</b>：生效时段内，只有下面名单里的软件可以打开，其他所有前台窗口都会被关掉。
           系统进程、资源管理器、本程序自身以及「设置 → 全局保护」里的进程不会被拦截。
         </div>` : ''}
-        <div class="tabs">${tabs.map(([k, n]) => `<button class="tab ${S.editorTab === k ? 'active' : ''}" data-act="editor-tab" data-tab="${k}">${n}</button>`).join('')}</div>
+        ${tabChart(r)}
+        <div class="tabs" style="margin-top:18px">${tabs.map(([k, n]) => `<button class="tab ${S.editorTab === k ? 'active' : ''}" data-act="editor-tab" data-tab="${k}">${n}</button>`).join('')}</div>
         ${body}
       </div>
       <div class="modal-ft">
@@ -480,7 +614,115 @@ function renderEditor() {
     </div>
   </div>`;
   $('#modalRoot').innerHTML = html;
-  if (S.editorTab === 'schedule') paintSchedule();
+}
+
+/* 滴答清单图表式时间分布：横轴 = 周一~周日，纵轴 = 00:00~24:00，色块 = 生效区间 */
+function tkTimeVal(m) {
+  const x = Math.max(0, Math.min(1440, +m || 0));
+  if (x === 1440) return '24:00';
+  return `${pad(Math.floor(x / 60) % 24)}:${pad(x % 60)}`;
+}
+function tkTimeParse(v) {
+  const mt = /^(\d{1,2}):(\d{2})$/.exec(String(v || '').trim());
+  if (!mt) return null;
+  const h = +mt[1], mm = +mt[2];
+  if (h === 24 && mm === 0) return 1440;
+  if (h > 23 || mm > 59) return null;
+  return h * 60 + mm;
+}
+
+function tabChart(r) {
+  const axis = [];
+  for (let h = 0; h <= 24; h += 3) {
+    axis.push(`<span style="top:${(h / 24) * 100}%">${pad(h % 24)}:00</span>`);
+  }
+  const cols = DAYS.map((d, di) => {
+    const segs = slDaySegs(r, di);
+    const blocks = segs.map((s) => {
+      const top = (s.a / 1440) * 100;
+      const h = Math.max(1.2, ((s.b - s.a) / 1440) * 100);
+      const bg = s.type === 'break'
+        ? 'repeating-linear-gradient(135deg, rgba(53,208,127,.85) 0 6px, rgba(53,208,127,.5) 6px 12px)'
+        : esc(r.color || '#4d8dff');
+      const label = `${mins(s.a)} - ${mins(s.b)}`;
+      return `<div class="tk-seg ${s.type}" style="top:${top.toFixed(3)}%;height:${h.toFixed(3)}%;background:${bg}" title="${label}"><em>${label}</em></div>`;
+    }).join('');
+    const slots = (r.schedule[di] || []);
+    const hint = slots.length
+      ? slots.map((s) => `${mins(s.start)}-${mins(s.end)}`).join('、')
+      : '未设置';
+    return `<div class="tk-col">
+      <div class="tk-track" data-day="${di}" title="${d}：${esc(hint)}">${blocks}</div>
+      <div class="tk-col-day">${d}</div>
+    </div>`;
+  }).join('');
+
+  const slotRows = DAYS.map((d, di) => {
+    const slots = (r.schedule[di] || []).map((s, i) => `
+      <div class="tk-slot">
+        <span class="tk-slot-day">${d}</span>
+        <input type="text" class="tk-time" value="${tkTimeVal(s.start)}" data-act="tk-slot-start" data-day="${di}" data-i="${i}" size="5" maxlength="5" />
+        <span class="muted">→</span>
+        <input type="text" class="tk-time" value="${tkTimeVal(s.end)}" data-act="tk-slot-end" data-day="${di}" data-i="${i}" size="5" maxlength="5" />
+        <button class="x" data-act="tk-slot-del" data-day="${di}" data-i="${i}">×</button>
+      </div>`).join('');
+    return slots;
+  }).join('');
+
+  return `
+    <div class="tk-chart">
+      <div class="tk-axis">${axis.join('')}</div>
+      <div class="tk-cols">${cols}</div>
+    </div>
+    <div class="tk-tools">
+      <button class="chip-btn" data-act="sched-copy" data-from="0" data-to="1,2,3,4">周一 → 工作日</button>
+      <button class="chip-btn" data-act="sched-copy" data-from="0" data-to="0,1,2,3,4,5,6">周一 → 全部</button>
+      <button class="chip-btn" data-act="sched-clear">清空</button>
+      <span class="hint" style="align-self:center">在某一列上<b>按住拖动</b>即可圈出时段；再次拖过同一段可取消。</span>
+    </div>
+    <div class="tk-legend">
+      <span><i class="lg-focus"></i>生效区间</span>
+      <span><i class="lg-break"></i>番茄休息（不拦截）</span>
+      <span class="muted">时间表全空 = 全天生效；色块只在这条自律时段真正生效的时间段出现。</span>
+    </div>
+    <div class="tk-slots">
+      <div class="tk-slots-hd">时段明细<span class="muted">（可精确到 15 分钟）</span></div>
+      ${slotRows || '<div class="empty" style="padding:14px">还没有时段。在上方图表里拖动即可创建。</div>'}
+    </div>`;
+}
+
+/* 图表重绘（拖动时实时刷新色块） */
+function paintChart() {
+  const r = S.editing;
+  if (!r) return;
+  document.querySelectorAll('.tk-track').forEach((track) => {
+    const di = +track.dataset.day;
+    const segs = slDaySegs(r, di);
+    track.innerHTML = segs.map((s) => {
+      const top = (s.a / 1440) * 100;
+      const h = Math.max(1.2, ((s.b - s.a) / 1440) * 100);
+      const bg = s.type === 'break'
+        ? 'repeating-linear-gradient(135deg, rgba(53,208,127,.85) 0 6px, rgba(53,208,127,.5) 6px 12px)'
+        : esc(r.color || '#4d8dff');
+      const label = `${mins(s.a)} - ${mins(s.b)}`;
+      return `<div class="tk-seg ${s.type}" style="top:${top.toFixed(3)}%;height:${h.toFixed(3)}%;background:${bg}" title="${label}"><em>${label}</em></div>`;
+    }).join('');
+  });
+}
+
+/* ---------------- 图表拖选（纵轴 00:00~24:00，15 分钟粒度） ---------------- */
+const TK_STEP = 15;
+function tkMinuteAt(track, clientY) {
+  const rect = track.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / Math.max(1, rect.height)));
+  const raw = ratio * 1440;
+  return Math.max(0, Math.min(1440 - TK_STEP, Math.round(raw / TK_STEP) * TK_STEP));
+}
+function tkSlotAt(r, day, minute) {
+  return ((r.schedule[day]) || []).some((s) => {
+    const end = s.end <= s.start ? 1440 : s.end;
+    return minute >= s.start && minute < end;
+  });
 }
 
 function tabApps(r) {
@@ -553,32 +795,6 @@ function tabExceptions(r) {
     </div>`;
 }
 
-function tabSchedule(r) {
-  const head = Array.from({ length: 24 }, (_, i) => `<span>${pad(i)}</span>`).join('');
-  const rows = DAYS.map((d, di) => {
-    const cells = Array.from({ length: 48 }, (_, ci) => {
-      const on = slotHas(r.schedule[di], ci * 30);
-      return `<div class="cell ${on ? 'on' : ''} ${ci % 2 === 0 ? 'hour' : ''}" data-day="${di}" data-idx="${ci}"></div>`;
-    }).join('');
-    return `<div class="sched-row"><div class="sched-day">${d}</div><div class="cells">${cells}</div></div>`;
-  }).join('');
-  return `
-    <div class="sched">
-      <div class="sched-head">${head}</div>
-      ${rows}
-    </div>
-    <div class="sched-tools">
-      <button class="chip-btn" data-act="sched-copy" data-from="0" data-to="1,2,3,4">周一 → 工作日</button>
-      <button class="chip-btn" data-act="sched-copy" data-from="0" data-to="0,1,2,3,4,5,6">周一 → 全部</button>
-      <button class="chip-btn" data-act="sched-clear">清空</button>
-      <span class="hint" style="align-self:center">拖动鼠标可以刷时段（每格 30 分钟）</span>
-    </div>
-    <div class="hint" style="margin-top:12px">
-      时间表全空 = 全天生效。规则<b>只在这些时段内</b>拦截，其余时间完全静默。
-      下周会自动循环，不需要重复设置。
-    </div>`;
-}
-
 function tabBreak(r) {
   const b = r.brk || { kind: 'none', workMin: 25, breakMin: 5 };
   const pomo = b.kind === 'pomodoro';
@@ -626,12 +842,6 @@ function tabLock(r) {
 }
 
 /* 拖动刷时段 */
-function slotHas(slots, minute) {
-  return (slots || []).some((s) => {
-    const end = s.end <= s.start ? 1440 : s.end;
-    return minute >= s.start && minute < end;
-  });
-}
 function normalize(slots) {
   const arr = slots.filter((s) => s.end !== s.start).sort((a, b) => a.start - b.start);
   const out = [];
@@ -652,13 +862,64 @@ function subRange(slots, a, b) {
   }
   return normalize(out);
 }
-function paintSchedule() {
+/* 图表拖动：在某一列上按住拖动 = 圈一段时段；拖过的区间若已在表内则取消 */
+document.addEventListener('mousedown', (e) => {
+  const track = e.target.closest('.tk-track');
+  if (!track || !S.editing) return;
+  e.preventDefault();
+  const day = +track.dataset.day;
+  const m = tkMinuteAt(track, e.clientY);
+  const covered = tkSlotAt(S.editing, day, m);
+  S.tkBase = JSON.parse(JSON.stringify(S.editing.schedule[day] || []));
+  S.tkDrag = { day, from: m, to: m, mode: covered ? 'remove' : 'add' };
+  tkDragApply(S.tkDrag);
+});
+document.addEventListener('mousemove', (e) => {
+  if (!S.tkDrag) return;
+  const track = document.querySelector(`.tk-track[data-day="${S.tkDrag.day}"]`);
+  if (!track) return;
+  const m = tkMinuteAt(track, e.clientY);
+  if (m === S.tkDrag.to) return;
+  S.tkDrag.to = m;
+  tkDragApply(S.tkDrag);
+});
+document.addEventListener('mouseup', () => {
+  if (!S.tkDrag || !S.editing) { S.tkDrag = null; return; }
+  const { day, from, to } = S.tkDrag;
+  const a = Math.min(from, to);
+  const b = Math.max(from, to);
+  const base = S.tkBase || [];
+  // 逐 15 分钟判定：原本有就删、没有就加（跨越已有/空白混合区也能正确切换）
+  let cur = base;
+  for (let m = a; m <= b; m += TK_STEP) {
+    const has = cur.some((s) => {
+      const e2 = s.end <= s.start ? 1440 : s.end;
+      return m >= s.start && m < e2;
+    });
+    cur = has ? subRange(cur, m, m + TK_STEP) : addRange(cur, m, m + TK_STEP);
+  }
+  S.editing.schedule[day] = cur;
+  S.tkDrag = null;
+  S.tkBase = null;
+  renderEditor();
+});
+/** 拖动过程中的临时预览（直接改 S.editing，mouseup 时再归一） */
+function tkDragApply(drag) {
   const r = S.editing;
   if (!r) return;
-  document.querySelectorAll('.cell').forEach((c) => {
-    const d = +c.dataset.day, i = +c.dataset.idx;
-    c.classList.toggle('on', slotHas(r.schedule[d], i * 30));
-  });
+  const a = Math.min(drag.from, drag.to);
+  const b = Math.max(drag.from, drag.to);
+  const base = S.tkBase || [];
+  let cur = base;
+  for (let m = a; m <= b; m += TK_STEP) {
+    const has = cur.some((s) => {
+      const e2 = s.end <= s.start ? 1440 : s.end;
+      return m >= s.start && m < e2;
+    });
+    cur = has ? subRange(cur, m, m + TK_STEP) : addRange(cur, m, m + TK_STEP);
+  }
+  r.schedule[drag.day] = cur;
+  paintChart();
 }
 
 /* ---------------- 视图：自律时段（7 列 × 24 小时柱状图） ---------------- */
@@ -2262,6 +2523,16 @@ function viewSettings() {
       <div><div style="font-size:12.5px">浏览器插件</div><div class="hint" style="margin-top:3px">在 Chrome / Edge 的扩展页打开"开发者模式"，载入已解压的扩展</div></div>
       <button class="btn btn-sm" data-act="open-ext">打开插件目录</button>
     </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+      <div>
+        <div style="font-size:12.5px">强制退出</div>
+        <div class="hint" style="margin-top:3px">
+          任何时候按 <b>Ctrl + Alt + F4</b> 即可强制结束本程序（窗口在前台时 <b>Alt + F4</b> 也行）。
+          强制退出会先停掉守护进程、还原被暂停的媒体、销毁遮罩并落盘统计，<b>不会</b>弹确认框。
+        </div>
+      </div>
+      <button class="btn btn-sm btn-danger" data-act="force-quit">立即强制退出</button>
+    </div>
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
       <div><div style="font-size:12.5px">配置文件</div><div class="hint" style="margin-top:3px">${esc(d.configPath)}</div></div>
       <button class="btn btn-sm" data-act="open-cfg">打开目录</button>
@@ -3036,6 +3307,12 @@ const Act = window.Act = {
 
   async restartAdmin() { await invoke('restart_as_admin'); },
   async openExt() { try { await invoke('open_extension_dir'); } catch (e) { toast(String(e), 'err'); } },
+  async forceQuit() {
+    // 强制退出不弹确认框（语义就是"立刻走"），但要有一次防误触的确认，
+    // 否则点一下界面就整个程序没了。
+    if (!confirm('确定要强制退出 King of Focus 吗？\n（等同于按 Ctrl+Alt+F4）')) return;
+    try { await invoke('force_quit'); } catch (e) { toast(String(e), 'err'); }
+  },
   async openCfg() { await invoke('open_config_dir'); },
   async openStatsDir() { const p = await invoke('stats_dir_path'); await invoke('open_path', { path: p }); },
 
@@ -3602,11 +3879,11 @@ const Act = window.Act = {
     const r = S.editing;
     const src = JSON.parse(JSON.stringify(r.schedule[+from]));
     for (const d of String(to).split(',')) r.schedule[+d] = JSON.parse(JSON.stringify(src));
-    paintSchedule();
+    renderEditor();
   },
   schedClear() {
     S.editing.schedule = [[], [], [], [], [], [], []];
-    paintSchedule();
+    renderEditor();
   },
 };
 
@@ -3835,8 +4112,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'new-rule') { openEditor(null, true); return; }
   if (act === 'edit-rule') {
     if (e.target.closest('[data-act="toggle-rule"]') || e.target.closest('[data-act="del-rule"]')) return;
-    openEditor(el.dataset.id, false); return;
+    openSlotModal(el.dataset.id); return;
   }
+  if (act === 'slot-more') {
+    if (!S.editing) return;
+    S.modalMode = 'editor';
+    S.editorTab = 'apps';
+    renderFullEditor();
+    return;
+  }
+  if (act === 'save-slot') { await Act.saveEditor(); return; }
   if (act === 'toggle-rule') {
     const sw = el.querySelector('input');
     if (sw) sw.checked = !sw.checked;
@@ -3867,6 +4152,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'add-exc') { Act.addExc(); return; }
   if (act === 'sched-copy') { Act.schedCopy(el.dataset.from, el.dataset.to); return; }
   if (act === 'sched-clear') { Act.schedClear(); return; }
+  if (act === 'tk-slot-del') {
+    if (!S.editing) return;
+    const day = +el.dataset.day, i = +el.dataset.i;
+    const slots = (S.editing.schedule[day] || []).slice();
+    if (!slots[i]) return;
+    slots.splice(i, 1);
+    S.editing.schedule[day] = slots;
+    renderEditor();
+    return;
+  }
   if (act === 'lock-kind') { S.editing.lock.kind = el.dataset.k; renderEditor(); return; }
   if (act === 'pick-item') {
     const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
@@ -3945,6 +4240,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'cycle-theme') { await Act.cycleTheme(); return; }
   if (act === 'restart-admin') { await Act.restartAdmin(); return; }
   if (act === 'open-ext') { await Act.openExt(); return; }
+  if (act === 'force-quit') { await Act.forceQuit(); return; }
   if (act === 'open-cfg') { await Act.openCfg(); return; }
   if (act === 'open-stats-dir') { await Act.openStatsDir(); return; }
   /* 云同步 */
@@ -3975,41 +4271,6 @@ document.addEventListener('click', async (e) => {
   if (act === 'skip-version') { await Act.skipVersion(el.dataset.v); return; }
   if (act === 'clear-skip') { await Act.clearSkip(); return; }
   if (act === 'do-update') { await Act.doUpdate(el.dataset.url, el.dataset.name); return; }
-});
-
-/* 时段拖动 */
-document.addEventListener('mousedown', (e) => {
-  const cell = e.target.closest('.cell');
-  if (!cell || !S.editing) return;
-  e.preventDefault();
-  const day = +cell.dataset.day, idx = +cell.dataset.idx;
-  S.paint = { day, from: idx, to: idx, mode: cell.classList.contains('on') ? 'remove' : 'add' };
-  document.querySelectorAll(`.cell[data-day="${day}"]`).forEach((c) => {
-    const i = +c.dataset.idx;
-    const isOn = S.paint.mode === 'add' ? (i >= idx && i <= idx) : false;
-    c.classList.toggle('on', S.paint.mode === 'add' ? i === idx : slotHas(S.editing.schedule[day], i * 30));
-  });
-});
-document.addEventListener('mouseover', (e) => {
-  const cell = e.target.closest('.cell');
-  if (!cell || !S.paint || +cell.dataset.day !== S.paint.day) return;
-  S.paint.to = +cell.dataset.idx;
-  const a = Math.min(S.paint.from, S.paint.to), b = Math.max(S.paint.from, S.paint.to);
-  document.querySelectorAll(`.cell[data-day="${S.paint.day}"]`).forEach((c) => {
-    const i = +c.dataset.idx;
-    const inRange = i >= a && i <= b;
-    if (S.paint.mode === 'add') c.classList.toggle('on', inRange || slotHas(S.editing.schedule[S.paint.day], i * 30));
-    else c.classList.toggle('on', inRange ? false : slotHas(S.editing.schedule[S.paint.day], i * 30));
-  });
-});
-document.addEventListener('mouseup', () => {
-  if (!S.paint || !S.editing) { S.paint = null; return; }
-  const { day, from, to, mode } = S.paint;
-  const a = Math.min(from, to) * 30, b = (Math.max(from, to) + 1) * 30;
-  const cur = S.editing.schedule[day] || [];
-  S.editing.schedule[day] = mode === 'add' ? addRange(cur, a, b) : subRange(cur, a, b);
-  S.paint = null;
-  paintSchedule();
 });
 
 /* 自律时段：7 列 × 24 小时柱状图，二维矩形拖选
@@ -4527,6 +4788,17 @@ document.addEventListener('mousedown', (e) => {
 
 /* 输入框回车 */
 document.addEventListener('keydown', (e) => {
+  // Alt+F4 强制退出（前端兜底）
+  //
+  // 后端已经用低级键盘钩子 + CloseRequested 双重判定实现了 Alt+F4 强制退出，
+  // 但 WebView2 在某些情况下会把 Alt+F4 当成浏览器快捷键派发到页面。
+  // 这里再兜一层：识别到 Alt+F4 就 preventDefault（别让 WebView 自己也处理）
+  // 并直接调后端的 force_quit —— 保证在设置页 / 自律时段弹窗里按下也一定退得掉。
+  if (e.altKey && (e.key === 'F4' || e.code === 'F4')) {
+    e.preventDefault();
+    invoke('force_quit').catch(() => {});
+    return;
+  }
   if (e.key === 'Escape') {
     if (typeof ccCloseMenu === 'function') ccCloseMenu();
     if ($('#modalRoot').innerHTML) { S.editing = null; closeModal(); }
@@ -4546,6 +4818,21 @@ document.addEventListener('keydown', (e) => {
 /* 遮罩滑块：实时预览 */
 document.addEventListener('input', async (e) => {
   if (e.target.id === 'opRange') await Act.setOpacity(e.target.value);
+});
+
+/* 时段明细起止时间修改 */
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-act="tk-slot-start"],[data-act="tk-slot-end"]');
+  if (!el || !S.editing) return;
+  const day = +el.dataset.day, i = +el.dataset.i;
+  const slots = S.editing.schedule[day] || [];
+  if (!slots[i]) return;
+  const v = tkTimeParse(el.value);
+  if (v == null) { toast('时间格式应为 HH:MM', 'err'); renderEditor(); return; }
+  if (el.dataset.act === 'tk-slot-start') slots[i].start = v;
+  else slots[i].end = v;
+  S.editing.schedule[day] = normalize(slots);
+  renderEditor();
 });
 
 /* 启动 */

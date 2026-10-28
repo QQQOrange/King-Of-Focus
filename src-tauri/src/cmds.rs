@@ -938,9 +938,17 @@ pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), St
     Ok(())
 }
 
+/// 强制退出（与 Ctrl+Alt+F4 走同一条路径）
+///
+/// 与 `quit_app` 的区别：**不受自律时段/专注段的退出拦截**，
+/// 也一定走完整的资源清理（守护进程、媒体、遮罩、统计、互斥体）。
 #[tauri::command]
-pub fn show_main(app: AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+pub fn force_quit(app: AppHandle, shared: State<'_, Arc<Shared>>) {
+    crate::forcequit::force_quit(&app, &shared);
+}
+
+#[tauri::command]
+pub fn show_main(app: AppHandle) {    if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
