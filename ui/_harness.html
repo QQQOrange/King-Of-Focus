@@ -138,6 +138,14 @@ window.__TAURI__ = {
       return null;
     }
     // 管理员开关：后端落盘 + 拉起提权副本（前端不自己 save）
+    if (cmd === 'hud_set_look') {
+      const h = STATE.config.settings.hud || (STATE.config.settings.hud = {});
+      if (args.corner) h.corner = args.corner;
+      if (args.opacity != null) h.opacity = args.opacity;
+      if (args.offset_x != null) h.offsetX = args.offset_x;
+      if (args.offset_y != null) h.offsetY = args.offset_y;
+      return null;
+    }
     if (cmd === 'set_always_on_top') { STATE.config.settings.alwaysOnTop = !!args.enabled; return null; }
     if (cmd === 'set_run_as_admin') {
       STATE.config.settings.runAsAdmin = !!args.enabled;
@@ -262,6 +270,9 @@ window.__itest = async () => {
   const pd = () => prof().days;
   const runs = (d) => [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)];
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** 打开"生效时间段"的完整页（大日历只在这一层里，微缩图那层没有格子） */
+  const openFull = async () => { S.view = 'clock'; S.ccFull = true; render(); await wait(200); };
+  await openFull();
 
   // 0a. 小时标签正序：从上到下 0 → 23；左上角是纵轴单位，不能又是一个 0
   const hlabs = [...document.querySelectorAll('.cc-hlab')].map((e) => e.textContent.trim());
@@ -328,24 +339,79 @@ window.__itest = async () => {
   out.push(['当前方案是工作日强化', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '工作日强化']);
   out.push(['方案 chip 显示段数', [...document.querySelectorAll('.cc-prof .n')].map((e) => e.textContent).join('|'), '22 段|4 段']);
 
-  // 1. 二维拖选：周三 13 点 → 周五 15 点（3 天 × 3 小时 = 9 段，原本全关）
-  fire('mousedown', cell(2, 13));
-  fire('mouseover', cell(2, 14));
-  fire('mouseover', cell(4, 15));
+  // 1. 自由拖选：周三 13:00 按下 → 不松手向下滑到 15:45 → 松手提交
+  //
+  // 新交互的判据不是"矩形"，而是一段**连续区间**：锚点固定在按下的那一格，
+  // 另一端跟着指针走，经过的时间自动并入同一段。所以这里只断言"起止分钟 + 总时长"。
+  const gY = (d, h, q) => {
+    const r = cell(d, h).getBoundingClientRect();
+    return r.top + r.height * ((q + 0.5) / ccQCnt());
+  };
+  fire('mousedown', cell(2, 13), { clientY: gY(2, 13, 0) });
+  const liveAnchor = $('#clockLive').textContent;
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(2, 15, 2) }));
+  await wait(150);           // 等一帧 rAF
   const liveDuringDrag = $('#clockLive').textContent;
-  fire('mouseup', document);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   await wait(250);
-  out.push(['拖选 9 段全开', pd().slice(2, 5).every((day) => [13, 14, 15].every((h) => day[h].on))]);
-  out.push(['拖选不碰区外', !pd()[1][13].on && !pd()[5][13].on && !pd()[2][12].on && !pd()[2][16].on]);
-  out.push(['区外原有保留', pd()[0][8].on === true]);
-  out.push(['新选时段沿用通用时长 45/15', (() => { const p = pd()[3][14]; return p.work === 45 && p.brk === 15; })()]);
+  out.push(['按下即出现一格的起始选区', liveAnchor, '选中 周三 13:00 – 13:15 · 共 15 分钟']);
+  out.push(['向下拖：实时显示起止与总时长', liveDuringDrag, '选中 周三 13:00 – 15:45 · 共 2 小时 45 分']);
+  out.push(['拖到的三小时全部选中', [13, 14, 15].every((h) => pd()[2][h].on), true]);
+  out.push(['首小时 0 分起、尾小时 45 分止', `${pd()[2][13].from}-${pd()[2][15].to}`, '0-45']);
+  out.push(['拖选不跨天（周四不动）', pd()[3][13].on, false]);
+  out.push(['拖选沿用通用时长 45/15', (() => { const p = pd()[2][14]; return p.work === 45 && p.brk === 15; })()]);
   out.push(['原有选中保留自定义值', pd()[0][8].work === 50 && pd()[0][8].brk === 10]);
-  // 拖选出来的 3×3 也必须是每列一个整块（周三/周四/周五各一块）
   const dragRun = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.h0 === '13' && r.dataset.h1 === '15');
-  out.push(['拖选 3 天 × 3 小时 = 一整块', dragRun ? `${dragRun.dataset.d}-${dragRun.dataset.d1}` : '(无)', '2-4']);
-  out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 15:15']);
-  // 旧断言用整点文案，新交互把结束刻度从「小时尾」收窄到「刻度尾」——拖选语义落到 15 分钟刻度上
-  // out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
+  out.push(['三小时连成一整块', dragRun ? `${dragRun.dataset.d}-${dragRun.dataset.d1}` : '(无)', '2-2']);
+
+  // 1-2. 反向伸缩：从 20:30 按住往上拖到 19:15（周日，原本全空）
+  fire('mousedown', cell(6, 20), { clientY: gY(6, 20, 2) });
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(6, 19, 1) }));
+  await wait(150);
+  const upTxt = $('#clockLive').textContent;
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await wait(250);
+  out.push(['向上拖同样能伸缩', upTxt, '选中 周日 19:15 – 20:45 · 共 1 小时 30 分']);
+  out.push(['向上拖的结果落盘', `${pd()[6][19].on && pd()[6][19].from}-${pd()[6][20].to}`, '15-45']);
+
+  // 1-3. 越界：从 0:00 往上拖出日历 → 夹在 0:00 并明确提示
+  fire('mousedown', cell(6, 0), { clientY: gY(6, 0, 0) });
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: -600 }));
+  await wait(150);
+  const edgeTxt = $('#clockLive').textContent;
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await wait(250);
+  out.push(['拖出上边界 → 提示已到 0:00', edgeTxt, '选中 周日 00:00 – 00:15 · 共 15 分钟 · 已到当日 0:00']);
+
+  // 1-4. 越界：从 23:45 往下拖出日历 → 夹在 24:00
+  fire('mousedown', cell(6, 23), { clientY: gY(6, 23, 3) });
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: 99999 }));
+  await wait(150);
+  const edgeTxt2 = $('#clockLive').textContent;
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await wait(250);
+  out.push(['拖出下边界 → 提示已到 24:00', edgeTxt2, '选中 周日 23:45 – 24:00 · 共 15 分钟 · 已到当日 24:00']);
+
+  // 1-5. 触摸：同一套核心，touchstart → touchmove → touchend
+  {
+    const mk = (type, y) => {
+      const t = new Touch({ identifier: 1, target: cell(6, 3), clientX: 100, clientY: y });
+      return new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: type === 'touchend' ? [] : [t],
+        targetTouches: type === 'touchend' ? [] : [t],
+        changedTouches: [t],
+      });
+    };
+    cell(6, 3).dispatchEvent(mk('touchstart', gY(6, 3, 0)));
+    document.dispatchEvent(mk('touchmove', gY(6, 4, 1)));
+    await wait(150);
+    const touchTxt = $('#clockLive').textContent;
+    document.dispatchEvent(mk('touchend', gY(6, 4, 1)));
+    await wait(250);
+    out.push(['触摸也能拖选', touchTxt, '选中 周日 03:00 – 04:30 · 共 1 小时 30 分']);
+    out.push(['触摸结果落盘', `${pd()[6][3].on}-${pd()[6][4].to}`, 'true-30']);
+  }
 
   // 1a. 15 分钟细分刻度：每格 4 条、默认隐藏、拖选/hover 才显示；单击刻度 = 单独开关那 15 分钟
   // 1a-0. 刻度必须是**纵向**等分：top 递增、宽度占满整格。
@@ -366,8 +432,16 @@ window.__itest = async () => {
     out.push(['第 2 格落在 1/4 高度处（±1% 亚像素）', Math.abs(pct - 25) <= 1, true]);
   }
 
-  const fireQ = (type, el, q, opts = {}) =>
-    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientY: q, ...opts }));
+  // q 是"这一小时的第九个粒度"；新交互按**绝对纵坐标**定位，所以这里换算成 clientY。
+  // 老写法直接传 clientY = q（0~3），在新交互下会被当成"点到了 0 点附近"。
+  const fireQ = (type, el, q, opts = {}) => {
+    let y = 0;
+    if (el && el.getBoundingClientRect) {
+      const r = el.getBoundingClientRect();
+      y = r.top + r.height * ((q + 0.5) / ccQCnt());
+    }
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientY: y, ...opts }));
+  };
   const qCount = cell(2, 13).querySelectorAll('.cc-q').length;
   out.push(['每格 4 条 15 分钟刻度', qCount, 4]);
   out.push(['15 分钟刻度有 0/15/30/45 标记', [...cell(2, 13).querySelectorAll('.cc-q')].map((e) => e.dataset.a).join(','), '0,15,30,45']);
@@ -401,7 +475,7 @@ window.__itest = async () => {
       ? WD[lastRect.d0]
       : `${WD[Math.min(lastRect.d0, lastRect.d1)]} – ${WD[Math.max(lastRect.d0, lastRect.d1)]}`)
     : '';
-  fire('contextmenu', cell(3, 14), { clientX: 420, clientY: 420 });
+  fire('contextmenu', cell(2, 14), { clientX: 420, clientY: 420 });
   await wait(120);
   out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent.indexOf(rectTxt) >= 0]);
   const expectCnt = lastRect ? (Math.abs(lastRect.d1 - lastRect.d0) + 1) * (Math.abs(lastRect.h1 - lastRect.h0) + 1) : 1;
@@ -411,8 +485,8 @@ window.__itest = async () => {
 
   // 2. 单击关格：周一 8 点（原本开着）→ 新交互下"单击"= 开关那 15 分钟刻度，
   //    从已选中的整小时（0–60）起笔会挖掉 00:00–00:15，剩 00:15–01:00 仍开着
-  fire('mousedown', cell(0, 8));
-  fire('mouseup', document);
+  fireQ('mousedown', cell(0, 8), 0);
+  fireQ('mouseup', document, 0);
   await wait(250);
   out.push(['单击挖掉起笔那 15 分钟', (() => { const p = pd()[0][8]; return p.on && p.from === 15 && p.to === 60; })()]);
   out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
@@ -485,8 +559,8 @@ window.__itest = async () => {
   await wait(250);
   out.push(['通用时长保存生效', prof().defWork === 30 && prof().defBrk === 5]);
   out.push(['保存后输入框回显新值', $('#defW').value === '30' && $('#defB').value === '5']);
-  fire('mousedown', cell(2, 2));
-  fire('mouseup', document);
+  fireQ('mousedown', cell(2, 2), 0);
+  fireQ('mouseup', document, 0);
   await wait(250);
   out.push(['保存后新单击选中沿用 30/5', (() => { const p = pd()[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
 
@@ -614,7 +688,7 @@ window.__itest = async () => {
   await wait(150);
 
   // 10. 自律时段生效中：与纪律相关的入口必须被锁住（测试模式除外）
-  await Act.nav('clock');
+  await openFull();
   await window.__patch({ clockOn: true, clockInWindow: true, testMode: false });
   await wait(200);
   out.push(['自律时段生效中：总开关置灰', document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
@@ -629,7 +703,7 @@ window.__itest = async () => {
   await wait(200);
   out.push(['自律时段生效中：不能切方案', fc().active, activeBefore]);
   const onCount = pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0);
-  await Act.clockCommitRect(2, 2, 2, 2, 0, 3, 'sub'); // qA=0,qB=3 → 整小时 [0,60)
+  await Act.clockCommitRange(2, 8 * 60, 12 * 60, 'sub'); // 周三 8–12 是选中的，试着取消
   await wait(200);
   out.push(['自律时段生效中：不能取消已选时段', pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
   await Act.nav('rules');
@@ -641,7 +715,7 @@ window.__itest = async () => {
 
   // 10b. 休息段（clockInWindow=true、clockOn=false）：同样锁死，不能"趁休息改"
   await window.__patch({ clockOn: false, clockInWindow: true, clockBreak: true });
-  await Act.nav('clock');
+  await openFull();
   await wait(200);
   out.push(['休息段：总开关同样置灰', document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
   await Act.clockEnable();
@@ -655,7 +729,7 @@ window.__itest = async () => {
   out.push(['休息段：黑名单开关也动不了', S.data.config.lists[0].enabled === true]);
   // 时段外才恢复可点
   await window.__patch({ clockOn: false, clockInWindow: false, clockBreak: false });
-  await Act.nav('clock');
+  await openFull();
   await wait(200);
   out.push(['时段外：总开关恢复可点', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
 
@@ -665,7 +739,8 @@ window.__itest = async () => {
   out.push(['切换方案后 active 变了', fc().active, 'p2']);
   out.push(['切换后图表跟着换（周一 8 点不再选中）', cell(0, 8).classList.contains('on'), false]);
   out.push(['切换后图表跟着换（周六 10 点选中）', cell(5, 10).classList.contains('on'), true]);
-  out.push(['切换后摘要是新方案的', $('#clockLive').textContent, '周六 10:00–12:00；周日 15:00–17:00']);
+  // 摘要已改成"按天聚合 + 总时长"：一天一段，而不是把每段当独立条目罗列
+  out.push(['切换后摘要是新方案的', $('#clockLive').textContent, '周六 共 2 小时（10:00–12:00）；周日 共 2 小时（15:00–17:00）']);
   out.push(['切换后高亮的是新 chip', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '周末轻松']);
 
   const beforeNew = fc().profiles.length;
@@ -732,7 +807,7 @@ window.__itest = async () => {
 
   // 12. 测试模式：自律时段生效中也不该锁（测试模式的意义就是随时开关）
   await window.__patch({ clockOn: true, testMode: true });
-  await Act.nav('clock');
+  await openFull();
   await wait(200);
   out.push(['测试模式下不锁总开关', !document.querySelector('[data-act="clock-enable"]').classList.contains('locked')]);
   await window.__patch({ testMode: false });
@@ -924,7 +999,7 @@ window.__itest = async () => {
   const rulesTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
   out.push(['黑名单页说明了「只在自律时间生效」', /只(在|会).*自律时间|自律时间内/.test(rulesTxt), true]);
   // 自律时段页的关系说明也必须改成包含关系（不是并列）
-  S.view = 'clock'; render();
+  await openFull();
   await wait(250);
   const clockTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
   out.push(['自律时段页说明与黑名单是包含关系', clockTxt.includes('只在自律时间'), true]);
@@ -951,7 +1026,7 @@ window.__itest = async () => {
   //
   // 这是第 3 号问题的直接回归：老实现里"第 1 格"落在中间、"第 2 格"跑到上面。
   // 现在格子和条子共用一条纵轴，逐格点击必须逐格落位。
-  S.view = 'clock'; render();
+  await openFull();
   await wait(250);
   {
     const clearAll = async () => {
@@ -993,7 +1068,7 @@ window.__itest = async () => {
 
   // ---- 24. 每套时段绑定黑名单分组 ----
   {
-    S.view = 'clock'; render();
+    await openFull();
     await wait(220);
     const chips = [...document.querySelectorAll('.cc-bind-chip')];
     out.push(['自律时段页有「绑定黑名单」区', !!document.querySelector('.cc-bind')]);
@@ -1016,14 +1091,91 @@ window.__itest = async () => {
   {
     await Act.nav('settings');
     await wait(250);
-    const btns = [...document.querySelectorAll('#content .cc-gran-btn')];
+    const btns = [...document.querySelectorAll('#content [data-act="clock-gran"]')];
     out.push(['设置页有粒度选择（10/15 分钟）', btns.length, 2]);
     const b10 = btns.find((b) => b.dataset.v === '10');
     if (b10) { b10.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); await wait(250); }
     out.push(['设置页点 10 分钟 → 写进配置', fc().granularity, 10]);
-    const b15 = [...document.querySelectorAll('#content .cc-gran-btn')].find((b) => b.dataset.v === '15');
+    const b15 = [...document.querySelectorAll('#content [data-act="clock-gran"]')].find((b) => b.dataset.v === '15');
     if (b15) { b15.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); await wait(250); }
     out.push(['设置页切回 15 分钟', fc().granularity, 15]);
+  }
+
+  // ---- 26. 两级形态：页面里是微缩概览，点开才是完整页 ----
+  {
+    // 先回到折叠态（页面）
+    S.ccFull = false; S.view = 'clock'; render();
+    await wait(220);
+    const mini = document.querySelector('.cc-mini');
+    out.push(['自律时段页里有微缩图表', !!mini]);
+    out.push(['微缩图不渲染大日历（折叠态没有格子）',
+      document.querySelectorAll('#content .cc-cell').length, 0]);
+    out.push(['微缩图没有坐标标签', document.querySelectorAll('.cc-mini .cc-hlab').length, 0]);
+    out.push(['微缩图没有可拖的细分刻度', document.querySelectorAll('.cc-mini .cc-q').length, 0]);
+    out.push(['微缩图有 7 列', document.querySelectorAll('.cc-mini-col').length, 7]);
+    // 微缩图里的色带数量 == 选中小时的段数（和完整页同源，不会对不上）
+    const miniBars = document.querySelectorAll('.cc-mini-col i').length;
+    const onHours = prof().days.reduce((n, d) => n + d.filter((h) => h.on).length, 0);
+    out.push(['微缩图色带数 = 选中小时数', miniBars, onHours]);
+    // 摘要里的小时数要和配置一致
+    const totalMin = prof().days.reduce((n, d) => n + d.reduce((m, h) => m
+      + (h.on ? Math.max(0, Math.min(60, h.to == null ? 60 : h.to) - (h.from || 0)) : 0), 0), 0);
+    const sumTxt = (document.querySelector('.cc-mini-ft .sum') || {}).textContent || '';
+    out.push(['微缩图摘要显示每周总时长', /每周.*小时|每周.*分钟/.test(sumTxt) || totalMin === 0, true]);
+
+    // 点微缩图 → 完整页
+    mini.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(260);
+    out.push(['点微缩图后出现完整页', !!document.querySelector('#ccDetail')]);
+    out.push(['完整页里才有大日历', document.querySelectorAll('#ccDetail .cc-cell').length, 168]);
+    out.push(['完整页有坐标刻度', document.querySelectorAll('#ccDetail .cc-hlab').length, 24]);
+    out.push(['完整页有每日明细', document.querySelectorAll('#ccDetail .cc-day').length, 7]);
+    out.push(['完整页合计与配置一致（分钟）', (() => {
+      const txt = document.querySelector('.cc-days-hd').textContent;
+      const h = /合计 (\d+) 小时/.exec(txt);
+      const m = /合计 (\d+) 分钟/.exec(txt);
+      const got = h ? +h[1] * 60 : (m ? +m[1] : 0);
+      return got === totalMin;
+    })(), true]);
+
+    // 返回 → 又是微缩图
+    document.querySelector('[data-act="cc-close"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(240);
+    out.push(['点返回到微缩图（完整页已收起）', document.querySelectorAll('#ccDetail').length, 0]);
+    out.push(['返回后微缩图还在', !!document.querySelector('.cc-mini')]);
+  }
+
+  // ---- 27. 专注计时弹窗（HUD）：四角可选 + 透明度可调 + 落盘 ----
+  {
+    STATE.config.settings.hud = STATE.config.settings.hud || {};
+    STATE.config.settings.hud.corner = 'tr';
+    STATE.config.settings.hud.opacity = 92;
+    await Act.nav('settings');
+    await wait(250);
+    const corners = [...document.querySelectorAll('[data-act="hud-corner"]')];
+    out.push(['HUD 位置有四个预设角', corners.length, 4]);
+    out.push(['默认停靠右上（active）',
+      (corners.find((c) => c.dataset.v === 'tr') || {}).className.includes('active'), true]);
+    const br = corners.find((c) => c.dataset.v === 'br');
+    br.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(300);
+    out.push(['点右下 → 写进配置', STATE.config.settings.hud.corner, 'br']);
+    out.push(['点右下 → 按钮态跟着变',
+      [...document.querySelectorAll('[data-act="hud-corner"]')].find((c) => c.dataset.v === 'br')
+        .className.includes('active'), true]);
+    const slider = document.querySelector('#hudOpacity');
+    out.push(['有透明度滑块且范围 30–100', slider ? `${slider.min}-${slider.max}` : '无', '30-100']);
+    slider.value = '60';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(80);
+    out.push(['拖动时只更新读数、不写盘', STATE.config.settings.hud.opacity, 92]);
+    out.push(['读数已变 60%', document.querySelector('#hudOpacityVal').textContent, '60%']);
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(300);
+    out.push(['松手后透明度写进配置', STATE.config.settings.hud.opacity, 60]);
+    // 复位，避免影响后续（目前是最后一段）
+    STATE.config.settings.hud.corner = 'tr';
+    STATE.config.settings.hud.opacity = 92;
   }
 
   const pre = document.createElement('pre');

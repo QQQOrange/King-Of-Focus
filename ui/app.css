@@ -700,6 +700,9 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   max-height: 560px; overflow-y: auto; overflow-x: hidden;
   margin-top: 6px; border-radius: var(--r-lg);
   scrollbar-width: thin;
+  /* 手指在日历里拖动时不要连带滚动页面 */
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 .cc {
   display: grid;
@@ -742,10 +745,16 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
-  cursor: pointer;
+  /* 上下拖才能伸缩，光标直接给这个暗示 */
+  cursor: ns-resize;
   transition: background .1s;
   z-index: 1;
+  /* 触摸时不要触发浏览器的滚动/缩放手势，否则移动端拖不动 */
+  touch-action: none;
 }
+/* 拖动中：整块日历不再响应文字选择，光标也切成"抓住" */
+.cc.dragging { cursor: ns-resize; user-select: none; }
+.cc.dragging .cc-cell { transition: none; }
 .cc-cell:hover { background: var(--hover-bg); }
 /* 选中态不画在格子上：格子之间 3px 间距，半透明底叠两次会留下一条亮缝，
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
@@ -892,6 +901,100 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   background: linear-gradient(180deg, #4d8dff, #3b74e8);
 }
 .cc-gran-btn[disabled] { opacity: .45; cursor: not-allowed; }
+.cc-gran-btn[disabled] { opacity: .45; cursor: not-allowed; }
+
+/* ══════════ 微缩概览（嵌在自律时段页里） ══════════
+ * 只表达"哪天、大概几点到几点有安排"，不给坐标、不加刻度、不接受拖拽：
+ * 信息密度压到最低，一眼看形状就够了。整块是一个按钮，点了进完整页。 */
+.cc-mini {
+  margin-top: 12px; padding: 10px 12px 9px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--panel-a); cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.cc-mini:hover { border-color: rgba(77, 141, 255, .55); background: var(--hover-bg); }
+.cc-mini:focus-visible { outline: 2px solid rgba(77, 141, 255, .6); outline-offset: 2px; }
+.cc-mini-hd {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px; margin-bottom: 5px;
+}
+.cc-mini-hd span { text-align: center; font-size: 10.5px; color: var(--text-3); }
+.cc-mini-hd span.today { color: var(--gold); font-weight: 700; }
+.cc-mini-body {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px; height: 132px;
+}
+.cc-mini-col {
+  position: relative; border-radius: 4px; overflow: hidden;
+  background: rgba(125, 176, 255, .05);
+}
+.cc-mini-col.today { background: rgba(245, 165, 36, .09); }
+.cc-mini-col i {
+  position: absolute; left: 0; right: 0; border-radius: 2px;
+  background: linear-gradient(180deg, #4d8dff, #3b74e8);
+}
+.cc-mini-ft {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 11.5px; color: var(--text-3);
+}
+.cc-mini-ft .nm { color: var(--text-2); font-weight: 600; font-size: 12px; }
+.cc-mini-ft .go { margin-left: auto; color: #6ea8ff; }
+
+/* ══════════ 完整页（点微缩图后展开） ══════════
+ * 盖住整个内容区，自成一层：返回按钮在左上，下面是完整日历与每日明细。 */
+.cc-detail {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+}
+.cc-detail-hd {
+  flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line);
+  background: var(--panel-a);
+}
+.cc-detail-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 650; color: var(--text);
+}
+.cc-detail-live {
+  margin-left: auto; font-size: 12px; color: var(--text-3);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-detail-live b { color: var(--text); font-weight: 600; }
+.cc-detail-bd { flex: 1; overflow: auto; padding: 12px 16px 28px; }
+
+/* 每日明细：一行一天，进度条给"相对多少"的直观感 */
+.cc-days {
+  margin-top: 14px; border: 1px solid var(--line);
+  border-radius: var(--r-md); overflow: hidden;
+}
+.cc-days-hd {
+  display: flex; justify-content: space-between; padding: 8px 12px;
+  font-size: 11.5px; color: var(--text-3);
+  background: var(--panel-a); border-bottom: 1px solid var(--line);
+}
+.cc-day {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr) 76px 44px;
+  align-items: center; gap: 10px; padding: 6px 12px; font-size: 12px;
+}
+.cc-day + .cc-day { border-top: 1px solid var(--line); }
+.cc-day .d { color: var(--text-2); }
+.cc-day.today .d { color: var(--gold); font-weight: 700; }
+.cc-day .bar { height: 6px; border-radius: 3px; background: rgba(125, 176, 255, .12); overflow: hidden; }
+.cc-day .bar i { display: block; height: 100%; background: linear-gradient(90deg, #4d8dff, #3b74e8); }
+.cc-day .v { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cc-day .s { text-align: right; color: var(--text-3); font-size: 11px; }
+
+/* 窄屏：微缩图压矮、完整页留白收窄、明细砍掉次要列 */
+@media (max-width: 720px) {
+  .cc-mini-body { height: 96px; gap: 4px; }
+  .cc-mini { padding: 8px 10px; }
+  .cc-detail-bd { padding: 10px 10px 22px; }
+  .cc-detail-hd { padding: 8px 10px; gap: 8px; }
+  .cc-detail-live { width: 100%; margin-left: 0; white-space: normal; }
+  .cc-day { grid-template-columns: 38px minmax(0, 1fr) 66px; }
+  .cc-day .s { display: none; }
+}
 
 .cc-legend {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;

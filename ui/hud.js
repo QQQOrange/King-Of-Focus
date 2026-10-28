@@ -38,6 +38,11 @@ async function tick() {
     document.documentElement.dataset.theme = t;
   }
 
+  // 透明度由设置页控制（30–100）。这里用 CSS opacity 做，
+  // 比改窗口 alpha 更省事，也不影响点击穿透与置顶属性。
+  const op = Math.max(30, Math.min(100, +(s.opacity || 92)));
+  document.body.style.opacity = String(op / 100);
+
   document.body.classList.toggle('break', !!s.breakOn);
   document.getElementById('label').textContent = s.breakOn
     ? '休息中'

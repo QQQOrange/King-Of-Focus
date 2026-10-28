@@ -81,6 +81,24 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 }
             }
         }
+        "/api/debug/flyout" => {
+            if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
+                reply(req, 403, json!({"error": "debug disabled"}).to_string())
+            } else {
+                reply(
+                    req,
+                    200,
+                    json!({
+                        "open": crate::mask::flyout_open_now(),
+                        "flyoutHits": crate::mask::FLYOUT_HITS.load(std::sync::atomic::Ordering::Relaxed),
+                        "flyoutCover": crate::mask::FLYOUT_COVER.load(std::sync::atomic::Ordering::Relaxed),
+                        "passWins": crate::mask::PASS_WINS.load(std::sync::atomic::Ordering::Relaxed),
+                        "drop": crate::mask::RAISE_DROP.load(std::sync::atomic::Ordering::Relaxed),
+                    })
+                    .to_string(),
+                )
+            }
+        }
         "/api/debug/testmode" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())

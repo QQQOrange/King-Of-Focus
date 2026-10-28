@@ -35,6 +35,37 @@ pub fn focus_main(app: &AppHandle, shared: &Shared) {
     let _ = app.emit("goto-home", ());
 }
 
+/// 把 HUD 摆到用户选的那个角。
+///
+/// 四角 + 边距（`offset_x/offset_y`）的组合足够避开绝大多数"主要专注内容"：
+/// 比如代码编辑器把侧栏放左边，就选右下；看视频就选左上。
+/// 换位置后立刻生效（命令里也会调这个函数），不用等下一轮轮询。
+pub fn place_hud(app: &tauri::AppHandle, cfg: &crate::model::Config) {
+    let Some(w) = app.get_webview_window("hud") else {
+        return;
+    };
+    let Ok(Some(mon)) = w.primary_monitor() else {
+        return;
+    };
+    let msize = mon.size();
+    let scale = mon.scale_factor();
+    let wsz = w
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(268, 116));
+    let h = &cfg.settings.hud;
+    let ix = (h.offset_x.max(0) as f64 * scale) as i32;
+    let iy = (h.offset_y.max(0) as f64 * scale) as i32;
+    let (mw, mh) = (msize.width as i32, msize.height as i32);
+    let (ww, wh) = (wsz.width as i32, wsz.height as i32);
+    let (x, y) = match h.corner_norm() {
+        "tl" => (ix, iy),
+        "br" => (mw - ww - ix, mh - wh - iy),
+        "bl" => (ix, mh - wh - iy),
+        _ => (mw - ww - ix, iy),
+    };
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 pub fn start(app: AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
         let mut pending: HashMap<u32, Instant> = HashMap::new();
@@ -236,18 +267,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             if let Some(w) = app.get_webview_window("hud") {
                 let vis = w.is_visible().unwrap_or(false);
                 if show_hud && !vis {
-                    if let Ok(Some(mon)) = w.primary_monitor() {
-                        let msize = mon.size();
-                        let scale = mon.scale_factor();
-                        let wsz = w
-                            .outer_size()
-                            .unwrap_or(tauri::PhysicalSize::new(268, 116));
-                        let x = msize.width as i32
-                            - wsz.width as i32
-                            - (cfg.settings.hud.offset_x as f64 * scale) as i32;
-                        let y = (cfg.settings.hud.offset_y as f64 * scale) as i32;
-                        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-                    }
+                    place_hud(&app, &cfg);
                     let _ = w.show();
                 } else if !show_hud && vis {
                     let _ = w.hide();

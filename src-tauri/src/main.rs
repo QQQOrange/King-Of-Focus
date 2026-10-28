@@ -403,6 +403,7 @@ fn main() {
             cmds::show_main,
             cmds::points_unlock,
             cmds::hud_state,
+            cmds::hud_set_look,
             cmds::hud_save,
             cmds::notify_save,
             cmds::backup_make,

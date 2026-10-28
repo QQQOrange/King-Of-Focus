@@ -1025,6 +1025,43 @@ pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Val
 }
 
 /// 桌面 HUD 的数据源（1 秒轮询）
+/// 设置 HUD 的停靠角与不透明度，并**立刻**生效（不等下一轮轮询）。
+///
+/// 角用短码（tr/tl/br/bl）；透明度 30–100，越界会被夹住。
+/// 落盘之后即使重启也还是用户选的位置和透明度。
+#[tauri::command]
+pub fn hud_set_look(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    corner: Option<String>,
+    opacity: Option<u32>,
+    offset_x: Option<i32>,
+    offset_y: Option<i32>,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    if let Some(v) = corner {
+        c.settings.hud.corner = v;
+    }
+    if let Some(v) = opacity {
+        c.settings.hud.opacity = v;
+    }
+    if let Some(v) = offset_x {
+        c.settings.hud.offset_x = v.max(0);
+    }
+    if let Some(v) = offset_y {
+        c.settings.hud.offset_y = v.max(0);
+    }
+    // 归一化（非法角回落 tr，透明度夹到 30–100）
+    c.settings.hud.corner = c.settings.hud.corner_norm().to_string();
+    c.settings.hud.opacity = c.settings.hud.opacity_pct();
+    crate::cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    crate::monitor::place_hud(&app, &c);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
     let now = chrono::Local::now().timestamp();
@@ -1066,6 +1103,9 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "quoteFrom": quote_from,
         "theme": cfg.settings.theme,
         "hudEnabled": cfg.settings.hud.enabled,
+        // HUD 自己的外观：页面按这个透明度自己调，改完立刻能看到
+        "opacity": cfg.settings.hud.opacity_pct(),
+        "corner": cfg.settings.hud.corner_norm(),
     })
 }
 

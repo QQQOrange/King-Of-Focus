@@ -89,6 +89,12 @@ pub static RAISE_FAIL: AtomicU64 = AtomicU64::new(0);
 pub static RAISE_ERR: AtomicU32 = AtomicU32::new(0);
 /// 因为压在遮罩上面而被摘掉 TOPMOST 的窗口次数（lazytyper 那类浮窗）
 pub static RAISE_DROP: AtomicU64 = AtomicU64::new(0);
+/// 外壳浮层（Start / 搜索）处于打开状态的次数（诊断：判断"让位"分支到底跑没跑）
+pub static FLYOUT_HITS: AtomicU64 = AtomicU64::new(0);
+/// 浮层打开期间把遮罩抬到最前面的次数（盖住放行弹窗）
+pub static FLYOUT_COVER: AtomicU64 = AtomicU64::new(0);
+/// 本轮收集到的放行窗口数（诊断用）
+pub static PASS_WINS: AtomicU32 = AtomicU32::new(0);
 
 /// 收到过多少次窗口事件（前台切换 / 最小化 / z 序变化）。
 /// 事件驱动是否真的在工作，看这个数就知道——不涨说明钩子没生效。
@@ -339,6 +345,65 @@ unsafe fn process_stem(pid: u32) -> String {
     let full = String::from_utf16_lossy(&buf[..size as usize]);
     let name = full.rsplit('\\').next().unwrap_or(&full);
     name.trim_end_matches(".exe").to_lowercase()
+}
+
+/// 「外壳浮层」的进程名（小写、不含 .exe）。
+///
+/// Start 菜单、搜索、任务视图、音量/网络那类飞出面板都在这几个宿主进程里。
+/// 它们打开时，**放行程序的小弹窗必须让位**——这正是本次要修的 bug：
+/// lazytyper 的语音弹条被我们特意提到遮罩之上（见 PASS_THROUGH_PROCS 的说明），
+/// 于是 Start 一打开，它就只能从"开始菜单与任务栏之间的那条缝"里露出来；
+/// 而主循环还在不停把它顶回遮罩上方，一顶一摘 → 肉眼看就是持续闪烁。
+///
+/// 判定用**进程名**而不是窗口类名：`Windows.UI.Core.CoreWindow` 是 UWP 通用类，
+/// 拿它判断会把任何 UWP 应用的前台都误当成"浮层打开"，那样弹条就再也不显示了。
+const SHELL_FLYOUT_PROCS: &[&str] = &[
+    "startmenuexperiencehost",
+    "searchhost",
+    "shellexperiencehost",
+    "textinputhost",
+    "startmenu",
+];
+
+/// 进程名是否属于"外壳浮层"宿主（纯函数，便于单测）
+fn is_shell_flyout_proc(stem: &str) -> bool {
+    if stem.is_empty() {
+        return false;
+    }
+    SHELL_FLYOUT_PROCS.iter().any(|p| stem.contains(p))
+}
+
+/// 当前前台是不是 Start 菜单 / 搜索 / 任务视图这类外壳浮层。
+///
+/// 带 150ms 缓存：这段每 8~50ms 会被问一次，而 GetForegroundWindow + 查进程名
+/// 都要进内核，不缓存会白烧 CPU；150ms 对"用户手动开/关开始菜单"完全够快。
+fn shell_flyout_open() -> bool {
+    static CACHE: AtomicU64 = AtomicU64::new(0);   // 高位 = 时刻，bit0 = 上次结果
+    let now = now_ms();
+    let packed = CACHE.load(Ordering::Relaxed);
+    let at = packed >> 1;
+    if at != 0 && now.saturating_sub(at) < 150 {
+        return (packed & 1) == 1;
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    let v = if fg.is_null() {
+        false
+    } else {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(fg, &mut pid) };
+        let stem = unsafe { process_stem(pid) };
+        is_shell_flyout_proc(&stem)
+    };
+    CACHE.store((now << 1) | v as u64, Ordering::Relaxed);
+    if v {
+        FLYOUT_HITS.fetch_add(1, Ordering::Relaxed);
+    }
+    v
+}
+
+/// 给诊断接口用：当前是否处于"外壳浮层打开"状态
+pub fn flyout_open_now() -> bool {
+    shell_flyout_open()
 }
 
 fn is_pass_through(pid: u32) -> bool {
@@ -811,6 +876,43 @@ impl Overlay {
                 self.hwnd, self.w, self.h, alpha
             ));
         }
+    }
+
+    /// 把遮罩顶到置顶带的最前面（盖住一切置顶浮窗）。
+    ///
+    /// 用在"Start 菜单 / 搜索打开"的时候：那会儿不需要再给选中窗口留亮区
+    /// （它本来就被开始菜单挡住了），但必须压住 lazytyper 那类小弹窗。
+    ///
+    /// 为什么是"抬自己"而不是"摘对方"：对方是自动置顶的窗口，
+    /// 我们摘一次它立刻加回来，两边 50ms 拉一次锯 —— 那就是用户看到的闪烁。
+    /// 抬自己是一次性动作，对方再调 `SetWindowPos(HWND_TOPMOST)` 对已经置顶的
+    /// 窗口是空操作，抢不回去。
+    unsafe fn raise_top(&mut self) {
+        if self.hwnd.is_null() || IsWindow(self.hwnd) == 0 {
+            return;
+        }
+        let ex = GetWindowLongW(self.hwnd, GWL_EXSTYLE) as u32;
+        if (ex & WS_EX_TOPMOST_FLAG) == 0 {
+            SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            );
+        }
+        SetWindowPos(
+            self.hwnd,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        mark_self_action();
     }
 
     /// 把遮罩锚定到选中窗口的正下方（三层结构见 `reassert_below`）
@@ -1372,6 +1474,9 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
     // 遮罩本身是置顶窗口，所以它 z 序**上方**只剩置顶带里的窗口：
     // 选中窗口（except，跳过）和那些抢置顶的浮窗（要摘）。普通窗口都在遮罩下面，
     // 不会出现在这条链里，所以这个扫描范围是精确的、不会误伤普通窗口。
+    // 外壳浮层（Start / 搜索 …）打开时，放行程序的窗口不再享受"永久豁免摘顶"：
+    // 它们这会儿只会从缝里露出来，必须能和普通浮窗一样被摘下去。
+    let flyout = shell_flyout_open();
     if IS_ADMIN.load(Ordering::Relaxed) {
         let mut a = GetWindow(hwnd, GW_HWNDPREV);
         let mut g2 = 0;
@@ -1384,7 +1489,7 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
             // 用 `is_pass_through` 按 pid 判定，不依赖 except 名单的时序。
             let mut pid_a = 0u32;
             GetWindowThreadProcessId(a, &mut pid_a);
-            let is_pass = pid_a != 0 && is_pass_through(pid_a);
+            let is_pass = pid_a != 0 && is_pass_through(pid_a) && !flyout;
             if IsWindowVisible(a) != 0
                 && !except.iter().any(|e| *e == a)
                 && !is_shell_window(a)
@@ -1840,8 +1945,11 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if pass_t.elapsed().as_millis() >= 500 || scan_now {
                     pass_t = Instant::now();
                     pass_wins = collect_pass_through();
-                    for h in pass_wins.iter() {
-                        ensure_above(*h, &mut raised);
+                    // 浮层打开时不顶：顶上去只会露在 Start 与任务栏之间的缝里闪
+                    if !shell_flyout_open() {
+                        for h in pass_wins.iter() {
+                            ensure_above(*h, &mut raised);
+                        }
                     }
                 }
                 if tgt != 0 {
@@ -1918,14 +2026,36 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             if last_top.elapsed().as_millis() >= 50 {
                 last_top = Instant::now();
                 let anchor = last_tgt as Hwnd;
-                for o in overlays.iter_mut() {
-                    o.anchor_under(anchor, &self_wins);
+                let flyout_now = shell_flyout_open();
+                if flyout_now {
+                    // 外壳浮层（Start / 搜索）打开：把遮罩抬到最前面，直接压住
+                    // lazytyper 那类"自动置顶"的小弹窗。
+                    // 这里**不摘**对方的 TOPMOST —— 它几毫秒内就会加回来，
+                    // 一摘一加就是持续闪烁的根因。
+                    for o in overlays.iter_mut() {
+                        o.raise_top();
+                        FLYOUT_COVER.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    for o in overlays.iter_mut() {
+                        o.anchor_under(anchor, &self_wins);
+                    }
                 }
-                // 兜底再顶一次放行程序窗口：摘顶扫描和 anchor_under 有时序间隙，
-                // 弹条刚好在那几十毫秒里被摘下来的话，会在下次 pass_wins 重收前
-                // 持续闪烁。这里每 50ms 顺手 ensure_above 一次，代价极小。
-                for h in pass_wins.iter() {
-                    ensure_above(*h, &mut raised);
+                // 放行程序（lazytyper 语音弹条）在这一层的处理，取决于外壳浮层开没开：
+                //   · 没开 → 每 50ms 兜底顶一次。摘顶扫描和 anchor_under 之间有几个
+                //     毫秒的空档，弹条刚好在那会儿被摘下来就会闪，这里补一刀。
+                //   · 开了（Start 菜单 / 搜索 / 输入法面板）→ **反过来压下去**。
+                //     它本来被特意提到遮罩之上，浮层一开就只能从"开始菜单与任务栏
+                //     之间那条缝"里露出，主循环再顶回去就是持续闪烁。
+                //     压到遮罩下面之后它被遮罩盖住，也不再和主循环拉锯。
+                PASS_WINS.store(pass_wins.len() as u32, Ordering::Relaxed);
+                // 浮层打开时什么都不做：遮罩已经抬到最前面（见上面的 raise_top），
+                // 弹窗自然被盖住。这里若再去 ensure_above，就成了"遮罩压、主循环顶"
+                // 的对拉，弹窗会在缝里一闪一闪。
+                if !shell_flyout_open() {
+                    for h in pass_wins.iter() {
+                        ensure_above(*h, &mut raised);
+                    }
                 }
             }
 
@@ -1993,4 +2123,34 @@ mod tests {
         Rect { left: l, top: t, right: rr, bottom: b }
     }
 
+
+    /// 外壳浮层的识别规则：只认那几个系统宿主进程。
+    ///
+    /// 这条是"打开开始菜单时 lazytyper 弹条从缝里露出来"那个 bug 的判据回归。
+    /// 匹配太宽（比如用 UWP 通用窗口类）会把普通应用也当成浮层，弹条就永远不显示了；
+    /// 匹配太窄则等于没修。
+    #[test]
+    fn shell_flyout_proc_matching() {
+        // Start 菜单 / 搜索 / 壳层飞出面板 / 输入法面板
+        assert!(is_shell_flyout_proc("startmenuexperiencehost"));
+        assert!(is_shell_flyout_proc("searchhost"));
+        assert!(is_shell_flyout_proc("shellexperiencehost"));
+        assert!(is_shell_flyout_proc("textinputhost"));
+        // 放行程序自己、资源管理器、本程序都不能被当成浮层
+        assert!(!is_shell_flyout_proc("lazytyper"));
+        assert!(!is_shell_flyout_proc("explorer"));
+        assert!(!is_shell_flyout_proc("king-of-focus"));
+        assert!(!is_shell_flyout_proc(""));
+    }
+
+    /// 放行名单与浮层名单必须是两套东西：混在一起会让"正常使用时弹条不显示"
+    #[test]
+    fn pass_through_and_flyout_lists_are_disjoint() {
+        for p in PASS_THROUGH_PROCS {
+            assert!(
+                !SHELL_FLYOUT_PROCS.iter().any(|f| p.contains(f) || f.contains(p)),
+                "放行程序不应同时被当成外壳浮层：{p}"
+            );
+        }
+    }
 }

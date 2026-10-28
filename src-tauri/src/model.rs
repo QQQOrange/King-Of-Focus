@@ -503,9 +503,43 @@ pub struct HudCfg {
     pub enabled: bool,
     /// 励志短语多久换一次（分钟）
     pub quote_minutes: u32,
-    /// 距屏幕右边缘的距离
+    /// 距屏幕边缘的距离（按所选角落取水平/垂直边）
     pub offset_x: i32,
     pub offset_y: i32,
+    /// 停靠角：`tr` 右上（默认）/ `tl` 左上 / `br` 右下 / `bl` 左下。
+    ///
+    /// 为什么要可选：HUD 是置顶小窗，固定放右上会压住很多人"右上角放工具栏/调试面板"
+    /// 的工作区。四角可换 + 边距可调，才能真的避开各自的主要专注内容。
+    #[serde(default = "default_hud_corner")]
+    pub corner: String,
+    /// 不透明度（30–100）。太低看不清，太高挡内容，默认 92。
+    #[serde(default = "default_hud_opacity")]
+    pub opacity: u32,
+}
+
+fn default_hud_corner() -> String {
+    "tr".into()
+}
+
+fn default_hud_opacity() -> u32 {
+    92
+}
+
+impl HudCfg {
+    /// 归一化后的角：只认四个合法值，其它一律按右上处理。
+    pub fn corner_norm(&self) -> &'static str {
+        match self.corner.as_str() {
+            "tl" => "tl",
+            "br" => "br",
+            "bl" => "bl",
+            _ => "tr",
+        }
+    }
+
+    /// 夹到 30–100 的不透明度
+    pub fn opacity_pct(&self) -> u32 {
+        self.opacity.clamp(30, 100)
+    }
 }
 
 impl Default for HudCfg {
@@ -515,6 +549,8 @@ impl Default for HudCfg {
             quote_minutes: 60,
             offset_x: 20,
             offset_y: 20,
+            corner: default_hud_corner(),
+            opacity: default_hud_opacity(),
         }
     }
 }
