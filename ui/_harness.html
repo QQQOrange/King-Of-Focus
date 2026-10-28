@@ -384,6 +384,78 @@ window.__itest = async () => {
   out.push(['不勾选则只改本片', (() => { const p = pd()[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
   out.push(['不勾选不动通用值', prof().defWork === 30 && prof().defBrk === 5]);
 
+  // 9a. 起止分钟：菜单预填 / 应用 / 单格校验
+  await Act.clockSetWB(1, 1, 10, 10, 50, 10, false, 15, 45);
+  await wait(150);
+  out.push(['起止分钟写入配置', (() => { const p = pd()[1][10]; return p.on && p.from === 15 && p.to === 45; })()]);
+  fire('contextmenu', cell(1, 10), { clientX: 420, clientY: 420 });
+  await wait(120);
+  out.push(['部分小时预填起止分钟', $('#ccFrom').value === '15' && $('#ccTo').value === '45']);
+  out.push(['目标文案带分钟', $('#ccTgt').textContent, '周二 10:15 – 10:45']);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+  // 起 >= 止（同一格里）→ 拦住，不改配置
+  fire('contextmenu', cell(1, 10), { clientX: 420, clientY: 420 });
+  await wait(120);
+  $('#ccFrom').value = '40';
+  $('#ccTo').value = '20';
+  $('#ccApply').click();
+  await wait(150);
+  out.push(['起>=止被拦住', (() => { const p = pd()[1][10]; return p.from === 15 && p.to === 45; })()]);
+  out.push(['拦住后菜单不关', !!document.querySelector('.cc-menu')]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(80);
+  // 多格应用：起止分钟只落首/尾小时，中间归一成整小时
+  await Act.clockSetWB(1, 1, 8, 12, 50, 10, false, 20, 50);
+  await wait(150);
+  out.push(['多格起止只落边界小时', (() => {
+    const p = pd()[1];
+    return p[8].from === 20 && p[8].to === 60 && p[9].from === 0 && p[9].to === 60 && p[12].from === 0 && p[12].to === 50;
+  })()]);
+  out.push(['摘要文案带分钟', $('#clockLive').textContent.indexOf('08:20') >= 0 && $('#clockLive').textContent.indexOf('12:50') >= 0]);
+  // 格子标题显示真实窗口
+  out.push(['格子标题带分钟', cell(1, 10).title.indexOf('周二 10:15 – 10:45') >= 0]);
+
+  // 9b. 起止分钟渲染：部分小时单独成块，没选中的分钟用占位带让出来
+  await Act.clockClear();
+  await wait(150);
+  await Act.clockSetWB(3, 3, 9, 9, 50, 10, false, 15, 45);
+  await wait(150);
+  const run9 = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '3' && r.dataset.h0 === '9');
+  out.push(['部分小时单独成块', !!run9 && run9.dataset.h1 === '9']);
+  const gaps9 = run9 ? [...run9.querySelectorAll('.cc-gap')].map((g) => g.style.flexBasis) : [];
+  out.push(['上下占位带各 25%', gaps9.length === 2 && gaps9[0] === '25%' && gaps9[1] === '25%']);
+  out.push(['部分小时不画顶/底描边', run9 ? (getComputedStyle(run9).boxShadow.match(/inset/g) || []).length : -1, 2]);
+  out.push(['格子标题显示真实窗口', cell(3, 9).title.indexOf('周四 09:15 – 09:45') >= 0]);
+  out.push(['摘要带分钟', $('#clockLive').textContent.indexOf('09:15') >= 0]);
+
+  // 9c. 相邻块缝合：周一 8–10 与周二 8–10 配方不同 → 仍然连成一条，不各画各的高光
+  await Act.clockClear();
+  await wait(150);
+  await Act.clockSetWB(0, 0, 8, 10, 50, 10, false, 0, 60);
+  await Act.clockSetWB(1, 1, 8, 10, 25, 5, false, 0, 60);
+  await wait(150);
+  const rMon = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '0' && r.dataset.h0 === '8');
+  const rTue = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '1' && r.dataset.h0 === '8');
+  out.push(['相邻两块各自存在', !!rMon && !!rTue]);
+  out.push(['后块负边距补上网格缝', rTue ? getComputedStyle(rTue).marginLeft : '', '-3px']);
+  out.push(['前块只少右边的圆角', rMon ? getComputedStyle(rMon).borderRadius : '', '4px 0px 0px 4px']);
+  out.push(['后块只少左边的圆角', rTue ? getComputedStyle(rTue).borderRadius : '', '0px 4px 4px 0px']);
+  out.push(['前块描边只剩 3 边', rMon ? (getComputedStyle(rMon).boxShadow.match(/inset/g) || []).length : -1, 3]);
+  out.push(['后块描边只剩 3 边', rTue ? (getComputedStyle(rTue).boxShadow.match(/inset/g) || []).length : -1, 3]);
+
+  // 9d. 孤立块保持原样：四角圆角 + 一整圈描边
+  await Act.clockClear();
+  await wait(150);
+  await Act.clockSetWB(3, 3, 8, 10, 50, 10, false, 0, 60);
+  await wait(150);
+  const rIso = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '3' && r.dataset.h0 === '8');
+  out.push(['孤立块四角圆角', rIso ? getComputedStyle(rIso).borderRadius : '', '4px']);
+  out.push(['孤立块整圈描边', rIso ? (getComputedStyle(rIso).boxShadow.match(/inset/g) || []).length : -1, 4]);
+  out.push(['孤立块不补缝', rIso ? getComputedStyle(rIso).marginLeft : '', '0px']);
+  await Act.clockClear();
+  await wait(150);
+
   // 10. 自律时段生效中：与纪律相关的入口必须被锁住（测试模式除外）
   await Act.nav('clock');
   await window.__patch({ clockOn: true, clockInWindow: true, testMode: false });

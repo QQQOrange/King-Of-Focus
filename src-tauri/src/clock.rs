@@ -12,6 +12,10 @@
 //! 每段的"专注 + 休息"以**整点**为锚点循环：第 9 段（09:00–10:00）设成
 //! 专注 45 / 休息 15，就是 09:00–09:45 专注、09:45–10:00 休息。
 //! `work + brk > 60` 会在 sanitize 里被夹到 60，休息不会溢到下一段。
+//!
+//! 每小时的选中窗口还可以用 `from`/`to` 收窄成"第几分钟到第几分钟"
+//! （默认 `0..60` = 整小时）：只有连续段的首/尾小时会带非默认值，
+//! 于是"08:15–11:45"这种比整小时更细的边界也能表达。窗口外一律视为没选中。
 
 use crate::model::Config;
 use crate::sched::now_local;
@@ -45,8 +49,9 @@ impl ClockState {
 
 /// 某天某小时的计划（未启用 / 未选中 → None）
 ///
+/// 返回 `(work, brk, from, to)`：专注分钟、休息分钟、选中窗口的起止分钟。
 /// 只认「当前生效的那套方案」：别的方案存着但不参与任何判定。
-pub fn plan_at(cfg: &Config, weekday: u32, hour: u32) -> Option<(u32, u32)> {
+pub fn plan_at(cfg: &Config, weekday: u32, hour: u32) -> Option<(u32, u32, u32, u32)> {
     let c = &cfg.settings.focus_clock;
     if !c.enabled {
         return None;
@@ -55,10 +60,10 @@ pub fn plan_at(cfg: &Config, weekday: u32, hour: u32) -> Option<(u32, u32)> {
     if !p.on {
         return None;
     }
-    Some((p.work.min(60), p.brk.min(60)))
+    Some((p.work.min(60), p.brk.min(60), p.from.min(59), p.to.clamp(1, 60)))
 }
 
-/// 当前时刻的状态。未启用或当前小时没选中 → None
+/// 当前时刻的状态。未启用 / 当前小时没选中 / 分钟落在窗口外 → None
 pub fn state(cfg: &Config) -> Option<ClockState> {
     state_at(cfg, now_local())
 }
@@ -70,9 +75,16 @@ pub fn state(cfg: &Config) -> Option<ClockState> {
 pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> {
     let weekday = now.weekday().num_days_from_monday();
     let hour = now.hour();
-    let (work, brk) = plan_at(cfg, weekday, hour)?;
+    let (work, brk, from, to) = plan_at(cfg, weekday, hour)?;
     let minute = now.minute() as i64;
     let sec = now.second() as i64;
+
+    // 起止分钟窗口外 → 这一小时没被选中（比如只选了 09:15–09:45）
+    if minute < from as i64 || minute >= to as i64 {
+        return None;
+    }
+    // 到窗口结束还剩多少分钟：专注/休息的阶段剩余时间都不能超过它
+    let win_left = to as i64 - minute;
 
     // 休息时长为 0 或专注占满整小时 → 这一段连续专注
     if brk == 0 || work == 0 || work >= 60 {
@@ -81,7 +93,7 @@ pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> 
             hour,
             in_window: true,
             in_break: false,
-            left: ((60 - minute) * 60 - sec).max(0),
+            left: (win_left * 60 - sec).max(0),
             work: 60,
             brk: 0,
         });
@@ -89,25 +101,31 @@ pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> 
 
     let brk_end = (work + brk).min(60) as i64;
     let in_break = minute >= work as i64 && minute < brk_end;
-    let left = if in_break {
-        (brk_end - minute) * 60 - sec
+    let phase_left = if in_break {
+        brk_end - minute
     } else {
-        (work as i64 - minute) * 60 - sec
+        work as i64 - minute
     };
     Some(ClockState {
         weekday,
         hour,
         in_window: true,
         in_break,
-        left: left.max(0),
+        // 窗口可能比阶段更早结束（如 09:00–09:30 的窗口里看不到 09:45 开始的休息）
+        left: (phase_left.min(win_left) * 60 - sec).max(0),
         work,
         brk,
     })
 }
 
+/// 某一时刻是否"真正在自律"（在窗口内且不在休息段）
+pub fn focusing_at(cfg: &Config, now: chrono::NaiveDateTime) -> bool {
+    state_at(cfg, now).map(|s| s.focusing()).unwrap_or(false)
+}
+
 /// 自律模式是否由"生效时间段"接管中（休息段不算）
 pub fn active(cfg: &Config) -> bool {
-    state(cfg).map(|s| s.focusing()).unwrap_or(false)
+    focusing_at(cfg, now_local())
 }
 
 /// 距离这个计划下一次状态翻转还有多少秒（用于界面上的倒计时）。
@@ -123,20 +141,13 @@ pub fn seconds_until_change(cfg: &Config) -> Option<i64> {
         return None;
     }
     let now = now_local();
-    let cur = state(cfg).map(|s| s.focusing()).unwrap_or(false);
+    let cur = focusing_at(cfg, now);
 
+    // 直接按"未来时刻的专注状态"探测：分钟级窗口、跨小时、跨天都自动算对
     let mut probe_secs = 30i64;
     while probe_secs <= 7 * 24 * 3600 {
         let probe = now + chrono::Duration::seconds(probe_secs);
-        let next = match plan_at(cfg, probe.weekday().num_days_from_monday(), probe.hour()) {
-            Some((work, brk)) if brk > 0 && work > 0 && work < 60 => {
-                let m = probe.minute();
-                !(m >= work && m < (work + brk).min(60))
-            }
-            Some(_) => true,
-            None => false,
-        };
-        if next != cur {
+        if focusing_at(cfg, probe) != cur {
             return Some(probe_secs);
         }
         probe_secs += if probe_secs < 7200 { 30 } else { 300 };
@@ -144,7 +155,9 @@ pub fn seconds_until_change(cfg: &Config) -> Option<i64> {
     None
 }
 
-/// 把一天里选中的小时合并成连续区间（"08:00–12:00、14:00–16:00"）
+/// 把一天里选中的小时合并成连续区间（"08:00–12:00、14:00–16:00"）。
+/// 起止分钟非整点时带分钟（"08:15–11:45"）；中间小时的窗口不完整时
+/// 会把区间断开——那段洞是真的没选中，文本不能假装连着。
 fn day_ranges(day: &[crate::model::HourPlan]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0usize;
@@ -154,11 +167,20 @@ fn day_ranges(day: &[crate::model::HourPlan]) -> Vec<String> {
             continue;
         }
         let start = i;
-        while i + 1 < day.len() && day[i + 1].on {
-            i += 1;
+        let mut end = i;
+        // 连续性看"有效边界"：上一小时得到整点、下一小时从整点开始，才算连上
+        while end + 1 < day.len()
+            && day[end + 1].on
+            && day[end].to >= 60
+            && day[end + 1].from == 0
+        {
+            end += 1;
         }
-        out.push(format!("{:02}:00–{:02}:00", start, i + 1));
-        i += 1;
+        let f = day[start].from.min(59);
+        let t = day[end].to.clamp(1, 60);
+        let (eh, em) = if t >= 60 { (end + 1, 0u32) } else { (end, t) };
+        out.push(format!("{start:02}:{f:02}–{eh:02}:{em:02}"));
+        i = end + 1;
     }
     out
 }
@@ -222,13 +244,13 @@ mod tests {
     }
 
     fn all_on(work: u32, brk: u32) -> Vec<Vec<HourPlan>> {
-        vec![vec![HourPlan { on: true, work, brk }; 24]; 7]
+        vec![vec![HourPlan { on: true, work, brk, from: 0, to: 60 }; 24]; 7]
     }
 
     #[test]
     fn plan_none_when_disabled() {
         let mut days = all_off();
-        days[0][9] = HourPlan { on: true, work: 50, brk: 10 };
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
         assert!(plan_at(&cfg_with(days, false), 0, 9).is_none());
     }
 
@@ -240,9 +262,9 @@ mod tests {
     #[test]
     fn plan_clamps_and_reads_selected() {
         let mut days = all_off();
-        days[2][9] = HourPlan { on: true, work: 90, brk: 30 };
+        days[2][9] = HourPlan { on: true, work: 90, brk: 30, from: 0, to: 60 };
         let c = cfg_with(days, true);
-        assert_eq!(plan_at(&c, 2, 9), Some((60, 30)));
+        assert_eq!(plan_at(&c, 2, 9), Some((60, 30, 0, 60)));
         assert_eq!(plan_at(&c, 3, 9), None);
         assert_eq!(plan_at(&c, 2, 23), None);
     }
@@ -287,7 +309,7 @@ mod tests {
         // 只有"今天"选中，其它天全关：state 的成败取决于今天是周几
         let mut days = all_off();
         for h in 0..24 {
-            days[0][h] = HourPlan { on: true, work: 50, brk: 10 };
+            days[0][h] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
         }
         let c = cfg_with(days, true);
         match state(&c) {
@@ -336,7 +358,7 @@ mod tests {
     #[test]
     fn seconds_until_change_some_when_any_hour_on() {
         let mut days = all_off();
-        days[0][9] = HourPlan { on: true, work: 50, brk: 10 };
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
         // 周计划：只要选了任一天的一小时，7 天内必然有状态翻转（不管今天周几）
         assert!(seconds_until_change(&cfg_with(days, true)).is_some());
     }
@@ -357,8 +379,8 @@ mod tests {
         b.id = "rest".into();
         b.name = "周末".into();
         for h in 8..12 {
-            a.days[0][h] = HourPlan { on: true, work: 50, brk: 10 };
-            b.days[0][h] = HourPlan { on: true, work: 25, brk: 5 };
+            a.days[0][h] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
+            b.days[0][h] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60 };
         }
         let mut c = Config::default();
         c.settings.focus_clock = ClockCfg {
@@ -373,9 +395,9 @@ mod tests {
     #[test]
     fn plan_at_follows_active_profile() {
         let mut c = two_profiles();
-        assert_eq!(plan_at(&c, 0, 8), Some((50, 10)));
+        assert_eq!(plan_at(&c, 0, 8), Some((50, 10, 0, 60)));
         c.settings.focus_clock.active = "rest".into();
-        assert_eq!(plan_at(&c, 0, 8), Some((25, 5)), "切换方案后应按新方案判定");
+        assert_eq!(plan_at(&c, 0, 8), Some((25, 5, 0, 60)), "切换方案后应按新方案判定");
         c.settings.focus_clock.enabled = false;
         assert!(plan_at(&c, 0, 8).is_none(), "总开关关掉后哪套都不生效");
     }
@@ -389,7 +411,7 @@ mod tests {
             Some("work"),
             "active 失效时退回第一套"
         );
-        assert_eq!(plan_at(&c, 0, 8), Some((50, 10)));
+        assert_eq!(plan_at(&c, 0, 8), Some((50, 10, 0, 60)));
     }
 
     #[test]
@@ -412,5 +434,105 @@ mod tests {
         assert!(seconds_until_change(&c).is_some());
         c.settings.focus_clock.profiles.truncate(1);
         assert!(seconds_until_change(&c).is_some());
+    }
+
+    /* ---- 起止分钟（窗口）---- */
+
+    /// 2026-10-26 是周一；tests 里都用它配一个确定的"现在"
+    fn monday(hour: u32, minute: u32) -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 26)
+            .unwrap()
+            .and_hms_opt(hour, minute, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn plan_at_returns_window_fields() {
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 45, brk: 15, from: 15, to: 45 };
+        assert_eq!(plan_at(&cfg_with(days, true), 0, 9), Some((45, 15, 15, 45)));
+    }
+
+    #[test]
+    fn state_none_when_minute_outside_window() {
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 45 };
+        let c = cfg_with(days, true);
+        assert!(state_at(&c, monday(9, 10)).is_none(), "09:10 在窗口开始前");
+        assert!(state_at(&c, monday(9, 50)).is_none(), "09:50 在窗口结束后");
+        let s = state_at(&c, monday(9, 30)).expect("09:30 落在 15–45 窗口里");
+        assert!(s.in_window && !s.in_break, "30 < 50，应是专注");
+        assert_eq!(s.left, 15 * 60, "到 09:45 窗口结束还剩 15 分钟");
+    }
+
+    #[test]
+    fn state_window_clips_phase_left() {
+        // 窗口 09:00–09:30，而休息段从 09:45 才开始 → 永远看不到休息
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 30 };
+        let c = cfg_with(days, true);
+        let s = state_at(&c, monday(9, 10)).expect("09:10 在窗口里");
+        assert!(!s.in_break, "窗口内全程专注");
+        assert_eq!(s.left, 20 * 60, "剩余以窗口结束封顶，不是阶段结束");
+    }
+
+    #[test]
+    fn state_break_inside_window() {
+        // 窗口整段落在休息段里：09:30–09:50，休息段是 20–60
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 20, brk: 40, from: 30, to: 50 };
+        let c = cfg_with(days, true);
+        let s = state_at(&c, monday(9, 35)).expect("09:35 在窗口里");
+        assert!(s.in_window && s.in_break, "35 落在 20–60 休息段");
+        assert_eq!(s.left, 15 * 60, "到 09:50 窗口结束");
+    }
+
+    #[test]
+    fn state_window_after_break_start() {
+        // 从休息段中间开始选：09:50–10:00 全是休息
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 45, brk: 15, from: 50, to: 60 };
+        let c = cfg_with(days, true);
+        let s = state_at(&c, monday(9, 55)).expect("09:55 在窗口里");
+        assert!(s.in_break, "55 >= 45 是休息段");
+        assert_eq!(s.left, 5 * 60);
+    }
+
+    #[test]
+    fn summary_includes_minute_boundaries() {
+        let mut days = all_off();
+        days[0][8] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 60 };
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
+        days[0][10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
+        days[0][11] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 45 };
+        assert_eq!(summary(&cfg_with(days, true)), "周一 08:15–11:45");
+    }
+
+    #[test]
+    fn summary_splits_at_interior_partial_hour() {
+        // 第 9 小时只选 0–30：08–12 连着选也会有洞，文本必须断开
+        let mut days = all_off();
+        for h in [8, 10, 11] {
+            days[0][h] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
+        }
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 30 };
+        assert_eq!(summary(&cfg_with(days, true)), "周一 08:00–09:30、10:00–12:00");
+    }
+
+    #[test]
+    fn seconds_until_change_with_window() {
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 45 };
+        assert!(seconds_until_change(&cfg_with(days, true)).is_some());
+    }
+
+    #[test]
+    fn focusing_at_respects_window() {
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 45 };
+        let c = cfg_with(days, true);
+        assert!(!focusing_at(&c, monday(9, 10)));
+        assert!(focusing_at(&c, monday(9, 30)));
+        assert!(!focusing_at(&c, monday(9, 50)));
     }
 }

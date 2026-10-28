@@ -674,7 +674,7 @@ function ccNormProfile(p, idx) {
   p.defWork = Math.max(1, Math.min(60, Math.round(p.defWork || CC_DEF_W)));
   p.defBrk = Math.max(0, Math.min(60, Math.round(p.defBrk || CC_DEF_B)));
   if (p.defBrk > 0 && p.defWork + p.defBrk > 60) p.defBrk = 60 - p.defWork;
-  const fresh = () => ({ on: false, work: p.defWork, brk: p.defBrk });
+  const fresh = () => ({ on: false, work: p.defWork, brk: p.defBrk, from: 0, to: 60 });
   if (!Array.isArray(p.days)) p.days = [];
   while (p.days.length < 7) p.days.push(Array.from({ length: 24 }, fresh));
   p.days.length = 7;
@@ -686,6 +686,10 @@ function ccNormProfile(p, idx) {
     for (const h of dd) {
       h.work = Math.max(0, Math.min(60, Math.round(h.work || 0)));
       h.brk = Math.max(0, Math.min(60, Math.round(h.brk || 0)));
+      // 起止分钟：夹到合法区间；起始不早于结束，否则按整小时算
+      h.from = Math.max(0, Math.min(59, Math.round(h.from || 0)));
+      h.to = Math.max(1, Math.min(60, Math.round(h.to == null ? 60 : h.to)));
+      if (h.from >= h.to) { h.from = 0; h.to = 60; }
       if (h.brk > 0) {
         h.work = Math.max(1, Math.min(59, h.work));
         if (h.work + h.brk > 60) h.brk = 60 - h.work;
@@ -707,11 +711,11 @@ function clockCfg() {
     let legacyDays = null;
     if (Array.isArray(fc.days) && fc.days.length) {
       legacyDays = fc.days;
-    } else if (Array.isArray(fc.hours) && fc.hours.length) {
+    } else     if (Array.isArray(fc.hours) && fc.hours.length) {
       const one = [];
       for (let h = 0; h < 24; h++) {
         const p = fc.hours[h] || {};
-        one.push({ on: !!p.on, work: +(p.work || CC_DEF_W), brk: +(p.brk || CC_DEF_B) });
+        one.push({ on: !!p.on, work: +(p.work || CC_DEF_W), brk: +(p.brk || CC_DEF_B), from: 0, to: 60 });
       }
       legacyDays = Array.from({ length: 7 }, () => one.map((p) => ({ ...p })));
     }
@@ -747,6 +751,13 @@ function clockProfile() {
  * 这里改成用 grid 跨行跨列的覆盖层——一个连续段就是**一个**圆角块，
  * 中间没有任何接缝；格子仍然负责命中、hover 与右键。
  *
+ * 两件事让"连续"真的连续：
+ * 1. 相邻的块（只隔 3px 网格间距）互相缝合：共享的那一侧不画圆角和描边，
+ *    并由后侧的块用负边距把间距补上——看起来就是一整块，而不是一块块拼的。
+ * 2. 起止分钟（右键设置"第几分钟到第几分钟"）：首小时从 `from` 开始画、
+ *    尾小时画到 `to` 为止，没选中的分钟用与格子同色的占位带让开；
+ *    中间出现窗口不完整的小 HourPlan 时会把区间切成两块，洞就是洞。
+ *
  * `dragRect` 传入时额外画一个金色虚线框，作为框选预览。 */
 function ccRenderRuns(root, dragRect) {
   const host = root || document;
@@ -754,6 +765,7 @@ function ccRenderRuns(root, dragRect) {
   if (!grid) return;
   grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => el.remove());
   const fc = clockProfile();
+  const hourAt = (d, h) => (fc.days[d] && fc.days[d][h]) || { on: false, work: 0, brk: 0, from: 0, to: 60 };
 
   // 按列收集选中小时（以 DOM 为准：拖选预览用的是同一套 DOM 状态）
   const cols = new Map();
@@ -766,7 +778,25 @@ function ccRenderRuns(root, dragRect) {
   const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
   // 1) 每列先算出连续段，并记录这一段的「专注/休息配方」——
   //    配方不同的两天不能横向合并，否则色带会画错。
+  //    分割点看「有效边界」：上一小时没到整点、或这一小时没从整点开始，
+  //    中间就有没选中的分钟，必须切开——那个洞渲染时要让出来。
+  //    切完的段只有首小时可以 from>0、尾小时可以 to<60，中间都是整小时。
   const segs = [];
+  const pushSeg = (d, h0, h1) => {
+    const mins = [];
+    for (let i = h0; i <= h1; i++) {
+      const p = hourAt(d, i);
+      const w = p.on ? clampW(p.work) : clampW(fc.defWork);
+      const b = p.on ? Math.max(0, Math.min(60 - w, clampW(p.brk))) : Math.min(clampW(fc.defBrk), 60 - w);
+      mins.push(`${w}/${b}`);
+    }
+    segs.push({
+      d, h0, h1,
+      sig: mins.join(','),
+      f0: Math.max(0, Math.min(59, Math.round(hourAt(d, h0).from || 0))),
+      t1: Math.max(1, Math.min(60, Math.round(hourAt(d, h1).to == null ? 60 : hourAt(d, h1).to))),
+    });
+  };
   cols.forEach((hs, d) => {
     let h = 0;
     while (h < 24) {
@@ -774,37 +804,61 @@ function ccRenderRuns(root, dragRect) {
       const from = h;
       while (h + 1 < 24 && hs.has(h + 1)) h++;
       const to = h;
-      const mins = [];
-      for (let i = from; i <= to; i++) {
-        const p = fc.days[d][i];
-        const w = p.on ? clampW(p.work) : clampW(fc.defWork);
-        const b = p.on ? Math.max(0, Math.min(60 - w, clampW(p.brk))) : Math.min(clampW(fc.defBrk), 60 - w);
-        mins.push(`${w}/${b}`);
+      let start = from;
+      for (let i = from + 1; i <= to; i++) {
+        const prev = hourAt(d, i - 1), cur = hourAt(d, i);
+        const cont = (prev.to == null ? 60 : prev.to) >= 60 && (cur.from || 0) <= 0;
+        if (!cont) {
+          pushSeg(d, start, i - 1);
+          start = i;
+        }
       }
-      segs.push({ d, h0: from, h1: to, sig: mins.join(',') });
+      pushSeg(d, start, to);
       h++;
     }
   });
 
-  // 2) 相邻日 + 同一小时区间 + 同一配方 → 合并成一条横跨的整带
+  // 2) 相邻日 + 同一小时区间 + 同起止分钟 + 同一配方 → 合并成一条横跨的整带
   //    （「周一–周五 8–12 点」应该是一条，而不是五块拼在一起）
   const groups = new Map();
   for (const s of segs) {
-    const k = `${s.h0}-${s.h1}|${s.sig}`;
+    const k = `${s.h0}-${s.h1}|${s.f0}-${s.t1}|${s.sig}`;
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(s);
   }
 
-  const addBlock = (d0, d1, h0, h1, sig) => {
+  const addBlock = (d0, d1, h0, h1, sig, f0, t1) => {
     const n = h1 - h0 + 1;
     const unit = 100 / n / 60; // 1 分钟占整块高度的百分比
     let bands = '';
-    for (const one of sig.split(',')) {
-      const [w, b] = one.split('/').map(Number);
-      const t = Math.max(0, 60 - w - b);
-      if (w) bands += `<i class="w" style="flex:0 0 ${(w * unit).toFixed(3)}%"></i>`;
-      if (b) bands += `<i class="b" style="flex:0 0 ${(b * unit).toFixed(3)}%"></i>`;
-      if (t) bands += `<i class="t" style="flex:0 0 ${(t * unit).toFixed(3)}%"></i>`;
+    for (let k = 0; k < n; k++) {
+      const [w, b] = sig.split(',')[k].split('/').map(Number);
+      const f = k === 0 ? f0 : 0;      // 首小时的起始分钟
+      const t = k === n - 1 ? t1 : 60; // 尾小时的结束分钟
+      if (k === 0 && f > 0) {
+        bands += `<i class="cc-gap" style="flex:0 0 ${(f * unit).toFixed(3)}%"></i>`;
+      }
+      if (f === 0 && t === 60) {
+        // 整小时：沿用旧画法，老配置零变化
+        if (w) bands += `<i class="w" style="flex:0 0 ${(w * unit).toFixed(3)}%"></i>`;
+        if (b) bands += `<i class="b" style="flex:0 0 ${(b * unit).toFixed(3)}%"></i>`;
+        if (60 - w - b > 0) bands += `<i class="t" style="flex:0 0 ${((60 - w - b) * unit).toFixed(3)}%"></i>`;
+      } else {
+        // 部分小时：只画窗口 [f,t) 里的 专注/休息 切片
+        const w1 = Math.max(0, Math.min(w, t) - f);
+        const bb = Math.max(0, Math.min(w + b, t) - Math.max(f, w));
+        const w2 = Math.max(0, t - Math.max(f, w + b));
+        if (bb > 0) {
+          if (w1) bands += `<i class="w" style="flex:0 0 ${(w1 * unit).toFixed(3)}%"></i>`;
+          bands += `<i class="b" style="flex:0 0 ${(bb * unit).toFixed(3)}%"></i>`;
+          if (w2) bands += `<i class="w" style="flex:0 0 ${(w2 * unit).toFixed(3)}%"></i>`;
+        } else if (t - f > 0) {
+          bands += `<i class="w" style="flex:0 0 ${((t - f) * unit).toFixed(3)}%"></i>`;
+        }
+      }
+      if (k === n - 1 && t < 60) {
+        bands += `<i class="cc-gap" style="flex:0 0 ${((60 - t) * unit).toFixed(3)}%"></i>`;
+      }
     }
     const run = document.createElement('div');
     run.className = 'cc-run';
@@ -812,6 +866,8 @@ function ccRenderRuns(root, dragRect) {
     run.dataset.d1 = String(d1);
     run.dataset.h0 = String(h0);
     run.dataset.h1 = String(h1);
+    run.dataset.f0 = String(f0);
+    run.dataset.t1 = String(t1);
     // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始
     run.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
     run.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
@@ -825,10 +881,12 @@ function ccRenderRuns(root, dragRect) {
     while (i < arr.length) {
       let j = i;
       while (j + 1 < arr.length && arr[j + 1].d === arr[j].d + 1) j++;
-      addBlock(arr[i].d, arr[j].d, arr[i].h0, arr[i].h1, arr[i].sig);
+      addBlock(arr[i].d, arr[j].d, arr[i].h0, arr[i].h1, arr[i].sig, arr[i].f0, arr[i].t1);
       i = j + 1;
     }
   });
+
+  ccStitchRuns(grid);
 
   if (dragRect) {
     const { d0, d1, h0, h1 } = dragRect;
@@ -840,22 +898,94 @@ function ccRenderRuns(root, dragRect) {
   }
 }
 
+/** 缝合相邻的 `.cc-run`：只隔 3px 网格间距的两块，共享边去掉圆角和内描边，
+ *  由右侧/下侧的块用负边距把间距补上。连续选中的区域于是连成一整块，
+ *  不会再出现"每块自带高光和圆角、块块拼接"的割裂感。
+ *
+ *  边界用「有效边界」算：尾小时的 `to` 不满 60 时块的实际底边在格子里，
+ *  差半分钟都不算相邻——那半小时是真的没选中，不能缝。 */
+function ccStitchRuns(grid) {
+  const runs = [...grid.querySelectorAll('.cc-run')].map((el) => ({
+    el,
+    d0: +el.dataset.d, d1: +el.dataset.d1,
+    h0: +el.dataset.h0, h1: +el.dataset.h1,
+    f0: +el.dataset.f0, t1: +el.dataset.t1,
+    up: false, down: false, left: false, right: false,
+  }));
+  if (runs.length < 2) {
+    for (const r of runs) ccRunEdges(r.el, false, false, false, false);
+    return;
+  }
+  const effTop = (r) => r.h0 + r.f0 / 60;
+  const effBottom = (r) => r.h1 + 1 - (60 - r.t1) / 60;
+  const dayOverlap = (a, b) => a.d0 <= b.d1 && b.d0 <= a.d1;
+  const hourOverlap = (a, b) => effTop(a) < effBottom(b) && effTop(b) < effBottom(a);
+  const EPS = 1e-6;
+  for (const a of runs) {
+    for (const b of runs) {
+      if (a === b) continue;
+      // 左右相邻：a 的右列挨着 b 的左列，且小时范围有重叠
+      if (a.d1 + 1 === b.d0 && hourOverlap(a, b)) { a.right = true; b.left = true; }
+      // 上下相邻：a 的末小时挨着 b 的首小时（有效边界严丝合缝），且日期范围有重叠
+      if (Math.abs(effBottom(a) - effTop(b)) < EPS && dayOverlap(a, b)) { a.down = true; b.up = true; }
+    }
+  }
+  for (const r of runs) {
+    // 后侧（右/下）的块把 3px 网格间距补上；缝合只改位置不影响其它块
+    const ml = r.left ? '-3px' : '';
+    const mr = r.right ? '-3px' : '';
+    const mt = r.up ? '-3px' : '';
+    const mb = r.down ? '-3px' : '';
+    if (ml) r.el.style.marginLeft = ml;
+    if (mr) r.el.style.marginRight = mr;
+    if (mt) r.el.style.marginTop = mt;
+    if (mb) r.el.style.marginBottom = mb;
+    ccRunEdges(r.el, r.up, r.down, r.left, r.right);
+  }
+}
+
+/** 按"哪些边不外露"画圆角和内描边。
+ *  首小时从第 from 分钟才开始 / 尾小时到第 to 分钟就结束时，顶/底边落在
+ *  没选中的占位带上，那一侧同样不外露——不能把高光画到空白里去。 */
+function ccRunEdges(el, up, down, left, right) {
+  const openTop = up || +el.dataset.f0 > 0;
+  const openBottom = down || +el.dataset.t1 < 60;
+  const r = 4;
+  const c = (a, b) => (a || b ? 0 : r);
+  el.style.borderRadius = `${c(openTop, left)}px ${c(openTop, right)}px ${c(openBottom, right)}px ${c(openBottom, left)}px`;
+  const ring = 'var(--cc-ring, rgba(125, 176, 255, .16))';
+  const sh = [];
+  if (!openTop) sh.push(`inset 0 1px 0 0 ${ring}`);
+  if (!openBottom) sh.push(`inset 0 -1px 0 0 ${ring}`);
+  if (!left) sh.push(`inset 1px 0 0 0 ${ring}`);
+  if (!right) sh.push(`inset -1px 0 0 0 ${ring}`);
+  el.style.boxShadow = sh.length ? sh.join(',') : 'none';
+}
+
 /** 已选时段总数（小时数）——只算当前生效的那套方案 */
 function clockCountOn(fc) {
   const p = fc ? (fc.profiles.find((x) => x.id === fc.active) || fc.profiles[0]) : clockProfile();
   return p.days.reduce((n, day) => n + day.filter((h) => h.on).length, 0);
 }
 
-/** 一天里选中的小时合并成区间文案 */
+/** 一天里选中的小时合并成区间文案。
+ *  带起止分钟（08:15–11:45）；中间小时的窗口不完整时会把区间断开——
+ *  那个洞是真的没选中，文本不能假装连着（与后端 day_ranges 口径一致）。 */
 function ccDayRanges(day) {
   const parts = [];
   let i = 0;
   while (i < 24) {
     if (!day[i].on) { i++; continue; }
     const start = i;
-    while (i + 1 < 24 && day[i + 1].on) i++;
-    parts.push(`${pad(start)}:00–${pad(i + 1)}:00`);
-    i++;
+    let end = i;
+    // 连续性看"有效边界"：上一小时得到整点、下一小时从整点开始，才算连上
+    while (end + 1 < 24 && day[end + 1].on
+      && (day[end].to == null ? 60 : day[end].to) >= 60 && (day[end + 1].from || 0) <= 0) end++;
+    const f = Math.max(0, Math.min(59, day[start].from || 0));
+    const t = Math.max(1, Math.min(60, day[end].to == null ? 60 : day[end].to));
+    const endH = t >= 60 ? end + 1 : end;
+    parts.push(`${pad(start)}:${pad(f)}–${pad(endH)}:${t >= 60 ? '00' : pad(t)}`);
+    i = end + 1;
   }
   return parts;
 }
@@ -876,10 +1006,14 @@ function clockRangeText(fc) {
   return parts.length ? parts.join('；') : '未选择任何时段';
 }
 
-/** 矩形区域文案：周三 08:00–12:00 / 周三 – 周五 08:00–12:00 */
-function ccRectText(d0, d1, h0, h1) {
+/** 矩形区域文案：周三 08:00–12:00 / 周三 – 周五 08:00–12:00。
+ *  传了起止分钟且不是整点时带分钟：周三 08:15–11:45（结束分钟 60 或省略 = 整点）。 */
+function ccRectText(d0, d1, h0, h1, fromMin, toMin) {
   const days = d0 === d1 ? WD[d0] : `${WD[d0]} – ${WD[d1]}`;
-  return `${days} ${pad(h0)}:00 – ${pad(h1 + 1)}:00`;
+  const f = fromMin > 0 ? `:${pad(fromMin)}` : ':00';
+  const endH = (toMin == null ? 60 : toMin) >= 60 ? h1 + 1 : h1;
+  const t = (toMin == null ? 60 : toMin) >= 60 ? ':00' : `:${pad(toMin)}`;
+  return `${days} ${pad(h0)}${f} – ${pad(endH)}${t}`;
 }
 
 /** 从当前时刻起，下一个被选中的时段（含本周稍后与下周），没有则返回 '' */
@@ -888,9 +1022,11 @@ function ccNextSlotText(fc, wdNow, hourNow) {
   for (let step = 0; step < 7 * 24; step++) {
     const d = (wdNow + Math.floor((hourNow + step) / 24)) % 7;
     const h = (hourNow + step) % 24;
-    if (p.days[d] && p.days[d][h] && p.days[d][h].on) {
+    const one = p.days[d] && p.days[d][h];
+    if (one && one.on) {
       const when = step < 24 ? (step === 0 ? '本小时' : `${step} 小时后`) : `${Math.floor(step / 24)} 天后`;
-      return `，下一个选中时段：${WD[d]} ${pad(h)}:00（${when}）`;
+      const hm = one.from > 0 ? `:${pad(one.from)}` : ':00';
+      return `，下一个选中时段：${WD[d]} ${pad(h)}${hm}（${when}）`;
     }
   }
   return '';
@@ -990,10 +1126,16 @@ function viewClock() {
       const w = Math.max(0, Math.min(60, p.work || 0));
       const b = Math.max(0, Math.min(60 - w, p.brk || 0));
       const t = Math.max(0, 60 - w - b); // 没排满的尾段，引擎里算继续专注
+      // 起止分钟不是整点时，标题显示真实窗口（09:15 – 09:45）
+      const pf = Math.max(0, Math.min(59, p.from || 0));
+      const pt = Math.max(1, Math.min(60, p.to == null ? 60 : p.to));
+      const winTxt = pf > 0 || pt < 60
+        ? `${WD[dd]} ${pad(h)}:${pad(pf)} – ${pad(h)}:${pad(pt)}`
+        : `${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00`;
       // 选中态的底色由 ccRenderRuns 画成整块；格子只留命中区与 hover
       grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}"
         style="grid-row:${h + 2};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
-        title="${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}"></div>`;
+        title="${winTxt}${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}"></div>`;
     }
   }
 
@@ -1054,7 +1196,7 @@ function viewClock() {
       <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
     <div class="tl-legend">
-      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长</b>。</span>
+      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长与起止分钟</b>（比如从第 15 分钟到第 45 分钟）。</span>
       <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
     </div>
     <div class="tl-range">已选${multi ? `（${esc(prof.name)}）` : ''}：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
@@ -1848,14 +1990,17 @@ function viewBrowsers() {
     ? list.map((b) => {
       const m = browserMeta(b.ext);
       const canInstall = b.installed && (b.ext === 'notInstalled' || b.ext === 'disabled');
+      // 「设置路径」一直可见：装在非默认目录时自动检测找不到主程序，
+      // 这正是"扩展页"按钮打不开的常见原因，得让用户当场能补救。
+      const pathBtn = `<button class="btn btn-sm btn-ghost" data-act="browser-setpath" data-k="${b.key}" title="${b.exe ? '当前：' + esc(b.exe) : '没找到主程序，点这里手动指定'}">设置路径</button>`;
       const act = !b.installed
-        ? '<span class="muted" style="font-size:12px">未安装</span>'
+        ? `<span class="muted" style="font-size:12px">未安装</span>${pathBtn}`
         : b.ext === 'unsupported'
           ? '<span class="muted" style="font-size:12px">无需安装</span>'
           : canInstall
             ? `<button class="btn btn-sm btn-primary" data-act="browser-install" data-k="${b.key}">${b.ext === 'disabled' ? '去启用' : '安装插件'}</button>
-               <button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`
-            : `<button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>`;
+               <button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>${pathBtn}`
+            : `<button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>${pathBtn}`;
       const hits = (b.hits || []).length
         ? `<div class="hint">命中配置档：${b.hits.map((h) => `${esc(h.profile)}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
         : '';
@@ -1867,6 +2012,8 @@ function viewBrowsers() {
             <span class="badge ${b.installed ? 'green' : ''}">${b.installed ? '已安装' : '未安装'}</span>
             ${b.installed ? `<span class="badge ${m.cls}">${m.txt}</span>` : ''}
             ${b.running ? '<span class="badge blue">运行中</span>' : ''}
+            ${b.exeSource === 'custom' ? '<span class="badge blue">自定义路径</span>' : ''}
+            ${b.exeSource === 'none' && b.installed ? '<span class="badge">未找到主程序</span>' : ''}
           </div>
           <div class="hint">${esc(b.note || '')}</div>
           ${hits}
@@ -2903,6 +3050,46 @@ const Act = window.Act = {
     render();
   },
 
+  /** 手动指定浏览器主程序路径。
+   *  先试系统文件对话框；对话框不可用（权限/环境问题）就退回粘贴输入框，
+   *  保证这个功能在任何情况下都能用，不能因为一个对话框把用户堵死。 */
+  async browserSetPath(key) {
+    let picked = null;
+    try {
+      const dlg = T && T.dialog;
+      if (dlg && typeof dlg.open === 'function') {
+        picked = await dlg.open({
+          multiple: false,
+          directory: false,
+          filters: [{ name: '浏览器主程序', extensions: ['exe'] }],
+        });
+      }
+    } catch (e) {
+      /* 对话框不可用，落到下面的手动输入 */
+    }
+    if (!picked) {
+      picked = window.prompt(
+        '粘贴浏览器主程序（.exe）的完整路径：\n例如 C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\n\n留空并确定 = 清除自定义设置、改为自动检测',
+        ''
+      );
+    }
+    if (picked === null) return;
+    try {
+      const msg = await invoke('browser_set_path', { key, path: String(picked) });
+      toast(msg, 'ok');
+      await pull();
+      render();
+    } catch (e) {
+      const m = String(e).replace(/^Error:\s*/, '');
+      toast('这个路径不能用：' + m, 'err');
+      const s = $('#extOpenStatus');
+      if (s) {
+        s.className = 'ext-status err';
+        s.innerHTML = '✗ 路径无效：' + esc(m) + '<br>请重新选择该浏览器的 .exe 主程序。';
+      }
+    }
+  },
+
   /** 打开扩展管理页。所有等待路径都有终态，不会出现"点完就没了" */
   async browserPage(key, el) {
     const status = (txt, cls) => {
@@ -2928,7 +3115,8 @@ const Act = window.Act = {
       toast('打不开扩展管理页：' + m, 'err');
       status(
         '✗ 打不开扩展管理页。' + esc(m) +
-        '<br>可以点下面的「打开文件夹」，在浏览器里手动打开扩展页 → 开发者模式 → 加载已解压的扩展程序。',
+        '<br>如果原因是"找不到主程序"，点「设置路径」手动选中该浏览器的 .exe 即可。<br>' +
+        '也可以点「打开文件夹」，然后在浏览器里手动打开扩展页 → 开发者模式 → 加载已解压的扩展程序。',
         'err'
       );
       return false;
@@ -3103,6 +3291,8 @@ const Act = window.Act = {
         if (p.on !== on) n++;
         // 新选中的时段沿用「通用」专注/休息；已选中的保留原值，不冲掉自定义
         if (on && !p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+        // 重新框选 = 重新划分：这一小时回到整点，别把上次的起止分钟留着
+        if (on) { p.from = 0; p.to = 60; }
         p.on = on;
       }
     }
@@ -3113,7 +3303,12 @@ const Act = window.Act = {
 
   /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段）。
    *  defToo = 同时把这一套更新成「通用」时长，之后新选的时段沿用 */
-  async clockSetWB(d0, d1, h0, h1, w, b, defToo) {
+  /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段），
+   *  并用起止分钟收窄首/尾小时的选中窗口。
+   *  defToo = 同时把这一套更新成「通用」时长，之后新选的时段沿用。
+   *  fromMin/toMin：起始分钟作用于第一个小时、结束分钟作用于最后一个小时；
+   *  0 / 60 = 整点。范围内先归一成整小时，避免上次留下的窄窗口看不见地残留。 */
+  async clockSetWB(d0, d1, h0, h1, w, b, defToo, fromMin, toMin) {
     const prof = clockProfile();
     // 生效中不能改"正在跑的这一小时"的时长（否则等于用改时长逃逸）
     const wdNow = (new Date().getDay() + 6) % 7;
@@ -3129,17 +3324,24 @@ const Act = window.Act = {
         p.on = true;
         p.work = w;
         p.brk = b;
+        p.from = 0;
+        p.to = 60;
         n++;
       }
     }
+    // 起止分钟只落在边界小时上（单格时两个都在这一格）
+    prof.days[d0][h0].from = Math.max(0, Math.min(59, Math.round(fromMin || 0)));
+    prof.days[d1][h1].to = Math.max(1, Math.min(60, Math.round(toMin == null ? 60 : toMin)));
     if (defToo) { prof.defWork = w; prof.defBrk = b; }
     await saveConfig();
     render();
+    const f2 = prof.days[d0][h0].from, t2 = prof.days[d1][h1].to;
     // 改到了「正在进行中的时段」：它会立刻按新时长重新划分专注 / 休息，提醒一句
     const liveTip = (d0 <= wdNow && wdNow <= d1 && h0 <= hourNow && hourNow <= h1)
       ? '；当前进行中的时段会立即按新时长重新划分'
       : '';
-    toast(`${ccRectText(d0, d1, h0, h1)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}${liveTip}`, 'ok');
+    const winTip = (f2 > 0 || t2 < 60) ? `，起止分钟 ${pad(f2)}–${pad(t2)}` : '';
+    toast(`${ccRectText(d0, d1, h0, h1, f2, t2)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}${winTip}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}${liveTip}`, 'ok');
   },
 
   /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息（只作用于当前方案） */
@@ -3661,6 +3863,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'clear-token') { await Act.clearToken(); return; }
   if (act === 'browser-scan') { await Act.browserScan(); return; }
   if (act === 'browser-page') { await Act.browserPage(el.dataset.k, el); return; }
+  if (act === 'browser-setpath') { await Act.browserSetPath(el.dataset.k); return; }
   if (act === 'browser-install') { await Act.browserInstall(el.dataset.k); return; }
   if (act === 'browser-rescan') { await Act.browserRescan(); return; }
   if (act === 'browser-guide') { await Act.browserGuide(null); return; }
@@ -3789,12 +3992,27 @@ function ccOpenMenu(d, h, x, y) {
   const prefill = (single) => {
     const one = single && p.on;
     return { w: one ? (p.work || CC_DEF_W) : fc.defWork, b: one ? (p.brk || CC_DEF_B) : fc.defBrk };
-  };  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
+  };
+  // 起止分钟预填：单格看这一格的窗口；多格看首/尾小时的窗口（没选中按整点）
+  const prefillWin = () => {
+    const single = t.d0 === t.d1 && t.h0 === t.h1;
+    if (single) {
+      const one = p.on ? p : null;
+      return { f: one ? Math.max(0, Math.min(59, one.from || 0)) : 0, t: one ? Math.max(1, Math.min(60, one.to == null ? 60 : one.to)) : 60 };
+    }
+    const pf = fc.days[t.d0][t.h0], pt = fc.days[t.d1][t.h1];
+    return {
+      f: pf && pf.on ? Math.max(0, Math.min(59, pf.from || 0)) : 0,
+      t: pt && pt.on ? Math.max(1, Math.min(60, pt.to == null ? 60 : pt.to)) : 60,
+    };
+  };
+  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
+  const preW = prefillWin();
   const el = document.createElement('div');
   el.className = 'cc-menu';
   el.innerHTML = `
-    <div class="cc-menu-hd">专注 / 休息<b class="x" data-act="cc-close" title="关闭">×</b></div>
-    <div class="cc-menu-tgt">作用于 <b id="ccTgt">${esc(ccRectText(t.d0, t.d1, t.h0, t.h1))}</b>（共 <b id="ccCnt">${(t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1)}</b> 段）</div>
+    <div class="cc-menu-hd">时段设置<b class="x" data-act="cc-close" title="关闭">×</b></div>
+    <div class="cc-menu-tgt">作用于 <b id="ccTgt">${esc(ccRectText(t.d0, t.d1, t.h0, t.h1, preW.f, preW.t))}</b>（共 <b id="ccCnt">${(t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1)}</b> 段）</div>
     <div class="cc-menu-scope">
       <button class="chip-btn${hasRect ? ' active' : ''}" data-scope="rect"${hasRect ? '' : ' disabled title="先拖动框选一片区域"'}>当前框选</button>
       <button class="chip-btn${hasRect ? '' : ' active'}" data-scope="cell">这一格</button>
@@ -3806,8 +4024,13 @@ function ccOpenMenu(d, h, x, y) {
     </div>
     <div class="cc-menu-scope">
       ${[[25, 5], [45, 15], [50, 10], [60, 0]].map(([w, b]) =>
-        `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
+    `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
     </div>
+    <div class="cc-menu-row win">
+      <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${preW.f}"> 到</label>
+      <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${preW.t}"> 分</label>
+    </div>
+    <div class="cc-menu-hint">起止分钟只改目标范围的<b>首 / 尾小时</b>：起始分钟改第一个小时从第几分钟开始，结束分钟改最后一个小时到第几分钟结束（填 0 和 60 = 整点）。比整小时更细的边界就这样设，比如 8:15–11:45。</div>
     <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
     <div class="cc-menu-hint">应用后会顺便开启这些时段；休息期间不拦截、不遮罩。排不满 60 分钟的尾段算继续专注。</div>
     <div class="cc-menu-ft">
@@ -3828,12 +4051,15 @@ function ccOpenMenu(d, h, x, y) {
     else if (scope === 'col') t = { d0: d, d1: d, h0: 0, h1: 23 };
     else if (hasRect) t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: Math.min(r.h0, r.h1), h1: Math.max(r.h0, r.h1) };
     else return;
-    tgt.textContent = ccRectText(t.d0, t.d1, t.h0, t.h1);
+    const qw = prefillWin();
+    tgt.textContent = ccRectText(t.d0, t.d1, t.h0, t.h1, qw.f, qw.t);
     cnt.textContent = (t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1);
     // 目标范围变了，输入框也跟着换：单格看这一格的值，多格看通用时长
     const q = prefill(t.d0 === t.d1 && t.h0 === t.h1);
     $('#ccW', el).value = q.w;
     $('#ccB', el).value = q.b;
+    $('#ccFrom', el).value = qw.f;
+    $('#ccTo', el).value = qw.t;
   };
 
   el.addEventListener('click', async (e) => {
@@ -3856,7 +4082,16 @@ function ccOpenMenu(d, h, x, y) {
       w2 = Math.max(1, Math.min(60, w2));
       b2 = Math.max(0, Math.min(60, b2));
       if (b2 > 0 && w2 + b2 > 60) b2 = 60 - w2;
-      await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked);
+      let f2 = Math.round(Number($('#ccFrom', el).value) || 0);
+      let t2 = Math.round(Number($('#ccTo', el).value) || 0);
+      f2 = Math.max(0, Math.min(59, f2));
+      t2 = Math.max(1, Math.min(60, t2));
+      // 单格时起止分钟在同一小时里，必须起早于止；多格时分别作用于首/尾小时
+      if (t.d0 === t.d1 && t.h0 === t.h1 && f2 >= t2) {
+        toast('起始分钟要小于结束分钟', 'err');
+        return;
+      }
+      await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked, f2, t2);
       ccCloseMenu();
       return;
     }

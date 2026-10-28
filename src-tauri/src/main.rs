@@ -357,6 +357,8 @@ fn main() {
             cmds::browser_open_ext,
             cmds::browser_open_folder,
             cmds::browser_ext_info,
+            cmds::browser_set_path,
+            cmds::browser_check_path,
             cmds::quit_app,
             cmds::hide_window,
             cmds::show_main,

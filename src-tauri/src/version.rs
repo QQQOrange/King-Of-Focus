@@ -7,5 +7,5 @@ pub const REPO_URL: &str = "https://github.com/QQQOrange/King-Of-Focus";
 pub const TOKEN_DOC_URL: &str =
     "https://docs.github.com/zh/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens";
 /// 本次版本的发布时间（发版时同步修改）
-pub const BUILD_DATE: &str = "2026-10-26";
+pub const BUILD_DATE: &str = "2026-10-28";
 pub const APP_NAME: &str = "King of Focus";

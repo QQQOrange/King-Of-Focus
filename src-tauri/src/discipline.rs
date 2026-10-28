@@ -107,7 +107,7 @@ mod tests {
 
     fn clock_on(cfg: &mut Config, weekday: u32, hour: u32, work: u32, brk: u32) {
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[weekday as usize][hour as usize] = HourPlan { on: true, work, brk };
+        days[weekday as usize][hour as usize] = HourPlan { on: true, work, brk, from: 0, to: 60 };
         cfg.settings.focus_clock = ClockCfg::with_days(true, days);
     }
 
@@ -142,7 +142,7 @@ mod tests {
         let mut c = base();
         // 时段没选中 → 不接管
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[0][3] = HourPlan { on: true, work: 60, brk: 0 };
+        days[0][3] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);

@@ -343,6 +343,8 @@ pub async fn pick_path(app: AppHandle, kind: String) -> Option<String> {
 /// 把配置灌进运行态（启动时和切换测试模式后都要走这一遍）
 pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     let config = shared.config();
+    // 浏览器自定义路径要同步给扫描/打开扩展页那一侧
+    crate::browsers::set_custom_exe(config.settings.browser_exe.clone());
     let m = &*shared.mask;
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
@@ -463,6 +465,47 @@ pub async fn browser_open_ext(key: String) -> Result<String, String> {
         .map_err(|e| format!("启动进程失败：{e}"))?
 }
 
+/// 设置/清除某个浏览器的自定义主程序路径。
+///
+/// `path` 为空 = 清除该浏览器的自定义设置（回退到自动检测）。
+/// 非空时必须通过校验（存在、是文件、是 .exe），否则直接报错、不写入配置——
+/// 存一个坏路径进去比不存更糟，用户会以为已经设好了。
+#[tauri::command]
+pub fn browser_set_path(
+    shared: State<'_, Arc<Shared>>,
+    key: String,
+    path: String,
+) -> Result<String, String> {
+    let trimmed = path.trim().trim_matches('"').to_string();
+    let mut c = shared.config();
+
+    if trimmed.is_empty() {
+        c.settings.browser_exe.remove(&key);
+        cfg::save(&c)?;
+        if let Ok(mut w) = shared.cfg.write() {
+            *w = c.clone();
+        }
+        crate::browsers::set_custom_exe(c.settings.browser_exe.clone());
+        return Ok("已清除自定义路径，改为自动检测".into());
+    }
+
+    let p = crate::browsers::validate_exe(&trimmed)?;
+    let normalized = p.to_string_lossy().to_string();
+    c.settings.browser_exe.insert(key.clone(), normalized.clone());
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    crate::browsers::set_custom_exe(c.settings.browser_exe.clone());
+    Ok(format!("已保存：{normalized}"))
+}
+
+/// 校验一个路径但不保存（供界面在选完文件后即时提示）
+#[tauri::command]
+pub fn browser_check_path(path: String) -> Result<String, String> {
+    crate::browsers::validate_exe(&path).map(|p| p.to_string_lossy().to_string())
+}
+
 /// 扩展目录信息（路径 / 是否存在 / CRX / 程序目录 / 来源），供安装引导展示与复制
 #[tauri::command]
 pub fn browser_ext_info() -> Value {
@@ -501,6 +544,8 @@ pub fn mask_start(
     m.manual_hwnd.store(hwnd as isize, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
+    // 选中窗口后立刻上遮罩，不等兜底超时
+    crate::mask::wake();
 
     // 主窗口不再强制置顶（保持正常窗口层级，可以被别的窗口盖住/最小化）
     if let Some(w) = app.get_webview_window("main") {
@@ -548,6 +593,8 @@ pub fn mask_set(
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
     }
+    // 参数改动也要立刻生效（比如拖不透明度滑块时能实时看到）
+    crate::mask::wake();
 }
 
 /// 设置全局快捷键（带冲突检测：注册失败会回滚到原来的组合）
@@ -613,6 +660,8 @@ pub fn mask_set_on(shared: State<'_, Arc<Shared>>, on: bool) -> Result<(), Strin
     m.manual_hwnd.store(0, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(on, Ordering::Relaxed);
+    // 叫醒遮罩线程：否则它要等到兜底超时（最长 1 秒）才会看到开关变了
+    crate::mask::wake();
     Ok(())
 }
 
@@ -626,12 +675,14 @@ pub fn mask_preview(shared: State<'_, Arc<Shared>>) -> i64 {
         m.preview_until.store(0, Ordering::Relaxed);
         m.test_lock.store(false, Ordering::Relaxed);
         m.on.store(false, Ordering::Relaxed);
+        crate::mask::wake();
         return 0;
     }
     m.test_lock.store(true, Ordering::Relaxed);
     m.painted.store(false, Ordering::Relaxed);
     m.on.store(true, Ordering::Relaxed);
     m.preview_until.store(now + 5, Ordering::Relaxed);
+    crate::mask::wake();
     5
 }
 
@@ -640,6 +691,7 @@ pub fn mask_preview(shared: State<'_, Arc<Shared>>) -> i64 {
 pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
     let m = &*shared.mask;
     m.auto_follow.store(enabled, Ordering::Relaxed);
+    crate::mask::wake();
     let mut c = shared.config();
     c.settings.mask.follow_schedule = enabled;
     cfg::save(&c)?;

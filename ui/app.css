@@ -583,6 +583,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   user-select: none;
   touch-action: none;
   margin-top: 6px;
+  /* 整块的内描边颜色：JS 缝合相邻块时按边取用（共享边不画） */
+  --cc-ring: rgba(125, 176, 255, .16);
 }
 .cc-corner, .cc-hlab {
   display: flex; align-items: center; justify-content: flex-end;
@@ -606,15 +608,19 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-width: 0; z-index: 3; }
 .cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
-/* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距 */
+/* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距。
+ * 圆角和内描边由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边不画），
+ * 这里只留默认值：孤立的整块仍然是四角 4px + 一整圈描边。 */
 .cc-run {
   position: relative; z-index: 2; pointer-events: none;
   display: flex; flex-direction: column; overflow: hidden;
   border-radius: 4px;
   background: linear-gradient(180deg, rgba(125, 176, 255, .26), rgba(47, 109, 240, .16));
-  box-shadow: inset 0 0 0 1px rgba(125, 176, 255, .16);
+  box-shadow: inset 0 0 0 1px var(--cc-ring);
 }
 .cc-run i { display: block; width: 100%; }
+/* 起止分钟让出来的占位带：颜色同未选中格子，看起来就是"这一小时没选满" */
+.cc-run .cc-gap { background: var(--cell-bg); }
 .cc-run .w { background: rgba(77, 141, 255, .78); }
 .cc-run .b { background: rgba(56, 189, 248, .45); }
 .cc-run .t { background: rgba(77, 141, 255, .22); }
@@ -730,6 +736,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   font-size: 11.5px; color: var(--text-3);
 }
 .cc-menu-row input { width: 62px; }
+/* 起止分钟一行有两个输入框，略收窄防止换行 */
+.cc-menu-row.win input { width: 56px; }
 .cc-menu-hint { font-size: 11px; color: var(--text-3); line-height: 1.55; margin-bottom: 11px; }
 .cc-menu-def {
   display: flex; align-items: center; gap: 6px;

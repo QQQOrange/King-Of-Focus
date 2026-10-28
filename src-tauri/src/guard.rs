@@ -420,7 +420,7 @@ mod tests {
     fn cfg_with_clock() -> Config {
         let mut c = Config::default();
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[2][10] = HourPlan { on: true, work: 60, brk: 0 };
+        days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         c.lists = vec![RuleList {
             id: "r1".into(),
@@ -466,7 +466,7 @@ mod tests {
         // 否则"每小时有 10 分钟可以随便改"等于没锁
         let mut c = Config::default();
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
+        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         c.lists = vec![RuleList {
             id: "r1".into(),
@@ -497,7 +497,7 @@ mod tests {
         let mut other = crate::model::ClockProfile::default();
         other.id = "p2".into();
         other.name = "另一套".into();
-        other.days[2][10] = HourPlan { on: true, work: 60, brk: 0 };
+        other.days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
         old.settings.focus_clock.profiles.push(other);
 
         let now = now_at(2, 10, 30);
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn exit_allowed_during_break_segment() {
         let mut c = cfg_with_clock();
-        c.settings.focus_clock.profiles[0].days[2][10] = HourPlan { on: true, work: 40, brk: 20 };
+        c.settings.focus_clock.profiles[0].days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
         assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_none(), "休息段可以退出");
     }
 

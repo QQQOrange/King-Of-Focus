@@ -216,6 +216,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 !active.is_empty() || lock.locked || clock_on,
                 std::sync::atomic::Ordering::Relaxed,
             );
+            // 自律状态一变就叫醒遮罩线程，别等兜底超时
+            crate::mask::wake();
 
             // ---- 桌面 HUD 显隐 ----
             // 遮罩开着时把 HUD 收起来：HUD 自己是置顶小窗，留在上面会变成

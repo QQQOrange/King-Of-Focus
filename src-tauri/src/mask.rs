@@ -50,6 +50,9 @@ const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 /// 窗口最小化 / 还原：目标可能因此失效
 const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
 const EVENT_SYSTEM_MINIMIZEEND: u32 = 0x0017;
+/// 有新窗口显示出来。用来抓"弹一下就走"的浮条（lazytyper 语音弹条），
+/// 让它在被遮罩盖住之前就先浮上去。
+const EVENT_OBJECT_SHOW: u32 = 0x8002;
 /// 我们自己动过窗口之后，这段时间内的事件一律忽略。
 /// 不设这个静默窗口，我们自己的 SetWindowPos 会回头触发事件 → 唤醒 → 再 SetWindowPos，
 /// 形成自激，CPU 直接飙起来。
@@ -95,20 +98,82 @@ pub static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SELF_ACTION_AT: AtomicU64 = AtomicU64::new(0);
 /// 最近一次被外部抢位/切目标的时刻，用来决定兜底超时该多激进
 static DISTURBED_AT: AtomicU64 = AtomicU64::new(0);
+/// 有新的放行窗口出现，要求主循环立刻重收放行名单（不必等 500ms 周期）
+static SCAN_NOW: AtomicBool = AtomicBool::new(false);
+/// 遮罩当前是否真的在显示。SHOW 钩子在系统范围极其活跃（任何窗口显示都触发），
+/// 遮罩没开时必须第一时间返回，否则光"查进程名"就能白烧一个多点。
+static MASK_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// 最近一次重收放行名单的原因（诊断用）
+static LAST_SCAN: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
     unsafe { GetTickCount64() }
 }
 
+/// 唤醒遮罩线程的手动信号（自动重置事件）。
+///
+/// 遮罩线程平时阻塞在 `MsgWaitForMultipleObjects` 里等**窗口事件**。
+/// 但"用户点了开关""调了不透明度"这些改的是原子量，**不是窗口事件**，
+/// 唤不醒它——遮罩关着时兜底超时是 1 秒，于是点开启要等最多一秒才生效。
+/// 所以这里给状态变更单开一条唤醒通道：谁改了状态就 SetEvent 一下。
+static WAKE: AtomicIsize = AtomicIsize::new(0);
+
+/// 通知遮罩线程"状态变了，立刻重算一帧"。任何改 MaskCtl 的地方都该调一下。
+pub fn wake() {
+    let h = WAKE.load(Ordering::Relaxed);
+    if h != 0 {
+        unsafe {
+            SetEvent(h as *mut std::ffi::c_void);
+        }
+    }
+}
+
 unsafe extern "system" fn win_event_proc(
     _hook: *mut std::ffi::c_void,
-    _event: u32,
-    _hwnd: Hwnd,
-    _id_object: i32,
+    event: u32,
+    hwnd: Hwnd,
+    id_object: i32,
     _id_child: i32,
     _thread: u32,
     _time: u32,
 ) {
+    // 新窗口显示。这一支专门处理 lazytyper 那种"弹一下"的浮条：
+    // 它是**新出现的窗口**，在下一轮重收（最长 500ms）之前不在豁免名单里，
+    // 于是先被遮罩盖住一瞬间、随后才浮上来——用户看到的就是那一下闪。
+    //
+    // 这里不排队、不等主循环：当场把它顶上去，并让主循环立刻重收名单，
+    // 好让后续的摘顶扫描跳过它（否则它又会被当"碍事的浮窗"摘下来）。
+    if event == EVENT_OBJECT_SHOW {
+        // 遮罩没在显示 → 什么都不用做。这条早退很关键：
+        // SHOW 事件覆盖整个桌面，不过滤的话每次都要开进程查名字。
+        if !MASK_ACTIVE.load(Ordering::Relaxed) {
+            return;
+        }
+        if hwnd.is_null() || id_object != 0 {
+            return;
+        }
+        if IsWindowVisible(hwnd) == 0 {
+            return;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || !is_pass_through(pid) {
+            return;
+        }
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        SCAN_NOW.store(true, Ordering::Relaxed);
+        LAST_SCAN.store(now_ms(), Ordering::Relaxed);
+        return;
+    }
+
     // 静默窗口内的事件是我们自己造成的，丢掉
     if now_ms().saturating_sub(SELF_ACTION_AT.load(Ordering::Relaxed)) < SELF_SETTLE_MS {
         return;
@@ -118,10 +183,18 @@ unsafe extern "system" fn win_event_proc(
 }
 
 /// 等一个窗口事件；超时返回。没事件时线程真正阻塞，不占 CPU。
+/// 同时等唤醒信号，好让"开关/参数变更"也能立刻叫醒它。
 unsafe fn wait_event(timeout_ms: u32) {
+    let h = WAKE.load(Ordering::Relaxed) as *mut std::ffi::c_void;
+    let handles = [h];
+    let (count, ptr) = if h.is_null() {
+        (0u32, std::ptr::null())
+    } else {
+        (1u32, handles.as_ptr())
+    };
     MsgWaitForMultipleObjects(
-        0,
-        std::ptr::null(),
+        count,
+        ptr,
         0,
         timeout_ms,
         QS_POSTMESSAGE | QS_SENDMESSAGE,
@@ -388,6 +461,8 @@ extern "system" {
         flags: u32,
     ) -> *mut std::ffi::c_void;
     fn GetTickCount64() -> u64;
+    fn CreateEventW(attr: *const u8, manual: i32, initial: i32, name: *const u16) -> *mut std::ffi::c_void;
+    fn SetEvent(h: *mut std::ffi::c_void) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
     fn QueryFullProcessImageNameW(
         h: *mut std::ffi::c_void,
@@ -1230,7 +1305,23 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
-        mlog(&format!("WinEvent 钩子 {:?}", hook));
+        // 单独再挂一个"窗口显示"钩子。EVENT_OBJECT_SHOW 在 0x8002 段，
+        // 和上面那段系统事件不相邻，没法用同一个区间覆盖，只能分开注册。
+        let hook_show = SetWinEventHook(
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_SHOW,
+            std::ptr::null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+        mlog(&format!("WinEvent 钩子 {:?} / show {:?}", hook, hook_show));
+
+        // 状态变更的唤醒通道。必须在这里（遮罩线程启动时）创建，
+        // 因为 wait_event 只在这个线程里用。
+        let we = CreateEventW(std::ptr::null(), 0, 0, std::ptr::null());
+        WAKE.store(we as isize, Ordering::Relaxed);
 
         let class = wide("KofMaskV2");
         let inst = GetModuleHandleW(std::ptr::null());
@@ -1283,11 +1374,14 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
 
         loop {
             // ---- 先等，再干活 ----
-            // 事件驱动：前台切换 / 最小化 / z 序变化都会把我们从等待里叫醒，
+            // 事件驱动：前台切换 / 最小化 / 新窗口显示都会把我们从等待里叫醒，
             // 没事件时线程真正阻塞（CPU≈0），不再靠固定频率轮询去"发现"变化。
             // 兜底超时只在"确实有变化的余波期"缩短（8ms），平时 500ms 只是防止
             // 极端情况下漏事件，不承担响应性——响应性由事件保证。
-            {
+            //
+            // scan_now：有放行程序的新窗口刚冒出来，不等了，立刻重收名单。
+            let scan_now = SCAN_NOW.swap(false, Ordering::Relaxed);
+            if !scan_now {
                 let disturbed =
                     now_ms().saturating_sub(DISTURBED_AT.load(Ordering::Relaxed)) < 400;
                 let want_on =
@@ -1487,8 +1581,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 popups.clear();
                 popup_pid = 0;
                 ctl.painted.store(false, Ordering::Relaxed);
+                MASK_ACTIVE.store(false, Ordering::Relaxed);
                 // 这里也要刷新诊断，否则界面会一直显示上一次的"已开启/洞口"
-                if last_diag.elapsed().as_millis() >= 500 {
+                // 关闭态循环只有 1 次/秒，这里不必节流：
+                // 不刷新的话，用户点了关闭、界面「自查」还会显示"已开启"好几百毫秒，
+                // 看起来就像"关不掉"。
+                {
                     last_diag = Instant::now();
                     let report = format!(
                         "on={} painted=false{} 置顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} 窗口=(0,0,0,0) 覆盖层=0 副屏={}",
@@ -1567,7 +1665,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
                 // 放行程序的窗口（lazytyper 的语音识别弹条等）。
                 // 它们是"输入通道"，遮罩让路、始终可见，不做任何压制。
-                if pass_t.elapsed().as_millis() >= 500 {
+                if pass_t.elapsed().as_millis() >= 500 || scan_now {
                     pass_t = Instant::now();
                     pass_wins = collect_pass_through();
                 }
@@ -1600,6 +1698,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     }
                 }
                 ctl.painted.store(true, Ordering::Relaxed);
+                MASK_ACTIVE.store(true, Ordering::Relaxed);
                 // 只有"换了目标"才算一次动作，用它驱动短周期；
                 // 否则每帧都刷新时间戳，短周期会永远生效、白烧 CPU。
                 last_tgt = tgt;
@@ -1639,7 +1738,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             }
 
             // 每 1s 更新一次诊断快照（界面上的「自查」按钮读它）
-            if last_diag.elapsed().as_millis() >= 200 {
+            // 诊断快照不限流：这里每秒才走到几次（事件驱动），
+            // 而界面「自查」要靠它立刻反映开关状态，节流会让"刚点开"看起来没反应。
+            {
                 last_diag = Instant::now();
                 let mut parts = Vec::new();
                 for (i, o) in overlays.iter().enumerate() {

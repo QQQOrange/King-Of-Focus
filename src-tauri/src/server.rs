@@ -201,6 +201,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 if let Some(v) = q("blockclick=") {
                     m.block_click.store(v != 0, std::sync::atomic::Ordering::Relaxed);
                 }
+                crate::mask::wake();
                 reply(
                     req,
                     200,
@@ -222,6 +223,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 let m = &*shared.mask;
                 m.test_lock.store(false, std::sync::atomic::Ordering::Relaxed);
                 m.on.store(on, std::sync::atomic::Ordering::Relaxed);
+                crate::mask::wake();
                 reply(req, 200, json!({"ok": true, "on": on}).to_string())
             }
         }

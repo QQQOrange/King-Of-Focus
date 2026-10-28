@@ -207,6 +207,8 @@ pub struct BrowserInfo {
     pub installed: bool,
     /// 主程序路径（找不到时为空）
     pub exe: String,
+    /// 主程序来源：custom（用户手动指定）/ auto（自动检测）/ none（没找到）
+    pub exe_source: String,
     /// notInstalled | enabled | disabled | unsupported
     pub ext: String,
     /// 现在是否有可见窗口（有 = 正在使用）
@@ -226,6 +228,7 @@ impl BrowserInfo {
             name: d.name.to_string(),
             installed: false,
             exe: String::new(),
+            exe_source: "none".into(),
             ext: "notInstalled".into(),
             running: false,
             ext_page: d.ext_page.to_string(),
@@ -234,6 +237,31 @@ impl BrowserInfo {
             note: String::new(),
         }
     }
+}
+
+/// 用户手动指定的浏览器主程序路径（browserKey → exe 绝对路径）。
+///
+/// 放全局而不是每次往下传：扫描/打开扩展页/界面渲染三处都要用，
+/// 走参数会把签名污染得到处都是。保存配置后由 `set_custom_exe` 刷新。
+static CUSTOM_EXE: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// 更新自定义路径表并让扫描缓存失效（改完路径要立刻反映到界面）
+pub fn set_custom_exe(map: std::collections::HashMap<String, String>) {
+    if let Ok(mut g) = CUSTOM_EXE.lock() {
+        g.clear();
+        g.extend(map.into_iter().filter(|(_, v)| !v.trim().is_empty()));
+    }
+    if let Ok(mut c) = CACHE.lock() {
+        *c = None;
+    }
+}
+
+fn custom_for(key: &str) -> Option<String> {
+    CUSTOM_EXE
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()))
+        .filter(|s| !s.trim().is_empty())
 }
 
 /* ---------------- 缓存 ---------------- */
@@ -303,6 +331,59 @@ fn roots() -> Vec<PathBuf> {
     .iter()
     .filter_map(|k| env_path(k))
     .collect()
+}
+
+/// 校验一个"用户手动指定"的可执行文件路径是否可用。
+/// 返回规范化后的路径，失败时给出能直接抄去排查的原因。
+pub fn validate_exe(path: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(path.trim().trim_matches('"'));
+    if path.trim().is_empty() {
+        return Err("路径是空的".into());
+    }
+    if !p.exists() {
+        return Err(format!("这个路径不存在：{}", p.display()));
+    }
+    if !p.is_file() {
+        return Err(format!("这不是一个文件：{}", p.display()));
+    }
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "exe" {
+        return Err(format!("选中的不是 .exe 程序：{}", p.display()));
+    }
+    Ok(p)
+}
+
+/// 找出某个浏览器的主程序。
+///
+/// 顺序：**用户手动指定的路径优先**，没有或已失效再走自动检测。
+/// 手动路径失效时不要静默忽略——那会让"我明明设过路径"变得莫名其妙，
+/// 所以把两条信息都带回给调用方。
+pub fn resolve_exe(key: &str, custom: Option<&String>) -> (Option<PathBuf>, Option<String>) {
+    let d = match DEFS.iter().find(|d| d.key == key) {
+        Some(d) => d,
+        None => return (None, None),
+    };
+    if let Some(raw) = custom {
+        if !raw.trim().is_empty() {
+            match validate_exe(raw) {
+                Ok(p) => return (Some(p), None),
+                Err(e) => {
+                    // 手动路径坏了 → 继续自动检测，但把原因带出去
+                    let auto = find_exe(d);
+                    let note = if auto.is_some() {
+                        format!("自定义路径无效（{e}），已改用自动检测到的位置")
+                    } else {
+                        format!("自定义路径无效：{e}")
+                    };
+                    return (auto, Some(note));
+                }
+            }
+        }
+    }
+    (find_exe(d), None)
 }
 
 fn find_exe(d: &Def) -> Option<PathBuf> {
@@ -515,7 +596,10 @@ fn full_scan() -> Vec<BrowserInfo> {
 
     let mut out = Vec::with_capacity(DEFS.len());
     for d in DEFS {
-        let exe = find_exe(d);
+        // 自定义路径优先，回退自动检测
+        let custom = custom_for(d.key);
+        let (exe, exe_note) = resolve_exe(d.key, custom.as_ref());
+        let exe_from_custom = custom.is_some() && exe.is_some();
         let data = user_data(d);
         let data_ok = data.as_ref().map(|p| p.is_dir()).unwrap_or(false);
         let installed = exe.is_some() || data_ok;
@@ -525,6 +609,13 @@ fn full_scan() -> Vec<BrowserInfo> {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+        info.exe_source = if exe_from_custom {
+            "custom".into()
+        } else if exe.is_some() {
+            "auto".into()
+        } else {
+            "none".into()
+        };
         info.data_dir = data
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
@@ -570,6 +661,15 @@ fn full_scan() -> Vec<BrowserInfo> {
             }
         } else {
             info.note = "未检测到安装。".into();
+        }
+        // 自定义路径有问题（不存在 / 不是 exe）但自动检测救回来了，
+        // 要把原因说清楚，否则用户会疑惑"我明明设过路径怎么没生效"
+        if let Some(n) = exe_note {
+            info.note = if info.note.is_empty() {
+                n
+            } else {
+                format!("{n}。{}", info.note)
+            };
         }
         out.push(info);
     }
@@ -734,7 +834,19 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
     if d.ext_page.is_empty() {
         return Err(format!("{} 不支持本插件", d.name));
     }
-    let exe = find_exe(d).ok_or_else(|| format!("没有找到 {} 的主程序，可能装在非默认位置", d.name))?;
+    let custom = custom_for(key);
+    let (exe, note) = resolve_exe(key, custom.as_ref());
+    let exe = exe.ok_or_else(|| {
+        // 这条提示要能直接指导用户下一步：说明为什么失败、去哪设路径、还能怎么手动完成
+        let detail = note.clone().map(|n| format!("（{n}）")).unwrap_or_default();
+        format!(
+            "找不到 {} 的主程序{detail}。\n\
+             多半是装在了非默认目录（绿色版 / 便携版 / 自定义安装位置）。\n\
+             解决：在「浏览器」列表里点「设置安装路径」，选中 {}.exe 即可。\n\
+             也可以手动打开 {}，在地址栏输入 {} 进入扩展页。",
+            d.name, d.name.to_lowercase(), d.name, d.ext_page
+        )
+    })?;
     INSTALL_GRACE_UNTIL.store(
         chrono::Local::now().timestamp() + INSTALL_GRACE_SECS,
         Ordering::Relaxed,
@@ -746,9 +858,21 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    cmd.spawn()
-        .map_err(|e| format!("启动 {} 失败：{e}。可以手动打开它，在地址栏输入 {} 进入扩展页。", d.name, d.ext_page))?;
-    Ok(format!("已打开 {} 的扩展管理页", d.name))
+    cmd.spawn().map_err(|e| {
+        format!(
+            "启动 {} 失败：{e}\n用的是这个路径：{}\n\
+             如果它确实不是浏览器主程序，请在「浏览器」列表里重新设置安装路径；\n\
+             也可以手动打开 {} 在地址栏输入 {}。",
+            d.name,
+            exe.display(),
+            d.name,
+            d.ext_page
+        )
+    })?;
+    Ok(match note {
+        Some(n) => format!("已打开 {} 的扩展管理页（{n}）", d.name),
+        None => format!("已打开 {} 的扩展管理页", d.name),
+    })
 }
 
 /// 在资源管理器里打开扩展目录。

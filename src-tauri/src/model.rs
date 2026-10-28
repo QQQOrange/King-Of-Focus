@@ -229,6 +229,11 @@ impl Default for MaskCfg {
 ///
 /// 语义和"规则里的番茄"完全一致：`work` 分钟专注 + `brk` 分钟休息循环。
 /// 区别只是粒度——这里是"每小时一段"，所以一段里最多一次专注 + 一次休息。
+///
+/// `from` / `to` 是这一小时的**选中窗口起止分钟**（`[from, to)`）：
+/// 默认 `0..60`（整小时全选），右键菜单里可以改成"第 15 分钟到第 45 分钟"，
+/// 实现比"整小时"更细的时段边界。只有连续段的首/尾小时会用到非默认值，
+/// 中间小时永远是 `0..60`（否则渲染上会出现选中区里的空洞）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct HourPlan {
@@ -238,11 +243,23 @@ pub struct HourPlan {
     pub work: u32,
     /// 休息时长（分钟）。0 = 不休息
     pub brk: u32,
+    /// 选中窗口在这一小时里的起始分钟（0–59）
+    #[serde(default)]
+    pub from: u32,
+    /// 选中窗口在这一小时里的结束分钟（1–60，60 = 到整点）
+    #[serde(default = "hour_end")]
+    pub to: u32,
+}
+
+/// `to` 的 serde 默认值：整点结束（旧配置没有这个字段时不能变成 0，
+/// 否则整个小时都会被当成"没选中"）
+fn hour_end() -> u32 {
+    60
 }
 
 impl Default for HourPlan {
     fn default() -> Self {
-        HourPlan { on: false, work: 50, brk: 10 }
+        HourPlan { on: false, work: 50, brk: 10, from: 0, to: 60 }
     }
 }
 
@@ -590,6 +607,11 @@ pub struct Settings {
     pub block_taskmgr: bool,
     /// 全局保护进程名（强制模式不拦截）
     pub protected: Vec<String>,
+    /// 浏览器自定义安装路径：browserKey → 可执行文件绝对路径。
+    ///
+    /// 装到非默认位置（绿色版、被改过安装目录、便携版）时自动检测找不到主程序，
+    /// 「扩展页」按钮就开不了。这里让用户手动指定，打开扩展页时优先用它。
+    pub browser_exe: std::collections::HashMap<String, String>,
     /// 外观：system | dark | light
     pub theme: String,
     /// 专注遮罩
@@ -626,6 +648,7 @@ impl Default for Settings {
             site_close_browser: true,
             block_taskmgr: true,
             protected: default_protected(),
+            browser_exe: std::collections::HashMap::new(),
             theme: "system".into(),
             mask: MaskCfg::default(),
             focus_clock: ClockCfg::default(),

@@ -189,6 +189,14 @@ fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {
         for h in day.iter_mut() {
             h.work = h.work.min(60);
             h.brk = h.brk.min(60);
+            // 起止分钟窗口：夹到合法区间；起始不早于结束，否则按整小时算
+            // （窗口为空等于这一小时没选中，会和使用者意图相反）
+            h.from = h.from.min(59);
+            h.to = h.to.clamp(1, 60);
+            if h.from >= h.to {
+                h.from = 0;
+                h.to = 60;
+            }
             if h.brk > 0 {
                 h.work = h.work.clamp(1, 59);
                 if h.work + h.brk > 60 {
@@ -218,7 +226,7 @@ mod tests {
     fn clock_migrates_legacy_hours_to_seven_days() {
         let mut c = Config::default();
         let mut hours = vec![HourPlan::default(); 24];
-        hours[9] = HourPlan { on: true, work: 45, brk: 15 };
+        hours[9] = HourPlan { on: true, work: 45, brk: 15, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             hours,
@@ -243,7 +251,7 @@ mod tests {
         // 上一版把单套方案直接摊在 ClockCfg.days 上
         let mut c = Config::default();
         let mut day = vec![HourPlan::default(); 24];
-        day[9] = HourPlan { on: true, work: 50, brk: 30 }; // work+brk > 60
+        day[9] = HourPlan { on: true, work: 50, brk: 30, from: 0, to: 60 }; // work+brk > 60
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             days: vec![day],
@@ -275,11 +283,11 @@ mod tests {
         let mut a = ClockProfile::default();
         a.id = "work".into();
         a.name = "工作日强化".into();
-        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10 };
+        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
         let mut b = ClockProfile::default();
         b.id = "weekend".into();
         b.name = "周末轻松".into();
-        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5 };
+        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             profiles: vec![a, b],
@@ -344,5 +352,30 @@ mod tests {
         assert!(v.get("defWork").is_none(), "{v}");
         assert!(v.get("defBrk").is_none(), "{v}");
         assert!(v.get("days").is_none(), "{v}");
+    }
+
+    #[test]
+    fn clock_clamps_minute_window() {
+        let mut c = Config::default();
+        let day = &mut c.settings.focus_clock.profiles[0].days[0];
+        day[8] = HourPlan { on: true, work: 50, brk: 10, from: 90, to: 45 }; // from 越界且起>=止
+        day[9] = HourPlan { on: true, work: 50, brk: 10, from: 30, to: 20 }; // 起晚于止
+        day[10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 0 }; // to 越界
+        day[11] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 30 }; // 合法窗口
+        sanitize(&mut c);
+        let day = &c.settings.focus_clock.profiles[0].days[0];
+        assert_eq!((day[8].from, day[8].to), (0, 60), "from 夹到 59 后仍起>=止，按整小时算");
+        assert_eq!((day[9].from, day[9].to), (0, 60), "空窗口必须退回整小时");
+        assert_eq!((day[10].from, day[10].to), (0, 1), "to 夹到 1，保留窄窗口");
+        assert_eq!((day[11].from, day[11].to), (15, 30), "合法窗口原样保留");
+    }
+
+    #[test]
+    fn hour_plan_defaults_full_hour_window() {
+        // 旧配置没有 from/to：反序列化后必须是整小时，不能变成"没选中"
+        let json = r#"{"on":true,"work":45,"brk":15}"#;
+        let p: HourPlan = serde_json::from_str(json).unwrap();
+        assert_eq!((p.from, p.to), (0, 60));
+        assert_eq!(HourPlan::default().to, 60);
     }
 }
