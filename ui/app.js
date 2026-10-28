@@ -4202,6 +4202,94 @@ function ccDaySegs(day) {
   return out;
 }
 
+/**
+ * 把目标范围展开成**逐个 15 分钟刻度**的垂直列表。
+ *
+ * 这正是原来主网格里那条"一条横条从左到右划分 4 段"（`.cc-q`）的展开版：
+ * 横条只有颜色、看不出任何信息；这里改成从上到下一行一个刻度，
+ * 每行给出起止时间、类型（专注 / 休息 / 未选中）、备注，并可直接开关这一段。
+ *
+ * 类型判定与后端 clock.rs 的节奏一致：以「选中窗口起点」为周期起点，
+ * 循环 专注 work 分 → 休息 brk 分；offset % (work+brk) < work 即为专注。
+ */
+function ccBuildSegments(t) {
+  const prof = clockProfile();
+  const rows = [];
+  for (let d = t.d0; d <= t.d1; d++) {
+    const day = prof.days[d] || [];
+    for (let h = t.h0; h <= t.h1; h++) {
+      const p = day[h];
+      if (!p) continue;
+      const work = p.work || CC_DEF_W;
+      const brk = p.brk || CC_DEF_B;
+      const winF = p.on ? (p.from || 0) : 0;
+      const winT = p.on ? (p.to == null ? 60 : p.to) : 60;
+      const cycle = work + brk;
+      let cum = 0;            // 本小时选中窗口内的累计专注分钟
+      for (let q = 0; q < CC_Q; q++) {
+        const a = qStart(q), b = qEnd(q);
+        const on = p.on && winF < b && a < winT;
+        let type = 'off';
+        let note = '未选中';
+        let focusMin = 0, breakMin = 0;
+        if (on) {
+          // 逐分钟判定：专注 work 分 → 休息 brk 分，循环，周期起点 = 选中窗口起点。
+          // 15 分钟刻度可能正好横跨边界（50/10 时 45–60 这一段就是），
+          // 所以按"这一段里专注/休息各占多少分钟"来定类型，取多的那个。
+          const lo = Math.max(a, winF), hi = Math.min(b, winT);
+          for (let m = lo; m < hi; m++) {
+            const off = m - winF;
+            if (brk <= 0 || cycle <= 0) { focusMin++; }
+            else {
+              const phase = ((off % cycle) + cycle) % cycle;
+              if (phase < work) focusMin++; else breakMin++;
+            }
+          }
+          type = breakMin > focusMin ? 'break' : 'focus';
+          if (focusMin > 0 && breakMin > 0) {
+            note = `专注 ${focusMin} 分 / 休息 ${breakMin} 分`;
+          } else if (type === 'break') {
+            note = '休息中，不拦截';
+          } else {
+            note = '连续专注';
+          }
+        }
+        cum += focusMin;
+        rows.push({
+          d, h, q,
+          a, b,
+          on,
+          type,
+          note,
+          focusMin, breakMin,
+          cumFocus: cum,
+          // 该刻度落在窗口里的哪一段（只显示窗口内的部分）
+          inFrom: Math.max(a, winF),
+          inTo: Math.min(b, winT),
+          work, brk,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+/** 一行刻度的起止时间文案（考虑窗口收窄：只显示落在窗口里的部分） */
+function ccSegTimeText(s) {
+  const f = s.inFrom > s.a ? s.inFrom : s.a;
+  const t = s.inTo < s.b ? s.inTo : s.b;
+  const fH = s.h + Math.floor(f / 60);
+  const tH = s.h + Math.floor(t / 60);
+  return `${pad(fH)}:${pad(f % 60)} – ${pad(tH)}:${pad(t % 60)}`;
+}
+
+/** 一行刻度的类型徽章文案 */
+function ccSegTypeText(s) {
+  if (s.type === 'focus') return '专注';
+  if (s.type === 'break') return '休息';
+  return '未选中';
+}
+
 /** 从上到下、垂直列出各时段（替代原来一条横条 4 段的布局） */
 function ccBuildSegRows(t) {
   const rows = [];
@@ -4267,7 +4355,6 @@ function ccOpenMenu(d, h, x, y) {
   };
   const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
   const preW = prefillWin();
-  const segs = ccBuildSegRows(t);
 
   $('#modalRoot').innerHTML = `
     <div class="modal-mask" data-act="close-modal-bg">
@@ -4284,34 +4371,16 @@ function ccOpenMenu(d, h, x, y) {
             <button class="chip-btn" data-scope="col">这一列（一整天）</button>
           </div>
 
-          <div class="cc-seg-cards">
-            <div class="cc-seg-hd">当前时段（从上到下）</div>
-            ${segs.length ? segs.map((s, idx) => `
-              <div class="cc-seg-card">
-                <div class="cc-seg-card-hd">
-                  <span class="cc-seg-card-num">#${idx + 1}</span>
-                  <span class="cc-seg-card-day">${WD[s.d]}</span>
-                  <span class="cc-seg-card-time">${ccHourWinText(s.d, s.h0, s.from, s.to)}</span>
-                  <span class="cc-seg-card-badge ${s.brk > 0 ? 'pomo' : 'pure'}">${s.kind}</span>
-                </div>
-                <div class="cc-seg-card-bd">
-                  <div class="cc-seg-card-info">
-                    <div class="cc-seg-card-item">
-                      <span class="cc-seg-card-label">时长</span>
-                      <span class="cc-seg-card-value">${s.totalMin} 分钟</span>
-                    </div>
-                    <div class="cc-seg-card-item">
-                      <span class="cc-seg-card-label">专注/休息</span>
-                      <span class="cc-seg-card-value">${s.work} / ${s.brk} 分钟</span>
-                    </div>
-                    ${s.notes.length ? `
-                    <div class="cc-seg-card-item">
-                      <span class="cc-seg-card-label">备注</span>
-                      <span class="cc-seg-card-value">${s.notes.join('、')}</span>
-                    </div>` : ''}
-                  </div>
-                </div>
-              </div>`).join('') : '<div class="cc-seg-empty">暂无已选中时段</div>'}
+          <div class="cc-tl-list" id="ccTlList">
+            <div class="cc-tl-hd">
+              <span class="cc-tl-c-idx">#</span>
+              <span class="cc-tl-c-day">星期</span>
+              <span class="cc-tl-c-time">起止时间</span>
+              <span class="cc-tl-c-type">类型</span>
+              <span class="cc-tl-c-note">备注</span>
+              <span class="cc-tl-c-act">状态</span>
+            </div>
+            <div id="ccTlRows"></div>
           </div>
 
           <div class="cc-menu-row">
@@ -4339,6 +4408,34 @@ function ccOpenMenu(d, h, x, y) {
   ccMenu = $('#modalRoot');
   $('#ccW') && $('#ccW').focus();
 
+  // ---- 垂直刻度列表：渲染 + 就地刷新 ----
+  // 列表是"从上到下、每行一个 15 分钟刻度"，替代主网格里那条
+  // "一条横条从左到右划分 4 段"（.cc-q）：横条只有颜色看不出信息，
+  // 这里每行都给起止时间、类型、备注，并可直接开关这一段。
+  const renderTlRows = () => {
+    const box = $('#ccTlRows');
+    if (!box) return;
+    const segs = ccBuildSegments(t);
+    if (!segs.length) {
+      box.innerHTML = '<div class="cc-tl-empty">这个范围里没有可设置的刻度</div>';
+      return;
+    }
+    box.innerHTML = segs.map((s, i) => `
+      <div class="cc-tl-row ${s.on ? 'on' : 'off'} type-${s.type}">
+        <span class="cc-tl-idx">${i + 1}</span>
+        <span class="cc-tl-day">${WD[s.d]}</span>
+        <span class="cc-tl-time">${ccSegTimeText(s)}</span>
+        <span class="cc-tl-type">${ccSegTypeText(s)}</span>
+        <span class="cc-tl-note">${s.note}${s.on && s.type === 'focus' ? ` · 累计专注 ${s.cumFocus} 分` : ''}</span>
+        <span class="cc-tl-act">
+          <button class="cc-tl-btn ${s.on ? 'on' : ''}" data-tl="${s.d},${s.h},${s.q}"
+            title="${s.on ? '点一下取消这 15 分钟' : '点一下选中这 15 分钟'}">${s.on ? '已选中' : '未选中'}</button>
+        </span>
+      </div>`).join('');
+  };
+  renderTlRows();
+  window.__ccRenderTlRows = renderTlRows;
+
   const tgt = $('#ccTgt');
   const cnt = $('#ccCnt');
   const updTgt = (scope) => {
@@ -4355,6 +4452,8 @@ function ccOpenMenu(d, h, x, y) {
     $('#ccB').value = q.b;
     $('#ccFrom').value = qw.f;
     $('#ccTo').value = qw.t;
+    // 目标范围变了，垂直刻度列表也要跟着换
+    if (typeof renderTlRows === 'function') renderTlRows();
   };
 
   // 模态内部交互：scope / wb / apply / 关闭 全在这里处理。
@@ -4364,6 +4463,14 @@ function ccOpenMenu(d, h, x, y) {
   if (window.__ccMenuCtrl) window.__ccMenuCtrl.abort();
   window.__ccMenuCtrl = new AbortController();
   $('#modalRoot').addEventListener('click', async (e) => {
+    // 垂直刻度列表里的单段开关：直接切换那 15 分钟
+    const tl = e.target.closest('[data-tl]');
+    if (tl) {
+      const [dd, hh, qq] = tl.dataset.tl.split(',').map(Number);
+      await Act.clockToggleQ(dd, hh, qq);
+      if (typeof window.__ccRenderTlRows === 'function') window.__ccRenderTlRows();
+      return;
+    }
     const sc = e.target.closest('[data-scope]');
     if (sc && !sc.disabled) {
       $('#modalRoot').querySelectorAll('[data-scope]').forEach((b) => b.classList.toggle('active', b === sc));

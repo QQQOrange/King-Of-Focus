@@ -727,9 +727,9 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .tl-range { margin-top: 8px; font-size: 12.5px; color: var(--text-2); }
 .tl-range b { color: var(--gold); }
 
-/* 右键菜单：设置某片区域的专注 / 休息（已改为居中模态） */
+/* 右键菜单：设置某片区域的专注 / 休息（已改为居中模态，独立窗口足够宽） */
 .cc-modal {
-  width: 560px;
+  width: 760px;
   max-width: calc(100vw - 32px);
 }
 .cc-modal .cc-menu-tgt { color: var(--text-2); margin-bottom: 9px; line-height: 1.5; }
@@ -752,69 +752,69 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 }
 
 /* 时段明细：从上到下垂直列出各段（替代原来一条横条 4 段的布局） */
-/* 时段卡片：从上到下垂直排列，每张卡片显示一个时段的完整信息 */
-.cc-seg-cards {
-  margin-bottom: 16px;
-}
-.cc-seg-hd {
-  font-size: 12px; color: var(--text-3); margin-bottom: 10px;
-  padding-bottom: 8px; border-bottom: 1px solid var(--line);
-}
-.cc-seg-card {
+/* 时段设置：垂直刻度列表
+   —— 替代主网格里"一条横条从左到右划分 4 段"（.cc-q）的横条式布局：
+   从上到下、每行一个 15 分钟刻度，每行给出起止时间 / 类型 / 备注 / 开关。 */
+.cc-tl-list {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel-a);
-  margin-bottom: 10px;
+  margin-bottom: 14px;
   overflow: hidden;
 }
-.cc-seg-card:last-child { margin-bottom: 0; }
-.cc-seg-card-hd {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px;
+.cc-tl-hd,
+.cc-tl-row {
+  display: grid;
+  grid-template-columns: 30px 46px 128px 58px 1fr 84px;
+  gap: 10px;
+  align-items: center;
+}
+.cc-tl-hd {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-3);
   background: rgba(125, 176, 255, .06);
   border-bottom: 1px solid var(--line);
 }
-.cc-seg-card-num {
-  font-size: 11px; color: var(--text-3); font-weight: 600;
-  min-width: 24px;
+.cc-tl-row {
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
 }
-.cc-seg-card-day {
-  font-size: 13px; color: var(--text); font-weight: 600;
-  min-width: 42px;
+.cc-tl-row:last-child { border-bottom: none; }
+.cc-tl-row.off { color: var(--text-3); }
+.cc-tl-idx { color: var(--text-3); font-size: 11px; }
+.cc-tl-day { color: var(--text-2); font-weight: 600; }
+.cc-tl-time { font-variant-numeric: tabular-nums; color: var(--text); }
+.cc-tl-type {
+  font-size: 11.5px; padding: 2px 7px; border-radius: 9px;
+  text-align: center; font-weight: 500;
 }
-.cc-seg-card-time {
-  font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums;
-  flex: 1;
+.cc-tl-row.type-focus .cc-tl-type {
+  background: rgba(255, 176, 32, .16); color: var(--gold);
 }
-.cc-seg-card-badge {
-  font-size: 11px; padding: 3px 8px; border-radius: 10px;
-  font-weight: 500;
+.cc-tl-row.type-break .cc-tl-type {
+  background: rgba(82, 196, 26, .16); color: var(--green, #52c41a);
 }
-.cc-seg-card-badge.pomo {
-  background: rgba(255, 176, 32, .15); color: var(--gold);
+.cc-tl-row.type-off .cc-tl-type {
+  background: rgba(140, 150, 165, .14); color: var(--text-3);
 }
-.cc-seg-card-badge.pure {
-  background: rgba(82, 196, 26, .15); color: var(--green, #52c41a);
+.cc-tl-note { color: var(--text-3); font-size: 11.5px; }
+.cc-tl-act { text-align: right; }
+.cc-tl-btn {
+  font-size: 11px; padding: 3px 9px; border-radius: 10px;
+  border: 1px solid var(--line-2); background: transparent;
+  color: var(--text-3); cursor: pointer; white-space: nowrap;
 }
-.cc-seg-card-bd {
-  padding: 10px 12px;
+.cc-tl-btn.on {
+  background: rgba(125, 176, 255, .18);
+  border-color: rgba(125, 176, 255, .45);
+  color: #7db0ff;
 }
-.cc-seg-card-info {
-  display: flex; flex-direction: column; gap: 6px;
-}
-.cc-seg-card-item {
-  display: flex; align-items: baseline; gap: 10px;
-  font-size: 12px;
-}
-.cc-seg-card-label {
-  color: var(--text-3); min-width: 64px;
-}
-.cc-seg-card-value {
-  color: var(--text-2); flex: 1;
-}
-.cc-seg-empty {
-  font-size: 12px; color: var(--text-3); padding: 20px 0;
-  text-align: center; border: 1px dashed var(--line); border-radius: var(--r-md);
+.cc-tl-btn:hover { border-color: var(--line-2); filter: brightness(1.15); }
+.cc-tl-empty {
+  font-size: 12px; color: var(--text-3); padding: 18px 0; text-align: center;
 }
 
 /* 安装引导里的状态条：加载 / 成功 / 失败 三态 */

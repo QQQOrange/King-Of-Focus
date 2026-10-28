@@ -481,13 +481,31 @@ window.__itest = async () => {
   await wait(150);
   fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
   await wait(150);
-  const segList = document.querySelector('.cc-seg-list');
-  out.push(['模态含垂直时段列表', !!segList]);
+  const segList = document.querySelector('.cc-tl-list');
+  out.push(['模态含垂直刻度列表', !!segList]);
   if (segList) {
-    const rows = segList.querySelectorAll('.cc-seg-row');
-    out.push(['时段列表有内容', rows.length >= 1]);
-    out.push(['时段列表首行显示起止', rows[0] ? rows[0].querySelector('.cc-seg-time').textContent.indexOf('08:00') >= 0 : false]);
-    out.push(['时段列表首行显示时长', rows[0] ? rows[0].querySelector('.cc-seg-kind').textContent.indexOf('专注 50') >= 0 : false]);
+    const rows = segList.querySelectorAll('.cc-tl-row');
+    out.push(['刻度列表有内容', rows.length >= 1]);
+    // 一格 = 4 个 15 分钟刻度 → 从上到下 4 行（替代原来横条 4 段）
+    out.push(['一格展开成 4 行刻度', rows.length === 4]);
+    out.push(['刻度首行显示起止时间', rows[0] ? rows[0].querySelector('.cc-tl-time').textContent.indexOf('09:00') >= 0 : false]);
+    out.push(['刻度首行显示类型', rows[0] ? rows[0].querySelector('.cc-tl-type').textContent.indexOf('专注') >= 0 : false]);
+    out.push(['刻度首行显示备注', rows[0] ? rows[0].querySelector('.cc-tl-note').textContent.length > 0 : false]);
+    out.push(['刻度行有开关按钮', rows[0] ? !!rows[0].querySelector('[data-tl]') : false]);
+    // 第 4 行（50–60 分）应当是休息段
+    out.push(['第 4 段识别为休息', rows[3] ? rows[3].querySelector('.cc-tl-type').textContent.indexOf('休息') >= 0 : false]);
+    // 点开关能切掉这一段
+    const before = (() => { const p = pd()[0][9]; return p.on && p.from === 0 && p.to === 60; })();
+    const btn = rows[0].querySelector('[data-tl]');
+    if (btn) btn.click();
+    await wait(200);
+    const after = (() => { const p = pd()[0][9]; return p.on && p.from === 15 && p.to === 60; })();
+    out.push(['列表内开关能切掉首段', before && after]);
+    // 切完再点回来
+    const btn2 = document.querySelector('.cc-tl-row [data-tl]');
+    if (btn2) btn2.click();
+    await wait(200);
+    out.push(['再点一次能补回', (() => { const p = pd()[0][9]; return p.on && p.from === 0 && p.to === 60; })()]);
   }
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
