@@ -535,4 +535,49 @@ mod tests {
         assert!(focusing_at(&c, monday(9, 30)));
         assert!(!focusing_at(&c, monday(9, 50)));
     }
+
+    /// 端到端：把"7×24 全选"的 JSON 反序列化成 Config，再算 state。
+    ///
+    /// 这条测试是为了抓一类很隐蔽的问题：**JSON 字段名写错 → 该方案解析失败 →
+    /// profiles 变空 → plan_at 返回 None → 表现成"自律时段没生效"**，
+    /// 而配置在文件里看起来完全正常。
+    #[test]
+    fn json_roundtrip_full_week_is_focusing() {
+        let plan = r#"{"on":true,"work":60,"brk":0,"from":0,"to":60}"#;
+        let day = format!("[{}]", vec![plan; 24].join(","));
+        let days = format!("[{}]", vec![day; 7].join(","));
+        let json = format!(
+            r#"{{"settings":{{"focusClock":{{"enabled":true,"applyRules":true,"active":"p1",
+               "profiles":[{{"id":"p1","name":"t","days":{days},"defWork":60,"defBrk":0}}]}}}}}}"#
+        );
+        let cfg: Config = serde_json::from_str(&json).expect("配置应能反序列化");
+        let fc = &cfg.settings.focus_clock;
+        assert!(fc.enabled, "enabled 应为 true");
+        assert_eq!(fc.profiles.len(), 1, "profiles 不该为空（字段名错会变空）");
+        let days_parsed = fc.active_days().expect("应能取到生效方案");
+        assert_eq!(days_parsed.len(), 7);
+        assert_eq!(days_parsed[0].len(), 24);
+
+        // 任意时刻都该在专注段
+        let now = monday(13, 30);
+        let st = state_at(&cfg, now).expect("应返回 ClockState");
+        assert!(st.in_window, "7×24 全选 → 任何时刻都在窗口内");
+        assert!(st.focusing(), "60/0 → 全程专注");
+        assert!(!st.in_break);
+    }
+
+    /// 同上，但用 snake_case 的 def_work/def_brk 也要能兼容（旧配置文件）
+    #[test]
+    fn json_accepts_legacy_snake_case_profile() {
+        let plan = r#"{"on":true,"work":60,"brk":0,"from":0,"to":60}"#;
+        let day = format!("[{}]", vec![plan; 24].join(","));
+        let days = format!("[{}]", vec![day; 7].join(","));
+        let json = format!(
+            r#"{{"settings":{{"focusClock":{{"enabled":true,"applyRules":true,"active":"p1",
+               "profiles":[{{"id":"p1","name":"t","days":{days},"def_work":60,"def_brk":0}}]}}}}}}"#
+        );
+        let cfg: Config = serde_json::from_str(&json).expect("旧字段格式也应能解析");
+        assert_eq!(cfg.settings.focus_clock.profiles.len(), 1);
+        assert!(state_at(&cfg, monday(9, 0)).map(|s| s.focusing()).unwrap_or(false));
+    }
 }

@@ -20,10 +20,10 @@ pub struct Discipline {
     pub clock_in: bool,
     /// 是否处于该小时的休息段
     pub clock_break: bool,
-    /// 是否处于专注段（真正在自律）
+    /// 是否处于专注段（真正在自律）—— **黑名单唯一的生效前提**
     pub clock_on: bool,
-    /// 时段内强制让所有已启用规则立即生效
-    pub clock_all: bool,
+    /// 是否允许在自律时间内启用黑名单（设置里的总开关）
+    pub apply_rules: bool,
     /// 休息段：整体暂停拦截
     pub hard_pause: bool,
     /// 是否有规则处于自己的番茄休息段
@@ -46,7 +46,7 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
         clock_in,
         clock_break,
         clock_on: clock.map(|c| c.focusing()).unwrap_or(false),
-        clock_all: clock_in && !clock_break && apply,
+        apply_rules: apply,
         hard_pause: clock_break && apply,
         on_break: clock_break
             || cfg.lists.iter().any(|l| {
@@ -60,10 +60,28 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
     }
 }
 
-/// 当前生效中的规则：引擎拦软件、插件拦网页都用这一份
+/// 当前生效中的黑名单：引擎拦软件、插件拦网页都用这一份
+///
+/// **硬性前提：只在「自律时间」内生效。**
+/// 自律时间 = 「自律时段」当前处于**专注段**（`clock_on`）。
+///   · 没配自律时段 / 当前小时没选中 → 一律不拦
+///   · 番茄休息段 → 一律不拦
+///   · 只有专注段内，才按条目自己的时间范围做进一步收窄
+///
+/// 为什么这么定：黑名单是"自律的执法工具"，不是常驻的防火墙。
+/// 自律时间之外用户是自由的，这时还去关人家的软件、拦人家的网页，
+/// 只会让人觉得软件在乱管闲事，反而破坏自律工具本身的可信度。
+///
+/// 条目自己的 `schedule` 现在只承担一个职责：**在自律时间内再收窄范围**。
+/// 空时间表 = 自律时间内全程生效；画了时间表 = 只在画出来的那些时段生效。
 pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<RuleList> {
-    if d.hard_pause {
-        return Vec::new(); // 休息段：整体放行
+    // 自律时间之外（含休息段、没选中的小时）→ 黑名单整体静默
+    if !d.clock_on {
+        return Vec::new();
+    }
+    // 总开关关掉 → 黑名单不随自律时间启用
+    if !d.apply_rules {
+        return Vec::new();
     }
     cfg.lists
         .iter()
@@ -71,11 +89,14 @@ pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Ru
             if !l.enabled {
                 return false;
             }
-            if d.clock_all {
-                return true; // 时段接管：忽略规则自己的时间表
+            // 条目自己的时间范围作为"自律时间内的二次收窄"
+            let w = &l.schedule;
+            let any = w.iter().any(|day| !day.is_empty());
+            if any && !crate::sched::is_active(w, now) {
+                return false;
             }
-            crate::sched::is_active(&l.schedule, now)
-                && !crate::sched::is_break_now(&l.schedule, &l.brk, now)
+            // 条目自己的番茄休息段也放行
+            !crate::sched::is_break_now(w, &l.brk, now)
         })
         .cloned()
         .collect()
@@ -112,18 +133,58 @@ mod tests {
     }
 
     #[test]
-    fn clock_all_forces_enabled_rules_even_when_rule_schedule_is_off() {
-        // 规则自己的时间表是"全天之外的空档"（这里设成周一 3:00–4:00，现在不是那会儿）
+    fn entry_schedule_narrows_inside_discipline_time() {
+        // 黑名单条目自己的时间表是"周一 3:00–4:00"，现在是周三 10 点。
+        // 旧语义：自律时段接管 → 忽略条目时间表。
+        // 新语义：条目时间表是"自律时间内的二次收窄"，不命中就不生效。
         let mut c = base();
         c.lists[0].schedule = vec![vec![Slot { start: 180, end: 240 }]; 7];
-        // 时段接管：周三 10 点选中
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(d.clock_on, "应处于专注段");
-        assert!(d.clock_all, "applyRules 打开时应接管规则");
         let rules = active_rules(&c, &now, &d);
-        assert_eq!(rules.len(), 1, "时段接管时规则应生效（哪怕规则自己的时段没到）");
+        assert!(rules.is_empty(), "条目自己的时间表没命中 → 不生效");
+    }
+
+    #[test]
+    fn blacklist_silent_outside_discipline_time() {
+        // 核心新语义：自律时间之外，黑名单一律不启用，哪怕它自己的时间表是全天
+        let mut c = base();
+        // 自律时段：周一 9 点（现在测周三 10 点，不在时段内）
+        let mut days = vec![vec![HourPlan::default(); 24]; 7];
+        days[0][9] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
+        c.settings.focus_clock = ClockCfg::with_days(true, days);
+        let now = now_at(2, 10, 30);
+        let d = state(&c, &now);
+        assert!(!d.clock_on, "不在自律时间");
+        assert!(
+            active_rules(&c, &now, &d).is_empty(),
+            "自律时间外必须静默，哪怕条目时间表是全天"
+        );
+    }
+
+    #[test]
+    fn blacklist_active_inside_discipline_time_with_empty_schedule() {
+        // 自律时间 + 条目时间表为空（= 不额外收窄）→ 生效
+        let mut c = base();
+        clock_on(&mut c, 2, 10, 60, 0);
+        let now = now_at(2, 10, 30);
+        let d = state(&c, &now);
+        assert!(d.clock_on);
+        assert_eq!(active_rules(&c, &now, &d).len(), 1, "自律时间内应生效");
+    }
+
+    #[test]
+    fn blacklist_narrows_with_own_schedule_inside_discipline_time() {
+        // 自律时间内在，但条目时间表只覆盖 09:00–09:30，现在 10:30 → 不生效
+        let mut c = base();
+        c.lists[0].schedule = vec![vec![Slot { start: 540, end: 570 }]; 7];
+        clock_on(&mut c, 2, 10, 60, 0);
+        let now = now_at(2, 10, 30);
+        let d = state(&c, &now);
+        assert!(d.clock_on);
+        assert!(active_rules(&c, &now, &d).is_empty(), "条目时间范围没覆盖 → 不生效");
     }
 
     #[test]
@@ -134,32 +195,28 @@ mod tests {
         let d = state(&c, &now);
         assert!(d.clock_break);
         assert!(d.hard_pause);
+        assert!(!d.clock_on, "休息段不算自律时间");
         assert!(active_rules(&c, &now, &d).is_empty(), "休息段应整体放行");
-    }
-
-    #[test]
-    fn outside_window_rule_follows_own_schedule() {
-        let mut c = base();
-        // 时段没选中 → 不接管
-        let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[0][3] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
-        c.settings.focus_clock = ClockCfg::with_days(true, days);
-        let now = now_at(2, 10, 30);
-        let d = state(&c, &now);
-        assert!(!d.clock_all);
-        assert_eq!(active_rules(&c, &now, &d).len(), 1, "规则全天生效 → 仍然生效");
     }
 
     #[test]
     fn apply_rules_off_means_clock_does_not_force_rules() {
         let mut c = base();
-        c.lists[0].schedule = vec![vec![Slot { start: 180, end: 240 }]; 7];
         clock_on(&mut c, 2, 10, 60, 0);
         c.settings.focus_clock.apply_rules = false;
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(d.clock_on, "时钟本身仍在专注段");
-        assert!(!d.clock_all, "applyRules 关掉后不该接管规则");
+        assert!(active_rules(&c, &now, &d).is_empty(), "总开关关掉后黑名单不启用");
+    }
+
+    #[test]
+    fn disabled_entry_never_active() {
+        let mut c = base();
+        c.lists[0].enabled = false;
+        clock_on(&mut c, 2, 10, 60, 0);
+        let now = now_at(2, 10, 30);
+        let d = state(&c, &now);
         assert!(active_rules(&c, &now, &d).is_empty());
     }
 }

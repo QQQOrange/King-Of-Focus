@@ -832,6 +832,25 @@ pub fn ext_dir() -> Option<PathBuf> {
 }
 
 /// 打开浏览器的扩展管理页，并给 10 分钟保护期
+
+/// 构造"打开扩展管理页"的完整命令行（纯函数，便于测试）。
+///
+/// 抽出来是为了能断言"到底把哪个 URL 传给了哪个 exe" ——
+/// 只看 `open_ext_page` 的实现很容易漏掉"传错参数"这类问题，
+/// 而一旦传错，用户点按钮只会看到一个空窗口。
+pub fn ext_page_cmd(exe: &std::path::Path, ext_page: &str) -> Command {
+    let mut cmd = Command::new(exe);
+    // 不用 `--new-window`：它在部分 Chromium 系（Edge / Opera / QQ 浏览器等）的
+    // 单实例转发里会被丢掉，只开一个空窗口、根本不过扩展页。
+    // 直接把 ext_page 作为唯一参数：无论浏览器是否已在运行，
+    // Chromium 系都会把它当 URL 路由到扩展管理页。
+    cmd.arg(ext_page);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 pub fn open_ext_page(key: &str) -> Result<String, String> {
     let d = DEFS
         .iter()
@@ -861,13 +880,10 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
     // 的单实例转发里会被丢掉，只开一个空窗口、根本不过扩展页。
     // 直接把 ext_page 作为唯一参数传给 exe：无论浏览器是否已在运行，
     // Chromium 系的命令行入口都会把它当 URL 路由到扩展管理页。
-    let mut cmd = Command::new(&exe);
-    cmd.arg(d.ext_page);
+    // 命令行构造统一走 ext_page_cmd：URL 是唯一参数，不带 --new-window。
+    let mut cmd = ext_page_cmd(&exe, d.ext_page);
     // 显式断开三个标准句柄：本程序是 GUI 子系统、没有控制台，
     // 子进程继承到无效句柄时，个别启动器（AppX 别名）会卡在初始化上。
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
     cmd.spawn().map_err(|e| {
         format!(
             "启动 {} 失败：{e}\n用的是这个路径：{}\n\
@@ -1302,5 +1318,105 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(!hits[0].enabled, "disable_reasons 非空应判停用：{hits:?}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 扩展管理页映射：key → URL 必须逐条对得上，绝不能臆造地址。
+    ///
+    /// 这是 A4 的验收测试。用户明确要求"按浏览器类型正确匹配到对应链接"，
+    /// 一旦有人手滑把 edge 写成 chrome:// 或者多臆造一个别的 scheme，
+    /// 点"扩展页"按钮就会打开一个 404 的页面，而错误很难被肉眼发现。
+    #[test]
+    fn ext_page_mapping_is_exact() {
+        let cases = [
+            ("chrome", "chrome://extensions/"),
+            ("edge", "edge://extensions/"),
+            ("brave", "brave://extensions/"),
+            ("vivaldi", "vivaldi://extensions/"),
+            ("opera", "opera://extensions/"),
+            ("chromium", "chrome://extensions/"),
+            ("360chrome", "chrome://extensions/"),
+            ("qqbrowser", "qqbrowser://extensions/"),
+            ("sogou", "chrome://extensions/"),
+            ("firefox", ""),
+        ];
+        for (key, want) in cases {
+            let d = DEFS
+                .iter()
+                .find(|d| d.key == key)
+                .unwrap_or_else(|| panic!("DEFS 里缺少浏览器 {key}"));
+            assert_eq!(d.ext_page, want, "{key} 的扩展页地址不对");
+        }
+        // DEFS 里不能有映射表之外的 key（防止偷偷加了浏览器却没登记地址）
+        assert_eq!(DEFS.len(), cases.len(), "DEFS 条目数与映射表不一致");
+    }
+
+    /// 每个浏览器都得是合法的 scheme（`xxx://` 形式），且不带路径外的垃圾
+    #[test]
+    fn ext_page_urls_are_well_formed() {
+        for d in DEFS.iter() {
+            if d.ext_page.is_empty() {
+                continue; // firefox：明确不支持本插件
+            }
+            assert!(
+                d.ext_page.ends_with("extensions/"),
+                "{} 的扩展页不是标准的 xxx://extensions/ 形式：{}",
+                d.key,
+                d.ext_page
+            );
+            assert!(
+                d.ext_page.contains("://"),
+                "{} 的扩展页缺少 scheme：{}",
+                d.key,
+                d.ext_page
+            );
+            // scheme 必须是纯 ASCII 小写字母（不允许出现中文/空格/引号）
+            let scheme = d.ext_page.split("://").next().unwrap();
+            assert!(
+                scheme.chars().all(|c| c.is_ascii_lowercase()),
+                "{} 的 scheme 不合法：{}",
+                d.key,
+                scheme
+            );
+        }
+    }
+
+    /// 未知浏览器 / 不支持插件的浏览器要给出明确错误，而不是静默成功
+    #[test]
+    fn open_ext_page_rejects_unknown_and_unsupported() {
+        let e = open_ext_page("not-a-real-browser").unwrap_err();
+        assert!(e.contains("不认识"), "未知浏览器应报错：{e}");
+        let e = open_ext_page("firefox").unwrap_err();
+        assert!(e.contains("不支持"), "Firefox 应明确说不支持：{e}");
+    }
+
+    /// 命令行里必须**只有**扩展页 URL 这一个参数，且不能带 --new-window。
+    ///
+    /// 这条是 A4 的运行时验收：命令行错了，用户点按钮只会看到空窗口。
+    #[test]
+    fn ext_page_cmd_passes_url_as_only_argument() {
+        use std::ffi::OsStr;
+        for d in DEFS.iter().filter(|d| !d.ext_page.is_empty()) {
+            let exe = std::path::Path::new("C:\\Fake\\browser.exe");
+            let cmd = ext_page_cmd(exe, d.ext_page);
+            let args: Vec<&OsStr> = cmd.get_args().collect();
+            assert_eq!(args.len(), 1, "{} 传了不止一个参数：{args:?}", d.key);
+            assert_eq!(args[0].to_str().unwrap(), d.ext_page, "{} 传的 URL 不对", d.key);
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.to_str().map(|s| s.contains("new-window")).unwrap_or(false)),
+                "{} 不该带 new-window 参数",
+                d.key
+            );
+            assert_eq!(cmd.get_program().to_str().unwrap(), exe.to_str().unwrap());
+        }
+    }
+
+    /// 给每个浏览器的 URL 都不能是空的窗口参数占位（防止改成"--new-window"这种）
+    #[test]
+    fn ext_page_cmd_never_uses_flags() {
+        for d in DEFS.iter().filter(|d| !d.ext_page.is_empty()) {
+            assert!(!d.ext_page.starts_with('-'), "{} 的扩展页不该是命令行开关", d.key);
+        }
     }
 }

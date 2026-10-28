@@ -17,9 +17,9 @@
     </div>
     <nav class="nav" id="nav">
       <button class="nav-item" data-view="overview"><span class="ico">◎</span>总览</button>
-      <button class="nav-item" data-view="rules"><span class="ico">☰</span>规则</button>
       <button class="nav-item" data-view="clock"><span class="ico">◷</span>自律时段</button>
       <button class="nav-item" data-view="mask"><span class="ico">▣</span>专注遮罩</button>
+      <button class="nav-item" data-view="rules"><span class="ico">☰</span>黑名单</button>
       <button class="nav-item" data-view="browsers"><span class="ico">▤</span>浏览器插件</button>
       <button class="nav-item" data-view="settings"><span class="ico">⚙</span>设置</button>
     </nav>
@@ -584,10 +584,10 @@ window.__itest = async () => {
   out.push(['自律时段生效中：不能取消已选时段', pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
   await Act.nav('rules');
   await wait(200);
-  out.push(['自律时段生效中：规则开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  out.push(['自律时段生效中：黑名单开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
   await Act.toggleRule('seed-study');
   await wait(200);
-  out.push(['自律时段生效中：规则关不掉', S.data.config.lists[0].enabled === true]);
+  out.push(['自律时段生效中：黑名单关不掉', S.data.config.lists[0].enabled === true]);
 
   // 10b. 休息段（clockInWindow=true、clockOn=false）：同样锁死，不能"趁休息改"
   await window.__patch({ clockOn: false, clockInWindow: true, clockBreak: true });
@@ -599,10 +599,10 @@ window.__itest = async () => {
   out.push(['休息段：总开关也关不掉', fc().enabled === true]);
   await Act.nav('rules');
   await wait(200);
-  out.push(['休息段：规则开关同样置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  out.push(['休息段：黑名单开关同样置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
   await Act.toggleRule('seed-study');
   await wait(200);
-  out.push(['休息段：规则开关也动不了', S.data.config.lists[0].enabled === true]);
+  out.push(['休息段：黑名单开关也动不了', S.data.config.lists[0].enabled === true]);
   // 时段外才恢复可点
   await window.__patch({ clockOn: false, clockInWindow: false, clockBreak: false });
   await Act.nav('clock');
@@ -788,10 +788,10 @@ window.__itest = async () => {
     out.push(['快捷键输入框保留', !!hkCard.querySelector('#hkInput')]);
   }
 
-  // 20. 规则页：多列/多组「自律时段」条目 + 点击弹独立图表弹窗
+  // 20. 黑名单页：多列/多组条目 + 点击弹独立图表弹窗
   await Act.nav('rules');
   await wait(300);
-  out.push(['规则页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
+  out.push(['黑名单页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
   out.push(['条目用的是多列网格 .sl-grid', document.querySelectorAll('.sl-grid').length >= 1]);
   out.push(['不再用旧的整块 .rule-card', document.querySelectorAll('.rule-card').length, 0]);
   const item = document.querySelector('.sl-item');
@@ -879,6 +879,32 @@ window.__itest = async () => {
   await wait(150);
   out.push(['Alt+F4 触发后端 force_quit', window.__forceQuit, 1]);
   out.push(['Alt+F4 被 preventDefault（不让 WebView 重复处理）', ev.defaultPrevented, true]);
+
+  // 23. 改名「规则」→「黑名单」+ 导航位置（自守时段 → 专注遮罩 → 黑名单 → 浏览器插件）
+  const navOrder = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.dataset.view);
+  out.push(['导航里没有「规则」项', navOrder.includes('rules') && !navOrder.includes('rule'), true]);
+  const navTxt = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.textContent.trim().replace(/^[^\u4e00-\u9fa5]+/, ''));
+  out.push(['导航文案含「黑名单」', navTxt.includes('黑名单'), true]);
+  out.push(['导航已无「规则」文案', navTxt.includes('规则'), false]);
+  out.push(['黑名单在专注遮罩之后', navOrder.indexOf('rules') > navOrder.indexOf('mask'), true]);
+  out.push(['黑名单在浏览器插件之前', navOrder.indexOf('rules') < navOrder.indexOf('browsers'), true]);
+  out.push(['导航顺序：自律时段→专注遮罩→黑名单→浏览器插件',
+    navOrder.slice(navOrder.indexOf('clock'), navOrder.indexOf('browsers') + 1).join('>'),
+    'clock>mask>rules>browsers']);
+  // 页面标题
+  out.push(['黑名单页标题是「黑名单」', VIEW_TITLES.rules, '黑名单']);
+
+  // 24. 仅自律时间生效：页面文案必须讲清楚，不能再说"按自己的时段生效"
+  S.view = 'rules'; render();
+  await wait(150);
+  const rulesTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
+  out.push(['黑名单页说明了「只在自律时间生效」', /只(在|会).*自律时间|自律时间内/.test(rulesTxt), true]);
+  // 自律时段页的关系说明也必须改成包含关系（不是并列）
+  S.view = 'clock'; render();
+  await wait(250);
+  const clockTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
+  out.push(['自律时段页说明与黑名单是包含关系', clockTxt.includes('只在自律时间'), true]);
+  out.push(['自律时段页不再声称「规则按自己时段走」', clockTxt.includes('按它自己的时段走'), false]);
 
   const pre = document.createElement('pre');
   pre.id = 'itest';

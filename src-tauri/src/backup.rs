@@ -296,7 +296,7 @@ fn apply(shared: &Shared, envelope: &str) -> Result<String, String> {
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;
     }
-    Ok(format!("已恢复 {n} 条规则（含设置）"))
+    Ok(format!("已恢复 {n} 条黑名单（含设置）"))
 }
 
 // ---------------- 云端备份（WebDAV） ----------------

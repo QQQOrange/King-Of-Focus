@@ -152,7 +152,7 @@ impl Default for RuleList {
     fn default() -> Self {
         RuleList {
             id: String::new(),
-            name: "新规则".into(),
+            name: "新黑名单".into(),
             enabled: false,
             mode: "blacklist".into(),
             apps: vec![],

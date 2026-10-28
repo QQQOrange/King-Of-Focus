@@ -110,7 +110,7 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;
     }
-    Ok(format!("已从云端恢复 {n} 条规则"))
+    Ok(format!("已从云端恢复 {n} 条黑名单"))
 }
 
 /// 智能同步：谁新用谁

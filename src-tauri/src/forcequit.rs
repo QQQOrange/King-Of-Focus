@@ -47,6 +47,9 @@ const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_HOTKEY: u32 = 0x0312;
 const WM_QUIT: u32 = 0x0012;
 const PM_REMOVE: u32 = 0x0001;
+const PM_NOREMOVE: u32 = 0x0000;
+/// 自定义消息：钩子命中后用它唤醒主循环（WM_APP 起点，避免和系统消息撞车）
+const WM_APP_FORCE: u32 = 0x8000 + 0x4F;
 const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
 
@@ -95,15 +98,18 @@ extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
     fn GetForegroundWindow() -> Handle;
     fn GetWindowThreadProcessId(hwnd: Handle, pid: *mut u32) -> u32;
+    fn GetMessageW(m: *mut Msg, hwnd: Handle, min: u32, max: u32) -> i32;
     fn PeekMessageW(m: *mut Msg, hwnd: Handle, min: u32, max: u32, remove: u32) -> i32;
     fn TranslateMessage(m: *const Msg) -> i32;
     fn DispatchMessageW(m: *const Msg) -> isize;
+    fn PostThreadMessageW(thread_id: u32, msg: u32, wparam: usize, lparam: isize) -> i32;
 }
 
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(name: *const u16) -> Handle;
     fn GetTickCount64() -> u64;
+    fn GetCurrentThreadId() -> u32;
 }
 
 // ---------------- 状态 ----------------
@@ -116,6 +122,11 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 static HOOK_OK: AtomicBool = AtomicBool::new(false);
 /// 全局热键注册成功没有
 static HOTKEY_OK: AtomicBool = AtomicBool::new(false);
+/// 最近一次命中时的修饰键状态（只用于日志，由主循环读取）
+static HIT_CTRL: AtomicBool = AtomicBool::new(false);
+static HIT_ALT: AtomicBool = AtomicBool::new(false);
+/// 安装钩子的线程 id（钩子回调要用它唤醒阻塞中的 GetMessageW）
+static HOOK_TID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// 已安装的键盘钩子句柄（退出时卸载）
 static HOOK_HANDLE: std::sync::atomic::AtomicPtr<core::ffi::c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -170,15 +181,16 @@ const ALT_RECENT_MS: u64 = 1500;
 
 /// 是否应当把这次窗口关闭请求判定为 **Alt+F4**（而不是点 X）
 pub fn is_alt_f4_close() -> bool {
-    if alt_held() {
-        return true;
-    }
+    let held = alt_held();
     let last = ALT_AT.load(Ordering::Relaxed);
-    if last == 0 {
-        return false;
-    }
     let now = unsafe { GetTickCount64() };
-    now.saturating_sub(last) < ALT_RECENT_MS
+    let age = if last == 0 { u64::MAX } else { now.saturating_sub(last) };
+    let hit = held || age < ALT_RECENT_MS;
+    if hit {
+        // 只在"确实判定为 Alt+F4"时记一行，避免普通关窗也刷日志
+        log(&format!("CloseRequested 判定为 Alt+F4（alt_held={held} 距按Alt={age}ms）"));
+    }
+    hit
 }
 
 /// 组合键判定（纯函数，便于单元测试）。
@@ -201,6 +213,20 @@ pub fn combo_triggers(vk: i32, ctrl: bool, alt: bool, fg_is_ours: bool) -> bool 
 }
 
 /// 低级键盘钩子回调：只看 F4，判断组合键后决定吞不吞。
+/// 低级键盘钩子回调。
+///
+/// **这里是全程序最危险的地方**，两条铁律：
+///
+/// 1. 必须极快返回。Windows 对低级钩子回调有硬性超时（LowLevelHooksTimeout，
+///    默认 300ms）。一旦超时，系统会**静默摘掉**钩子——不报错、不抛异常，
+///    只是从此再也收不到任何按键。现象极具迷惑性：
+///    "单进程时 Alt+F4 好用，一开固化（多一个守护进程抢 CPU）就失灵"。
+///
+/// 2. **绝对不能做任何 I/O**（写文件、写日志都算）。曾经的版本在这里调 `log()`
+///    写日志文件，磁盘一慢就超时，钩子在启动几秒后就被系统摘掉——
+///    这正是"按了没反应"的真正原因。现在回调里只做：
+///    读键值 → 判组合键 → 置原子标志 → PostThreadMessage 唤醒主循环。
+///    真正干活（日志、清理、退出）全在主循环里做。
 unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
     if code == HC_ACTION {
         let msg = wparam as u32;
@@ -209,15 +235,25 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> 
             // 记下 Alt 被按下的时刻：窗口关闭请求到达时 Alt 可能已经松开了，
             // 靠这个时间戳才能把 Alt+F4 和"点 X"区分开。
             if st.vk_code as i32 == VK_MENU {
-                ALT_AT.store(unsafe { GetTickCount64() }, Ordering::Relaxed);
+                ALT_AT.store(GetTickCount64(), Ordering::Relaxed);
             }
-            let ctrl = key_down(VK_CONTROL);
-            let alt = key_down(VK_MENU);
-            if combo_triggers(st.vk_code as i32, ctrl, alt, foreground_is_ours()) {
-                TRIGGERED.store(true, Ordering::SeqCst);
-                // 返回 1 = 吞掉这次按键：不让它继续传给前台程序，
-                // 免得"强制退出"顺手把别人的窗口也关了。
-                return 1;
+            // 只判 F4；其它按键在这里立刻放行（绝大多数按键走这条快路径）
+            if st.vk_code as i32 == VK_F4 {
+                let ctrl = key_down(VK_CONTROL);
+                let alt = key_down(VK_MENU);
+                let fg_ours = foreground_is_ours();
+                if combo_triggers(st.vk_code as i32, ctrl, alt, fg_ours) {
+                    HIT_CTRL.store(ctrl, Ordering::Relaxed);
+                    HIT_ALT.store(alt, Ordering::Relaxed);
+                    TRIGGERED.store(true, Ordering::SeqCst);
+                    // 叫醒阻塞在 GetMessageW 上的主循环（回调返回后它会继续阻塞）
+                    let tid = HOOK_TID.load(Ordering::SeqCst);
+                    if tid != 0 {
+                        PostThreadMessageW(tid, WM_APP_FORCE, 0, 0);
+                    }
+                    // 返回 1 = 吞掉这次按键，别让它继续传给前台程序
+                    return 1;
+                }
             }
         }
     }
@@ -225,29 +261,24 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> 
 }
 
 /// 启动强制退出监听（进程启动时调用一次）
+///
+/// 方案说明（为什么不用低级键盘钩子）：
+///   WH_KEYBOARD_LL 看起来最灵活，但它有个致命弱点：回调必须在
+///   LowLevelHooksTimeout（默认 300ms）内返回，否则系统会**静默摘掉钩子**，
+///   不报错、不抛异常，只是从此收不到任何按键。
+///   实测在"主进程 + 固化守护"双进程抢 CPU 时，钩子几秒内就被摘掉，
+///   表现为"单进程时 Alt+F4 好用，一开固化就失灵"——极难排查。
+///
+/// 所以改成两条各自最可靠的路径：
+///   1. **Ctrl+Alt+F4** → `RegisterHotKey` 系统级热键。由系统直接投递 WM_HOTKEY，
+///      不经过任何回调超时机制，前台后台都稳定。这是"强制退出"的主通道。
+///   2. **Alt+F4** → 走窗口的 `CloseRequested`（见 main.rs）。
+///      Alt+F4 本来就是"关闭当前窗口"，Windows 会把它变成 WM_CLOSE，
+///      由 `is_alt_f4_close()` 区分"Alt+F4"和"点右上角 X"。
+///      这条路只在窗口处于前台时生效——这符合预期：后台按 Alt+F4 不该
+///      越过前台程序去关我们的窗口。
 pub fn start(app: AppHandle, shared: Arc<Shared>) {
     std::thread::spawn(move || unsafe {
-        // 钩子：装不上就退化成热键
-        let module = GetModuleHandleW(std::ptr::null());
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
-        HOOK_OK.store(!hook.is_null(), Ordering::SeqCst);
-        HOOK_HANDLE.store(hook, Ordering::SeqCst);
-
-        // 兜底热键：Ctrl+Alt+F4。钩子可用时它其实用不上（按键被吞了），
-        // 但留着可以在钩子被系统拒绝时仍然能强制退出。
-        let hotkey_ok = RegisterHotKey(
-            std::ptr::null_mut(),
-            HOTKEY_ID_FORCE_QUIT,
-            MOD_CONTROL | MOD_ALT,
-            VK_F4 as u32,
-        ) != 0;
-        HOTKEY_OK.store(hotkey_ok, Ordering::SeqCst);
-        log(&format!(
-            "强制退出监听启动：钩子={} 热键={}",
-            HOOK_OK.load(Ordering::Relaxed),
-            HOTKEY_OK.load(Ordering::Relaxed)
-        ));
-
         let mut msg = Msg {
             hwnd: std::ptr::null_mut(),
             message: 0,
@@ -258,23 +289,54 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             pt_y: 0,
             _private: 0,
         };
+        // 先建立线程消息队列（RegisterHotKey 的 WM_HOTKEY 依赖它）
+        PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+
+        // 主通道：系统级热键 Ctrl+Alt+F4
+        let ok = RegisterHotKey(
+            std::ptr::null_mut(),
+            HOTKEY_ID_FORCE_QUIT,
+            MOD_CONTROL | MOD_ALT,
+            VK_F4 as u32,
+        ) != 0;
+        HOTKEY_OK.store(ok, Ordering::SeqCst);
+        log(&format!("强制退出热键 Ctrl+Alt+F4 注册={ok}"));
+
+        // 钩子：**始终安装**，它承担两件热键做不到的事：
+        //   1. 第一次按下 Alt 时把时刻记进 ALT_AT —— `is_alt_f4_close()` 靠它
+        //      才能把 "Alt+F4" 和 "点右上角 X" 区分开（两者在 Win32 层同属 WM_CLOSE）。
+        //   2. 热键被别的程序占用时，它还能独立识别 Ctrl+Alt+F4。
+        //
+        // 回调已经是**零 I/O**（只读键值 + 写原子量 + PostThreadMessage），
+        // 这是它不被系统按 LowLevelHooksTimeout 摘掉的前提。
+        let module = GetModuleHandleW(std::ptr::null());
+        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
+        HOOK_OK.store(!hook.is_null(), Ordering::SeqCst);
+        HOOK_HANDLE.store(hook, Ordering::SeqCst);
+        HOOK_TID.store(GetCurrentThreadId(), Ordering::SeqCst);
+        log(&format!(
+            "强制退出就绪：热键={ok} 钩子={}",
+            !hook.is_null()
+        ));
+
         loop {
-            // 泵消息：低级钩子的回调由系统投递到本线程，必须泵起来才会跑
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                if msg.message == WM_QUIT {
-                    break;
-                }
-                if msg.message == WM_HOTKEY && msg.w_param as i32 == HOTKEY_ID_FORCE_QUIT {
-                    TRIGGERED.store(true, Ordering::SeqCst);
-                }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            // 阻塞等消息：0 CPU，热键一来立刻醒
+            let r = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+            if r == 0 || r == -1 {
+                break;
             }
+            if (msg.message == WM_HOTKEY && msg.w_param as i32 == HOTKEY_ID_FORCE_QUIT)
+                || msg.message == WM_APP_FORCE
+            {
+                TRIGGERED.store(true, Ordering::SeqCst);
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
             if TRIGGERED.swap(false, Ordering::SeqCst) {
+                log("收到强制退出信号（热键 / Alt+F4）");
                 force_quit(&app, &shared);
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(30));
         }
     });
 }
@@ -369,11 +431,24 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) {
 }
 
 /// 仅在 KOF_DEBUG=1 时输出日志
+///
+/// 同时写一份到数据目录的 `forcequit.log`：
+/// 本程序是 GUI 子系统（windows_subsystem），stderr 在双击启动时根本没有宿主，
+/// 排查"钩子看见了按键却没触发"这类问题时，重定向 stderr 也常常拿不到内容。
+/// 写文件是唯一可靠的方式。
 fn log(msg: &str) {
     if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
         return;
     }
     eprintln!("[king-of-focus][forcequit] {msg}");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crate::cfg::data_dir().join("forcequit.log"))
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{} {msg}", chrono::Local::now().format("%H:%M:%S%.3f"));
+    }
 }
 
 #[cfg(test)]

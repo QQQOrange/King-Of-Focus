@@ -48,13 +48,16 @@ pub struct LockInfo {
 }
 
 pub fn lock_info(cfg: &Config) -> LockInfo {
+    lock_info_at(cfg, Local::now().naive_local())
+}
+
+/// 与 `lock_info` 相同，但"现在"可以指定（便于测试）。
+pub fn lock_info_at(cfg: &Config, nd: chrono::NaiveDateTime) -> LockInfo {
     // 测试模式：自律开关随时可用，不做任何固化锁定
     if crate::testmode::on() {
         return LockInfo::default();
     }
-    let now = Local::now();
-    let nd = now.naive_local();
-    let ts = now.timestamp();
+    let ts = nd.and_local_timezone(Local).single().map(|x| x.timestamp()).unwrap_or_else(|| Local::now().timestamp());
 
     // 用积分解锁期间：一律不锁
     if ts < cfg.points.unlock_until {
@@ -73,19 +76,33 @@ pub fn lock_info(cfg: &Config) -> LockInfo {
 
     let mut names = Vec::new();
     let mut until = 0i64;
+    // 固化（硬锁）是黑名单条目的属性，因此同样**只在自律时间生效**：
+    // 自律时段之外用户是自由的，这时候还锁着退出/设置，只会让人觉得
+    // 软件在乱管闲事。门槛用 clock_on（专注段），休息段不锁。
+    let d = crate::discipline::state(cfg, &nd);
+    if !d.clock_on {
+        return LockInfo::default();
+    }
     for l in cfg.lists.iter() {
         if !l.enabled || !l.hard {
             continue;
         }
-        if !sched::is_active(&l.schedule, &nd) {
+        // 条目自己的时间范围是"自律时间内的二次收窄"
+        let w = &l.schedule;
+        let any = w.iter().any(|day| !day.is_empty());
+        if any && !sched::is_active(w, &nd) {
             continue;
         }
-        // 安全闸：没有明确结束时间的规则（全天生效）不参与固化，
+        // 安全闸：没有明确结束时间的条目（全天生效）不参与固化，
         // 否则会把自己永久锁死，只有等到明天才有解。
-        let left = match sched::slot_left_secs(&l.schedule, &nd) {
+        // 用自律时段本身的结束时间兜底，保证一定有一个"自然解封"的时刻。
+        let left = match sched::slot_left_secs(w, &nd) {
             Some(v) if v > 0 => v,
-            _ => continue,
+            _ => d.clock_left.max(0),
         };
+        if left <= 0 {
+            continue;
+        }
         names.push(l.name.clone());
         until = until.max(ts + left);
     }
@@ -153,7 +170,7 @@ pub fn discipline_violation_at(
     }
     // 2) "时段内让规则立即生效"不能关
     if oc.apply_rules && !nc.apply_rules {
-        return Some("自律时段生效中，不能关闭「时段内让已启用的规则立即生效」".into());
+        return Some("自律时段生效中，不能关闭「时段内让已启用的黑名单立即生效」".into());
     }
     // 3) 正在生效的那套方案不能被切走 / 删掉
     let old_id = oc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
@@ -203,14 +220,14 @@ pub fn discipline_violation_at(
         match new.lists.iter().find(|x| x.id == l.id) {
             None => {
                 if l.enabled {
-                    return Some(format!("自律时段生效中，不能删除规则「{}」", l.name));
+                    return Some(format!("自律时段生效中，不能删除黑名单「{}」", l.name));
                 }
             }
             Some(nl) if nl.enabled != l.enabled => {
                 return Some(if l.enabled {
-                    format!("自律时段生效中，不能关闭规则「{}」", l.name)
+                    format!("自律时段生效中，不能关闭黑名单「{}」", l.name)
                 } else {
-                    format!("自律时段生效中，规则开关已锁定，不能开启规则「{}」", l.name)
+                    format!("自律时段生效中，黑名单开关已锁定，不能开启黑名单「{}」", l.name)
                 });
             }
             _ => {}
@@ -229,7 +246,7 @@ pub fn discipline_violation_at(
             if !nl.apps.iter().any(|x| x.id == a.id) {
                 let name = if a.label.is_empty() { &a.value } else { &a.label };
                 return Some(format!(
-                    "自律时段生效中，不能从规则「{}」里删掉软件「{}」",
+                    "自律时段生效中，不能从黑名单「{}」里删掉软件「{}」",
                     l.name, name
                 ));
             }
@@ -238,7 +255,7 @@ pub fn discipline_violation_at(
             if !nl.sites.iter().any(|x| x.id == s.id) {
                 let name = if s.label.is_empty() { &s.pattern } else { &s.label };
                 return Some(format!(
-                    "自律时段生效中，不能从规则「{}」里删掉网站「{}」",
+                    "自律时段生效中，不能从黑名单「{}」里删掉网站「{}」",
                     l.name, name
                 ));
             }
@@ -246,7 +263,7 @@ pub fn discipline_violation_at(
         for e in &nl.exceptions {
             if !l.exceptions.iter().any(|x| x.eq_ignore_ascii_case(e)) {
                 return Some(format!(
-                    "自律时段生效中，不能给规则「{}」新增网站例外「{}」",
+                    "自律时段生效中，不能给黑名单「{}」新增网站例外「{}」",
                     l.name, e
                 ));
             }
@@ -726,6 +743,58 @@ mod tests {
         assert!(
             discipline_violation_at(&old, &old.clone(), now).is_none(),
             "同样的配置在时段外应放行"
+        );
+    }
+
+    // ---- 固化（hard）只在自律时间生效：新语义的核心测试 ----
+
+    /// 自律时间内 + 固化条目 → 锁定
+    #[test]
+    fn hard_lock_active_inside_discipline_time() {
+        let mut c = cfg_with_clock();
+        c.lists[0].hard = true;
+        let info = lock_info_at(&c, now_at(2, 10, 30));
+        assert!(info.locked, "自律时间内固化应生效：{info:?}");
+        assert_eq!(info.names.len(), 1);
+    }
+
+    /// 自律时间外 + 固化条目 → **不锁**（黑名单只在自律时间生效）
+    #[test]
+    fn hard_lock_silent_outside_discipline_time() {
+        let mut c = cfg_with_clock();
+        c.lists[0].hard = true;
+        // 周三 15 点：时钟只选了 10 点那段 → 不在自律时间
+        let info = lock_info_at(&c, now_at(2, 15, 0));
+        assert!(!info.locked, "自律时间外固化必须不生效：{info:?}");
+    }
+
+    /// 番茄休息段 → 不算自律时间，固化不生效
+    #[test]
+    fn hard_lock_silent_during_break() {
+        let mut c = cfg_with_clock();
+        c.lists[0].hard = true;
+        // 把 10 点那段改成 40 专注 / 20 休息，10:45 落在休息段
+        let mut days = vec![vec![HourPlan::default(); 24]; 7];
+        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
+        c.settings.focus_clock = ClockCfg::with_days(true, days);
+        let info = lock_info_at(&c, now_at(2, 10, 45));
+        assert!(!info.locked, "休息段不算自律时间，不该锁：{info:?}");
+    }
+
+    /// 退出拦截：自律时间内禁止退出，自律时间外放行
+    #[test]
+    fn exit_allowed_outside_discipline_time() {
+        let mut c = cfg_with_clock();
+        c.lists[0].hard = true;
+        // 自律时间内（周三 10:20）→ 禁退
+        assert!(
+            exit_blocked_at(&c, now_at(2, 10, 20)).is_some(),
+            "自律时间内应禁止退出"
+        );
+        // 自律时间外（周三 15:00）→ 允许退出
+        assert!(
+            exit_blocked_at(&c, now_at(2, 15, 0)).is_none(),
+            "自律时间外应允许退出"
         );
     }
 }
