@@ -23,6 +23,7 @@ const S = {
   paint: null,
   ccDrag: null,
   ccRect: null,
+  ccHover: null,
   browsers: null,
   browserScanning: false,
 };
@@ -664,6 +665,24 @@ function paintSchedule() {
 const WD = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const CC_DEF_W = 50, CC_DEF_B = 10; // 配置里没有通用时长时的兜底值
 const CC_MAX_PROFILES = 12;         // 与后端 model::MAX_CLOCK_PROFILES 对齐
+/** 一天切成 24 小时 × 每小时 4 个 15 分钟刻度（滴答清单周视图同款）。
+ *  「选中」是连续区间 [start,end) 的分钟数，与后端 HourPlan 的 from/to 是同一套口径；
+ *  `from`/`to` 的边界自动夹到 15 分钟刻度——引擎按整小时算，刻度外的零头留不住。 */
+const CC_Q = 4;
+const CC_QMIN = 60 / CC_Q; // 15
+const qStart = (q) => q * CC_QMIN;          // 15 分钟刻度 → 该刻度起点分钟
+const qEnd = (q) => (q + 1) * CC_QMIN;      // 15 分钟刻度 → 该刻度终点分钟
+/** 夹到合法区间并把边界落回 15 分钟刻度（from 向下取整、to 向上取整） */
+function ccSnapWin(f, t) {
+  let a = Math.max(0, Math.min(59, Math.round(f || 0)));
+  let b = Math.max(1, Math.min(60, Math.round(t == null ? 60 : t)));
+  if (a >= b) { a = 0; b = 60; }
+  a = Math.floor(a / CC_QMIN) * CC_QMIN;
+  b = Math.ceil(b / CC_QMIN) * CC_QMIN;
+  if (b > 60) b = 60;
+  if (a >= b) { a = 0; b = 60; }
+  return { f: a, t: b };
+}
 
 /** 归一化一套方案：7 天 × 24 小时 + 时长夹紧 */
 function ccNormProfile(p, idx) {
@@ -686,10 +705,10 @@ function ccNormProfile(p, idx) {
     for (const h of dd) {
       h.work = Math.max(0, Math.min(60, Math.round(h.work || 0)));
       h.brk = Math.max(0, Math.min(60, Math.round(h.brk || 0)));
-      // 起止分钟：夹到合法区间；起始不早于结束，否则按整小时算
-      h.from = Math.max(0, Math.min(59, Math.round(h.from || 0)));
-      h.to = Math.max(1, Math.min(60, Math.round(h.to == null ? 60 : h.to)));
-      if (h.from >= h.to) { h.from = 0; h.to = 60; }
+      // 起止分钟：夹到合法区间并对齐 15 分钟刻度；起始不早于结束，否则按整小时算
+      const snap = ccSnapWin(h.from, h.to);
+      h.from = snap.f;
+      h.to = snap.t;
       if (h.brk > 0) {
         h.work = Math.max(1, Math.min(59, h.work));
         if (h.work + h.brk > 60) h.brk = 60 - h.work;
@@ -744,19 +763,20 @@ function clockProfile() {
   return fc.profiles.find((p) => p.id === fc.active) || fc.profiles[0];
 }
 
-/** 把 DOM 里 `.cc-cell.on` 的选中态按「每列连续小时」画成整块覆盖层。
+/** 把 DOM 里 `.cc-cell` 的选中态按「每列连续分钟」画成整块覆盖层。
  *
  * 为什么不在格子上画：格子之间有 3px 间距，半透明底色在间距里叠两次会
  * 变成一条亮缝，几个连续小时看起来就像几块独立的小方块。
  * 这里改成用 grid 跨行跨列的覆盖层——一个连续段就是**一个**圆角块，
  * 中间没有任何接缝；格子仍然负责命中、hover 与右键。
  *
- * 两件事让"连续"真的连续：
+ * 三件事让"连续"真的连续：
  * 1. 相邻的块（只隔 3px 网格间距）互相缝合：共享的那一侧不画圆角和描边，
  *    并由后侧的块用负边距把间距补上——看起来就是一整块，而不是一块块拼的。
- * 2. 起止分钟（右键设置"第几分钟到第几分钟"）：首小时从 `from` 开始画、
- *    尾小时画到 `to` 为止，没选中的分钟用与格子同色的占位带让开；
- *    中间出现窗口不完整的小 HourPlan 时会把区间切成两块，洞就是洞。
+ * 2. 选中窗口是分钟区间 [from,to)（右键或细分刻度设置），整块按**均匀分钟格**
+ *    切片：与格子边界无关，所以 11:10–12:20 这种零碎时间也是一条整带，
+ *    不会因为跨小时被切开。未选中的分钟用与格子同色的占位带让开。
+ * 3. 专注 / 休息配方按分钟窗口重新切片，跨小时也不会断色。
  *
  * `dragRect` 传入时额外画一个金色虚线框，作为框选预览。 */
 function ccRenderRuns(root, dragRect) {
@@ -766,6 +786,7 @@ function ccRenderRuns(root, dragRect) {
   grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => el.remove());
   const fc = clockProfile();
   const hourAt = (d, h) => (fc.days[d] && fc.days[d][h]) || { on: false, work: 0, brk: 0, from: 0, to: 60 };
+  const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
 
   // 按列收集选中小时（以 DOM 为准：拖选预览用的是同一套 DOM 状态）
   const cols = new Map();
@@ -775,7 +796,6 @@ function ccRenderRuns(root, dragRect) {
     cols.get(d).add(h);
   });
 
-  const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
   // 1) 每列先算出连续段，并记录这一段的「专注/休息配方」——
   //    配方不同的两天不能横向合并，否则色带会画错。
   //    分割点看「有效边界」：上一小时没到整点、或这一小时没从整点开始，
@@ -829,7 +849,9 @@ function ccRenderRuns(root, dragRect) {
 
   const addBlock = (d0, d1, h0, h1, sig, f0, t1) => {
     const n = h1 - h0 + 1;
-    const unit = 100 / n / 60; // 1 分钟占整块高度的百分比
+    // 块内统一按「分钟」切片：每个 <i> 都是一条等宽色带，
+    // 跨小时的零碎时间因此天然连续（11:10–12:20 = 70 分钟一条带）。
+    const unit = 100 / (n * 60);
     let bands = '';
     for (let k = 0; k < n; k++) {
       const [w, b] = sig.split(',')[k].split('/').map(Number);
@@ -1025,7 +1047,8 @@ function ccNextSlotText(fc, wdNow, hourNow) {
     const one = p.days[d] && p.days[d][h];
     if (one && one.on) {
       const when = step < 24 ? (step === 0 ? '本小时' : `${step} 小时后`) : `${Math.floor(step / 24)} 天后`;
-      const hm = one.from > 0 ? `:${pad(one.from)}` : ':00';
+      const snap = ccSnapWin(one.from, one.to);
+      const hm = snap.f > 0 ? `:${pad(snap.f)}` : ':00';
       return `，下一个选中时段：${WD[d]} ${pad(h)}${hm}（${when}）`;
     }
   }
@@ -1117,6 +1140,8 @@ function viewClock() {
   // 所有格子都**显式定位**：连续时段的整块是按行号覆盖上去的，
   // 只要格子还是自动流，自动布局就会绕开被覆盖块占住的位置，整张表会错行。
   // 左上角是「纵轴单位」，不再重复标一个 0（第一个小时标签已经是 0 了）。
+  // 每个格子里再放 4 条 15 分钟细分刻度（滴答清单周视图同款）：默认不画，
+  // hover / 拖选该小时时才浮现，用来勾选 15 分钟粒度的时间段。
   let grid = `<div class="cc-corner" style="grid-row:1;grid-column:1">时</div>` + WD.map((w, i) =>
     `<div class="cc-dh${i === wdNow ? ' today' : ''}" style="grid-row:1;grid-column:${i + 2}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
   for (let h = 0; h < 24; h++) {
@@ -1126,16 +1151,23 @@ function viewClock() {
       const w = Math.max(0, Math.min(60, p.work || 0));
       const b = Math.max(0, Math.min(60 - w, p.brk || 0));
       const t = Math.max(0, 60 - w - b); // 没排满的尾段，引擎里算继续专注
-      // 起止分钟不是整点时，标题显示真实窗口（09:15 – 09:45）
-      const pf = Math.max(0, Math.min(59, p.from || 0));
-      const pt = Math.max(1, Math.min(60, p.to == null ? 60 : p.to));
+      // 起止分钟对齐 15 分钟刻度；不是整点时标题显示真实窗口（09:15 – 09:45）
+      const snap = ccSnapWin(p.from, p.to);
+      const pf = p.on ? snap.f : 0, pt = p.on ? snap.t : 60;
       const winTxt = pf > 0 || pt < 60
         ? `${WD[dd]} ${pad(h)}:${pad(pf)} – ${pad(h)}:${pad(pt)}`
         : `${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00`;
-      // 选中态的底色由 ccRenderRuns 画成整块；格子只留命中区与 hover
+      // 选中态的底色由 ccRenderRuns 画成整块；格子只留命中区与 hover。
+      // 细分刻度：只在 hover / 拖选时浮现（CSS .cc-cell:hover .cc-q / .cc-cell.qshow .cc-q）。
+      let qs = '';
+      for (let q = 0; q < CC_Q; q++) {
+        const a = qStart(q), bq = qEnd(q);
+        const onQ = p.on && pf < bq && a < pt;
+        qs += `<i class="cc-q${onQ ? ' on' : ''}" data-q="${q}" data-a="${a}" data-b="${bq}"></i>`;
+      }
       grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}"
         style="grid-row:${h + 2};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
-        title="${winTxt}${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}"></div>`;
+        title="${winTxt}${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}">${qs}</div>`;
     }
   }
 
@@ -1196,7 +1228,7 @@ function viewClock() {
       <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
     <div class="tl-legend">
-      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；单击格子 = 单独开关那一小时；<b>右键格子 = 设置这一片的专注 / 休息时长与起止分钟</b>（比如从第 15 分钟到第 45 分钟）。</span>
+      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；<b>每小时默认整块，hover / 拖选时会分成 4 个 15 分钟刻度</b>，单击刻度 = 单独开关那 15 分钟，上下一划就能框住一个时间段（11:10–12:20 这种零碎时间也行）；<b>右键格子 = 设置这一片的专注 / 休息时长与起止分钟</b>（比如从第 15 分钟到第 45 分钟）。</span>
       <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
     </div>
     <div class="tl-range">已选${multi ? `（${esc(prof.name)}）` : ''}：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
@@ -1206,7 +1238,7 @@ function viewClock() {
     <div class="card-title">它和「规则」的关系</div>
     <div class="card-sub">两条时间轴各管一件事，不用二选一。</div>
     <div class="note" style="line-height:1.95">
-      <b>这里（自律时段）</b>：决定"什么时候进入自律模式"。粒度 1 小时，按周排，每周重复。<br>
+      <b>这里（自律时段）</b>：决定"什么时候进入自律模式"。粒度 15 分钟，按周排，每周重复。<br>
       <b>规则页的时段</b>：决定"某条规则在哪几天、哪几个时间点生效"，粒度到分钟，可以跨夜。<br>
       <b>两者叠加</b>：自律时段内会强制让所有「已启用」的规则立刻生效（可以在下面关掉这个行为）；
       自律时段外，规则还是按它自己的时段走。
@@ -1305,6 +1337,17 @@ function viewMask() {
           </div>
           <div class="switch" data-act="toggle-follow"><input type="checkbox" ${m.follow ? 'checked' : ''}><i></i></div>
         </div>
+        <div class="row" style="align-items:center;justify-content:space-between;gap:14px;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+          <div>
+            <div style="font-size:12.5px">媒体管控</div>
+            <div class="hint" style="margin-top:4px">
+              遮罩生效时，自动<b>暂停</b>被盖住（非前台/非呈现）窗口的媒体播放；
+              窗口回到前台、或遮罩关闭时<b>自动恢复</b>播放。只动我们暂停过的，
+              你自己手动暂停的不会被乱动；归因不到的后台音乐一律不碰。
+            </div>
+          </div>
+          <div class="switch" data-act="toggle-media-pause"><input type="checkbox" ${m.mediaPause ? 'checked' : ''}><i></i></div>
+        </div>
       </div>
     </div>
 
@@ -1353,10 +1396,6 @@ function viewMask() {
       <input type="text" id="hkInput" value="${esc(m.hotkey || '')}" placeholder="Ctrl+Alt+K（留空=不注册）" style="flex:1;max-width:270px" />
       <button class="btn btn-sm" data-act="save-hotkey">保存</button>
       <span class="badge ${m.hotkeyOk ? 'green' : 'red'}">${m.hotkeyOk ? '已注册' : '未注册'}</span>
-    </div>
-    <div class="hint" style="margin-bottom:14px">
-      格式：修饰键 + 一个键，如 <code>Ctrl+Alt+K</code>、<code>Ctrl+Shift+F2</code>、<code>Win+Alt+1</code>。
-      被别的程序占用会直接报错并保留原来的组合。
     </div>
   <div class="note" style="margin-top:16px">
     <b>遮罩怎么让开：</b>遮罩是一整块盖住全屏的图层，选中窗口那一块从遮罩里"让开"，
@@ -2629,6 +2668,7 @@ const Act = window.Act = {
     m.opacity = cur.opacity;
     m.blockClick = cur.blockClick;
     m.follow = !!cur.follow;
+    m.mediaPause = !!cur.mediaPause;
     try {
       await saveConfig();
       toast('遮罩参数已保存', 'ok');
@@ -2732,6 +2772,16 @@ const Act = window.Act = {
     await pull();
     render();
     toast(on ? '已开启跟随：遮罩会跟着当前最上层窗口走' : '已关闭跟随', 'ok');
+  },
+
+  async toggleMediaPause() {
+    const on = !S.data.mask.mediaPause;
+    try {
+      await invoke('mask_media_pause', { enabled: on });
+      await pull();
+      render();
+      toast(on ? '已开启媒体管控：遮罩生效时自动暂停被盖住窗口的媒体，回到前台自动恢复' : '已关闭媒体管控，已暂停的媒体会自动恢复', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
 
   async toggleClick() {
@@ -3269,27 +3319,76 @@ const Act = window.Act = {
     toast(n ? `已清空 ${n} 个小时段` : '当前没有已选时段', n ? 'ok' : 'err');
   },
 
-  /** 提交一次框选：矩形区域 [d0..d1]×[h0..h1] 整体选中（add）或取消（sub） */
-  async clockCommitRect(d0, d1, h0, h1, mode) {
+  /** 提交一次框选：矩形区域 [d0..d1]×[h0..h1] 按 15 分钟刻度窗口整体选中（add）或取消（sub）。
+   *  qA/qB = 起笔/结束刻度（0–3），窗口 [qStart(qA), qEnd(qB)) 在首/尾小时上收窄。 */
+  async clockCommitRect(d0, d1, h0, h1, qA, qB, mode) {
     const prof = clockProfile();
     // 生效中不能取消已选中的时段（新增时段是加强，不拦）
     if (mode === 'sub' && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
     const on = mode === 'add';
+    const wins = ccRectWindows(d0, d1, h0, h1, qA, qB);
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
         const p = prof.days[d][h];
-        if (p.on !== on) n++;
-        // 新选中的时段沿用「通用」专注/休息；已选中的保留原值，不冲掉自定义
-        if (on && !p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
-        // 重新框选 = 重新划分：这一小时回到整点，别把上次的起止分钟留着
-        if (on) { p.from = 0; p.to = 60; }
-        p.on = on;
+        const win = wins.get(`${d},${h}`);
+        if (on) {
+          // 选中 = 并上框选窗口（新选中的沿用「通用」专注/休息；已选中的保留原值）
+          if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+          const pf = p.on ? (p.from || 0) : 0;
+          const pt = p.on ? (p.to == null ? 60 : p.to) : 60;
+          const nf = Math.min(pf, win.f), nt = Math.max(pt, win.t);
+          if (!p.on || nf !== pf || nt !== pt) n++;
+          p.from = nf;
+          p.to = nt;
+          p.on = true;
+        } else {
+          // 取消 = 从原窗口里挖掉框选那段（挖空了整小时就关掉）
+          if (!p.on) continue;
+          const pf = p.from || 0, pt = p.to == null ? 60 : p.to;
+          if (!win || pf >= win.t || win.f >= pt) { n++; continue; } // 无交集 → 整格关
+          const keepL = { f: pf, t: Math.min(pt, win.f) };
+          const keepR = { f: Math.max(pf, win.t), t: pt };
+          if (keepL.t > keepL.f) { p.from = keepL.f; p.to = keepL.t; }
+          else if (keepR.t > keepR.f) { p.from = keepR.f; p.to = keepR.t; }
+          else { p.on = false; p.from = 0; p.to = 60; }
+          n++;
+        }
       }
     }
     await saveConfig();
     render();
-    if (n) toast(on ? `已选上 ${n} 个小时段（专注 ${prof.defWork} 分 / 休息 ${prof.defBrk} 分）` : `已取消 ${n} 个小时段`, 'ok');
+    const f2 = qStart(qA), t2 = qEnd(qB);
+    const winTip = (f2 > 0 || t2 < 60) ? `（${pad(f2)}–${pad(t2)} 分）` : '';
+    if (n) toast(on
+      ? `已选上 ${n} 个时段${winTip}（专注 ${prof.defWork} 分 / 休息 ${prof.defBrk} 分）`
+      : `已取消 ${n} 个时段${winTip}`, 'ok');
+  },
+
+  /** 单击 = 单独开关一个 15 分钟刻度（与整小时窗口做并/差） */
+  async clockToggleQ(d, h, q) {
+    const prof = clockProfile();
+    const p = prof.days[d][h];
+    const a = qStart(q), b = qEnd(q);
+    const pf = p.on ? (p.from || 0) : 0;
+    const pt = p.on ? (p.to == null ? 60 : p.to) : 60;
+    const covered = p.on && pf < b && a < pt;
+    if (covered && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
+    if (covered) {
+      // 挖掉这 15 分钟：保留左右两侧
+      const keepL = { f: pf, t: Math.min(pt, a) };
+      const keepR = { f: Math.max(pf, b), t: pt };
+      if (keepL.t > keepL.f) { p.from = keepL.f; p.to = keepL.t; }
+      else if (keepR.t > keepR.f) { p.from = keepR.f; p.to = keepR.t; }
+      else { p.on = false; p.from = 0; p.to = 60; }
+    } else {
+      if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+      p.from = p.on ? Math.min(pf, a) : a;
+      p.to = p.on ? Math.max(pt, b) : b;
+      p.on = true;
+    }
+    await saveConfig();
+    render();
   },
 
   /** 右键菜单应用：给矩形区域设置专注 / 休息时长（顺带开启这些时段）。
@@ -3308,6 +3407,8 @@ const Act = window.Act = {
       guardDiscipline('改这一小时的专注 / 休息时长');
       return;
     }
+    // 起止分钟对齐 15 分钟刻度（边界自动向下/向上取整，零碎时间才对得齐）
+    const snap = ccSnapWin(fromMin, toMin);
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
@@ -3321,8 +3422,8 @@ const Act = window.Act = {
       }
     }
     // 起止分钟只落在边界小时上（单格时两个都在这一格）
-    prof.days[d0][h0].from = Math.max(0, Math.min(59, Math.round(fromMin || 0)));
-    prof.days[d1][h1].to = Math.max(1, Math.min(60, Math.round(toMin == null ? 60 : toMin)));
+    prof.days[d0][h0].from = snap.f;
+    prof.days[d1][h1].to = snap.t;
     if (defToo) { prof.defWork = w; prof.defBrk = b; }
     await saveConfig();
     render();
@@ -3803,6 +3904,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'toggle-follow-schedule') { await Act.toggleFollowSchedule(); return; }
   if (act === 'toggle-click') { await Act.toggleClick(); return; }
   if (act === 'toggle-follow') { await Act.toggleFollow(); return; }
+  if (act === 'toggle-media-pause') { await Act.toggleMediaPause(); return; }
   if (act === 'test-enter') { await Act.enterTestMode(); return; }
   if (act === 'test-exit-keep') { await Act.askExitTest(true); return; }
   if (act === 'test-exit-discard') { await Act.askExitTest(false); return; }
@@ -3907,24 +4009,93 @@ document.addEventListener('mouseup', () => {
 });
 
 /* 自律时段：7 列 × 24 小时柱状图，二维矩形拖选
- * 口径：格子 = 某一天的一个小时。按住拖动框出一片矩形（可跨天、跨小时）；
- * 从灰格起笔 = 选中整片，从蓝格起笔 = 取消整片；单击（不拖动）= 单独开关那一格。
+ * 口径：格子 = 某一天的一个小时，格子里再分 4 个 15 分钟刻度（滴答清单周视图同款）。
+ * 按住拖动框出一片矩形（可跨天、跨小时），粒度落在 15 分钟刻度上：
+ * 鼠标压在格子哪一段就落在哪个刻度，上下一划就能框住一个时间段；
+ * 零碎时间（11:10–12:20 这种）也是一条整带，不会被小时边界切开。
+ * 从灰格起笔 = 选中整片，从蓝格起笔 = 取消整片；单击（不拖动）= 单独开关那个 15 分钟刻度。
  * 右键格子 = 弹出"专注 / 休息"设置，作用于右键时选中的范围。 */
+
+/** 鼠标事件落在 (d,h) 这一格的哪个 15 分钟刻度上（0–3） */
+function ccQAt(el, clientY) {
+  const r = el.getBoundingClientRect();
+  const q = Math.floor(((clientY - r.top) / r.height) * CC_Q);
+  return Math.max(0, Math.min(CC_Q - 1, q));
+}
+/** 整片矩形（刻度坐标）→ 逐格 [from,to) 的「目标选中窗口」映射。
+ *  以「锚点刻度」为边界：起笔刻度之前的分钟是洞（若框往上有延伸），
+ *  结束刻度之后的分钟是洞（若框往下有延伸）——与拖动框选的直觉一致。 */
+function ccRectWindows(d0, d1, h0, h1, qA, qB) {
+  const out = new Map();
+  for (let d = d0; d <= d1; d++) {
+    for (let h = h0; h <= h1; h++) {
+      const top = (h === h0) ? qStart(qA) : 0;
+      const bot = (h === h1) ? qEnd(qB) : 60;
+      if (bot > top) out.set(`${d},${h}`, { f: top, t: bot });
+    }
+  }
+  return out;
+}
+/** 重算某格的 DOM 选中态（.on）与细分刻度高亮（.cc-q.on），不触发整表渲染 */
+function ccPaintCell(cell, d, h, win) {
+  cell.classList.toggle('on', !!win);
+  cell.querySelectorAll('.cc-q').forEach((q) => {
+    const a = +q.dataset.a, b = +q.dataset.b;
+    q.classList.toggle('on', !!win && win.f < b && a < win.t);
+  });
+}
+/** hover 提示：只在停在细分刻度上时更新（避免 mouseover 抖动刷 tooltip） */
+function ccHoverTip(cell, d, h, q) {
+  const p = clockProfile().days[d][h];
+  const a = qStart(q), b = qEnd(q);
+  const w = Math.max(0, Math.min(60, p.work || 0));
+  const br = Math.max(0, Math.min(60 - w, p.brk || 0));
+  const onQ = p.on && (p.from || 0) < b && a < (p.to == null ? 60 : p.to);
+  cell.setAttribute('title', `${WD[d]} ${pad(h)}:${pad(a)} – ${pad(h)}:${pad(b)}`
+    + (onQ ? ` · 专注 ${w} 分 / 休息 ${br} 分，右键可改` : '（未选中，单击 / 拖选这 15 分钟）'));
+}
+
 function paintCcDrag() {
   const dg = S.ccDrag;
   if (!dg) return;
+  const { d0, d1, h0, h1, qA, qB, mode } = rectFromDrag(dg);
+  const wins = ccRectWindows(d0, d1, h0, h1, qA, qB);
   const fc = clockProfile();
-  const d0 = Math.min(dg.d0, dg.d1), d1 = Math.max(dg.d0, dg.d1);
-  const h0 = Math.min(dg.h0, dg.h1), h1 = Math.max(dg.h0, dg.h1);
   document.querySelectorAll('.cc-cell').forEach((c) => {
     const d = +c.dataset.d, h = +c.dataset.h;
-    const inRect = d >= d0 && d <= d1 && h >= h0 && h <= h1;
-    c.classList.toggle('on', inRect ? dg.mode === 'add' : !!fc.days[d][h].on);
+    const win = wins.get(`${d},${h}`);
+    // add = 框选窗口；sub = 把框住的部分从原选中里挖掉
+    let target = null;
+    if (mode === 'add') target = win || null;
+    else {
+      const p = fc.days[d][h];
+      if (p.on) {
+        const pf = p.from || 0, pt = p.to == null ? 60 : p.to;
+        if (win && pf < win.t && win.f < pt) {
+          // 与原窗口有交集：挖掉中间那段，保留左右两侧（哪段更长留哪段）
+          const keepL = { f: pf, t: Math.min(pt, win.f) };
+          const keepR = { f: Math.max(pf, win.t), t: pt };
+          if (keepL.t - keepL.f >= keepR.t - keepR.f && keepL.t > keepL.f) target = keepL;
+          else if (keepR.t > keepR.f) target = keepR;
+        } else target = { f: pf, t: pt };
+      }
+    }
+    ccPaintCell(c, d, h, target);
   });
   // 预览也走"整块"渲染：拖过的接缝不会留残影
   ccRenderRuns(document, { d0, d1, h0, h1 });
   const lab = $('#clockLive');
-  if (lab) lab.textContent = ccRectText(d0, d1, h0, h1);
+  if (lab) lab.textContent = ccRectText(d0, d1, h0, h1, qStart(qA), qEnd(qB));
+}
+
+/** 起笔 / 当前点的刻度坐标 → 归一化矩形（含锚点刻度 qA/qB） */
+function rectFromDrag(dg) {
+  const d0 = Math.min(dg.d0, dg.d1), d1 = Math.max(dg.d0, dg.d1);
+  const h0 = Math.min(dg.h0, dg.h1), h1 = Math.max(dg.h0, dg.h1);
+  // 锚点刻度：框往"起笔同列往上/往下"延伸时，起笔刻度那一侧留洞
+  const qA = (dg.h1 >= dg.h0) ? dg.q0 : dg.q1;
+  const qB = (dg.h1 >= dg.h0) ? dg.q1 : dg.q0;
+  return { d0, d1, h0, h1, qA, qB, mode: dg.mode };
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -3932,32 +4103,46 @@ document.addEventListener('mousedown', (e) => {
   if (!cell || e.button !== 0) return;
   e.preventDefault();
   const d = +cell.dataset.d, h = +cell.dataset.h;
-  S.ccDrag = { d0: d, h0: h, d1: d, h1: h, mode: cell.classList.contains('on') ? 'sub' : 'add', moved: false };
+  const q = ccQAt(cell, e.clientY);
+  S.ccDrag = { d0: d, h0: h, d1: d, h1: h, q0: q, q1: q, mode: cell.classList.contains('on') ? 'sub' : 'add', moved: false };
+  // 拖动期间保持细分刻度可见（否则一离开 hover 刻度就消失，框不住）
+  cell.classList.add('qshow');
   paintCcDrag();
 });
 
 document.addEventListener('mouseover', (e) => {
   const dg = S.ccDrag;
-  if (!dg) return;
   const cell = e.target.closest('.cc-cell');
   if (!cell) return;
   const d = +cell.dataset.d, h = +cell.dataset.h;
-  if (d === dg.d1 && h === dg.h1) return;
-  dg.d1 = d;
-  dg.h1 = h;
-  dg.moved = true;
-  paintCcDrag();
+  if (dg) {
+    const q = ccQAt(cell, e.clientY);
+    if (d === dg.d1 && h === dg.h1 && q === dg.q1) return;
+    dg.d1 = d;
+    dg.h1 = h;
+    dg.q1 = q;
+    dg.moved = true;
+    cell.classList.add('qshow');
+    paintCcDrag();
+    return;
+  }
+  // 没在拖动：更新 hover 提示
+  ccHoverTip(cell, d, h, ccQAt(cell, e.clientY));
 });
 
-document.addEventListener('mouseup', async () => {
+document.addEventListener('mouseup', async (e) => {
   const dg = S.ccDrag;
   if (!dg) return;
   S.ccDrag = null;
-  S.ccRect = { d0: dg.d0, d1: dg.d1, h0: dg.h0, h1: dg.h1 };
-  await Act.clockCommitRect(
-    Math.min(dg.d0, dg.d1), Math.max(dg.d0, dg.d1),
-    Math.min(dg.h0, dg.h1), Math.max(dg.h0, dg.h1),
-    dg.mode);
+  document.querySelectorAll('.cc-cell.qshow').forEach((c) => c.classList.remove('qshow'));
+  const { d0, d1, h0, h1, qA, qB, mode } = rectFromDrag(dg);
+  S.ccRect = { d0, d1, h0, h1, qA, qB };
+  // 单击（没拖动）= 单独开关起笔那个 15 分钟刻度
+  if (!dg.moved && dg.d0 === dg.d1 && dg.h0 === dg.h1) {
+    await Act.clockToggleQ(dg.d0, dg.h0, dg.q0);
+    return;
+  }
+  await Act.clockCommitRect(d0, d1, h0, h1, qA, qB, mode);
 });
 
 /* ---- 自律时段：右键设置某片区域的专注 / 休息 ---- */
@@ -3984,17 +4169,22 @@ function ccOpenMenu(d, h, x, y) {
     const one = single && p.on;
     return { w: one ? (p.work || CC_DEF_W) : fc.defWork, b: one ? (p.brk || CC_DEF_B) : fc.defBrk };
   };
-  // 起止分钟预填：单格看这一格的窗口；多格看首/尾小时的窗口（没选中按整点）
+  // 起止分钟预填：单格看这一格的窗口；多格看首/尾小时的窗口（没选中按整点）。
+  // 框选带了锚点刻度时用框选窗口的首/尾（与拖动一致）。
   const prefillWin = () => {
     const single = t.d0 === t.d1 && t.h0 === t.h1;
+    if (hasRect && r.qA != null && t.d0 === Math.min(r.d0, r.d1) && t.d1 === Math.max(r.d0, r.d1)
+      && t.h0 === Math.min(r.h0, r.h1) && t.h1 === Math.max(r.h0, r.h1)) {
+      return { f: qStart(r.qA), t: qEnd(r.qB) };
+    }
     if (single) {
       const one = p.on ? p : null;
-      return { f: one ? Math.max(0, Math.min(59, one.from || 0)) : 0, t: one ? Math.max(1, Math.min(60, one.to == null ? 60 : one.to)) : 60 };
+      return { f: one ? ccSnapWin(one.from, one.to).f : 0, t: one ? ccSnapWin(one.from, one.to).t : 60 };
     }
     const pf = fc.days[t.d0][t.h0], pt = fc.days[t.d1][t.h1];
     return {
-      f: pf && pf.on ? Math.max(0, Math.min(59, pf.from || 0)) : 0,
-      t: pt && pt.on ? Math.max(1, Math.min(60, pt.to == null ? 60 : pt.to)) : 60,
+      f: pf && pf.on ? ccSnapWin(pf.from, pf.to).f : 0,
+      t: pt && pt.on ? ccSnapWin(pt.from, pt.to).t : 60,
     };
   };
   const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
@@ -4075,8 +4265,9 @@ function ccOpenMenu(d, h, x, y) {
       if (b2 > 0 && w2 + b2 > 60) b2 = 60 - w2;
       let f2 = Math.round(Number($('#ccFrom', el).value) || 0);
       let t2 = Math.round(Number($('#ccTo', el).value) || 0);
-      f2 = Math.max(0, Math.min(59, f2));
-      t2 = Math.max(1, Math.min(60, t2));
+      // 对齐 15 分钟刻度（边界向下/向上取整，零碎时间才对得齐）
+      const snap = ccSnapWin(f2, t2);
+      f2 = snap.f; t2 = snap.t;
       // 单格时起止分钟在同一小时里，必须起早于止；多格时分别作用于首/尾小时
       if (t.d0 === t.d1 && t.h0 === t.h1 && f2 >= t2) {
         toast('起始分钟要小于结束分钟', 'err');

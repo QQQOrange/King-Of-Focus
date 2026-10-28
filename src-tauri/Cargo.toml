@@ -1,6 +1,6 @@
 [package]
 name = "king-of-focus"
-version = "0.0.5"
+version = "0.0.6"
 description = "King of Focus - 专注与自律守护工具"
 authors = ["QQQOrange"]
 edition = "2021"
@@ -24,6 +24,15 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 #   AES-256-GCM 带认证、有 AES-NI 加速；Argon2id 抗暴力破解。
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "rand_core", "getrandom"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+
+# 媒体管控：WinRT SMTC（GlobalSystemMediaTransportControlsSessionManager）
+# 用官方 windows 投影，不手写 COM ABI（手写 vtable/IID 猜错会调错方法甚至崩）。
+windows = { version = "0.58", features = [
+  "Media_Control",
+  "Media_Playback",
+  "Foundation",
+  "Foundation_Collections",
+] }
 
 [profile.release]
 opt-level = "s"

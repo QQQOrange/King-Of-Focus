@@ -180,6 +180,17 @@ unsafe extern "system" fn win_event_proc(
     }
     EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
     DISTURBED_AT.store(now_ms(), Ordering::Relaxed);
+    // 前台切换 / 最小化这类必须秒回：立刻叫醒主循环重算"让开哪个窗口"。
+    // 少了这一下，主循环要等下一轮 wait_event 超时才醒，那段时间洞口还停在
+    // 旧的前台窗口上 → 新的前台窗口先被遮住一下、随后才被让开——就是用户
+    // 看到的"切换窗口时被遮罩盖一下又消失"的闪烁。注释里承诺的"事件即时唤醒"
+    // 正是靠这里兑现的。
+    if event == EVENT_SYSTEM_FOREGROUND
+        || event == EVENT_SYSTEM_MINIMIZESTART
+        || event == EVENT_SYSTEM_MINIMIZEEND
+    {
+        wake();
+    }
 }
 
 /// 等一个窗口事件；超时返回。没事件时线程真正阻塞，不占 CPU。
@@ -561,6 +572,8 @@ pub struct MaskCtl {
     /// 手动选定的目标窗口句柄；非 0 时优先于"跟随前台"（0 = 没有手动锁定）
     pub manual_hwnd: AtomicIsize,
     pub painted: AtomicBool,
+    /// 媒体管控：遮罩生效时自动暂停「被盖住」窗口的媒体播放（真暂停+自动恢复）
+    pub media_pause: AtomicBool,
     pub notice: Mutex<Option<String>>,
 }
 
@@ -621,6 +634,7 @@ impl Default for MaskCtl {
             test_lock: AtomicBool::new(false),
             manual_hwnd: AtomicIsize::new(0),
             painted: AtomicBool::new(false),
+            media_pause: AtomicBool::new(false),
             notice: Mutex::new(None),
         }
     }
@@ -913,6 +927,43 @@ fn is_mask_class(h: Hwnd) -> bool {
 unsafe fn collect_visible_windows(pid: u32) -> Vec<Hwnd> {
     let mut ctx = CollectCtx { pid, out: Vec::new() };
     EnumWindows(Some(collect_visible_cb), &mut ctx as *mut _ as isize);
+    ctx.out
+}
+
+/// 同上，但显式排除 `target_pid`（被选中/跟随的那个窗口所属进程）。
+unsafe fn collect_covered_pids_with_target(target_pid: u32, exempt: &[Hwnd]) -> Vec<u32> {
+    unsafe extern "system" fn cb(h: Hwnd, lp: isize) -> i32 {
+        let ctx = &mut *(lp as *mut CoverCtx);
+        if IsWindowVisible(h) == 0 {
+            return 1;
+        }
+        if is_mask_class(h) || is_shell_window(h) {
+            return 1;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(h, &mut pid);
+        if pid == 0 || pid == std::process::id() || pid == ctx.target_pid {
+            return 1;
+        }
+        if ctx.exempt.iter().any(|x| *x == h) {
+            return 1;
+        }
+        if !ctx.out.contains(&pid) {
+            ctx.out.push(pid);
+        }
+        1
+    }
+    struct CoverCtx {
+        target_pid: u32,
+        exempt: Vec<Hwnd>,
+        out: Vec<u32>,
+    }
+    let mut ctx = CoverCtx {
+        target_pid,
+        exempt: exempt.to_vec(),
+        out: Vec::new(),
+    };
+    EnumWindows(Some(cb), &mut ctx as *mut _ as isize);
     ctx.out
 }
 
@@ -1463,6 +1514,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let on = ctl.on.load(Ordering::Relaxed) || auto_hold;
             let opacity = ctl.opacity.load(Ordering::Relaxed).min(100) as f32 / 100.0;
             let block_click = ctl.block_click.load(Ordering::Relaxed);
+            // 媒体管控：跟随遮罩开关。关/收起时把我们停过的媒体全部还原。
+            let media_on = ctl.media_pause.load(Ordering::Relaxed);
+            let media_should_run = media_on && on;
+            if media_should_run {
+                crate::media::set_active(true);
+            } else {
+                // set_active(false) 内部会 resume_all，一次搞定开关+还原
+                crate::media::set_active(false);
+            }
 
             // ---- 热键：代数变了就重注册，结果写回 hk_ok 供界面读 ----
             let gen = ctl.hk_gen.load(Ordering::Relaxed);
@@ -1686,6 +1746,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 // 主窗口先提，弹窗/放行窗口后提 —— 后提的在上
                 if tgt != 0 {
                     ensure_above(tgt as Hwnd, &mut raised);
+                }
+                // ---- 媒体管控：暂停「被盖住」进程的媒体（真暂停，回到前台自动恢复）----
+                // 节奏：与 popups 同级（500ms）重算名单，避免每帧都 EnumWindows。
+                if media_should_run && (popup_t.elapsed().as_millis() >= 500 || scan_now) {
+                    let covered = collect_covered_pids_with_target(tpid, &self_wins);
+                    crate::media::pause_covered(&covered);
                 }
                 for h in popups.iter() {
                     if *h != tgt as Hwnd {

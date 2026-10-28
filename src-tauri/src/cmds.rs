@@ -211,6 +211,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
             "opacity": mask.opacity.load(Ordering::Relaxed),
             "blockClick": mask.block_click.load(Ordering::Relaxed),
             "follow": mask.follow.load(Ordering::Relaxed),
+            "mediaPause": config.settings.mask.media_pause,
             "hotkey": config.settings.mask.hotkey,
             "hotkeyOk": mask.hk_ok.load(Ordering::Relaxed),
             "followSchedule": config.settings.mask.follow_schedule,
@@ -358,6 +359,12 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
         .store(config.settings.mask.follow_schedule, Ordering::Relaxed);
     m.target_pid
         .store(config.settings.mask.target_pid, Ordering::Relaxed);
+    m.media_pause
+        .store(config.settings.mask.media_pause, Ordering::Relaxed);
+    // 开关关掉时顺手把停过的媒体还回去（切配置/退出测试模式都会走这里）
+    if !config.settings.mask.media_pause {
+        crate::media::set_active(false);
+    }
 }
 
 /// 进入测试模式：换到独立数据目录，所有功能照常生效，但自律模式可以随时开关
@@ -565,6 +572,8 @@ pub fn mask_start(
 pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
     shared.mask.on.store(false, Ordering::Relaxed);
     shared.mask.manual_hwnd.store(0, Ordering::Relaxed);
+    // 遮罩关了，媒体管控也一起收：把我们停过的媒体还回去
+    crate::media::set_active(false);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_always_on_top(false);
     }
@@ -577,6 +586,7 @@ pub fn mask_set(
     block_click: Option<bool>,
     follow: Option<bool>,
     follow_schedule: Option<bool>,
+    media_pause: Option<bool>,
 ) {
     let m = &*shared.mask;
     if let Some(o) = opacity {
@@ -592,6 +602,13 @@ pub fn mask_set(
     }
     if let Some(b) = block_click {
         m.block_click.store(b, Ordering::Relaxed);
+    }
+    if let Some(v) = media_pause {
+        // 媒体管控开关：关掉时立刻把我们停过的媒体还回去
+        m.media_pause.store(v, Ordering::Relaxed);
+        if !v {
+            crate::media::set_active(false);
+        }
     }
     // 参数改动也要立刻生效（比如拖不透明度滑块时能实时看到）
     crate::mask::wake();
@@ -694,6 +711,25 @@ pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Re
     crate::mask::wake();
     let mut c = shared.config();
     c.settings.mask.follow_schedule = enabled;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
+}
+
+/// 媒体管控开关（遮罩生效时自动暂停被盖住窗口的媒体）
+#[tauri::command]
+pub fn mask_media_pause(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    let m = &*shared.mask;
+    m.media_pause.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        // 关掉时立刻把我们停过的媒体还回去
+        crate::media::set_active(false);
+    }
+    crate::mask::wake();
+    let mut c = shared.config();
+    c.settings.mask.media_pause = enabled;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
         *w = c;

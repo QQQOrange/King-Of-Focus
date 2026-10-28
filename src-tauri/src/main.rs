@@ -9,6 +9,7 @@ mod discipline;
 mod guard;
 mod mask;
 mod matcher;
+mod media;
 mod model;
 mod monitor;
 mod net;
@@ -340,6 +341,7 @@ fn main() {
             cmds::mask_set,
             cmds::mask_hotkey,
             cmds::mask_follow_schedule,
+            cmds::mask_media_pause,
             cmds::mask_set_on,
             cmds::mask_preview,
             cmds::mask_test,

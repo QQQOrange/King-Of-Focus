@@ -127,6 +127,21 @@ pub fn stem(path: &str) -> String {
     s.to_lowercase()
 }
 
+/// 进程的可执行文件名（含 .exe，保留原大小写）；取不到返回 None。
+/// 用于把 SMTC 媒体会话的 AUMID 归因到具体进程（见 media.rs）。
+pub fn exe_name_of(pid: u32) -> Option<String> {
+    let p = exe_path(pid);
+    if p.is_empty() {
+        return None;
+    }
+    let name = p.rsplit(['\\', '/']).next().unwrap_or(&p).to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// 当前所有"有可见窗口"的应用（去重到 pid 粒度）
 pub fn screen_apps() -> Vec<WinApp> {
     unsafe {

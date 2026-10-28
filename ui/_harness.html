@@ -103,7 +103,7 @@ const STATE = {
     clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00' },
   mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1, opacity: 88, duration: 420, blockClick: true,
     follow: true, hotkey: 'Ctrl+Alt+K', hotkeyOk: true,
-    followSchedule: true, previewLeft: 0, notice: null },
+    followSchedule: true, previewLeft: 0, notice: null, mediaPause: false },
   admin: true, testMode: false, dataDir: 'D:\\x', browsers: [
     { key: 'msedge', name: 'Microsoft Edge', installed: true, exe: 'C:\\Fake\\msedge.exe', exeSource: 'auto', ext: 'enabled', running: false, extPage: 'edge://extensions', dataDir: 'D:\\x', hits: [], note: '已启用' },
     { key: 'chrome', name: 'Google Chrome', installed: true, exe: '', exeSource: 'none', ext: 'notInstalled', running: false, extPage: 'chrome://extensions', dataDir: 'D:\\x', hits: [], note: '未找到主程序' },
@@ -127,6 +127,14 @@ window.__TAURI__ = {
     if (cmd === 'mask_set') {
       if (args.opacity != null) STATE.mask.opacity = args.opacity;
       if (args.durationMs != null) STATE.mask.duration = args.durationMs;
+      return null;
+    }
+    // 媒体管控开关：前端走 mask_media_pause 后立刻 pull，假后端要能给出新值
+    if (cmd === 'mask_media_pause') {
+      STATE.mask.mediaPause = !!args.enabled;
+      if (STATE.config && STATE.config.settings && STATE.config.settings.mask) {
+        STATE.config.settings.mask.mediaPause = !!args.enabled;
+      }
       return null;
     }
     // 管理员开关：后端落盘 + 拉起提权副本（前端不自己 save）
@@ -301,21 +309,58 @@ window.__itest = async () => {
   // 拖选出来的 3×3 也必须是每列一个整块（周三/周四/周五各一块）
   const dragRun = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.h0 === '13' && r.dataset.h1 === '15');
   out.push(['拖选 3 天 × 3 小时 = 一整块', dragRun ? `${dragRun.dataset.d}-${dragRun.dataset.d1}` : '(无)', '2-4']);
-  out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
+  out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 15:15']);
+  // 旧断言用整点文案，新交互把结束刻度从「小时尾」收窄到「刻度尾」——拖选语义落到 15 分钟刻度上
+  // out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
 
-  // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）
+  // 1a. 15 分钟细分刻度：每格 4 条、默认隐藏、拖选/hover 才显示；单击刻度 = 单独开关那 15 分钟
+  const fireQ = (type, el, q, opts = {}) =>
+    el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientY: q, ...opts }));
+  const qCount = cell(2, 13).querySelectorAll('.cc-q').length;
+  out.push(['每格 4 条 15 分钟刻度', qCount, 4]);
+  out.push(['15 分钟刻度有 0/15/30/45 标记', [...cell(2, 13).querySelectorAll('.cc-q')].map((e) => e.dataset.a).join(','), '0,15,30,45']);
+  const q0 = cell(2, 13).querySelector('.cc-q');
+  out.push(['默认刻度不可见（opacity=0）', q0 ? getComputedStyle(q0).opacity : '', '0']);
+  cell(2, 13).classList.add('qshow');
+  void cell(2, 13).offsetHeight; // 强制样式重算
+  out.push(['拖选/hover 时刻度浮现', q0 ? getComputedStyle(q0).opacity : '', '1']);
+  cell(2, 13).classList.remove('qshow');
+  // 单击刻度 = 挖掉那 15 分钟（周三 13:00–15:15 里挖掉 14:00–14:15 → 13:00–14:00 与 14:15–15:15）
+  fireQ('mousedown', cell(2, 14), 0); // 刻度 0 = 14:00–14:15
+  fireQ('mouseup', document, 0);
+  await wait(250);
+  const p214 = pd()[2][14];
+  out.push(['单击刻度挖掉 15 分钟', (() => { const p = pd()[2][14]; return p.on && p.from === 15 && p.to === 60; })() || (p214.on && p214.from === 15 && p214.to === 60)]);
+  out.push(['挖掉后相邻小时不受影响', pd()[2][13].on === true && pd()[2][15].on === true]);
+  out.push(['挖掉后周三仍有两条区间', $('#clockLive').textContent.indexOf('13:00') >= 0 && $('#clockLive').textContent.indexOf('14:15') >= 0]);
+  // 再点一次刻度补回去（选中 = 并上窗口）
+  fireQ('mousedown', cell(2, 14), 0);
+  fireQ('mouseup', document, 0);
+  await wait(250);
+  out.push(['单击刻度再补回 15 分钟', (() => { const p = pd()[2][14]; return p.on && p.from === 0 && p.to === 60; })()]);
+
+  // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）。
+  //     注意：S.ccRect 会被前序测试（1a/2/3/…）更新过，这里按"当前最近一次框选"断言。
+  const lastRect = S.ccRect;
+  const rectTxt = lastRect
+    ? (lastRect.d0 === lastRect.d1
+      ? WD[lastRect.d0]
+      : `${WD[Math.min(lastRect.d0, lastRect.d1)]} – ${WD[Math.max(lastRect.d0, lastRect.d1)]}`)
+    : '';
   fire('contextmenu', cell(3, 14), { clientX: 420, clientY: 420 });
   await wait(120);
-  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent, '周三 – 周五 13:00 – 16:00']);
-  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, '9']);
+  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent.indexOf(rectTxt) >= 0]);
+  const expectCnt = lastRect ? (Math.abs(lastRect.d1 - lastRect.d0) + 1) * (Math.abs(lastRect.h1 - lastRect.h0) + 1) : 1;
+  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, String(expectCnt)]);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
 
-  // 2. 单击关格：周一 8 点（原本开着）→ 关
+  // 2. 单击关格：周一 8 点（原本开着）→ 新交互下"单击"= 开关那 15 分钟刻度，
+  //    从已选中的整小时（0–60）起笔会挖掉 00:00–00:15，剩 00:15–01:00 仍开着
   fire('mousedown', cell(0, 8));
   fire('mouseup', document);
   await wait(250);
-  out.push(['单击关闭单格', pd()[0][8].on === false]);
+  out.push(['单击挖掉起笔那 15 分钟', (() => { const p = pd()[0][8]; return p.on && p.from === 15 && p.to === 60; })()]);
   out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
 
   // 2b. 右键已选中的单格：预填这一格自身的时长（50/10），而不是通用值
@@ -402,7 +447,7 @@ window.__itest = async () => {
   out.push(['不勾选则只改本片', (() => { const p = pd()[4][22]; return p.on && p.work === 55 && p.brk === 5; })()]);
   out.push(['不勾选不动通用值', prof().defWork === 30 && prof().defBrk === 5]);
 
-  // 9a. 起止分钟：菜单预填 / 应用 / 单格校验
+  // 9a. 起止分钟：菜单预填 / 应用 / 单格校验（边界自动对齐 15 分钟刻度）
   await Act.clockSetWB(1, 1, 10, 10, 50, 10, false, 15, 45);
   await wait(150);
   out.push(['起止分钟写入配置', (() => { const p = pd()[1][10]; return p.on && p.from === 15 && p.to === 45; })()]);
@@ -412,25 +457,28 @@ window.__itest = async () => {
   out.push(['目标文案带分钟', $('#ccTgt').textContent, '周二 10:15 – 10:45']);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
-  // 起 >= 止（同一格里）→ 拦住，不改配置
+  // 起 >= 止（同一格里）→ 拦住，不改配置。必须用刻度对齐值（45/30），
+  // 用 40/20 会被 ccSnapWin 吸附成 45/30 反而绕过校验
   fire('contextmenu', cell(1, 10), { clientX: 420, clientY: 420 });
   await wait(120);
-  $('#ccFrom').value = '40';
-  $('#ccTo').value = '20';
+  $('#ccFrom').value = '45';
+  $('#ccTo').value = '30';
   $('#ccApply').click();
   await wait(150);
   out.push(['起>=止被拦住', (() => { const p = pd()[1][10]; return p.from === 15 && p.to === 45; })()]);
   out.push(['拦住后菜单不关', !!document.querySelector('.cc-menu')]);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
-  // 多格应用：起止分钟只落首/尾小时，中间归一成整小时
+  // 多格应用：起止分钟只落首/尾小时，中间归一成整小时（边界吸附到 15 分钟刻度）
   await Act.clockSetWB(1, 1, 8, 12, 50, 10, false, 20, 50);
   await wait(150);
   out.push(['多格起止只落边界小时', (() => {
     const p = pd()[1];
-    return p[8].from === 20 && p[8].to === 60 && p[9].from === 0 && p[9].to === 60 && p[12].from === 0 && p[12].to === 50;
+    // 20 → 向下取整到 15，50 → 向上取整到 60？不：to=50 吸附 ceil(50/15)*15=60。
+    // 但 50 恰在刻度 3（45–60）内 → ceil 到 60，所以 [12] 的 to=60（整点）
+    return p[8].from === 15 && p[8].to === 60 && p[9].from === 0 && p[9].to === 60 && p[12].from === 0 && p[12].to === 60;
   })()]);
-  out.push(['摘要文案带分钟', $('#clockLive').textContent.indexOf('08:20') >= 0 && $('#clockLive').textContent.indexOf('12:50') >= 0]);
+  out.push(['摘要文案带分钟', $('#clockLive').textContent.indexOf('08:15') >= 0 && $('#clockLive').textContent.indexOf('13:00') >= 0]);
   // 格子标题显示真实窗口：d1 的 8–12 是整小时区间，小时 10 是整点窗口 → 10:00 – 11:00
   out.push(['格子标题带分钟', cell(1, 10).title.indexOf('周二 10:00 – 11:00') >= 0]);
 
@@ -490,7 +538,7 @@ window.__itest = async () => {
   await wait(200);
   out.push(['自律时段生效中：不能切方案', fc().active, activeBefore]);
   const onCount = pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0);
-  await Act.clockCommitRect(2, 2, 2, 2, 'sub');
+  await Act.clockCommitRect(2, 2, 2, 2, 0, 3, 'sub'); // qA=0,qB=3 → 整小时 [0,60)
   await wait(200);
   out.push(['自律时段生效中：不能取消已选时段', pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
   await Act.nav('rules');
@@ -556,14 +604,19 @@ window.__itest = async () => {
   await wait(250);
   out.push(['删除方案后数量 -1', fc().profiles.length, beforeDel - 1]);
   out.push(['删除后自动切到剩下的一套', fc().active, fc().profiles[0].id]);
-  // 只剩一套时必须拒绝再删（临时把方案裁到 1 套来验守卫，验完还原）
-  const savedFc = JSON.parse(JSON.stringify(fc()));
-  fc().profiles = fc().profiles.slice(0, 1);
-  fc().active = fc().profiles[0].id;
+  // 只剩一套时必须拒绝再删。注意：不能用"临时裁到 1 套再还原"的老办法——
+  // saveConfig→pull 会用后端 STATE 重新归一化，直接改 S.data 会被冲掉。
+  // 改成在假后端 STATE 上构造只剩一套的场景，pull 回来就是 1 套。
+  const savedFc2 = JSON.parse(JSON.stringify(S.data.config.settings.focusClock));
+  STATE.config.settings.focusClock.profiles = STATE.config.settings.focusClock.profiles.slice(0, 1);
+  STATE.config.settings.focusClock.active = STATE.config.settings.focusClock.profiles[0].id;
+  await pull(); render();
+  await wait(120);
   await Act.clockProfDel();
   await wait(120);
   out.push(['只剩一套时拒绝再删', fc().profiles.length, 1]);
-  S.data.config.settings.focusClock = savedFc;
+  // 还原假后端 + 前端
+  STATE.config.settings.focusClock = savedFc2;
   await pull(); render();
   await wait(120);
   // 回到最初那套，后面的断言按它来
@@ -644,6 +697,20 @@ window.__itest = async () => {
   // 该开关的"标题"（文本恰为「跟随当前窗口」且不含子元素的 div）只应出现一次
   const followTitles = [...document.querySelectorAll('div')].filter((n) => n.children.length === 0 && n.textContent.trim() === '跟随当前窗口');
   out.push(['跟随当前窗口标题唯一', followTitles.length, 1]);
+
+  // 16b. 媒体管控开关：遮罩页必须有唯一开关，点击走 mask_media_pause 并落库
+  const mediaSw = document.querySelectorAll('[data-act="toggle-media-pause"]');
+  out.push(['遮罩页媒体管控开关唯一', mediaSw.length, 1]);
+  const mediaBefore = S.data.mask.mediaPause;
+  if (mediaSw[0]) {
+    mediaSw[0].click();
+    await wait(250);
+    out.push(['媒体管控开关可切换并保存', S.data.mask.mediaPause === !mediaBefore]);
+    out.push(['媒体管控同步进配置', S.data.config.settings.mask.mediaPause === !mediaBefore]);
+    document.querySelector('[data-act="toggle-media-pause"]').click();
+    await wait(250);
+    out.push(['媒体管控再点一次恢复', S.data.mask.mediaPause === mediaBefore]);
+  }
 
   // 17. 浏览器插件页：「设置路径」存在，且点击后走后端 pick_path 原生选取（而非前端 T.dialog / prompt）
   await Act.nav('browsers');

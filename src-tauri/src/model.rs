@@ -203,6 +203,9 @@ pub struct MaskCfg {
     pub hotkey_label: String,
     /// 遮罩跟随自律模式：自律生效时就开，自律结束就关
     pub follow_schedule: bool,
+    /// 媒体管控：遮罩生效时自动暂停「被盖住/非前台」窗口的媒体播放，
+    /// 窗口回到前台/呈现状态时恢复。默认关，避免误伤正在听歌的后台播放。
+    pub media_pause: bool,
     /// 【已废弃】旧版"进入指定应用自动开遮罩"，仅保留字段以兼容老配置
     pub auto: bool,
     pub auto_apps: Vec<String>,
@@ -219,6 +222,7 @@ impl Default for MaskCfg {
             hotkey: "Ctrl+Alt+K".into(),
             hotkey_label: "Ctrl+Alt+K".into(),
             follow_schedule: false,
+            media_pause: false,
             auto: false,
             auto_apps: vec![],
         }

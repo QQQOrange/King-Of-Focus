@@ -539,13 +539,19 @@ fn scan_profiles(root: &Path) -> Vec<ExtHit> {
                 // 浏览器正在写这个文件时会读到半截 JSON，跳过即可（下次扫描再读）
                 continue;
             };
-            let Some(settings) = v
+            // Chrome 系把扩展状态放 `extensions/settings`；Opera 放 `extensions/opsettings`。
+            // 两者结构相同（id → 条目），只是节点名不同，都要读——Opera 只读 settings 会漏检。
+            let settings = v
                 .pointer("/extensions/settings")
-                .and_then(|x| x.as_object())
-            else {
-                continue;
-            };
-            for (id, e) in settings {
+                .and_then(|x| x.as_object());
+            let opsettings = v
+                .pointer("/extensions/opsettings")
+                .and_then(|x| x.as_object());
+            let iter = settings
+                .into_iter()
+                .flat_map(|m| m.iter())
+                .chain(opsettings.into_iter().flat_map(|m| m.iter()));
+            for (id, e) in iter {
                 if hits.iter().any(|h| h.profile == pname && h.id == *id) {
                     continue;
                 }
@@ -1154,4 +1160,143 @@ fn html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 在临时目录里造一份 Chrome 式的 `extensions/settings` 条目。
+    fn write_chrome_pref(dir: &Path, id: &str, entry: serde_json::Value) {
+        let v = serde_json::json!({ "extensions": { "settings": { id: entry } } });
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("Secure Preferences"), v.to_string()).unwrap();
+    }
+
+    /// 在临时目录里造一份 Opera 式的 `extensions/opsettings` 条目。
+    fn write_opera_pref(dir: &Path, id: &str, entry: serde_json::Value) {
+        let v = serde_json::json!({ "extensions": { "opsettings": { id: entry } } });
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("Secure Preferences"), v.to_string()).unwrap();
+    }
+
+    /// 造一个解压加载的我们的扩展：条目里不写 manifest.name、不写 state，
+    /// 识别只能靠 path 指向的目录里的 manifest.json —— 与 Opera 实测一致。
+    fn unpacked_ours_entry(path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "location": 4,
+            "path": path,
+            "active_permissions": { "api": ["alarms", "storage"] },
+            "disable_reasons": [],
+        })
+    }
+
+    /// 在磁盘上落一个 manifest.json（name 是我们的）。
+    fn write_manifest(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::json!({ "name": name, "version": "1.0.0", "manifest_version": 3 })
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Chrome 路径仍能识别（回归保护：改动不能把 Chrome 系弄坏）。
+    #[test]
+    fn scan_reads_chrome_extensions_settings() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_chrome_{}", std::process::id()));
+        let ext = tmp.join("ext");
+        write_manifest(&ext, "King of Focus 网页拦截");
+        let _ = std::fs::remove_file(tmp.join("Secure Preferences"));
+        write_chrome_pref(
+            &tmp,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "Chrome settings 条目应被识别：{hits:?}");
+        assert!(hits[0].enabled, "解压加载无 state 应视为启用：{hits:?}");
+        assert!(hits[0].unpacked);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Opera 把扩展状态放在 `extensions/opsettings`（不是 settings）——
+    /// 这正是"Opera 装了却提示未安装"的根因。必须能识别出来。
+    #[test]
+    fn scan_reads_opera_extensions_opsettings() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_opera_{}", std::process::id()));
+        let ext = tmp.join("ext");
+        write_manifest(&ext, "King of Focus 网页拦截");
+        write_opera_pref(
+            &tmp,
+            "edpcikhfaamopgineppbimjhjgnbgdhp",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "Opera opsettings 条目应被识别：{hits:?}");
+        assert!(hits[0].enabled, "Opera 解压加载无 state/disabled 应视为启用：{hits:?}");
+        assert!(hits[0].unpacked, "location=4 应判为解压加载：{hits:?}");
+        assert!(hits[0].name.contains("King of Focus"), "名字来自磁盘 manifest：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Opera 条目在 settings 与 opsettings 同时存在时不能重复计数（同 id 去重）。
+    #[test]
+    fn scan_dedups_across_settings_and_opsettings() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_dedup_{}", std::process::id()));
+        let ext = tmp.join("ext");
+        write_manifest(&ext, "King of Focus 网页拦截");
+        let entry = unpacked_ours_entry(&ext.to_string_lossy());
+        // 同 id 同时出现在 settings 和 opsettings
+        let v = serde_json::json!({
+            "extensions": {
+                "settings": { "zzzz": entry },
+                "opsettings": { "zzzz": entry },
+            }
+        });
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Secure Preferences"), v.to_string()).unwrap();
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "同 id 在两个节点里只能算一个：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Opera 解压加载条目无 disable_reasons（字段缺失）时不应被误判为停用。
+    #[test]
+    fn opera_unpacked_without_state_counts_as_enabled() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_state_{}", std::process::id()));
+        let ext = tmp.join("ext");
+        write_manifest(&ext, "King of Focus 网页拦截");
+        // 故意不写 state、不写 disable_reasons（Opera 解压加载实测如此）
+        let entry = serde_json::json!({
+            "location": 4,
+            "path": ext.to_string_lossy(),
+            "active_permissions": { "api": ["alarms"] },
+        });
+        write_opera_pref(&tmp, "opnoState00000000000000000000000", entry);
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].enabled, "state/disabled 缺失应视为启用：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Opera 手动停用时会写 disable_reasons（非空）→ 判为停用。
+    #[test]
+    fn opera_with_disable_reasons_counts_as_disabled() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_dis_{}", std::process::id()));
+        let ext = tmp.join("ext");
+        write_manifest(&ext, "King of Focus 网页拦截");
+        let entry = serde_json::json!({
+            "location": 4,
+            "path": ext.to_string_lossy(),
+            "active_permissions": { "api": ["alarms"] },
+            "disable_reasons": [1],
+        });
+        write_opera_pref(&tmp, "opDisabled000000000000000000000", entry);
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].enabled, "disable_reasons 非空应判停用：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

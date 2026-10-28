@@ -608,6 +608,23 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-width: 0; z-index: 3; }
 .cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
+/* 15 分钟细分刻度（滴答清单周视图同款）：每小时 4 条，默认不画，
+ * hover / 拖选时才浮现，用来勾选 15 分钟粒度的时间段。 */
+.cc-q {
+  position: absolute; top: 0; bottom: 0;
+  width: calc(25% - 2px); margin-left: 1px;
+  border-radius: 2px;
+  background: rgba(125, 176, 255, .10);
+  opacity: 0; pointer-events: none;
+  transition: opacity .12s ease;
+}
+.cc-q:nth-child(1) { left: 0; }
+.cc-q:nth-child(2) { left: 25%; }
+.cc-q:nth-child(3) { left: 50%; }
+.cc-q:nth-child(4) { left: 75%; }
+.cc-cell:hover .cc-q, .cc-cell.qshow .cc-q { opacity: 1; pointer-events: auto; cursor: pointer; }
+.cc-q.on { background: rgba(125, 176, 255, .42); }
+.cc-cell:hover .cc-q:hover, .cc-cell.qshow .cc-q:hover { background: rgba(125, 176, 255, .6); }
 /* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距。
  * 圆角和内描边由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边不画），
  * 这里只留默认值：孤立的整块仍然是四角 4px + 一整圈描边。 */
