@@ -104,7 +104,10 @@ const STATE = {
   mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1, opacity: 88, duration: 420, blockClick: true,
     follow: true, hotkey: 'Ctrl+Alt+K', hotkeyOk: true,
     followSchedule: true, previewLeft: 0, notice: null },
-  admin: true, testMode: false, dataDir: 'D:\\x', browsers: [], browserGuard: {},
+  admin: true, testMode: false, dataDir: 'D:\\x', browsers: [
+    { key: 'msedge', name: 'Microsoft Edge', installed: true, exe: 'C:\\Fake\\msedge.exe', exeSource: 'auto', ext: 'enabled', running: false, extPage: 'edge://extensions', dataDir: 'D:\\x', hits: [], note: '已启用' },
+    { key: 'chrome', name: 'Google Chrome', installed: true, exe: '', exeSource: 'none', ext: 'notInstalled', running: false, extPage: 'chrome://extensions', dataDir: 'D:\\x', hits: [], note: '未找到主程序' },
+  ], browserGuard: {},
   extFolder: 'D:\\software\\myself\\extension',
   extInfo: { path: 'D:\\software\\myself\\extension', exists: true,
     crx: 'D:\\software\\myself\\KingOfFocus-Extension.crx', exeDir: 'D:\\software\\myself',
@@ -131,7 +134,17 @@ window.__TAURI__ = {
       STATE.config.settings.runAsAdmin = !!args.enabled;
       return null;
     }
-    if (cmd === 'browsers_scan') return { list: [], installed: 0, broken: 0 };
+    if (cmd === 'browsers_scan') return {
+      list: [
+        { key: 'msedge', name: 'Microsoft Edge', installed: true, exe: 'C:\\Fake\\msedge.exe', exeSource: 'auto', ext: 'enabled', running: false, extPage: 'edge://extensions', dataDir: 'D:\\x', hits: [], note: '已启用' },
+        { key: 'chrome', name: 'Google Chrome', installed: true, exe: '', exeSource: 'none', ext: 'notInstalled', running: false, extPage: 'chrome://extensions', dataDir: 'D:\\x', hits: [], note: '未找到主程序' },
+      ],
+      installed: 2, broken: 1,
+    };
+    // 浏览器自定义主程序路径：让"设置路径"链路可被前端回归验证
+    if (cmd === 'pick_path') { window.__picked = (window.__picked || 0) + 1; return 'C:\\Picked\\chrome.exe'; }
+    if (cmd === 'browser_set_path') { window.__setpath = (window.__setpath || 0) + 1; return '已保存：' + (args.path || '(清除)'); }
+    if (cmd === 'browser_check_path') return args.path || '';
     if (cmd === 'browser_ext_info') return STATE.extInfo;
     if (cmd === 'mask_diag') return 'on=true painted=true 模式=区域挖洞';
     if (cmd === 'browser_open_ext') return '已打开 Microsoft Edge 的扩展管理页';
@@ -255,7 +268,12 @@ window.__itest = async () => {
   const rc8 = cell(0, 8).getBoundingClientRect(), rc11 = cell(0, 11).getBoundingClientRect();
   const run0 = runs(0)[0] ? runs(0)[0].getBoundingClientRect() : null;
   out.push(['整块高度 = 4 格 + 3 道缝', run0 ? Math.abs(run0.height - (rc11.bottom - rc8.top)) < 1.5 : false, true]);
-  out.push(['周一–周五 同一时段合并成一条整带', run0 ? Math.abs(run0.width - (cell(4, 8).getBoundingClientRect().right - rc8.left)) < 1.5 : false, true]);
+  // 周一–周五同一时段合并成一条横跨 5 列的整带（d0→d4，单块）。
+  // 宽度 ≥ 周五右沿-周一左沿（右侧若与相邻日接壤会再补最多 3px 缝，故不取等）
+  out.push(['周一–周五 同一时段合并成一条整带', run0
+    ? (runs(0).length === 1 && runs(0)[0].dataset.d1 === '4'
+      && run0.width - (cell(4, 8).getBoundingClientRect().right - rc8.left) >= -1.5)
+    : false, true]);
   // 周六只有 9–11 两格，也应是一个块；周日没选 → 一个块都没有
   out.push(['周六 9–11 一个块', runs(5).length, 1]);
   out.push(['周六块覆盖 2 格', runs(5)[0] ? Math.abs(runs(5)[0].getBoundingClientRect().height - (cell(5, 10).getBoundingClientRect().bottom - cell(5, 9).getBoundingClientRect().top)) < 1.5 : false, true]);
@@ -413,8 +431,8 @@ window.__itest = async () => {
     return p[8].from === 20 && p[8].to === 60 && p[9].from === 0 && p[9].to === 60 && p[12].from === 0 && p[12].to === 50;
   })()]);
   out.push(['摘要文案带分钟', $('#clockLive').textContent.indexOf('08:20') >= 0 && $('#clockLive').textContent.indexOf('12:50') >= 0]);
-  // 格子标题显示真实窗口
-  out.push(['格子标题带分钟', cell(1, 10).title.indexOf('周二 10:15 – 10:45') >= 0]);
+  // 格子标题显示真实窗口：d1 的 8–12 是整小时区间，小时 10 是整点窗口 → 10:00 – 11:00
+  out.push(['格子标题带分钟', cell(1, 10).title.indexOf('周二 10:00 – 11:00') >= 0]);
 
   // 9b. 起止分钟渲染：部分小时单独成块，没选中的分钟用占位带让出来
   await Act.clockClear();
@@ -618,6 +636,28 @@ window.__itest = async () => {
   out.push(['时段外：管理员开关不置灰', !!adminSw3 && !adminSw3.classList.contains('locked')]);
   await window.__patch({ admin: true, runAsAdmin: true });
 
+  // 16. 专注遮罩页：「跟随当前窗口」只保留唯一一个开关（曾出现两处重复渲染）
+  await Act.nav('mask');
+  await wait(200);
+  const followSw = document.querySelectorAll('[data-act="toggle-follow"]');
+  out.push(['遮罩页跟随当前窗口开关唯一', followSw.length, 1]);
+  // 该开关的"标题"（文本恰为「跟随当前窗口」且不含子元素的 div）只应出现一次
+  const followTitles = [...document.querySelectorAll('div')].filter((n) => n.children.length === 0 && n.textContent.trim() === '跟随当前窗口');
+  out.push(['跟随当前窗口标题唯一', followTitles.length, 1]);
+
+  // 17. 浏览器插件页：「设置路径」存在，且点击后走后端 pick_path 原生选取（而非前端 T.dialog / prompt）
+  await Act.nav('browsers');
+  await wait(250);
+  const pathBtn = document.querySelector('[data-act="browser-setpath"]');
+  out.push(['浏览器页有设置路径按钮', !!pathBtn]);
+  window.__picked = 0; window.__setpath = 0;
+  if (pathBtn) {
+    pathBtn.click();
+    await wait(300);
+  }
+  // 真正的证据：mock 的 pick_path 被调用（后端原生选取通道），随后 browser_set_path 落盘
+  out.push(['设置路径走后端原生选取', window.__picked >= 1, true]);
+  out.push(['设置路径已落盘保存', window.__setpath >= 1, true]);
   const pre = document.createElement('pre');
   pre.id = 'itest';
   pre.textContent = JSON.stringify(out);

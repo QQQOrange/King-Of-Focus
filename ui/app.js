@@ -1299,8 +1299,8 @@ function viewMask() {
           <div>
             <div style="font-size:12.5px">跟随当前窗口</div>
             <div class="hint" style="margin-top:4px">
-              决定"哪一个窗口浮在遮罩上面"：只让当前最上层（正在用）的窗口可见，其他全部压暗。
-              切换窗口时焦点会立刻换过去，拖动窗口时完全跟手。
+              打开后不用选目标窗口：遮罩自动盯住<b>当前最上层（正在用）的窗口</b>，只留它可见、其他全压暗。
+              切换窗口时洞口平滑移过去，拖动 / 缩放时 1:1 完全跟手。
             </div>
           </div>
           <div class="switch" data-act="toggle-follow"><input type="checkbox" ${m.follow ? 'checked' : ''}><i></i></div>
@@ -1316,19 +1316,7 @@ function viewMask() {
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="row" style="align-items:center;justify-content:space-between">
-      <div>
-        <div style="font-size:13px;font-weight:600">跟随当前窗口</div>
-        <div class="hint" style="margin-top:4px">
-          打开后不用选目标窗口：遮罩会自动盯住<b>当前最上层（正在用）的窗口</b>，
-          只留它可见，其他窗口全被盖住。切换窗口时洞口平滑移过去，拖动窗口时 1:1 跟随。
-        </div>
-      </div>
-      <div class="switch" data-act="toggle-follow">
-        <input type="checkbox" ${m.follow ? 'checked' : ''}><i></i>
-      </div>
-    </div>
-    <div class="card-title" style="margin-top:16px">遮罩参数</div>
+    <div class="card-title">遮罩参数</div>
     <div class="card-sub">拖动即时生效——遮罩开着的时候，你可以直接在屏幕上看到效果。动画速度就是"从窗口边缘铺满全屏"用多久，数值越大越慢，0 = 瞬间出现。</div>
     <div class="slider-row">
       <span class="lab">不透明度</span>
@@ -1992,7 +1980,11 @@ function viewBrowsers() {
       const canInstall = b.installed && (b.ext === 'notInstalled' || b.ext === 'disabled');
       // 「设置路径」一直可见：装在非默认目录时自动检测找不到主程序，
       // 这正是"扩展页"按钮打不开的常见原因，得让用户当场能补救。
-      const pathBtn = `<button class="btn btn-sm btn-ghost" data-act="browser-setpath" data-k="${b.key}" title="${b.exe ? '当前：' + esc(b.exe) : '没找到主程序，点这里手动指定'}">设置路径</button>`;
+      // 已设自定义路径时提示"可改/留空清除"，让入口既能设也能清。
+      const pathTitle = b.exe
+        ? `当前：${b.exe}${b.exeSource === 'custom' ? '（自定义，点此重新选择；在弹出的输入框留空可清除、回退自动检测）' : ''}`
+        : '没找到主程序，点这里手动指定 .exe';
+      const pathBtn = `<button class="btn btn-sm btn-ghost" data-act="browser-setpath" data-k="${b.key}" title="${esc(pathTitle)}">${b.exeSource === 'custom' ? '重设路径' : '设置路径'}</button>`;
       const act = !b.installed
         ? `<span class="muted" style="font-size:12px">未安装</span>${pathBtn}`
         : b.ext === 'unsupported'
@@ -3051,22 +3043,21 @@ const Act = window.Act = {
   },
 
   /** 手动指定浏览器主程序路径。
-   *  先试系统文件对话框；对话框不可用（权限/环境问题）就退回粘贴输入框，
-   *  保证这个功能在任何情况下都能用，不能因为一个对话框把用户堵死。 */
+   *  主通道走后端 `pick_path`（tauri_plugin_dialog 原生文件选择框，与规则页"选择 exe"同一条已验证链路）。
+   *  后端对话框不可用时退回输入框，保证任何情况下都能设/清除，不被一个对话框堵死。 */
   async browserSetPath(key) {
     let picked = null;
     try {
-      const dlg = T && T.dialog;
-      if (dlg && typeof dlg.open === 'function') {
-        picked = await dlg.open({
-          multiple: false,
-          directory: false,
-          filters: [{ name: '浏览器主程序', extensions: ['exe'] }],
-        });
-      }
+      picked = await withTimeout(
+        invoke('pick_path', { kind: 'file' }),
+        300000,
+        '选择文件超时'
+      );
     } catch (e) {
-      /* 对话框不可用，落到下面的手动输入 */
+      picked = null;
     }
+    // pick_path 有效返回 → 用它；返回 null/空 = 用户点了取消或对话框不可用，
+    // 再走输入框让用户粘路径（留空=清除）。两条路都不会无声失败。
     if (!picked) {
       picked = window.prompt(
         '粘贴浏览器主程序（.exe）的完整路径：\n例如 C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\n\n留空并确定 = 清除自定义设置、改为自动检测',
