@@ -4284,15 +4284,33 @@ function ccOpenMenu(d, h, x, y) {
             <button class="chip-btn" data-scope="col">这一列（一整天）</button>
           </div>
 
-          <div class="cc-seg-list">
-            <div class="cc-seg-hd">当前时段明细（从上到下）</div>
-            ${segs.length ? segs.map((s) => `
-              <div class="cc-seg-row">
-                <span class="cc-seg-day">${WD[s.d]}</span>
-                <span class="cc-seg-time">${ccHourWinText(s.d, s.h0, s.from, s.to)}</span>
-                <span class="cc-seg-dur">${s.totalMin} 分钟</span>
-                <span class="cc-seg-kind">${s.kind}${s.brk ? ` ${s.work}/${s.brk}` : ''}</span>
-                <span class="cc-seg-note">${s.notes.join(' · ')}</span>
+          <div class="cc-seg-cards">
+            <div class="cc-seg-hd">当前时段（从上到下）</div>
+            ${segs.length ? segs.map((s, idx) => `
+              <div class="cc-seg-card">
+                <div class="cc-seg-card-hd">
+                  <span class="cc-seg-card-num">#${idx + 1}</span>
+                  <span class="cc-seg-card-day">${WD[s.d]}</span>
+                  <span class="cc-seg-card-time">${ccHourWinText(s.d, s.h0, s.from, s.to)}</span>
+                  <span class="cc-seg-card-badge ${s.brk > 0 ? 'pomo' : 'pure'}">${s.kind}</span>
+                </div>
+                <div class="cc-seg-card-bd">
+                  <div class="cc-seg-card-info">
+                    <div class="cc-seg-card-item">
+                      <span class="cc-seg-card-label">时长</span>
+                      <span class="cc-seg-card-value">${s.totalMin} 分钟</span>
+                    </div>
+                    <div class="cc-seg-card-item">
+                      <span class="cc-seg-card-label">专注/休息</span>
+                      <span class="cc-seg-card-value">${s.work} / ${s.brk} 分钟</span>
+                    </div>
+                    ${s.notes.length ? `
+                    <div class="cc-seg-card-item">
+                      <span class="cc-seg-card-label">备注</span>
+                      <span class="cc-seg-card-value">${s.notes.join('、')}</span>
+                    </div>` : ''}
+                  </div>
+                </div>
               </div>`).join('') : '<div class="cc-seg-empty">暂无已选中时段</div>'}
           </div>
 
