@@ -673,14 +673,15 @@ const CC_QMIN = 60 / CC_Q; // 15
 const qStart = (q) => q * CC_QMIN;          // 15 分钟刻度 → 该刻度起点分钟
 const qEnd = (q) => (q + 1) * CC_QMIN;      // 15 分钟刻度 → 该刻度终点分钟
 /** 夹到合法区间并把边界落回 15 分钟刻度（from 向下取整、to 向上取整） */
+/** 夹到合法区间并把边界落回 15 分钟刻度（from 向下取整、to 向上取整）。
+ *  只做对齐，不偷偷把非法区间翻成整小时——「起 >= 止」原样透出，
+ *  由调用方（右键菜单 / clockSetWB）拦截并提示，避免非法输入被静默改写。 */
 function ccSnapWin(f, t) {
   let a = Math.max(0, Math.min(59, Math.round(f || 0)));
   let b = Math.max(1, Math.min(60, Math.round(t == null ? 60 : t)));
-  if (a >= b) { a = 0; b = 60; }
   a = Math.floor(a / CC_QMIN) * CC_QMIN;
   b = Math.ceil(b / CC_QMIN) * CC_QMIN;
   if (b > 60) b = 60;
-  if (a >= b) { a = 0; b = 60; }
   return { f: a, t: b };
 }
 
@@ -1397,13 +1398,6 @@ function viewMask() {
       <button class="btn btn-sm" data-act="save-hotkey">保存</button>
       <span class="badge ${m.hotkeyOk ? 'green' : 'red'}">${m.hotkeyOk ? '已注册' : '未注册'}</span>
     </div>
-  <div class="note" style="margin-top:16px">
-    <b>遮罩怎么让开：</b>遮罩是一整块盖住全屏的图层，选中窗口那一块从遮罩里"让开"，
-    所以窗口本身完整可见、层级不变（不抢任何窗口的置顶状态）。<b>圆角半径 0 就是严丝合缝地贴住窗口</b>，
-    调大相当于在窗口四周留一圈圆角留白——圆角永远画在窗口外侧，不会切掉窗口四角。<br>
-    <b>扩散动画：</b>开启时遮罩从窗口边缘向外铺满整个显示器，关闭时反向收回；
-    切换目标窗口时高亮框会平滑移过去。窗口拖动 / 缩放时 1:1 实时跟随，
-    多显示器和混合 DPI 下按各自的物理分辨率等比适配。
   </div>`;
 }
 
@@ -3407,8 +3401,17 @@ const Act = window.Act = {
       guardDiscipline('改这一小时的专注 / 休息时长');
       return;
     }
-    // 起止分钟对齐 15 分钟刻度（边界自动向下/向上取整，零碎时间才对得齐）
+    // 单格的起止分钟必须起早于止：非法时原样返回 false（不改配置），调用方给出提示并留住菜单。
+    // 这条兜住一切入口（右键菜单 / 直接调 Act），与菜单里的校验是同一条规则。
+    if (d0 === d1 && h0 === h1 && (Number(fromMin) || 0) >= (Number(toMin) || 0)) {
+      return false;
+    }
+    // 起止分钟对齐 15 分钟刻度（边界自动向下/向上取整，零碎时间才对得齐）。
+    // snap 后再判一次非法：刻度对齐也可能让「起 >= 止」成立（45/30 → 45/30）。
     const snap = ccSnapWin(fromMin, toMin);
+    if (d0 === d1 && h0 === h1 && snap.f >= snap.t) {
+      return false;
+    }
     let n = 0;
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
@@ -3434,6 +3437,7 @@ const Act = window.Act = {
       : '';
     const winTip = (f2 > 0 || t2 < 60) ? `，起止分钟 ${pad(f2)}–${pad(t2)}` : '';
     toast(`${ccRectText(d0, d1, h0, h1, f2, t2)}：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}${winTip}，共 ${n} 段${defToo ? '；已更新为通用时长' : ''}${liveTip}`, 'ok');
+    return true;
   },
 
   /** 保存「通用时长」：之后新选中的时段都沿用这套专注 / 休息（只作用于当前方案） */
@@ -4137,8 +4141,11 @@ document.addEventListener('mouseup', async (e) => {
   document.querySelectorAll('.cc-cell.qshow').forEach((c) => c.classList.remove('qshow'));
   const { d0, d1, h0, h1, qA, qB, mode } = rectFromDrag(dg);
   S.ccRect = { d0, d1, h0, h1, qA, qB };
-  // 单击（没拖动）= 单独开关起笔那个 15 分钟刻度
+  // 单击（没拖动）= 单独开关起笔那个 15 分钟刻度。
+  // 单击不该"续用"上一次的框选矩形（那是拖选留下的），先把矩形清掉，
+  // 否则后面在这格上右键会把目标错认成上一次的整片框选。
   if (!dg.moved && dg.d0 === dg.d1 && dg.h0 === dg.h1) {
+    S.ccRect = null;
     await Act.clockToggleQ(dg.d0, dg.h0, dg.q0);
     return;
   }
@@ -4157,11 +4164,18 @@ function ccOpenMenu(d, h, x, y) {
   const fc = clockProfile();
   const r = S.ccRect;
   const hasRect = !!r;
-  // 默认目标：这一格在上次框选的矩形里 → 整个矩形；否则只作用这一格
+  // 默认目标：这一格在上次框选的矩形里 → 整个矩形；否则只作用这一格。
+  // 矩形要和这一格的 15 分钟窗口有交集才算"落在选区内"——
+  // 只比 (d,h) 会把"框选没盖到的那 15 分钟"也算进去（比如框住 13:00–15:15，
+  // 右键点 15:15–15:30 那半格，目标却显示成整片框选）。
   let t = { d0: d, d1: d, h0: h, h1: h };
   if (hasRect && d >= Math.min(r.d0, r.d1) && d <= Math.max(r.d0, r.d1)
     && h >= Math.min(r.h0, r.h1) && h <= Math.max(r.h0, r.h1)) {
-    t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: Math.min(r.h0, r.h1), h1: Math.max(r.h0, r.h1) };
+    const r0 = Math.min(r.h0, r.h1), r1 = Math.max(r.h0, r.h1);
+    const qA2 = (r.h1 >= r.h0) ? r.qA : r.qB, qB2 = (r.h1 >= r.h0) ? r.qB : r.qA;
+    const rw = ccRectWindows(Math.min(r.d0, r.d1), Math.max(r.d0, r.d1), r0, r1, qA2 == null ? 0 : qA2, qB2 == null ? CC_Q - 1 : qB2);
+    const w = rw.get(`${d},${h}`);
+    if (w) t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: r0, h1: r1 };
   }
   const p = fc.days[d][h];
   // 输入框预填：只作用这一格且这一格已选中 → 用这一格的值；否则用「通用」时长
@@ -4273,7 +4287,12 @@ function ccOpenMenu(d, h, x, y) {
         toast('起始分钟要小于结束分钟', 'err');
         return;
       }
-      await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked, f2, t2);
+      const ok = await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo', el).checked, f2, t2);
+      if (ok === false) {
+        // 兜底：直连 Act 的非法起止（菜单里的校验被绕过时）也不改配置、不关菜单
+        toast('起始分钟要小于结束分钟', 'err');
+        return;
+      }
       ccCloseMenu();
       return;
     }

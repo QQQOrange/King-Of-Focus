@@ -28,11 +28,24 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionManager as SessionManager,
 };
 
-/// 我们主动暂停过的会话：AUMID → 会话句柄（用于恢复）。
+/// 我们主动暂停过的会话：AUMID → (会话句柄, 是否原本在播放)。
+/// 「是否原本在播放」用于恢复时区分：原本就在暂停/停止态的会话，只解除记录、不发 TryPlay，
+/// 否则会把用户自己主动暂停的视频/音乐又播起来。
 /// HashMap::new 不是 const，static 里只能用 LazyLock 延迟到首次使用时构造。
-static PAUSED_BY_US: LazyLock<Mutex<HashMap<String, Session>>> =
+static PAUSED_BY_US: LazyLock<Mutex<HashMap<String, (Session, bool)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static MEDIA_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 查询会话当前是否处于「播放中」。SMTC 状态由播放器异步上报，
+/// 拿不到 PlaybackInfo / 状态时保守返回 true（宁可多发一次 TryPlay，
+/// 也不要误判成"用户暂停"把正在播的音乐停在暂停态）。
+fn was_playing(sess: &Session) -> bool {
+    match sess.GetPlaybackInfo().and_then(|info| info.PlaybackStatus()) {
+        Ok(status) => status
+            == windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
+        Err(_) => true,
+    }
+}
 
 /// 媒体管控开/关（由遮罩设置驱动）。关掉时立刻恢复所有被我们暂停的媒体。
 pub fn set_active(on: bool) {
@@ -89,7 +102,8 @@ pub fn pause_covered(covered_pids: &[u32]) {
         // TryPauseAsync：fire-and-forget（异步结果不等，够用；要精确等会拖慢遮罩帧）
         if sess.TryPauseAsync().is_ok() {
             if let Ok(mut g) = PAUSED_BY_US.lock() {
-                g.insert(aumid, sess);
+                let wp = was_playing(&sess);
+                g.insert(aumid, (sess, wp));
             }
         }
     }
@@ -106,8 +120,10 @@ fn resume_uncovered(covered_pids: &[u32]) {
         .cloned()
         .collect();
     for k in stale {
-        if let Some(sess) = g.remove(&k) {
-            let _ = sess.TryPlayAsync();
+        if let Some((sess, was_play)) = g.remove(&k) {
+            if was_play {
+                let _ = sess.TryPlayAsync();
+            }
         }
     }
 }
@@ -118,8 +134,10 @@ pub fn resume_all() {
     if g.is_empty() {
         return;
     }
-    for (_, sess) in g.drain() {
-        let _ = sess.TryPlayAsync();
+    for (_, (sess, was_play)) in g.drain() {
+        if was_play {
+            let _ = sess.TryPlayAsync();
+        }
     }
 }
 

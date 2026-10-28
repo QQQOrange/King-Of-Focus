@@ -615,8 +615,10 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   width: calc(25% - 2px); margin-left: 1px;
   border-radius: 2px;
   background: rgba(125, 176, 255, .10);
+  /* 默认藏起来；可见性只靠 opacity（getComputedStyle 在无头里读的就是它）。
+   * 不做 transition：无头 / 低帧率环境里过渡会把"刚加的 qshow"拖成一帧还没走完，
+   * 回归里读到 0 就成了偶发假红。 */
   opacity: 0; pointer-events: none;
-  transition: opacity .12s ease;
 }
 .cc-q:nth-child(1) { left: 0; }
 .cc-q:nth-child(2) { left: 25%; }

@@ -857,8 +857,12 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
         chrono::Local::now().timestamp() + INSTALL_GRACE_SECS,
         Ordering::Relaxed,
     );
+    // 不再用 `--new-window`：它在部分 Chromium 系（Edge / Opera / QQ 浏览器等）
+    // 的单实例转发里会被丢掉，只开一个空窗口、根本不过扩展页。
+    // 直接把 ext_page 作为唯一参数传给 exe：无论浏览器是否已在运行，
+    // Chromium 系的命令行入口都会把它当 URL 路由到扩展管理页。
     let mut cmd = Command::new(&exe);
-    cmd.arg("--new-window").arg(d.ext_page);
+    cmd.arg(d.ext_page);
     // 显式断开三个标准句柄：本程序是 GUI 子系统、没有控制台，
     // 子进程继承到无效句柄时，个别启动器（AppX 别名）会卡在初始化上。
     cmd.stdin(std::process::Stdio::null())

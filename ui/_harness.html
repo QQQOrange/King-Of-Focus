@@ -155,7 +155,11 @@ window.__TAURI__ = {
     if (cmd === 'browser_check_path') return args.path || '';
     if (cmd === 'browser_ext_info') return STATE.extInfo;
     if (cmd === 'mask_diag') return 'on=true painted=true 模式=区域挖洞';
-    if (cmd === 'browser_open_ext') return '已打开 Microsoft Edge 的扩展管理页';
+    if (cmd === 'browser_open_ext') {
+      window.__openExt = (window.__openExt || 0) + 1;
+      window.__openExtKey = (args && args.key) || '';
+      return '已打开 Microsoft Edge 的扩展管理页';
+    }
     if (cmd === 'browser_open_folder') return '已打开扩展目录';
     if (cmd === 'update_quota') return { ok: false };
     if (cmd === 'report_list') return [];
@@ -725,6 +729,28 @@ window.__itest = async () => {
   // 真正的证据：mock 的 pick_path 被调用（后端原生选取通道），随后 browser_set_path 落盘
   out.push(['设置路径走后端原生选取', window.__picked >= 1, true]);
   out.push(['设置路径已落盘保存', window.__setpath >= 1, true]);
+
+  // 18. 「扩展页」按钮：点击后必须走后端 browser_open_ext 并带上浏览器 key
+  window.__openExt = 0; window.__openExtKey = '';
+  const extBtn = document.querySelector('[data-act="browser-page"]');
+  out.push(['浏览器页有扩展页按钮', !!extBtn]);
+  if (extBtn) {
+    extBtn.click();
+    await wait(300);
+    out.push(['扩展页按钮走 browser_open_ext', window.__openExt >= 1, true]);
+    out.push(['扩展页调用带上浏览器 key', window.__openExtKey, extBtn.dataset.k || '']);
+  }
+
+  // 19. 快捷键卡片：只留快捷键控件，不再有浅蓝背景框（.note）的遮罩介绍
+  await Act.nav('mask');
+  await wait(250);
+  const hkCard = [...document.querySelectorAll('.card')].find((c) => (c.querySelector('.card-title') || {}).textContent === '快捷键');
+  out.push(['快捷键卡片存在', !!hkCard]);
+  if (hkCard) {
+    out.push(['快捷键卡片无浅蓝介绍框', hkCard.querySelectorAll('.note').length, 0]);
+    out.push(['快捷键输入框保留', !!hkCard.querySelector('#hkInput')]);
+  }
+
   const pre = document.createElement('pre');
   pre.id = 'itest';
   pre.textContent = JSON.stringify(out);
