@@ -290,6 +290,17 @@ pub struct ClockProfile {
     /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
     pub def_work: u32,
     pub def_brk: u32,
+    /// 这套时段生效时，启用**哪些**黑名单（`RuleList::id` 列表）。
+    ///
+    /// 空 = 全部（老配置没有这个字段，语义必须保持原样：所有已启用黑名单都生效）。
+    /// 非空 = 只启用列出的那几条，其余条目即使开着也不参与拦截。
+    ///
+    /// 为什么要这个：黑名单可以有"工作 / 娱乐 / 深夜"好几组，
+    /// 而「自律时段」又能存好几套（工作日 / 周末 / 假期）。
+    /// 「周末那套只该管娱乐，不该管工作软件」这种要求，
+    /// 靠一个全局开关是表达不出来的，必须让每套时段各自挑分组。
+    #[serde(default)]
+    pub bound: Vec<String>,
 }
 
 impl Default for ClockProfile {
@@ -300,6 +311,7 @@ impl Default for ClockProfile {
             days: vec![vec![HourPlan::default(); 24]; 7],
             def_work: 50,
             def_brk: 10,
+            bound: Vec::new(),
         }
     }
 }
@@ -329,6 +341,13 @@ pub struct ClockCfg {
     /// 时段内让所有「已启用」的规则立刻生效（忽略各规则自己的时段）
     #[serde(default = "default_true")]
     pub apply_rules: bool,
+    /// 选中时段的最小粒度（分钟）：10 或 15。
+    ///
+    /// 只影响**怎么画、怎么点**，不影响判定：判定永远按 `from`/`to`
+    /// 的绝对分钟数走，所以把 15 改成 10 不会让已排好的时段失效——
+    /// 原来卡在 :00 / :15 / :30 / :45 的边界，在新粒度下依然对得上。
+    #[serde(default = "default_clock_granularity")]
+    pub granularity: u32,
     /// 所有「星期时段」方案
     #[serde(default)]
     pub profiles: Vec<ClockProfile>,
@@ -349,9 +368,22 @@ pub struct ClockCfg {
 }
 
 fn default_true() -> bool { true }
+
+/// 粒度默认 15 分钟（与历史行为一致）
+fn default_clock_granularity() -> u32 {
+    15
+}
 fn is_zero_u32(v: &u32) -> bool { *v == 0 }
 
 impl ClockCfg {
+    /// 夹到 10 / 15 的合法粒度。任何非法值（0、37、被手改的配置）都退回 15。
+    pub fn step(&self) -> u32 {
+        match self.granularity {
+            10 => 10,
+            _ => 15,
+        }
+    }
+
     /// 当前生效的那套方案（`active` 找不到时退回第一套）
     pub fn active_profile(&self) -> Option<&ClockProfile> {
         if let Some(p) = self.profiles.iter().find(|p| p.id == self.active) {
@@ -382,6 +414,7 @@ impl Default for ClockCfg {
         ClockCfg {
             enabled: false,
             apply_rules: true,
+            granularity: default_clock_granularity(),
             active: p.id.clone(),
             profiles: vec![p],
             days: Vec::new(),

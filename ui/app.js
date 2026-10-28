@@ -629,7 +629,10 @@ function renderFullEditor() {
           <b>强制模式</b>：生效时段内，只有下面名单里的软件可以打开，其他所有前台窗口都会被关掉。
           系统进程、资源管理器、本程序自身以及「设置 → 全局保护」里的进程不会被拦截。
         </div>` : ''}
-        ${tabChart(r)}
+        <div class="note" style="margin-bottom:14px">
+          生效时间不在这里设：<b>「自律时段」决定什么时候进入自律时间</b>，
+          这里只决定"自律时间里不能打开什么"。
+        </div>
         <div class="tabs" style="margin-top:18px">${tabs.map(([k, n]) => `<button class="tab ${S.editorTab === k ? 'active' : ''}" data-act="editor-tab" data-tab="${k}">${n}</button>`).join('')}</div>
         ${body}
       </div>
@@ -960,22 +963,38 @@ function tkDragApply(drag) {
 const WD = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const CC_DEF_W = 50, CC_DEF_B = 10; // 配置里没有通用时长时的兜底值
 const CC_MAX_PROFILES = 12;         // 与后端 model::MAX_CLOCK_PROFILES 对齐
-/** 一天切成 24 小时 × 每小时 4 个 15 分钟刻度（滴答清单周视图同款）。
- *  「选中」是连续区间 [start,end) 的分钟数，与后端 HourPlan 的 from/to 是同一套口径；
- *  `from`/`to` 的边界自动夹到 15 分钟刻度——引擎按整小时算，刻度外的零头留不住。 */
-const CC_Q = 4;
-const CC_QMIN = 60 / CC_Q; // 15
-const qStart = (q) => q * CC_QMIN;          // 15 分钟刻度 → 该刻度起点分钟
-const qEnd = (q) => (q + 1) * CC_QMIN;      // 15 分钟刻度 → 该刻度终点分钟
-/** 夹到合法区间并把边界落回 15 分钟刻度（from 向下取整、to 向上取整） */
-/** 夹到合法区间并把边界落回 15 分钟刻度（from 向下取整、to 向上取整）。
+/** 一天切成 24 小时，每小时再竖向切成若干格 —— **格子的高度就是时间**。
+ *
+ * 为什么是竖向切（历史教训）：以前每小时从左到右切成 4 个方块，
+ * 但判定点击落在哪一格用的是 `clientY`（纵向坐标），于是点最左边那格
+ * 得到的是"中间那 15 分钟"，点第二格反而落到更上面一格 —— 方块的顺序
+ * 和横条的位置对不上。现在方块本身也是竖向排布，看得见的顺序、
+ * 点到的位置、画出来的横条三者用同一个坐标轴，不可能再错位。
+ *
+ * 粒度（每格多少分钟）由设置决定：10 或 15。它只影响"怎么画、怎么点"，
+ * 判定永远按 from/to 的绝对分钟走，所以改粒度不会让已排好的时段失效。
+ */
+const CC_GRANS = [10, 15];
+/** 当前粒度（分钟）：10 或 15 */
+function ccStep() {
+  const s = S.data && S.data.config && S.data.config.settings;
+  const g = s && s.focusClock ? +s.focusClock.granularity : 15;
+  return g === 10 ? 10 : 15;
+}
+/** 一小时被切成几格（15 分钟 → 4 格，10 分钟 → 6 格） */
+const ccQCnt = () => 60 / ccStep();
+/** 每小时的行高（px）：保证每格至少 13px，才点得准 */
+const ccHourH = () => ccQCnt() * 13;
+const qStart = (q) => q * ccStep();          // 第 q 格 → 起点分钟
+const qEnd = (q) => (q + 1) * ccStep();      // 第 q 格 → 终点分钟
+/** 夹到合法区间并把边界落回当前粒度（from 向下取整、to 向上取整）。
  *  只做对齐，不偷偷把非法区间翻成整小时——「起 >= 止」原样透出，
  *  由调用方（右键菜单 / clockSetWB）拦截并提示，避免非法输入被静默改写。 */
 function ccSnapWin(f, t) {
   let a = Math.max(0, Math.min(59, Math.round(f || 0)));
   let b = Math.max(1, Math.min(60, Math.round(t == null ? 60 : t)));
-  a = Math.floor(a / CC_QMIN) * CC_QMIN;
-  b = Math.ceil(b / CC_QMIN) * CC_QMIN;
+  a = Math.floor(a / ccStep()) * ccStep();
+  b = Math.ceil(b / ccStep()) * ccStep();
   if (b > 60) b = 60;
   return { f: a, t: b };
 }
@@ -1405,6 +1424,9 @@ function viewClock() {
   const hourNow = new Date().getHours();
   const n = clockCountOn(fc);
   const multi = fc.profiles.length > 1;
+  // 这套时段绑定哪些黑名单（空 = 全部）
+  const allLists = (S.data.config.lists || []);
+  const bound = Array.isArray(prof.bound) ? prof.bound : [];
 
   // 自律时段生效中（且非测试模式）：与纪律相关的控件置灰
   const frozen = settingsFrozen();
@@ -1443,12 +1465,17 @@ function viewClock() {
       <span class="nm">${esc(p.name)}</span><span class="n">${cnt} 段</span></button>`;
   }).join('');
 
-  // 柱状图：第 1 行星期表头，下面 24 行小时格（自上而下 0 → 23）。
+  // 周日历：第 1 行星期表头，下面 24 行小时格（自上而下 0 → 23）。
   // 所有格子都**显式定位**：连续时段的整块是按行号覆盖上去的，
   // 只要格子还是自动流，自动布局就会绕开被覆盖块占住的位置，整张表会错行。
   // 左上角是「纵轴单位」，不再重复标一个 0（第一个小时标签已经是 0 了）。
-  // 每个格子里再放 4 条 15 分钟细分刻度（滴答清单周视图同款）：默认不画，
-  // hover / 拖选该小时时才浮现，用来勾选 15 分钟粒度的时间段。
+  //
+  // 每一小时内部**自上而下**再切成若干格（粒度 15 分钟 = 4 格，10 分钟 = 6 格）：
+  // 格子是竖向的、位置就是时间顺序；选中的时段画成同样竖向的横条，
+  // 两者共用一条纵轴，所以"点哪一格"和"条子出现在哪"必然一致。
+  const step = ccStep();
+  const qn = ccQCnt();
+  const hourH = ccHourH();
   let grid = `<div class="cc-corner" style="grid-row:1;grid-column:1">时</div>` + WD.map((w, i) =>
     `<div class="cc-dh${i === wdNow ? ' today' : ''}" style="grid-row:1;grid-column:${i + 2}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
   for (let h = 0; h < 24; h++) {
@@ -1465,12 +1492,14 @@ function viewClock() {
         ? `${WD[dd]} ${pad(h)}:${pad(pf)} – ${pad(h)}:${pad(pt)}`
         : `${WD[dd]} ${pad(h)}:00 – ${pad(h + 1)}:00`;
       // 选中态的底色由 ccRenderRuns 画成整块；格子只留命中区与 hover。
-      // 细分刻度：只在 hover / 拖选时浮现（CSS .cc-cell:hover .cc-q / .cc-cell.qshow .cc-q）。
+      // 细分刻度：**自上而下**等分（top/height 用百分比），常显淡淡的虚线分隔，
+      // hover / 拖选时变明显——这样不用点下去就能看出"这里是几格"。
       let qs = '';
-      for (let q = 0; q < CC_Q; q++) {
+      for (let q = 0; q < qn; q++) {
         const a = qStart(q), bq = qEnd(q);
         const onQ = p.on && pf < bq && a < pt;
-        qs += `<i class="cc-q${onQ ? ' on' : ''}" data-q="${q}" data-a="${a}" data-b="${bq}"></i>`;
+        qs += `<i class="cc-q${onQ ? ' on' : ''}" data-q="${q}" data-a="${a}" data-b="${bq}"
+          style="top:${(q * 100 / qn).toFixed(4)}%;height:${(100 / qn).toFixed(4)}%"></i>`;
       }
       grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}"
         style="grid-row:${h + 2};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
@@ -1484,9 +1513,10 @@ function viewClock() {
       <div>
         <div class="card-title">自律模式生效时间段</div>
         <div class="card-sub">
-          一周七天各一根柱子，纵轴 0–24 点。哪几天、哪几段要自律，拖出来就行；到点自动进入自律模式，到点自动退出；
-          黑名单、浏览器巡检、专注遮罩都会跟着这段状态走。
-          需要多套排班时，做成几套「星期时段」方案，随时切到要用的那一套。
+          横轴一周七天，纵轴 0–24 点，一小时再竖着分成若干格。
+          哪几天、哪几段要自律，直接在格子上拖出来——选中的部分就是一条从上到下的横条，条子的长度就是时长。
+          到点自动进入自律模式，到点自动退出；黑名单、浏览器巡检、专注遮罩都会跟着这段状态走。
+          需要多套排班时，做成几套「星期时段」方案，每套还能各自绑定不同的黑名单分组。
         </div>
       </div>
       <div class="switch${frozen ? ' locked' : ''}" data-act="clock-enable"
@@ -1513,6 +1543,25 @@ function viewClock() {
       <span class="hint">同一时刻只有一套在生效；卡片顶部的开关管的是「自律时段」整体，与选哪套无关。</span>
     </div>
 
+    <div class="cc-bind">
+      <div class="cc-bind-hd">
+        <span class="cc-bind-title">这套时段生效的黑名单</span>
+        <span class="hint">${bound.length ? `已绑 ${bound.length} 组，其余分组这套时段不管` : '没绑任何分组 = 全部生效（默认）'}</span>
+      </div>
+      <div class="cc-bind-list">
+        <button class="cc-bind-chip${bound.length ? '' : ' active'}" data-act="clock-bind" data-id=""
+          title="这套时段用上全部已启用的黑名单">全部</button>
+        ${allLists.map((l) => `<button class="cc-bind-chip${bound.includes(l.id) ? ' active' : ''}"
+          data-act="clock-bind" data-id="${esc(l.id)}"
+          title="${esc(l.name)}：${l.apps.length} 个软件 · ${l.sites.length} 个网站${l.enabled ? '' : '（这条没启用，绑了也不会拦）'}">
+          ${esc(l.name)}</button>`).join('') || '<span class="hint">还没有黑名单分组，先去「黑名单」建一组</span>'}
+      </div>
+      <div class="hint" style="margin-top:6px">
+        换方案 = 换时间表 + 换管哪些分组。比如「工作日」那套只绑工作类，
+        「周末」那套只绑娱乐类，互不干扰。
+      </div>
+    </div>
+
 
     <div class="clock-state ${stateCls}">
       <span class="cs-dot"></span>
@@ -1520,7 +1569,17 @@ function viewClock() {
       ${fc.enabled && n ? `<span class="badge">已选 ${n} 个小时段</span>` : ''}
     </div>
 
-    <div class="cc-scroll"><div class="cc" id="ccGrid">${grid}</div></div>
+    <div class="cc-gran">
+      <span class="cc-gran-lab">每次选择</span>
+      ${CC_GRANS.map((g) => `<button class="cc-gran-btn${g === step ? ' active' : ''}"
+        data-act="clock-gran" data-v="${g}" ${frozen ? 'disabled' : ''}
+        title="每一格代表 ${g} 分钟">${g} 分钟</button>`).join('')}
+      <span class="hint">
+        现在每格 ${step} 分钟，一小时 ${ccQCnt()} 格。切到 10 分钟会更细（格子变多、日历变高），
+        已经排好的时段不受影响。
+      </span>
+    </div>
+    <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px">${grid}</div></div>
     <div class="cc-legend">
       <span><i class="sw w"></i>专注</span>
       <span><i class="sw b"></i>休息</span>
@@ -1535,7 +1594,12 @@ function viewClock() {
       <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
     <div class="tl-legend">
-      <span class="hint">按住拖动 = 框选一片时段（从灰格起笔＝选中，从蓝格起笔＝取消，新选的时段沿用上面的通用时长）；<b>每小时默认整块，hover / 拖选时会分成 4 个 15 分钟刻度</b>，单击刻度 = 单独开关那 15 分钟，上下一划就能框住一个时间段（11:10–12:20 这种零碎时间也行）；<b>右键格子 = 设置这一片的专注 / 休息时长与起止分钟</b>（比如从第 15 分钟到第 45 分钟）。</span>
+      <span class="hint">
+        每一小时<b>从上到下</b>分成 ${step} 分钟一格（虚线就是格线，现在一小时 ${ccQCnt()} 格）。
+        <b>单击一格</b> = 打开 / 关掉这 ${step} 分钟；<b>按住上下拖</b> = 连续框选一段（从蓝条起笔是取消）；
+        选中的部分会连成一条从上到下的实心横条，跨小时、跨天也会自动接成一整条。
+        <b>右键格子</b> = 细调这一片的专注 / 休息时长与起止分钟。
+      </span>
       <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
     </div>
     <div class="tl-range">已选${multi ? `（${esc(prof.name)}）` : ''}：<b id="clockLive">${esc(clockRangeText(fc))}</b></div>
@@ -1545,9 +1609,10 @@ function viewClock() {
     <div class="card-title">它和「黑名单」的关系</div>
     <div class="card-sub">自律时段是总开关，黑名单是执法工具。</div>
     <div class="note" style="line-height:1.95">
-      <b>这里（自律时段）</b>：决定"什么时候进入自律时间"。粒度 15 分钟，按周排，每周重复。<br>
-      <b>黑名单页的时段</b>：只在自律时间<b>之内</b>做二次收窄——"这条黑名单在自律时间的哪几段生效"，粒度到分钟，可以跨夜。<br>
-      <b>两者是包含关系</b>：黑名单<b>只在自律时间（专注段）内生效</b>；自律时间之外、以及番茄休息段，一律不拦。
+      <b>这里（自律时段）</b>：决定"什么时候进入自律时间"。按周排、每周重复，每格 ${ccStep()} 分钟。<br>
+      <b>黑名单</b>：只有名单，没有自己的时间表。它<b>只在自律时间（专注段）内生效</b>，其余时间一律静默。<br>
+      <b>两者是包含关系</b>：自律时间之外的时段、以及番茄休息段，黑名单都不拦。<br>
+      <b>每套时段还能各自绑定分组</b>：上面「这套时段生效的黑名单」勾了哪几组，这套时段就只管那几组。
       <div class="row" style="justify-content:space-between;align-items:center;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
         <div>
           <div style="font-size:12.5px">自律时间内启用黑名单</div>
@@ -2430,6 +2495,24 @@ function viewSettings() {
     <b>当前不是管理员权限。</b>拦截普通程序没问题，但要关掉以管理员身份运行的程序（比如某些游戏、安装程序）会失败。
     <div style="margin-top:8px"><button class="btn btn-sm btn-danger" data-act="restart-admin">以管理员身份重启</button></div>
   </div>` : ''}
+
+  <div class="card">
+    <div class="card-title">自律时段</div>
+    <div class="card-sub">只影响「自律时段」页怎么排时间，不改变判定口径。</div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
+      <div>
+        <div style="font-size:12.5px">每次选择的时长</div>
+        <div class="hint" style="margin-top:3px">
+          拖一下 / 点一下代表多少分钟。改成 10 分钟能排得更细，代价是日历更高、要滚动；
+          已经排好的时段不会被改动。
+        </div>
+      </div>
+      <div class="row" style="align-items:center;gap:6px">
+        ${[10, 15].map((g) => `<button class="cc-gran-btn${(st.focusClock && +st.focusClock.granularity === g) || (!(st.focusClock && st.focusClock.granularity) && g === 15) ? ' active' : ''}"
+          data-act="clock-gran" data-v="${g}">${g} 分钟</button>`).join('')}
+      </div>
+    </div>
+  </div>
 
   <div class="card">
     <div class="card-title">外观</div>
@@ -3792,6 +3875,41 @@ const Act = window.Act = {
     toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用（已选中的时段保持原样）`, 'ok');
   },
 
+  /** 改「每次选择多少分钟」：10 / 15。
+   *
+   * 只改画法与吸附粒度，不动已有配置 —— from/to 存的是绝对分钟，
+   * 原来对齐到 15 分钟边界的时段在 10 分钟粒度下依然对齐，
+   * 所以切成 10 分钟不会把排好的表弄乱，只是能排得更细。 */
+  async clockGran(v) {
+    const fc = clockCfg();
+    const g = +v === 10 ? 10 : 15;
+    if (fc.granularity === g) return;
+    fc.granularity = g;
+    await saveConfig();
+    render();
+    toast(`已改为每格 ${g} 分钟：一小时 ${60 / g} 格，已排好的时段不受影响`, 'ok');
+  },
+
+  /** 勾选 / 取消"这套时段管哪些黑名单分组"。
+   *
+   * 空列表 = 全部（默认，也是老配置的语义）。
+   * 取消某组 = 这套时段不再管它 → 属于"放松纪律"，生效期间要拦。 */
+  async clockBind(id) {
+    const p = clockProfile();
+    if (!Array.isArray(p.bound)) p.bound = [];
+    const removing = !id || p.bound.includes(id);
+    if (removing && settingsFrozen()) { guardDiscipline('改绑黑名单分组'); render(); return; }
+    if (!id) p.bound = [];
+    else if (p.bound.includes(id)) p.bound = p.bound.filter((x) => x !== id);
+    else p.bound = [...p.bound, id];
+    await saveConfig();
+    render();
+    const names = (S.data.config.lists || []);
+    if (!p.bound.length) { toast('这套时段恢复为「全部黑名单生效」', 'ok'); return; }
+    const label = p.bound.map((x) => (names.find((l) => l.id === x) || {}).name || x).join('、');
+    toast(`「${p.name}」现在只管：${label}`, 'ok');
+  },
+
   /* ---- 多套「星期时段」方案 ---- */
   /** 切换生效方案（时段进行中不许切：切到更松的一套等于当场放行） */
   async clockProfSwitch(id) {
@@ -4248,6 +4366,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-prof-rename') { ccNameDialog('rename'); return; }
   if (act === 'clock-prof-dup') { await Act.clockProfDup(); return; }
   if (act === 'clock-prof-del') { await Act.clockProfDel(); return; }
+  if (act === 'clock-gran') { await Act.clockGran(el.dataset.v); return; }
+  if (act === 'clock-bind') { await Act.clockBind(el.dataset.id || ''); return; }
   if (act === 'cc-name-ok') {
     const inp = $('#ccNameInput');
     const name = ((inp && inp.value) || '').trim().slice(0, 30);
@@ -4343,8 +4463,8 @@ document.addEventListener('click', async (e) => {
 /** 鼠标事件落在 (d,h) 这一格的哪个 15 分钟刻度上（0–3） */
 function ccQAt(el, clientY) {
   const r = el.getBoundingClientRect();
-  const q = Math.floor(((clientY - r.top) / r.height) * CC_Q);
-  return Math.max(0, Math.min(CC_Q - 1, q));
+  const q = Math.floor(((clientY - r.top) / r.height) * ccQCnt());
+  return Math.max(0, Math.min(ccQCnt() - 1, q));
 }
 /** 整片矩形（刻度坐标）→ 逐格 [from,to) 的「目标选中窗口」映射。
  *  以「锚点刻度」为边界：起笔刻度之前的分钟是洞（若框往上有延伸），
@@ -4376,7 +4496,7 @@ function ccHoverTip(cell, d, h, q) {
   const br = Math.max(0, Math.min(60 - w, p.brk || 0));
   const onQ = p.on && (p.from || 0) < b && a < (p.to == null ? 60 : p.to);
   cell.setAttribute('title', `${WD[d]} ${pad(h)}:${pad(a)} – ${pad(h)}:${pad(b)}`
-    + (onQ ? ` · 专注 ${w} 分 / 休息 ${br} 分，右键可改` : '（未选中，单击 / 拖选这 15 分钟）'));
+    + (onQ ? ` · 专注 ${w} 分 / 休息 ${br} 分，右键可改` : `（未选中，单击 / 拖选这 ${b - a} 分钟）`));
 }
 
 function paintCcDrag() {
@@ -4546,7 +4666,7 @@ function ccBuildSegments(t) {
       const winT = p.on ? (p.to == null ? 60 : p.to) : 60;
       const cycle = work + brk;
       let cum = 0;            // 本小时选中窗口内的累计专注分钟
-      for (let q = 0; q < CC_Q; q++) {
+      for (let q = 0; q < ccQCnt(); q++) {
         const a = qStart(q), b = qEnd(q);
         const on = p.on && winF < b && a < winT;
         let type = 'off';
@@ -4645,7 +4765,7 @@ function ccOpenMenu(d, h, x, y) {
     && h >= Math.min(r.h0, r.h1) && h <= Math.max(r.h0, r.h1)) {
     const r0 = Math.min(r.h0, r.h1), r1 = Math.max(r.h0, r.h1);
     const qA2 = (r.h1 >= r.h0) ? r.qA : r.qB, qB2 = (r.h1 >= r.h0) ? r.qB : r.qA;
-    const rw = ccRectWindows(Math.min(r.d0, r.d1), Math.max(r.d0, r.d1), r0, r1, qA2 == null ? 0 : qA2, qB2 == null ? CC_Q - 1 : qB2);
+    const rw = ccRectWindows(Math.min(r.d0, r.d1), Math.max(r.d0, r.d1), r0, r1, qA2 == null ? 0 : qA2, qB2 == null ? ccQCnt() - 1 : qB2);
     const w = rw.get(`${d},${h}`);
     if (w) t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: r0, h1: r1 };
   }

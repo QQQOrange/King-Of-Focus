@@ -697,13 +697,18 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
  *   · 整块日历限高 + 内部滚动，表头吸顶（跟滴答一样，不用滚一屏才看到星期）
  */
 .cc-scroll {
-  max-height: 520px; overflow-y: auto; overflow-x: hidden;
+  max-height: 560px; overflow-y: auto; overflow-x: hidden;
   margin-top: 6px; border-radius: var(--r-lg);
   scrollbar-width: thin;
 }
 .cc {
   display: grid;
   grid-template-columns: 30px repeat(7, minmax(0, 1fr));
+  /* 行高由 JS 按粒度写进 --cc-hour-h：
+   *   15 分钟粒度 = 4 格 × 13px = 52px/小时
+   *   10 分钟粒度 = 6 格 × 13px = 78px/小时（一天更高，靠滚动看）
+   * 每格至少 13px 才点得准，所以粒度变细时行高跟着变高。 */
+  grid-template-rows: auto repeat(24, var(--cc-hour-h, 52px));
   /* 行间距 0：同一天内连续几小时必须连成一整条，不能断开 */
   row-gap: 0;
   column-gap: 6px;
@@ -731,7 +736,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 }
 .cc-dh.today { color: var(--gold); }
 .cc-cell {
-  position: relative; height: 44px; border-radius: 0;
+  position: relative; border-radius: 0;
+  /* 高度由 grid-template-rows 统一给（跟着粒度走），这里不再写死 */
   /* 整点横线：只用最上面 1px 的极淡描边暗示刻度，不做整格边框 */
   background: transparent;
   border: 0;
@@ -745,25 +751,26 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-top-color: transparent; z-index: 3; }
 .cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
-/* 15 分钟细分刻度（滴答清单周视图同款）：每小时 4 条，默认不画，
- * hover / 拖选时才浮现，用来勾选 15 分钟粒度的时间段。 */
+/* 细分刻度：每小时**自上而下**等分成若干格（15 分钟 4 格 / 10 分钟 6 格）。
+ * top / height 由 JS 按粒度写成百分比，这里只负责样子。
+ *
+ * 常显一条极淡的虚线，让人一眼看出"这一小时被分成了几格"；
+ * hover 到某一格上时那一格微微发亮，给"点这里会选中这一段"的即时反馈。
+ * 指针事件留给格子本身（ccQAt 用 clientY 算刻度），避免 hover 抖动。 */
 .cc-q {
-  position: absolute; top: 0; bottom: 0;
-  width: calc(25% - 2px); margin-left: 1px;
-  border-radius: 2px;
-  background: rgba(125, 176, 255, .10);
-  /* 默认藏起来；可见性只靠 opacity（getComputedStyle 在无头里读的就是它）。
-   * 不做 transition：无头 / 低帧率环境里过渡会把"刚加的 qshow"拖成一帧还没走完，
-   * 回归里读到 0 就成了偶发假红。 */
-  opacity: 0; pointer-events: none;
+  position: absolute; left: 0; right: 0;
+  border-top: 1px dashed rgba(140, 180, 255, .16);
+  background: transparent;
+  pointer-events: none;
+  /* 不做 transition：无头 / 低帧率环境里过渡会把"刚加的 qshow"拖成一帧还没走完，
+   * 回归里读到中间值就成了偶发假红。 */
+  opacity: .6;
 }
-.cc-q:nth-child(1) { left: 0; }
-.cc-q:nth-child(2) { left: 25%; }
-.cc-q:nth-child(3) { left: 50%; }
-.cc-q:nth-child(4) { left: 75%; }
-.cc-cell:hover .cc-q, .cc-cell.qshow .cc-q { opacity: 1; pointer-events: auto; cursor: pointer; }
-.cc-q.on { background: rgba(125, 176, 255, .42); }
-.cc-cell:hover .cc-q:hover, .cc-cell.qshow .cc-q:hover { background: rgba(125, 176, 255, .6); }
+/* 每小时最上面那一格与整点线重合，不再重复画 */
+.cc-q[data-q="0"] { border-top-color: transparent; }
+.cc-cell:hover .cc-q, .cc-cell.qshow .cc-q { opacity: 1; }
+/* 已选中的格子：给一点点底，方便看清"这段是 15 还是 30 分钟" */
+.cc-q.on { background: rgba(125, 176, 255, .10); }
 /* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距。
  * 圆角和内描边由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边不画），
  * 这里只留默认值：孤立的整块仍然是四角 4px + 一整圈描边。 */
@@ -842,6 +849,49 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   margin-top: 9px; font-size: 11.5px; color: var(--text-3);
 }
 .cc-prof-ops .hint { margin-left: 2px; }
+
+/* 「这套时段生效的黑名单」—— 每套方案各自挑分组 */
+.cc-bind {
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--panel-a);
+}
+.cc-bind-hd {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.cc-bind-title { font-size: 12.5px; font-weight: 650; color: var(--text-2); }
+.cc-bind-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-bind-chip {
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  font-size: 12px; line-height: 1.3;
+  color: var(--text-2); background: var(--cell-bg);
+  border: 1px solid var(--line-2);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.cc-bind-chip:hover { background: var(--hover-bg); color: var(--text); }
+.cc-bind-chip.active {
+  color: #fff; border-color: rgba(77, 141, 255, .85);
+  background: linear-gradient(180deg, #4d8dff, #3b74e8);
+}
+
+/* 「每次选择多少分钟」—— 粒度切换 */
+.cc-gran {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 2px; font-size: 11.5px; color: var(--text-3);
+}
+.cc-gran-lab { color: var(--text-2); font-weight: 600; font-size: 12px; }
+.cc-gran-btn {
+  padding: 4px 12px; border-radius: var(--r-sm); cursor: pointer;
+  font-size: 12px; color: var(--text-2);
+  background: var(--cell-bg); border: 1px solid var(--line-2);
+}
+.cc-gran-btn:hover { background: var(--hover-bg); color: var(--text); }
+.cc-gran-btn.active {
+  color: #fff; border-color: rgba(77, 141, 255, .85);
+  background: linear-gradient(180deg, #4d8dff, #3b74e8);
+}
+.cc-gran-btn[disabled] { opacity: .45; cursor: not-allowed; }
 
 .cc-legend {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;

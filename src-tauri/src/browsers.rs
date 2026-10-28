@@ -831,20 +831,21 @@ pub fn ext_dir() -> Option<PathBuf> {
     }
 }
 
-/// 打开浏览器的扩展管理页，并给 10 分钟保护期
-
-/// 构造"打开扩展管理页"的完整命令行（纯函数，便于测试）。
+/// 构造启动浏览器的命令行（纯函数，便于测试）。
 ///
-/// 抽出来是为了能断言"到底把哪个 URL 传给了哪个 exe" ——
-/// 只看 `open_ext_page` 的实现很容易漏掉"传错参数"这类问题，
-/// 而一旦传错，用户点按钮只会看到一个空窗口。
-pub fn ext_page_cmd(exe: &std::path::Path, ext_page: &str) -> Command {
+/// **这里不传扩展页 URL。** 原因见 `extpage` 模块头：Chromium 会把命令行里的
+/// 内部 URL（`chrome://` `edge://` `opera://`）直接丢掉，传了也白传 ——
+/// 而且正是"传了 URL + 又点了一次新建标签"造成了**点一次出两个标签页**。
+///
+/// 所以冷启动**不带任何参数**：让浏览器按它自己的方式打开（新建标签页 /
+/// 我的导航 / 上次的标签），随后由 UIA 在"当前那个还没有内容的标签"里跳转。
+///
+/// 为什么连 `about:blank` 都不给：实测 Opera 会把命令行 URL 当成
+/// **额外的一个标签**（起始页保留），于是又是一次点击两个标签。
+/// 无参数启动时浏览器的标签数就是它自己的启动行为，我们只填其中一个，
+/// 净增还是 0。
+pub fn launch_cmd(exe: &std::path::Path) -> Command {
     let mut cmd = Command::new(exe);
-    // 不用 `--new-window`：它在部分 Chromium 系（Edge / Opera / QQ 浏览器等）的
-    // 单实例转发里会被丢掉，只开一个空窗口、根本不过扩展页。
-    // 直接把 ext_page 作为唯一参数：无论浏览器是否已在运行，
-    // Chromium 系都会把它当 URL 路由到扩展管理页。
-    cmd.arg(ext_page);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -876,73 +877,75 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
         chrono::Local::now().timestamp() + INSTALL_GRACE_SECS,
         Ordering::Relaxed,
     );
-    // 不再用 `--new-window`：它在部分 Chromium 系（Edge / Opera / QQ 浏览器等）
-    // 的单实例转发里会被丢掉，只开一个空窗口、根本不过扩展页。
-    // 直接把 ext_page 作为唯一参数传给 exe：无论浏览器是否已在运行，
-    // Chromium 系的命令行入口都会把它当 URL 路由到扩展管理页。
-    // 命令行构造统一走 ext_page_cmd：URL 是唯一参数，不带 --new-window。
-    // ---- 第一步：浏览器已经在运行 → 走 UI Automation ----
-    //
-    // 为什么不能直接用命令行：**Chromium 会主动丢弃命令行里的内部 URL**
-    // （chrome:// edge:// opera:// 这类）。实测 6 种参数变体全部只开「新建标签页」。
-    // 这是浏览器的安全策略，不是参数写错 —— 详见 extpage.rs 顶部注释。
-    //
-    // UIA 的做法：点「新建标签页」→ 地址栏设值 → PostMessage 投递回车。
-    // 全程不需要键盘焦点，也不会覆盖用户正在看的页面。
+
+    let suffix = |m: String| match &note {
+        Some(n) => format!("{m}（{n}）"),
+        None => m,
+    };
+
+    // ---- 情况一：浏览器已经在运行 ----
+    // 开一个**新标签页**去扩展页，绝不覆盖用户正在看的页面。
     if let Some(pid) = running_pid(d) {
         match crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
-            Ok(msg) => {
-                let suffix = note.map(|n| format!("（{n}）")).unwrap_or_default();
-                return Ok(format!("{msg}{suffix}"));
-            }
+            Ok(msg) => return Ok(suffix(msg)),
             Err(e) => {
-                // UIA 失败时仍然尝试命令行（某些旧版浏览器可能允许），
-                // 但把 UIA 的真实原因一并带出去，别让用户以为是"没反应"。
-                let _ = ext_page_cmd(&exe, d.ext_page).spawn();
+                // 命令行这条路已经被证伪（Chromium 丢内部 URL），
+                // 但万一用户装的是很旧的版本，试一下不亏；失败以 UIA 的原因为准。
+                let _ = launch_cmd(&exe).spawn();
                 return Err(e);
             }
         }
     }
 
-    // ---- 第二步：浏览器没在运行 → 先启动它 ----
-    //
-    // 注意：启动时带的 URL 会被 Chromium 丢弃，所以要等窗口出来后再用 UIA 补一次。
-    ext_page_cmd(&exe, d.ext_page)
-        .spawn()
-        .map_err(|e| {
-            format!(
-                "启动 {} 失败：{e}\n用的是这个路径：{}\n\
-                 如果它确实不是浏览器主程序，请在「浏览器」列表里重新设置安装路径；\n\
-                 也可以手动打开 {} 在地址栏输入 {}。",
-                d.name,
-                exe.display(),
-                d.name,
-                d.ext_page
-            )
-        })?;
+    // ---- 情况二：浏览器没在运行 ----
+    // 带 about:blank 启动 → 等窗口 → 在**这一个空白标签**里跳转。
+    // 这样不会出现"新建标签页 + 扩展页"两个标签，也没有多余的固定等待。
+    launch_cmd(&exe).spawn().map_err(|e| {
+        format!(
+            "启动 {} 失败：{e}\n用的是这个路径：{}\n\
+             如果它确实不是浏览器主程序，请在「浏览器」列表里重新设置安装路径；\n\
+             也可以手动打开 {} 在地址栏输入 {}。",
+            d.name,
+            exe.display(),
+            d.name,
+            d.ext_page
+        )
+    })?;
 
-    // 等窗口建好（最多 12 秒），再用 UIA 把地址栏填上
-    for _ in 0..24 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        if let Some(pid) = running_pid(d) {
-            if let Ok(msg) = crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
-                let suffix = note.map(|n| format!("（{n}）")).unwrap_or_default();
-                return Ok(format!("{msg}{suffix}"));
-            }
+    // 轮询等窗口出现（150ms × 80 = 12s，通常 1–2s 就有）
+    let mut last_err = String::new();
+    for _ in 0..80 {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let Some(pid) = running_pid(d) else { continue };
+        match crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
+            Ok(msg) => return Ok(suffix(msg)),
+            Err(e) => last_err = e,
         }
     }
-    Ok(format!(
-        "已启动 {}，但没能自动跳转到扩展页。\n请在地址栏输入 {}。",
-        d.name, d.ext_page
-    ))
+    Err(if last_err.is_empty() {
+        format!(
+            "已启动 {}，但没能自动跳转到扩展页。\n请在地址栏输入 {}。",
+            d.name, d.ext_page
+        )
+    } else {
+        last_err
+    })
 }
 
 /// 这个浏览器当前有没有在运行？返回它的 pid
+///
+/// 注意：Opera / Edge 这类浏览器有几十个子进程（渲染、GPU、网络…），
+/// 我们要的是**有主窗口的那个**，因为只有它能被 UIA 操作。
+/// `screen_apps()` 只返回有可见窗口的顶层进程，正好满足。
 fn running_pid(d: &Def) -> Option<u32> {
     let want = d.exe.to_lowercase();
     crate::proc::screen_apps()
         .into_iter()
-        .find(|a| a.name == want || a.name.starts_with(&want))
+        .find(|a| {
+            let n = a.name.to_lowercase();
+            // exe 名可能是 "opera" 也可能是 "opera.exe"，两种都吃
+            n == want || n == format!("{want}.exe") || n.starts_with(&want)
+        })
         .map(|a| a.pid)
 }
 
@@ -1434,27 +1437,20 @@ mod tests {
         assert!(e.contains("不支持"), "Firefox 应明确说不支持：{e}");
     }
 
-    /// 命令行里必须**只有**扩展页 URL 这一个参数，且不能带 --new-window。
+    /// 冷启动命令行的契约：**一个参数都不带**。
     ///
-    /// 这条是 A4 的运行时验收：命令行错了，用户点按钮只会看到空窗口。
+    /// 这条是"点一次只出一个标签页"的验收。历史上踩过两次坑：
+    ///   1. 带扩展页 URL → Chromium 丢掉它，只开一个新建标签页，UIA 再开一个 → 两个标签
+    ///   2. 带 `about:blank` → Opera 把它当**额外的标签**（起始页保留）→ 又是两个标签
+    /// 所以正确做法是让浏览器按自己的方式启动，我们只填"当前那个空标签"。
     #[test]
-    fn ext_page_cmd_passes_url_as_only_argument() {
+    fn cold_start_passes_no_arguments() {
         use std::ffi::OsStr;
-        for d in DEFS.iter().filter(|d| !d.ext_page.is_empty()) {
-            let exe = std::path::Path::new("C:\\Fake\\browser.exe");
-            let cmd = ext_page_cmd(exe, d.ext_page);
-            let args: Vec<&OsStr> = cmd.get_args().collect();
-            assert_eq!(args.len(), 1, "{} 传了不止一个参数：{args:?}", d.key);
-            assert_eq!(args[0].to_str().unwrap(), d.ext_page, "{} 传的 URL 不对", d.key);
-            assert!(
-                !args
-                    .iter()
-                    .any(|a| a.to_str().map(|s| s.contains("new-window")).unwrap_or(false)),
-                "{} 不该带 new-window 参数",
-                d.key
-            );
-            assert_eq!(cmd.get_program().to_str().unwrap(), exe.to_str().unwrap());
-        }
+        let exe = std::path::Path::new("C:////Fake////browser.exe");
+        let cmd = launch_cmd(exe);
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        assert!(args.is_empty(), "冷启动不该带任何参数：{args:?}");
+        assert_eq!(cmd.get_program().to_str().unwrap(), exe.to_str().unwrap());
     }
 
     /// 给每个浏览器的 URL 都不能是空的窗口参数占位（防止改成"--new-window"这种）

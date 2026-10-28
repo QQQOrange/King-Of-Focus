@@ -580,4 +580,53 @@ mod tests {
         assert_eq!(cfg.settings.focus_clock.profiles.len(), 1);
         assert!(state_at(&cfg, monday(9, 0)).map(|s| s.focusing()).unwrap_or(false));
     }
+
+    /// 旧的配置文件里没有 granularity / bound 两个新字段，
+    /// 必须能正常加载，且落到"15 分钟 / 不绑定（全部生效）"的默认语义。
+    #[test]
+    fn legacy_config_without_new_fields_gets_safe_defaults() {
+        let plan = r#"{"on":true,"work":60,"brk":0,"from":0,"to":60}"#;
+        let day = format!("[{}]", vec![plan; 24].join(","));
+        let days = format!("[{}]", vec![day; 7].join(","));
+        let json = format!(
+            r#"{{"settings":{{"focusClock":{{"enabled":true,"applyRules":true,"active":"p1",
+               "profiles":[{{"id":"p1","name":"t","days":{days},"defWork":60,"defBrk":0}}]}}}}}}"#
+        );
+        let cfg: Config = serde_json::from_str(&json).expect("旧配置应能解析");
+        let fc = &cfg.settings.focus_clock;
+        assert_eq!(fc.granularity, 15, "没有 granularity 时默认 15 分钟");
+        assert_eq!(fc.step(), 15);
+        assert!(
+            fc.active_profile().map(|p| p.bound.is_empty()).unwrap_or(false),
+            "没有 bound 时空绑定（= 全部黑名单生效，保持旧行为）"
+        );
+    }
+
+    /// 粒度只认 10 / 15，别的值一律夹回 15（防止被手改的配置把界面搞乱）
+    #[test]
+    fn granularity_is_clamped_to_ten_or_fifteen() {
+        let mut c = Config::default();
+        for (input, want) in [(10u32, 10u32), (15, 15), (0, 15), (7, 15), (30, 15), (60, 15)] {
+            c.settings.focus_clock.granularity = input;
+            assert_eq!(c.settings.focus_clock.step(), want, "granularity={input}");
+        }
+    }
+
+    /// 粒度与 bound 一起往返：存进去什么，读出来还是什么
+    #[test]
+    fn new_fields_survive_json_roundtrip() {
+        let mut c = Config::default();
+        c.settings.focus_clock.granularity = 10;
+        c.settings.focus_clock.profiles[0].bound = vec!["l-work".into(), "l-fun".into()];
+        let js = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&js).unwrap();
+        assert_eq!(back.settings.focus_clock.granularity, 10);
+        assert_eq!(
+            back.settings.focus_clock.profiles[0].bound,
+            vec!["l-work".to_string(), "l-fun".to_string()]
+        );
+        // 字段名必须是 camelCase，前端才读得到
+        assert!(js.contains("\"granularity\":10"));
+        assert!(js.contains("\"bound\":["));
+    }
 }

@@ -104,6 +104,16 @@ pub fn sanitize(c: &mut Config) {
             l.color = "#ff9f43".into();
         }
     }
+    // 黑名单分组绑定：只保留真实存在的条目。
+    // 删掉某条黑名单后，绑定里会留下一个死 id；如果不管，勾选界面会显示一个
+    // 不存在的分组，判定也会因为"绑定了但找不到"而变成什么都不生效。
+    // 全都被删光时清空绑定（= 恢复"全部生效"），比静默失效更符合直觉。
+    {
+        let alive: Vec<String> = c.lists.iter().map(|l| l.id.clone()).collect();
+        for prof in c.settings.focus_clock.profiles.iter_mut() {
+            prof.bound.retain(|id| alive.iter().any(|a| a == id));
+        }
+    }
     c.settings.poll_ms = c.settings.poll_ms.clamp(300, 5000);
     c.settings.grace_secs = c.settings.grace_secs.clamp(20, 600);
     if c.settings.mask.opacity > 100 {
@@ -154,6 +164,9 @@ fn sanitize_clock(hc: &mut ClockCfg) {
     if !hc.profiles.iter().any(|p| p.id == hc.active) {
         hc.active = hc.profiles.first().map(|p| p.id.clone()).unwrap_or_default();
     }
+    // 粒度只允许 10 / 15（界面上就这两个选项；被手改成别的值一律退回 15）
+    let step = hc.step();
+    hc.granularity = step;
 }
 
 fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {

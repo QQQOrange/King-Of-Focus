@@ -67,9 +67,10 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
 /// 什么时候算自律时间，完全由「自律时段」那一页决定；
 /// 黑名单只管名单本身，不参与任何时间判定。
 ///
-/// 所以这里只有两个条件：
+/// 所以这里只有三个条件：
 ///   1. 处于自律时间（`clock_on`，即自律时段的专注段）
 ///   2. 这条黑名单被启用
+///   3. 它被**当前这套**自律时段绑定（没绑任何一条 = 全部生效）
 ///
 /// 之前黑名单条目还带一张周时间表，那是把两件事混在了一起：
 /// 用户想"9 点开始自律"，结果要去两个页面各排一次时间，很容易对不上。
@@ -84,9 +85,16 @@ pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Ru
     if !d.apply_rules {
         return Vec::new();
     }
+    // 这套时段绑定的黑名单分组；空 = 不限制（老配置与默认行为）
+    let fc = &cfg.settings.focus_clock;
+    let bound: &[String] = fc
+        .active_profile()
+        .map(|p| p.bound.as_slice())
+        .unwrap_or(&[]);
     cfg.lists
         .iter()
         .filter(|l| l.enabled)
+        .filter(|l| bound.is_empty() || bound.iter().any(|id| *id == l.id))
         .cloned()
         .collect()
 }
@@ -179,6 +187,66 @@ mod tests {
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
+        assert!(active_rules(&c, &now, &d).is_empty());
+    }
+
+    /// 两套方案绑定不同的黑名单分组：同一时刻按"当前那套"的绑定判定。
+    ///
+    /// 这是"每套自律时段可自定义绑定某一套黑名单中的分组"的核心验收：
+    /// 切方案不只是换时间表，还要换"这段时间管哪些名单"。
+    #[test]
+    fn profile_binding_selects_which_lists_apply() {
+        let mut c = base();
+        c.lists.push(RuleList {
+            id: "r2".into(),
+            name: "娱乐".into(),
+            enabled: true,
+            ..RuleList::default()
+        });
+        clock_on(&mut c, 2, 10, 60, 0);
+        // 第二套方案（同一天同一小时），只绑 "r2"
+        let mut p2 = c.settings.focus_clock.profiles[0].clone();
+        p2.id = "p2".into();
+        p2.name = "周末".into();
+        p2.bound = vec!["r2".into()];
+        c.settings.focus_clock.profiles.push(p2);
+
+        let now = now_at(2, 10, 30);
+
+        // 用第一套（bound 为空 = 全部）→ 两条都生效
+        c.settings.focus_clock.active = "p1".into();
+        let d = state(&c, &now);
+        let ids: Vec<String> = active_rules(&c, &now, &d).into_iter().map(|l| l.id).collect();
+        assert_eq!(ids.len(), 2, "未绑定 = 全部生效：{ids:?}");
+
+        // 切到第二套（只绑 r2）→ 只剩 r2
+        c.settings.focus_clock.active = "p2".into();
+        let d = state(&c, &now);
+        let ids: Vec<String> = active_rules(&c, &now, &d).into_iter().map(|l| l.id).collect();
+        assert_eq!(ids, vec!["r2".to_string()], "绑定后只应生效被绑的那条：{ids:?}");
+    }
+
+    /// 绑定到一条"没启用"的黑名单 → 不生效（enabled 仍然是硬门槛）
+    #[test]
+    fn binding_cannot_force_disabled_list() {
+        let mut c = base();
+        clock_on(&mut c, 2, 10, 60, 0);
+        c.settings.focus_clock.profiles[0].bound = vec!["r1".into()];
+        c.lists[0].enabled = false;
+        let now = now_at(2, 10, 30);
+        let d = state(&c, &now);
+        assert!(active_rules(&c, &now, &d).is_empty(), "绑定不能绕过 enabled 开关");
+    }
+
+    /// 与时间无关的回归：休息段即使绑定了也不生效
+    #[test]
+    fn binding_still_respects_break_pause() {
+        let mut c = base();
+        clock_on(&mut c, 2, 10, 40, 20);
+        c.settings.focus_clock.profiles[0].bound = vec!["r1".into()];
+        let now = now_at(2, 10, 45);
+        let d = state(&c, &now);
+        assert!(d.clock_break);
         assert!(active_rules(&c, &now, &d).is_empty());
     }
 }

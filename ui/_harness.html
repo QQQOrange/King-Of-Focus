@@ -287,12 +287,15 @@ window.__itest = async () => {
   // 0b. 滴答清单式周日历：行高、滚动、色块时长文字、实心色
   {
     const c8 = cell(0, 8);
-    out.push(['每小时行高 44px（不再是压扁的 16px）',
-      Math.round(c8.getBoundingClientRect().height), 44]);
+    // 行高跟着粒度走：15 分钟粒度 = 4 格 × 13px = 52px/小时
+    out.push(['每小时行高 52px（15 分钟粒度，4 格 × 13px）',
+      Math.round(c8.getBoundingClientRect().height), 52]);
+    out.push(['行高由 --cc-hour-h 统一控制',
+      getComputedStyle(document.querySelector('#ccGrid')).gridTemplateRows.split(' ')[1], '52px']);
     const sc = document.querySelector('.cc-scroll');
     out.push(['日历限高可滚动（表头吸顶）',
       sc ? getComputedStyle(sc).overflowY + '/' + Math.round(sc.getBoundingClientRect().height) : '无',
-      'auto/520']);
+      'auto/560']);
     const anyRun = document.querySelector('.cc-run');
     const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
     out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]$/.test(txt.textContent.trim()) : false, true]);
@@ -345,13 +348,33 @@ window.__itest = async () => {
   // out.push(['拖动中实时文案', liveDuringDrag, '周三 – 周五 13:00 – 16:00']);
 
   // 1a. 15 分钟细分刻度：每格 4 条、默认隐藏、拖选/hover 才显示；单击刻度 = 单独开关那 15 分钟
+  // 1a-0. 刻度必须是**纵向**等分：top 递增、宽度占满整格。
+  // 老实现是 left:0/25/50/75% 的横向方块 + 用 clientY 判定，
+  // 于是"点第 1 块"选中了中间那 15 分钟 —— 本轮的 3 号问题。
+  {
+    const c = cell(2, 13);
+    const qs = [...c.querySelectorAll('.cc-q')];
+    const tops = qs.map((e) => Math.round(parseFloat(e.style.top)));
+    out.push(['刻度自上而下排布（top: 0/25/50/75）', tops.join(','), '0,25,50,75']);
+    const cs0 = getComputedStyle(qs[1]);
+    out.push(['刻度是整行宽的横条（不是竖直窄条）', cs0.left + '/' + cs0.right, '0px/0px']);
+    // 每一格的 top 与"第几格 × 格高"一致 → 点哪一格就是哪一段
+    const cellH = c.getBoundingClientRect().height;
+    const q1 = qs[1].getBoundingClientRect();
+    const cRect = c.getBoundingClientRect();
+    const pct = Math.round((q1.top - cRect.top) / cellH * 100);
+    out.push(['第 2 格落在 1/4 高度处（±1% 亚像素）', Math.abs(pct - 25) <= 1, true]);
+  }
+
   const fireQ = (type, el, q, opts = {}) =>
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientY: q, ...opts }));
   const qCount = cell(2, 13).querySelectorAll('.cc-q').length;
   out.push(['每格 4 条 15 分钟刻度', qCount, 4]);
   out.push(['15 分钟刻度有 0/15/30/45 标记', [...cell(2, 13).querySelectorAll('.cc-q')].map((e) => e.dataset.a).join(','), '0,15,30,45']);
   const q0 = cell(2, 13).querySelector('.cc-q');
-  out.push(['默认刻度不可见（opacity=0）', q0 ? getComputedStyle(q0).opacity : '', '0']);
+  // 现在刻度常显（淡虚线），让人一眼能看出"这一小时分成了几格"；
+  // hover / 拖选时变实（opacity 1）。
+  out.push(['刻度常显（淡，opacity=0.6）', q0 ? getComputedStyle(q0).opacity : '', '0.6']);
   cell(2, 13).classList.add('qshow');
   void cell(2, 13).offsetHeight; // 强制样式重算
   out.push(['拖选/hover 时刻度浮现', q0 ? getComputedStyle(q0).opacity : '', '1']);
@@ -906,6 +929,102 @@ window.__itest = async () => {
   const clockTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
   out.push(['自律时段页说明与黑名单是包含关系', clockTxt.includes('只在自律时间'), true]);
   out.push(['自律时段页不再声称「规则按自己时段走」', clockTxt.includes('按它自己的时段走'), false]);
+
+  /** 在格子的 frac 位置按下再松开（frac 0..1 = 整格高度的位置） */
+  const clickFrac = (el, frac) => {
+    const r = el.getBoundingClientRect();
+    const y = r.top + r.height * frac;
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientY: y }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientY: y }));
+  };
+  /** 取某天第一条色带的顶部相对该小时格的比例（0 = 格顶、1 = 格底） */
+  const bandTopRatio = (d, h) => {
+    const run = document.querySelector(`.cc-run[data-d="${d}"]`);
+    if (!run) return null;
+    const band = [...run.querySelectorAll('i')].find((i) => !i.classList.contains('cc-gap'));
+    if (!band) return null;
+    const c = cell(d, h).getBoundingClientRect();
+    return (band.getBoundingClientRect().top - c.top) / c.height;
+  };
+
+  // ---- 22. 纵向横条：点哪一格，条子就出现在哪 ----
+  //
+  // 这是第 3 号问题的直接回归：老实现里"第 1 格"落在中间、"第 2 格"跑到上面。
+  // 现在格子和条子共用一条纵轴，逐格点击必须逐格落位。
+  S.view = 'clock'; render();
+  await wait(250);
+  {
+    const clearAll = async () => {
+      const c = fc();
+      const p = c.profiles.find((x) => x.id === c.active) || c.profiles[0];
+      p.days.forEach((day) => day.forEach((h) => { h.on = false; h.from = 0; h.to = 60; }));
+      await saveConfig(); await wait(120);
+    };
+    for (const target of [0, 1, 2, 3]) {
+      await clearAll();
+      clickFrac(cell(2, 9), (target + 0.5) / 4);
+      await wait(180);
+      const ratio = bandTopRatio(2, 9);
+      const want = target / 4;
+      out.push([`点第 ${target + 1} 格 → 条子顶部在 ${Math.round(want * 100)}%`,
+        ratio !== null && Math.abs(ratio - want) < 0.02, true]);
+    }
+    await clearAll();
+  }
+
+  // ---- 23. 粒度：10 / 15 分钟可切换 ----
+  {
+    await Act.clockGran(10);
+    await wait(220);
+    const c = cell(2, 9);
+    out.push(['切到 10 分钟 → 每小时 6 格', c.querySelectorAll('.cc-q').length, 6]);
+    out.push(['切到 10 分钟 → 行高 78px',
+      Math.round(c.getBoundingClientRect().height), 78]);
+    out.push(['粒度写进了配置', fc().granularity, 10]);
+    // 10 分钟粒度下单击最细一格 = 10 分钟
+    clickFrac(c, 0.5 / 6);
+    await wait(200);
+    const p10 = pd()[2][9];
+    out.push(['10 分钟粒度下单击 = 选中 10 分钟', p10.on && p10.to - p10.from, 10]);
+    await Act.clockGran(15);
+    await wait(220);
+    out.push(['切回 15 分钟 → 每小时 4 格', cell(2, 9).querySelectorAll('.cc-q').length, 4]);
+  }
+
+  // ---- 24. 每套时段绑定黑名单分组 ----
+  {
+    S.view = 'clock'; render();
+    await wait(220);
+    const chips = [...document.querySelectorAll('.cc-bind-chip')];
+    out.push(['自律时段页有「绑定黑名单」区', !!document.querySelector('.cc-bind')]);
+    out.push(['绑定列表里有「全部」+ 每个分组', chips.length >= 2]);
+    out.push(['默认「全部」为选中态（空绑定 = 全部生效）',
+      (chips[0] || {}).className.includes('active'), true]);
+    // 点分组 → 只绑这一组
+    const one = chips.find((c) => c.dataset.id === 'seed-study');
+    one.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(250);
+    out.push(['点分组后写进这套方案的 bound', (prof().bound || []).join(','), 'seed-study']);
+    // 再点「全部」→ 清空绑定
+    const all = [...document.querySelectorAll('.cc-bind-chip')].find((c) => c.dataset.id === '');
+    all.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(250);
+    out.push(['点「全部」清空绑定', (prof().bound || []).length, 0]);
+  }
+
+  // ---- 25. 设置页也能配粒度（与自律时段页是同一个字段） ----
+  {
+    await Act.nav('settings');
+    await wait(250);
+    const btns = [...document.querySelectorAll('#content .cc-gran-btn')];
+    out.push(['设置页有粒度选择（10/15 分钟）', btns.length, 2]);
+    const b10 = btns.find((b) => b.dataset.v === '10');
+    if (b10) { b10.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); await wait(250); }
+    out.push(['设置页点 10 分钟 → 写进配置', fc().granularity, 10]);
+    const b15 = [...document.querySelectorAll('#content .cc-gran-btn')].find((b) => b.dataset.v === '15');
+    if (b15) { b15.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); await wait(250); }
+    out.push(['设置页切回 15 分钟', fc().granularity, 15]);
+  }
 
   const pre = document.createElement('pre');
   pre.id = 'itest';
