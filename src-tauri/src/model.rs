@@ -603,6 +603,12 @@ pub struct Settings {
     pub run_as_admin: bool,
     /// 关闭窗口时最小化到托盘
     pub close_to_tray: bool,
+    /// 主窗口置顶：让 King of Focus 始终浮在其它窗口上面。
+    ///
+    /// 之前程序只会在各种场合把它 `set_always_on_top(false)`（遮罩接管、
+    /// 选中目标窗口、点托盘图标……），却从来没有把它设回 true，
+    /// 结果就是"有多个窗口时它永远在最底下"，用户得先把别的窗口都挪开才看得见它。
+    pub always_on_top: bool,
     /// 关闭前先尝试温和关闭
     pub soft_close: bool,
     /// 网页命中黑名单时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
@@ -648,6 +654,7 @@ impl Default for Settings {
             autostart: false,
             run_as_admin: false,
             close_to_tray: true,
+            always_on_top: false,
             soft_close: true,
             site_close_browser: true,
             block_taskmgr: true,

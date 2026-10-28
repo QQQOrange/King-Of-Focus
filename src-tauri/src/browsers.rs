@@ -881,24 +881,69 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
     // 直接把 ext_page 作为唯一参数传给 exe：无论浏览器是否已在运行，
     // Chromium 系的命令行入口都会把它当 URL 路由到扩展管理页。
     // 命令行构造统一走 ext_page_cmd：URL 是唯一参数，不带 --new-window。
-    let mut cmd = ext_page_cmd(&exe, d.ext_page);
-    // 显式断开三个标准句柄：本程序是 GUI 子系统、没有控制台，
-    // 子进程继承到无效句柄时，个别启动器（AppX 别名）会卡在初始化上。
-    cmd.spawn().map_err(|e| {
-        format!(
-            "启动 {} 失败：{e}\n用的是这个路径：{}\n\
-             如果它确实不是浏览器主程序，请在「浏览器」列表里重新设置安装路径；\n\
-             也可以手动打开 {} 在地址栏输入 {}。",
-            d.name,
-            exe.display(),
-            d.name,
-            d.ext_page
-        )
-    })?;
-    Ok(match note {
-        Some(n) => format!("已打开 {} 的扩展管理页（{n}）", d.name),
-        None => format!("已打开 {} 的扩展管理页", d.name),
-    })
+    // ---- 第一步：浏览器已经在运行 → 走 UI Automation ----
+    //
+    // 为什么不能直接用命令行：**Chromium 会主动丢弃命令行里的内部 URL**
+    // （chrome:// edge:// opera:// 这类）。实测 6 种参数变体全部只开「新建标签页」。
+    // 这是浏览器的安全策略，不是参数写错 —— 详见 extpage.rs 顶部注释。
+    //
+    // UIA 的做法：点「新建标签页」→ 地址栏设值 → PostMessage 投递回车。
+    // 全程不需要键盘焦点，也不会覆盖用户正在看的页面。
+    if let Some(pid) = running_pid(d) {
+        match crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
+            Ok(msg) => {
+                let suffix = note.map(|n| format!("（{n}）")).unwrap_or_default();
+                return Ok(format!("{msg}{suffix}"));
+            }
+            Err(e) => {
+                // UIA 失败时仍然尝试命令行（某些旧版浏览器可能允许），
+                // 但把 UIA 的真实原因一并带出去，别让用户以为是"没反应"。
+                let _ = ext_page_cmd(&exe, d.ext_page).spawn();
+                return Err(e);
+            }
+        }
+    }
+
+    // ---- 第二步：浏览器没在运行 → 先启动它 ----
+    //
+    // 注意：启动时带的 URL 会被 Chromium 丢弃，所以要等窗口出来后再用 UIA 补一次。
+    ext_page_cmd(&exe, d.ext_page)
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "启动 {} 失败：{e}\n用的是这个路径：{}\n\
+                 如果它确实不是浏览器主程序，请在「浏览器」列表里重新设置安装路径；\n\
+                 也可以手动打开 {} 在地址栏输入 {}。",
+                d.name,
+                exe.display(),
+                d.name,
+                d.ext_page
+            )
+        })?;
+
+    // 等窗口建好（最多 12 秒），再用 UIA 把地址栏填上
+    for _ in 0..24 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Some(pid) = running_pid(d) {
+            if let Ok(msg) = crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
+                let suffix = note.map(|n| format!("（{n}）")).unwrap_or_default();
+                return Ok(format!("{msg}{suffix}"));
+            }
+        }
+    }
+    Ok(format!(
+        "已启动 {}，但没能自动跳转到扩展页。\n请在地址栏输入 {}。",
+        d.name, d.ext_page
+    ))
+}
+
+/// 这个浏览器当前有没有在运行？返回它的 pid
+fn running_pid(d: &Def) -> Option<u32> {
+    let want = d.exe.to_lowercase();
+    crate::proc::screen_apps()
+        .into_iter()
+        .find(|a| a.name == want || a.name.starts_with(&want))
+        .map(|a| a.pid)
 }
 
 /// 在资源管理器里打开扩展目录。

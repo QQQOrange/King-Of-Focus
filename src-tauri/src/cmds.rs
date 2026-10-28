@@ -554,9 +554,10 @@ pub fn mask_start(
     // 选中窗口后立刻上遮罩，不等兜底超时
     crate::mask::wake();
 
-    // 主窗口不再强制置顶（保持正常窗口层级，可以被别的窗口盖住/最小化）
+    // 主窗口的层级由用户设置决定，不在这里一刀切成"不置顶"。
+    // （以前这里写死 false，用户开了"窗口置顶"也会被这次操作悄悄取消）
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_always_on_top(false);
+        let _ = w.set_always_on_top(shared.config().settings.always_on_top);
     }
     let mut c = shared.config();
     c.settings.mask.target_pid = pid;
@@ -575,7 +576,7 @@ pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
     // 遮罩关了，媒体管控也一起收：把我们停过的媒体还回去
     crate::media::set_active(false);
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_always_on_top(false);
+        let _ = w.set_always_on_top(shared.config().settings.always_on_top);
     }
 }
 
@@ -945,6 +946,35 @@ pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), St
 #[tauri::command]
 pub fn force_quit(app: AppHandle, shared: State<'_, Arc<Shared>>) {
     crate::forcequit::force_quit(&app, &shared);
+}
+
+/// 主窗口置顶开关。
+///
+/// 为什么需要它：程序里多处会 `set_always_on_top(false)`（遮罩接管、选中目标窗口、
+/// 托盘操作…），而从来没有一处把它设回 true。于是用户感觉"主界面永远在别的窗口
+/// 下面，必须先挪开别的窗口才看得见"。这里给一个显式开关，并让那些地方统一读这个值。
+#[tauri::command]
+pub fn set_always_on_top(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.always_on_top = enabled;
+    crate::cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        w.set_always_on_top(enabled).map_err(|e| e.to_string())?;
+        // 从"不置顶"切到"置顶"时，仅设属性不会自己浮上来，得主动抬一次
+        if enabled {
+            let _ = w.show();
+            let _ = w.set_focus();
+            crate::mask::raise_self();
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

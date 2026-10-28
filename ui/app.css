@@ -685,38 +685,65 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .clock-state.green .cs-dot { background: var(--green); box-shadow: 0 0 8px rgba(53, 208, 127, .8); }
 .clock-state.gold .cs-dot { background: var(--warn); box-shadow: 0 0 8px rgba(245, 165, 36, .8); }
 
-/* ══════════ 自律时段（7 列 × 24 小时柱状图） ══════════ */
+/* ══════════ 自律时段：滴答清单式周日历 ══════════
+ *
+ * 设计口径（对齐 TickTick 周视图）：
+ *   · 横轴 = 周一~周日 7 列，纵轴 = 0~24 点，每小时一行
+ *   · 行高 44px（不是原来压扁的 16px）——太矮的话一小时只有一条细缝，
+ *     根本看不出"这是几个小时"，也点不准
+ *   · 列之间有 6px 缝（区分天），**行之间不留缝**（同一天的时间要连续）
+ *   · 格子本身不画边框，只用极淡的整点横线暗示刻度，避免"表格感"
+ *   · 选中的时段画成实心圆角色块，高度就是真实时长
+ *   · 整块日历限高 + 内部滚动，表头吸顶（跟滴答一样，不用滚一屏才看到星期）
+ */
+.cc-scroll {
+  max-height: 520px; overflow-y: auto; overflow-x: hidden;
+  margin-top: 6px; border-radius: var(--r-lg);
+  scrollbar-width: thin;
+}
 .cc {
   display: grid;
-  grid-template-columns: 24px repeat(7, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: 30px repeat(7, minmax(0, 1fr));
+  /* 行间距 0：同一天内连续几小时必须连成一整条，不能断开 */
+  row-gap: 0;
+  column-gap: 6px;
   user-select: none;
   touch-action: none;
-  margin-top: 6px;
   /* 整块的内描边颜色：JS 缝合相邻块时按边取用（共享边不画） */
-  --cc-ring: rgba(125, 176, 255, .16);
+  --cc-ring: rgba(125, 176, 255, .28);
 }
 .cc-corner, .cc-hlab {
-  display: flex; align-items: center; justify-content: flex-end;
-  font-size: 9px; color: var(--text-3); line-height: 1;
-  padding-right: 3px; font-variant-numeric: tabular-nums;
+  display: flex; align-items: flex-start; justify-content: flex-end;
+  font-size: 10px; color: var(--text-3); line-height: 1;
+  padding: 1px 5px 0 0; font-variant-numeric: tabular-nums;
+  /* 小时刻度按行顶对齐，读起来才像时间轴 */
+  transform: translateY(-5px);
 }
 .cc-dh {
-  text-align: center; font-size: 11.5px; font-weight: 600;
-  color: var(--text-2); padding-bottom: 3px;
+  text-align: center; font-size: 12px; font-weight: 600;
+  color: var(--text-2); padding: 2px 0 6px;
+  position: sticky; top: 0; z-index: 8;
+  background: var(--bg);
+}
+.cc-corner {
+  position: sticky; top: 0; z-index: 9;
+  background: var(--bg);
 }
 .cc-dh.today { color: var(--gold); }
 .cc-cell {
-  position: relative; height: 16px; border-radius: 3px;
-  background: var(--cell-bg); border: 1px solid transparent;
+  position: relative; height: 44px; border-radius: 0;
+  /* 整点横线：只用最上面 1px 的极淡描边暗示刻度，不做整格边框 */
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
   cursor: pointer;
   transition: background .1s;
   z-index: 1;
 }
-.cc-cell:hover { background: var(--hover-bg); border-color: var(--line-2); }
+.cc-cell:hover { background: var(--hover-bg); }
 /* 选中态不画在格子上：格子之间 3px 间距，半透明底叠两次会留下一条亮缝，
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
-.cc-cell.on { background: transparent; border-width: 0; z-index: 3; }
+.cc-cell.on { background: transparent; border-top-color: transparent; z-index: 3; }
 .cc-cell.on:hover { background: rgba(125, 176, 255, .16); }
 /* 15 分钟细分刻度（滴答清单周视图同款）：每小时 4 条，默认不画，
  * hover / 拖选时才浮现，用来勾选 15 分钟粒度的时间段。 */
@@ -743,16 +770,27 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .cc-run {
   position: relative; z-index: 2; pointer-events: none;
   display: flex; flex-direction: column; overflow: hidden;
-  border-radius: 4px;
-  background: linear-gradient(180deg, rgba(125, 176, 255, .26), rgba(47, 109, 240, .16));
+  border-radius: 7px;
+  background: rgba(47, 109, 240, .30);
   box-shadow: inset 0 0 0 1px var(--cc-ring);
 }
 .cc-run i { display: block; width: 100%; }
-/* 起止分钟让出来的占位带：颜色同未选中格子，看起来就是"这一小时没选满" */
-.cc-run .cc-gap { background: var(--cell-bg); }
-.cc-run .w { background: rgba(77, 141, 255, .78); }
-.cc-run .b { background: rgba(56, 189, 248, .45); }
-.cc-run .t { background: rgba(77, 141, 255, .22); }
+/* 起止分钟让出来的占位带：透明，看起来就是"这一小时没选满" */
+.cc-run .cc-gap { background: transparent; }
+/* 专注段：实心蓝，日历里一眼能看出"这段时间被占了" */
+.cc-run .w { background: linear-gradient(180deg, #4d8dff, #3b74e8); }
+/* 番茄休息段：浅青，和专注明显区分 */
+.cc-run .b { background: rgba(56, 189, 248, .58); }
+/* 时段没排满的尾段：继续专注，颜色略淡 */
+.cc-run .t { background: rgba(77, 141, 255, .55); }
+/* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
+.cc-run-txt {
+  position: absolute; top: 3px; left: 6px; right: 6px;
+  font-size: 10.5px; line-height: 1.25; font-weight: 600;
+  color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
 /* 框选预览：整片范围画一个金色虚线框，比逐格描边清楚得多 */
 .cc-drag {
   position: relative; z-index: 4; pointer-events: none;

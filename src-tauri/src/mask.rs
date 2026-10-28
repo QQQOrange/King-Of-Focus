@@ -1162,6 +1162,44 @@ unsafe fn root_window(h: Hwnd) -> Hwnd {
 /// 遮罩允许把洞挖在自己身上——用户明确要求"专注遮罩也要盖住 King of Focus 自己"。
 pub static SELF_MAIN: AtomicIsize = AtomicIsize::new(0);
 
+/// 把主窗口抬到置顶带的最前面。
+///
+/// 只调 `set_always_on_top(true)` 不一定能把窗口"浮上来"：如果它已经是
+/// WS_EX_TOPMOST，再设一次属性是空操作，窗口仍旧被别的置顶窗口压着。
+/// 真正确保"浮到最前"的做法是 `SetWindowPos(HWND_TOPMOST)`，
+/// 再配合 HWND_TOP 提到置顶带顶端。
+pub fn raise_self() {
+    let h = SELF_MAIN.load(Ordering::Relaxed) as Hwnd;
+    if h.is_null() {
+        return;
+    }
+    unsafe {
+        if IsWindow(h) == 0 {
+            return;
+        }
+        let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+        SetWindowLongW(h, GWL_EXSTYLE, (ex | WS_EX_TOPMOST_FLAG) as i32);
+        SetWindowPos(
+            h,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        SetWindowPos(
+            h,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+}
+
 unsafe fn is_self_window(h: Hwnd) -> bool {
     if h.is_null() {
         return false;

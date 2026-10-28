@@ -414,6 +414,9 @@ function viewRules() {
   const hardLocked = !!d.runtime.locked;
   const locked = settingsFrozen();      // 固化中 或 自律时段生效中
 
+  // 黑名单条目 = 纯名单：名称 + 软件 / 网站 / 例外 + 开关。
+  // **不显示任何"时间范围"** —— 什么时候生效由「自律时段」统一决定，
+  // 黑名单只管"自律时间里不能开什么"，两件事不混在一起。
   const item = (l) => `
     <div class="sl-item ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
       <div class="sl-item-bar" style="background:${esc(l.color || '#4d8dff')}"></div>
@@ -424,10 +427,10 @@ function viewRules() {
           ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
           ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
         </div>
-        <div class="sl-item-range">${esc(schedCompact(l.schedule))}</div>
-        <div class="sl-item-meta">${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外</div>
+        <div class="sl-item-meta">
+          ${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外
+        </div>
       </div>
-      ${slMini(l)}
       <div class="sl-item-act">
         <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
              style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
@@ -446,8 +449,8 @@ function viewRules() {
       <div class="sl-grid">${arr.map(item).join('')}</div>
     </div>`);
   };
-  push('黑名单时段', '这些时段里，命中的软件 / 网站会被拦下', lists.filter((l) => l.mode !== 'whitelist'));
-  push('强制模式时段', '这些时段里，只有名单内的软件能打开', lists.filter((l) => l.mode === 'whitelist'));
+  push('黑名单', '自律时间里，这些软件和网站会被拦下', lists.filter((l) => l.mode !== 'whitelist'));
+  push('强制模式', '自律时间里，只有名单内的软件能打开', lists.filter((l) => l.mode === 'whitelist'));
 
   const body = lists.length
     ? groups.join('')
@@ -511,11 +514,13 @@ function openSlotModal(id) {
 function renderSlotModal() {
   const r = S.editing;
   if (!r) return;
+  // 黑名单弹窗 = **纯名单编辑**，不再有周时间表。
+  // 时间只在「自律时段」排一次；这里只管"自律时间里不能开什么"。
   const html = `
   <div class="modal-mask" data-act="close-modal-bg">
     <div class="modal wide tk-modal">
       <div class="modal-hd">
-        <h3>自律时段
+        <h3>${esc(r.name || '黑名单')}
           <span class="badge ${r.mode === 'whitelist' ? 'red' : 'gold'}">${r.mode === 'whitelist' ? '强制模式' : '黑名单'}</span>
           ${r.hard ? '<span class="badge red">固化</span>' : ''}
           ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
@@ -525,10 +530,12 @@ function renderSlotModal() {
       </div>
       <div class="modal-bd">
         <div class="row" style="gap:10px;margin-bottom:14px;align-items:center">
-          <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14.5px;font-weight:650" placeholder="时段名称，例如：晚自习" />
-          <div class="sl-sum">${esc(schedCompact(r.schedule))}</div>
+          <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14.5px;font-weight:650" placeholder="名字，例如：短视频与游戏" />
         </div>
-        ${tabChart(r)}
+        <div class="note" style="margin-bottom:14px">
+          生效时间由「<b>自律时段</b>」统一决定：<b>自律时间里，这里的软件和网站会被拦下</b>；
+          自律时间之外一律不拦。所以这里不需要、也不提供时间设置。
+        </div>
         <div class="tk-info">
           <div><b>${r.apps.length}</b> 个软件</div>
           <div><b>${r.sites.length}</b> 个网站</div>
@@ -537,7 +544,7 @@ function renderSlotModal() {
         </div>
       </div>
       <div class="modal-ft">
-        <button class="btn" data-act="slot-more">名单与更多设置…</button>
+        <button class="btn" data-act="slot-more">编辑名单…</button>
         <button class="btn" data-act="close-editor">取消</button>
         <button class="btn btn-primary" data-act="save-slot">保存</button>
       </div>
@@ -1137,6 +1144,7 @@ function ccRenderRuns(root, dragRect) {
   }
 
   const addBlock = (d0, d1, h0, h1, sig, f0, t1) => {
+    const t1Min = t1;   // 尾小时的结束分钟，用于色块上的时长文字
     const n = h1 - h0 + 1;
     // 块内统一按「分钟」切片：每个 <i> 都是一条等宽色带，
     // 跨小时的零碎时间因此天然连续（11:10–12:20 = 70 分钟一条带）。
@@ -1182,7 +1190,15 @@ function ccRenderRuns(root, dragRect) {
     // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始
     run.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
     run.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
-    run.innerHTML = bands;
+    // 色块上的时长文字（滴答清单风格）：09:00 – 12:00。
+    // 注意结束分钟可能是 60，那是"到下一小时整点"，必须进成 12:00，
+    // 不能直接写成 11:60（非法时间，之前真出现过）。
+    const labStart = `${pad(h0)}:${pad(f0)}`;
+    const eMin = Math.round(t1Min);
+    const labEnd = eMin >= 60
+      ? `${pad(Math.min(24, h1 + 1))}:00`
+      : `${pad(h1)}:${pad(eMin)}`;
+    run.innerHTML = `<span class="cc-run-txt">${labStart} – ${labEnd}</span>` + bands;
     grid.appendChild(run);
   };
 
@@ -1243,10 +1259,11 @@ function ccStitchRuns(grid) {
   }
   for (const r of runs) {
     // 后侧（右/下）的块把 3px 网格间距补上；缝合只改位置不影响其它块
-    const ml = r.left ? '-3px' : '';
-    const mr = r.right ? '-3px' : '';
-    const mt = r.up ? '-3px' : '';
-    const mb = r.down ? '-3px' : '';
+    // 列间距 6px（跨天缝合要把缝补上）；行间距是 0，所以上下不用补
+    const ml = r.left ? '-6px' : '';
+    const mr = r.right ? '-6px' : '';
+    const mt = '';
+    const mb = '';
     if (ml) r.el.style.marginLeft = ml;
     if (mr) r.el.style.marginRight = mr;
     if (mt) r.el.style.marginTop = mt;
@@ -1261,10 +1278,11 @@ function ccStitchRuns(grid) {
 function ccRunEdges(el, up, down, left, right) {
   const openTop = up || +el.dataset.f0 > 0;
   const openBottom = down || +el.dataset.t1 < 60;
-  const r = 4;
+  // 圆角跟 CSS 里的 .cc-run 保持一致（滴答清单那种圆润块）
+  const r = 7;
   const c = (a, b) => (a || b ? 0 : r);
   el.style.borderRadius = `${c(openTop, left)}px ${c(openTop, right)}px ${c(openBottom, right)}px ${c(openBottom, left)}px`;
-  const ring = 'var(--cc-ring, rgba(125, 176, 255, .16))';
+  const ring = 'var(--cc-ring, rgba(125, 176, 255, .28))';
   const sh = [];
   if (!openTop) sh.push(`inset 0 1px 0 0 ${ring}`);
   if (!openBottom) sh.push(`inset 0 -1px 0 0 ${ring}`);
@@ -1502,7 +1520,7 @@ function viewClock() {
       ${fc.enabled && n ? `<span class="badge">已选 ${n} 个小时段</span>` : ''}
     </div>
 
-    <div class="cc" id="ccGrid">${grid}</div>
+    <div class="cc-scroll"><div class="cc" id="ccGrid">${grid}</div></div>
     <div class="cc-legend">
       <span><i class="sw w"></i>专注</span>
       <span><i class="sw b"></i>休息</span>
@@ -2544,6 +2562,7 @@ function viewSettings() {
       </div>
       <div class="switch${settingsFrozen() && !d.admin ? ' locked' : ''}" data-act="cfg-switch" data-k="runAsAdmin"><input type="checkbox" ${st.runAsAdmin ? 'checked' : ''}><i></i></div>
     </div>
+    ${sw('alwaysOnTop', st.alwaysOnTop, '主窗口置顶', '开启后主界面始终浮在其它窗口之上，不会被别的窗口盖住；点一下这里就能立刻生效')}
     ${sw('closeToTray', st.closeToTray, '关闭窗口时收进托盘', '拦截引擎在托盘里继续工作')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
       <div><div style="font-size:12.5px">浏览器插件</div><div class="hint" style="margin-top:3px">在 Chrome / Edge 的扩展页打开"开发者模式"，载入已解压的扩展</div></div>
@@ -3239,6 +3258,20 @@ const Act = window.Act = {
       await saveConfig();
       render();
       return;
+    }
+    if (k === 'alwaysOnTop') {
+      // 窗口层级必须由后端改（前端只能存一个布尔值）。
+      // 这里不做乐观更新：等后端真的把窗口设成置顶之后再刷新界面，
+      // 免得出现"开关亮了但窗口还在下面"的假象。
+      const next = !st.alwaysOnTop;
+      try {
+        await invoke('set_always_on_top', { enabled: next });
+        st.alwaysOnTop = next;
+        toast(next ? '主窗口已置顶' : '已取消置顶', 'ok');
+      } catch (e) {
+        toast('切换置顶失败：' + e, 'err');
+      }
+      await pull(); render(); return;
     }
     if (k === 'hudEnabled') {
       const h = st.hud || (st.hud = { enabled: true, quoteMinutes: 60 });

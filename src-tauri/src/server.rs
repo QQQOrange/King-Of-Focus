@@ -145,8 +145,21 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
                 reply(req, 403, json!({"error": "debug disabled"}).to_string())
             } else {
-                let loc = crate::browsers::ext_location();
-                reply(req, 200, serde_json::to_string(&loc).unwrap_or_default())
+                // ?open=<浏览器key> 时真的执行"打开扩展页"，便于端到端验证
+                // 注意：路由已经把 query 剥给 `path` 了，要用原始 `url` 取参数
+                let open_key = url
+                    .split_once("open=")
+                    .map(|(_, v)| v.split('&').next().unwrap_or("").to_string())
+                    .filter(|k| !k.is_empty());
+                if let Some(key) = open_key {
+                    match crate::browsers::open_ext_page(&key) {
+                        Ok(msg) => reply(req, 200, json!({"ok": true, "msg": msg}).to_string()),
+                        Err(e) => reply(req, 200, json!({"ok": false, "err": e}).to_string()),
+                    }
+                } else {
+                    let loc = crate::browsers::ext_location();
+                    reply(req, 200, serde_json::to_string(&loc).unwrap_or_default())
+                }
             }
         }
         "/api/debug/browsers" => {

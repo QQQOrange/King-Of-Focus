@@ -62,19 +62,20 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
 
 /// 当前生效中的黑名单：引擎拦软件、插件拦网页都用这一份
 ///
-/// **硬性前提：只在「自律时间」内生效。**
-/// 自律时间 = 「自律时段」当前处于**专注段**（`clock_on`）。
-///   · 没配自律时段 / 当前小时没选中 → 一律不拦
-///   · 番茄休息段 → 一律不拦
-///   · 只有专注段内，才按条目自己的时间范围做进一步收窄
+/// **黑名单没有自己的时间表。** 它的语义就一句话：
+/// 「自律时间里不能打开的软件 / 网站」。
+/// 什么时候算自律时间，完全由「自律时段」那一页决定；
+/// 黑名单只管名单本身，不参与任何时间判定。
 ///
-/// 为什么这么定：黑名单是"自律的执法工具"，不是常驻的防火墙。
-/// 自律时间之外用户是自由的，这时还去关人家的软件、拦人家的网页，
-/// 只会让人觉得软件在乱管闲事，反而破坏自律工具本身的可信度。
+/// 所以这里只有两个条件：
+///   1. 处于自律时间（`clock_on`，即自律时段的专注段）
+///   2. 这条黑名单被启用
 ///
-/// 条目自己的 `schedule` 现在只承担一个职责：**在自律时间内再收窄范围**。
-/// 空时间表 = 自律时间内全程生效；画了时间表 = 只在画出来的那些时段生效。
+/// 之前黑名单条目还带一张周时间表，那是把两件事混在了一起：
+/// 用户想"9 点开始自律"，结果要去两个页面各排一次时间，很容易对不上。
+/// 现在时间只在「自律时段」排一次，黑名单纯名单。
 pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<RuleList> {
+    let _ = now; // 黑名单不再依赖具体时刻，保留参数是为了不破坏调用方签名
     // 自律时间之外（含休息段、没选中的小时）→ 黑名单整体静默
     if !d.clock_on {
         return Vec::new();
@@ -85,19 +86,7 @@ pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Ru
     }
     cfg.lists
         .iter()
-        .filter(|l| {
-            if !l.enabled {
-                return false;
-            }
-            // 条目自己的时间范围作为"自律时间内的二次收窄"
-            let w = &l.schedule;
-            let any = w.iter().any(|day| !day.is_empty());
-            if any && !crate::sched::is_active(w, now) {
-                return false;
-            }
-            // 条目自己的番茄休息段也放行
-            !crate::sched::is_break_now(w, &l.brk, now)
-        })
+        .filter(|l| l.enabled)
         .cloned()
         .collect()
 }
@@ -133,58 +122,31 @@ mod tests {
     }
 
     #[test]
-    fn entry_schedule_narrows_inside_discipline_time() {
-        // 黑名单条目自己的时间表是"周一 3:00–4:00"，现在是周三 10 点。
-        // 旧语义：自律时段接管 → 忽略条目时间表。
-        // 新语义：条目时间表是"自律时间内的二次收窄"，不命中就不生效。
+    fn entry_schedule_is_ignored_now() {
+        // 黑名单不再有自己的时间表：条目上的 schedule 写什么都不影响生效与否。
+        // 时间只由「自律时段」决定 —— 这是本轮的核心语义变更。
         let mut c = base();
+        // 故意写一个"现在肯定不在"的时间表（周一 3:00–4:00，现在是周三 10:30）
         c.lists[0].schedule = vec![vec![Slot { start: 180, end: 240 }]; 7];
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
-        assert!(d.clock_on, "应处于专注段");
-        let rules = active_rules(&c, &now, &d);
-        assert!(rules.is_empty(), "条目自己的时间表没命中 → 不生效");
-    }
-
-    #[test]
-    fn blacklist_silent_outside_discipline_time() {
-        // 核心新语义：自律时间之外，黑名单一律不启用，哪怕它自己的时间表是全天
-        let mut c = base();
-        // 自律时段：周一 9 点（现在测周三 10 点，不在时段内）
-        let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[0][9] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
-        c.settings.focus_clock = ClockCfg::with_days(true, days);
-        let now = now_at(2, 10, 30);
-        let d = state(&c, &now);
-        assert!(!d.clock_on, "不在自律时间");
-        assert!(
-            active_rules(&c, &now, &d).is_empty(),
-            "自律时间外必须静默，哪怕条目时间表是全天"
+        assert!(d.clock_on);
+        assert_eq!(
+            active_rules(&c, &now, &d).len(),
+            1,
+            "自律时间内、条目已启用 → 生效，条目自己的时间表不再参与判定"
         );
     }
 
     #[test]
     fn blacklist_active_inside_discipline_time_with_empty_schedule() {
-        // 自律时间 + 条目时间表为空（= 不额外收窄）→ 生效
         let mut c = base();
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(d.clock_on);
         assert_eq!(active_rules(&c, &now, &d).len(), 1, "自律时间内应生效");
-    }
-
-    #[test]
-    fn blacklist_narrows_with_own_schedule_inside_discipline_time() {
-        // 自律时间内在，但条目时间表只覆盖 09:00–09:30，现在 10:30 → 不生效
-        let mut c = base();
-        c.lists[0].schedule = vec![vec![Slot { start: 540, end: 570 }]; 7];
-        clock_on(&mut c, 2, 10, 60, 0);
-        let now = now_at(2, 10, 30);
-        let d = state(&c, &now);
-        assert!(d.clock_on);
-        assert!(active_rules(&c, &now, &d).is_empty(), "条目时间范围没覆盖 → 不生效");
     }
 
     #[test]

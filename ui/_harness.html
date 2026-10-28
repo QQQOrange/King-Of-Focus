@@ -64,7 +64,7 @@ const STATE = {
     settings: {
       pollMs: 1000, dryRun: false, guardBrowser: true, graceSecs: 90,
       browserGuard: { enabled: true, notify: true, graceMs: 1200, detectOnStart: true },
-      port: 27315, autostart: false, runAsAdmin: false, closeToTray: true, softClose: true,
+      port: 27315, autostart: false, runAsAdmin: false, closeToTray: true, alwaysOnTop: false, softClose: true,
       siteCloseBrowser: true, blockTaskmgr: true, protected: [], theme: 'dark',
       mask: { opacity: 88, durationMs: 420, follow: true,
         blockClick: true, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
@@ -113,7 +113,7 @@ const STATE = {
     crx: 'D:\\software\\myself\\KingOfFocus-Extension.crx', exeDir: 'D:\\software\\myself',
     source: '程序同级 extension' },
   pid: 1, points: { balance: 12, earned: 40, unlockUntil: 0, count: 0, price: 15 },
-  version: '0.0.2', buildDate: '2026-10-27', developer: 'QQQOrange',
+  version: '0.1.0', buildDate: '2026-10-28', developer: 'QQQOrange',
   repoUrl: 'https://github.com/QQQOrange/King-Of-Focus', tokenDocUrl: '',
   appName: 'King of Focus', hasToken: false, configPath: 'D:\\x\\config.json',
   dataPath: 'D:\\x', now: '2026-10-27 09:00', weekday: '1',
@@ -138,6 +138,7 @@ window.__TAURI__ = {
       return null;
     }
     // 管理员开关：后端落盘 + 拉起提权副本（前端不自己 save）
+    if (cmd === 'set_always_on_top') { STATE.config.settings.alwaysOnTop = !!args.enabled; return null; }
     if (cmd === 'set_run_as_admin') {
       STATE.config.settings.runAsAdmin = !!args.enabled;
       return null;
@@ -273,13 +274,38 @@ window.__itest = async () => {
   // 正序实证：第一个小时标签（0）与 (周一,0) 格同一行
   const rH = document.querySelector('.cc-hlab').getBoundingClientRect();
   const rC = cell(0, 0).getBoundingClientRect();
-  out.push(['0 点标签与 (周一,0) 同行', Math.abs(rH.top - rC.top) < 2, true]);
+  // 日历式时间轴：刻度文字按行顶对齐、再上移约 5px 让文字视觉居中于网格线，
+  // 所以允许 ±8px 的偏移（这是设计，不是错位）。
+  out.push(['0 点标签与 (周一,0) 同行', Math.abs(rH.top + 5 - rC.top) < 8, true]);
 
   // 0. 连续时段合并：周一 8–12 点必须是**一个**整块，高度正好盖住 4 格 + 3 道缝
   out.push(['周一 8–12 合并成一个块', runs(0).length, 1]);
   out.push(['合并块的起止小时', runs(0)[0] ? `${runs(0)[0].dataset.h0}-${runs(0)[0].dataset.h1}` : '(无)', '8-11']);
   const rc8 = cell(0, 8).getBoundingClientRect(), rc11 = cell(0, 11).getBoundingClientRect();
   const run0 = runs(0)[0] ? runs(0)[0].getBoundingClientRect() : null;
+
+  // 0b. 滴答清单式周日历：行高、滚动、色块时长文字、实心色
+  {
+    const c8 = cell(0, 8);
+    out.push(['每小时行高 44px（不再是压扁的 16px）',
+      Math.round(c8.getBoundingClientRect().height), 44]);
+    const sc = document.querySelector('.cc-scroll');
+    out.push(['日历限高可滚动（表头吸顶）',
+      sc ? getComputedStyle(sc).overflowY + '/' + Math.round(sc.getBoundingClientRect().height) : '无',
+      'auto/520']);
+    const anyRun = document.querySelector('.cc-run');
+    const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
+    out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]$/.test(txt.textContent.trim()) : false, true]);
+    out.push(['色块时间不含非法的 :60', txt ? !/:60/.test(txt.textContent) : false, true]);
+    const wBand = anyRun ? anyRun.querySelector('i.w') : null;
+    out.push(['专注段是实心蓝（不是几乎透明）',
+      wBand ? getComputedStyle(wBand).backgroundImage.includes('gradient') : false, true]);
+    out.push(['列间距 6px（每天一栏）',
+      getComputedStyle(document.querySelector('#ccGrid')).columnGap, '6px']);
+    out.push(['行间距 0（同一天连续不断开）',
+      getComputedStyle(document.querySelector('#ccGrid')).rowGap, '0px']);
+  }
+
   out.push(['整块高度 = 4 格 + 3 道缝', run0 ? Math.abs(run0.height - (rc11.bottom - rc8.top)) < 1.5 : false, true]);
   // 周一–周五同一时段合并成一条横跨 5 列的整带（d0→d4，单块）。
   // 宽度 ≥ 周五右沿-周一左沿（右侧若与相邻日接壤会再补最多 3px 缝，故不取等）
@@ -545,9 +571,10 @@ window.__itest = async () => {
   const rMon = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '0' && r.dataset.h0 === '8');
   const rTue = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '1' && r.dataset.h0 === '8');
   out.push(['相邻两块各自存在', !!rMon && !!rTue]);
-  out.push(['后块负边距补上网格缝', rTue ? getComputedStyle(rTue).marginLeft : '', '-3px']);
-  out.push(['前块只少右边的圆角', rMon ? getComputedStyle(rMon).borderRadius : '', '4px 0px 0px 4px']);
-  out.push(['后块只少左边的圆角', rTue ? getComputedStyle(rTue).borderRadius : '', '0px 4px 4px 0px']);
+  // 列间距改成 6px（更接近日历的"每天一栏"），所以补缝值是 -6px
+  out.push(['后块负边距补上网格缝', rTue ? getComputedStyle(rTue).marginLeft : '', '-6px']);
+  out.push(['前块只少右边的圆角', rMon ? getComputedStyle(rMon).borderRadius : '', '7px 0px 0px 7px']);
+  out.push(['后块只少左边的圆角', rTue ? getComputedStyle(rTue).borderRadius : '', '0px 7px 7px 0px']);
   out.push(['前块描边只剩 3 边', rMon ? (getComputedStyle(rMon).boxShadow.match(/inset/g) || []).length : -1, 3]);
   out.push(['后块描边只剩 3 边', rTue ? (getComputedStyle(rTue).boxShadow.match(/inset/g) || []).length : -1, 3]);
 
@@ -557,7 +584,7 @@ window.__itest = async () => {
   await Act.clockSetWB(3, 3, 8, 10, 50, 10, false, 0, 60);
   await wait(150);
   const rIso = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '3' && r.dataset.h0 === '8');
-  out.push(['孤立块四角圆角', rIso ? getComputedStyle(rIso).borderRadius : '', '4px']);
+  out.push(['孤立块四角圆角', rIso ? getComputedStyle(rIso).borderRadius : '', '7px']);
   out.push(['孤立块整圈描边', rIso ? (getComputedStyle(rIso).boxShadow.match(/inset/g) || []).length : -1, 4]);
   out.push(['孤立块不补缝', rIso ? getComputedStyle(rIso).marginLeft : '', '0px']);
   await Act.clockClear();
@@ -788,64 +815,38 @@ window.__itest = async () => {
     out.push(['快捷键输入框保留', !!hkCard.querySelector('#hkInput')]);
   }
 
-  // 20. 黑名单页：多列/多组条目 + 点击弹独立图表弹窗
+  // 20. 黑名单页：多列条目 + 弹窗里**只有名单、没有时间表**
+  //
+  // 语义变更（本轮）：黑名单 = "自律时间里不能打开的软件/网站"，
+  // 时间只由「自律时段」那一页统一决定，黑名单条目不再有自己的周时间表。
   await Act.nav('rules');
   await wait(300);
   out.push(['黑名单页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
   out.push(['条目用的是多列网格 .sl-grid', document.querySelectorAll('.sl-grid').length >= 1]);
   out.push(['不再用旧的整块 .rule-card', document.querySelectorAll('.rule-card').length, 0]);
   const item = document.querySelector('.sl-item');
-  out.push(['存在自律时段条目', !!item]);
+  out.push(['存在黑名单条目', !!item]);
   if (item) {
-    out.push(['条目含时段名称', !!(item.querySelector('.sl-item-name') || {}).textContent]);
-    out.push(['条目含时间范围', !!(item.querySelector('.sl-item-range') || {}).textContent]);
-    out.push(['条目含迷你时间分布图', item.querySelectorAll('.sl-mini-col').length, 7]);
+    out.push(['条目含名称', !!(item.querySelector('.sl-item-name') || {}).textContent]);
+    out.push(['条目列出软件/网站/例外数量', /个软件/.test((item.querySelector('.sl-item-meta') || {}).textContent || '')]);
+    // 关键：条目上不该再出现"时间范围"与迷你时间图
+    out.push(['条目不再显示时间范围', document.querySelectorAll('.sl-item-range').length, 0]);
+    out.push(['条目不再有迷你时间分布图', document.querySelectorAll('.sl-mini-col').length, 0]);
   }
-  // 点击条目 → 打开独立弹窗（图表式）
+  // 点击条目 → 打开弹窗（纯名单编辑）
   if (item) {
     item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
     await wait(250);
   }
   const modal = document.querySelector('#modalRoot .tk-modal');
   out.push(['点击条目后打开独立弹窗', !!modal]);
-  out.push(['弹窗里是图表 .tk-chart', document.querySelectorAll('#modalRoot .tk-chart').length, 1]);
-  out.push(['图表横轴 7 天（周一~周日）', document.querySelectorAll('#modalRoot .tk-col').length, 7]);
-  const dayLbl = [...document.querySelectorAll('#modalRoot .tk-col-day')].map((e) => e.textContent.trim());
-  out.push(['横轴标签为周一~周日', dayLbl.join(','), '周一,周二,周三,周四,周五,周六,周日']);
-  out.push(['纵轴有 00:00~24:00 刻度', document.querySelectorAll('#modalRoot .tk-axis span').length, 9]);
-  out.push(['弹窗可编辑（拖动轨道）', document.querySelectorAll('#modalRoot .tk-track').length, 7]);
+  out.push(['弹窗里不再有周时间表图表', document.querySelectorAll('#modalRoot .tk-chart').length, 0]);
+  out.push(['弹窗不再有拖动轨道', document.querySelectorAll('#modalRoot .tk-track').length, 0]);
+  out.push(['弹窗说明「时间由自律时段决定」',
+    /自律时段/.test((document.querySelector('#modalRoot .modal-bd') || {}).textContent || ''), true]);
   out.push(['弹窗有保存/取消', document.querySelectorAll('#modalRoot [data-act="save-slot"]').length
     + document.querySelectorAll('#modalRoot [data-act="close-editor"]').length >= 2]);
-  out.push(['弹窗含时段明细列表', !!document.querySelector('#modalRoot .tk-slots')]);
-  // 拖动第 0 列 → 生成一个时段
-  const track0 = document.querySelector('#modalRoot .tk-track[data-day="0"]');
-  if (track0) {
-    const rc = track0.getBoundingClientRect();
-    const y = (m) => rc.top + (m / 1440) * rc.height;
-    const fire = (type, el, opts = {}) =>
-      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
-    fire('mousedown', track0, { clientY: y(540) });
-    fire('mousemove', track0, { clientY: y(720) });
-    fire('mouseup', track0, { clientY: y(720) });
-    await wait(250);
-  }
-  const segs0 = document.querySelectorAll('#modalRoot .tk-track[data-day="0"] .tk-seg');
-  out.push(['拖动后周一出现色块', segs0.length >= 1]);
-  const detail = [...document.querySelectorAll('#modalRoot .tk-slot')].map((e) => {
-    const ins = [...e.querySelectorAll('input.tk-time')].map((i) => i.value);
-    return ins.join('-');
-  });
-  out.push(['时段明细同步出现 09:00', detail.join('|').includes('09:00'), true]);
-  out.push(['色块落在 09:00-12:00 区间', (() => {
-    if (!segs0.length || !track0) return false;
-    const tr = track0.getBoundingClientRect();
-    // 该列可能本来就有别的时段，找**顶部落在 09:00 那个**色块，别只取第一个
-    return Array.from(segs0).some((sg) => {
-      const s = sg.getBoundingClientRect();
-      const topPct = (s.top - tr.top) / tr.height;
-      return Math.abs(topPct - 0.375) < 0.02;
-    });
-  })()]);
+  out.push(['弹窗提供名单编辑入口', !!document.querySelector('#modalRoot [data-act="slot-more"]')]);
   // 关闭弹窗
   const cx = document.querySelector('#modalRoot .close-x');
   if (cx) cx.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));

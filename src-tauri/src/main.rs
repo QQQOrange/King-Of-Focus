@@ -6,6 +6,7 @@ mod cfg;
 mod clock;
 mod cmds;
 mod discipline;
+mod extpage;
 mod forcequit;
 mod guard;
 mod mask;
@@ -256,7 +257,7 @@ fn main() {
                             m.on.store(!on, Ordering::Relaxed);
                         }
                         if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.set_always_on_top(false);
+                            let _ = w.set_always_on_top(sh_menu.config().settings.always_on_top);
                             let _ = w.show();
                         }
                     }
@@ -324,7 +325,7 @@ fn main() {
                         }
                         if sh.mask.on.load(Ordering::Relaxed) {
                             sh.mask.on.store(false, Ordering::Relaxed);
-                            let _ = w2.set_always_on_top(false);
+                            let _ = w2.set_always_on_top(sh.config().settings.always_on_top);
                         }
                         if sh.config().settings.close_to_tray {
                             api.prevent_close();
@@ -341,6 +342,14 @@ fn main() {
                         }
                     }
                 });
+            }
+
+            // 启动时应用「窗口置顶」设置（之前这一项根本没被读过）
+            if shared.config().settings.always_on_top {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_always_on_top(true);
+                    crate::mask::raise_self();
+                }
             }
 
             monitor::start(app.handle().clone(), shared.clone());
@@ -378,6 +387,7 @@ fn main() {
             cmds::restart_as_admin,
             cmds::set_autostart,
             cmds::set_run_as_admin,
+            cmds::set_always_on_top,
             cmds::test_mode_enter,
             cmds::test_mode_exit,
             cmds::test_mode_status,

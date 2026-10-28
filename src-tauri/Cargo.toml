@@ -1,6 +1,6 @@
 [package]
 name = "king-of-focus"
-version = "0.1.0"
+version = "0.1.1"
 description = "King of Focus - 专注与自律守护工具"
 authors = ["QQQOrange"]
 edition = "2021"
@@ -32,6 +32,12 @@ windows = { version = "0.58", features = [
   "Media_Playback",
   "Foundation",
   "Foundation_Collections",
+  # 打开浏览器扩展页：Chromium 会丢弃命令行里的内部 URL（chrome:// edge://），
+  # 只能用 UI Automation 找到地址栏控件、直接设值再投递回车。
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Foundation",
+  "Win32_System_Com",
 ] }
 
 [profile.release]
