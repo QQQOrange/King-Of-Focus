@@ -122,6 +122,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             // ---- 生效中的规则（休息段内的规则暂时放行）----
             let active: Vec<Rule> = crate::discipline::active_rules(&cfg, &now, &dstate);
 
+            // ---- 进入自律时间时自动打开应用 / 网页 ----
+            // 放在这里（而不是独立的秒级线程）是因为它要看同一份 dstate：
+            // "现在是不是专注段"必须和拦截判定同口径，否则会出现
+            // 规则已经在拦人了、窗口却没打开的情况。
+            // 内部按"规则 + 专注段起点"记账，段内只会执行一次。
+            crate::autoopen::tick(&shared, &cfg, &now, &dstate);
+
             // 当前是否有规则处于「休息」
             let on_break = dstate.on_break;
 

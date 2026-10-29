@@ -3,6 +3,7 @@
 mod backup;
 mod browsers;
 mod appname;
+mod autoopen;
 mod cfg;
 mod clock;
 mod cmds;
@@ -25,7 +26,6 @@ mod server;
 mod shared;
 mod sleep;
 mod stats;
-mod wake;
 mod testmode;
 mod sync;
 mod update;

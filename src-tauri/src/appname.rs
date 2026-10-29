@@ -154,7 +154,93 @@ const KNOWN: &[(&str, &str)] = &[
     ("zoom", "Zoom"),
     ("teams", "Microsoft Teams"),
     ("slack", "Slack"),
+    ("wechatappex", "微信"),
+    ("wxwork", "企业微信"),
+    ("qqlive", "腾讯视频"),
+    ("iqiyi", "爱奇艺"),
+    ("youku", "优酷"),
+    ("bilibili", "哔哩哔哩"),
+    ("bilibilihelper", "哔哩哔哩"),
+    ("douyin", "抖音"),
+    ("kuaishou", "快手"),
+    ("xiaohongshu", "小红书"),
+    ("zhihu", "知乎"),
+    ("xmind", "XMind"),
+    ("typora", "Typora"),
+    ("obsidian", "Obsidian"),
+    ("notion", "Notion"),
+    ("yuque", "语雀"),
+    ("xunlei", "迅雷"),
+    ("qiyeweixin", "企业微信"),
+    ("alipay", "支付宝"),
+    ("taobao", "淘宝"),
+    ("jd", "京东"),
+    ("pinduoduo", "拼多多"),
+    ("meituan", "美团"),
+    ("netease", "网易"),
+    ("kgmusic", "酷狗音乐"),
+    ("kugou", "酷狗音乐"),
+    ("baidupinyin", "百度输入法"),
+    ("sogouinput", "搜狗输入法"),
+    ("qqpinyin", "QQ 输入法"),
+    ("iflytek", "讯飞输入法"),
+    ("snipaste", "Snipaste"),
+    ("everything", "Everything"),
+    ("bandizip", "Bandizip"),
+    ("7zfm", "7-Zip"),
+    ("winrar", "WinRAR"),
+    ("idman", "Internet Download Manager"),
+    ("clash", "Clash"),
+    ("v2rayn", "v2rayN"),
+    ("todesk", "ToDesk"),
+    ("sunloginclient", "向日葵"),
+    ("anydesk", "AnyDesk"),
+    ("rustdesk", "RustDesk"),
+    ("wemeet", "腾讯会议"),
+    ("tencentmeeting", "腾讯会议"),
+    ("voov", "腾讯会议"),
+    ("dingtalkding", "钉钉"),
+    ("gitkraken", "GitKraken"),
+    ("sourcetree", "Sourcetree"),
+    ("githubdesktop", "GitHub Desktop"),
+    ("postman", "Postman"),
+    ("apifox", "Apifox"),
+    ("navicat", "Navicat"),
+    ("dbeaver", "DBeaver"),
+    ("androidstudio", "Android Studio"),
+    ("unity", "Unity"),
+    ("unrealengine", "Unreal Engine"),
+    ("blender", "Blender"),
+    ("premiere", "Adobe Premiere"),
+    ("aftereffects", "Adobe After Effects"),
+    ("audition", "Adobe Audition"),
+    ("lightroom", "Adobe Lightroom"),
 ];
+
+/// 进程名带后缀的情况：WeChatAppEx、WeixinHelper、WeChatWebview……
+///
+/// 只对**明确的一组**做前缀匹配，不用"任意 key 前缀"这种通用规则：
+/// 那会把 chromedriver 认成 Chrome、codeblocks 认成 VS Code，比不认更糟。
+const KNOWN_PREFIX: &[(&str, &str)] = &[
+    ("wechatapp", "微信"),
+    ("wechatwebview", "微信"),
+    ("weixin", "微信"),
+    ("wecom", "企业微信"),
+    ("wxwork", "企业微信"),
+    ("dingtalk", "钉钉"),
+    ("feishu", "飞书"),
+    ("wpscloud", "WPS Office"),
+    ("qqmusic", "QQ 音乐"),
+    ("cloudmusic", "网易云音乐"),
+];
+
+fn known_prefix(s: &str) -> Option<&'static str> {
+    let low = s.to_lowercase();
+    KNOWN_PREFIX
+        .iter()
+        .find(|(k, _)| low.starts_with(k))
+        .map(|(_, v)| *v)
+}
 
 fn known(stem: &str) -> Option<&'static str> {
     let low = stem.to_lowercase();
@@ -179,9 +265,18 @@ pub fn display(path: &str, stem: &str) -> String {
     if let Some(v) = cache().lock().ok().and_then(|c| c.get(path).cloned()) {
         return v;
     }
-    let mut name = file_description(path)
-        .filter(|d| !is_generic(d))
-        .unwrap_or_else(|| known(stem).map(|s| s.to_string()).unwrap_or_else(|| stem.to_string()));
+    // **内置表优先**：它是人工整理过的名字，而版本信息经常是全大写英文
+    // （微信的 FileDescription 就是 "WEIXIN"，QQ 是 "QQ"），
+    // 直接用会让统计页变成一串大写缩写。有中文名就用中文名。
+    let mut name = match known(stem) {
+        Some(v) => v.to_string(),
+        None => file_description(path)
+            .filter(|d| !is_generic(d))
+            // 版本信息本身是纯大写英文（WEIXIN / WECHAT）时，也别直接摆上去：
+            // 能靠前缀认出是哪个软件就换成中文名，认不出才原样显示。
+            .map(|d| known_prefix(&d).map(|x| x.to_string()).unwrap_or(d))
+            .unwrap_or_else(|| known(stem).map(|s| s.to_string()).unwrap_or_else(|| stem.to_string())),
+    };
     // 版本信息里偶尔带尾部括号或多余空白，收一下
     name = name.trim().to_string();
     if name.is_empty() {
@@ -207,6 +302,43 @@ mod tests {
         assert_eq!(known("Chrome"), Some("Google Chrome"));
         assert_eq!(known("CODE"), Some("Visual Studio Code"));
         assert_eq!(known("nope-not-here"), None);
+    }
+
+    /// 内置表必须**优先于**版本信息。
+    /// 微信的 FileDescription 是 "WEIXIN"，直接用它统计页就是一串大写缩写。
+    #[test]
+    fn builtin_name_beats_version_info() {
+        assert_eq!(display("", "weixin"), "微信");
+        assert_eq!(display("", "WeChat"), "微信");
+        assert_eq!(display("", "wechatappex"), "微信");
+        assert_eq!(display("", "wxwork"), "企业微信");
+        assert_eq!(display("", "qq"), "QQ");
+        assert_eq!(display("", "dingtalk"), "钉钉");
+    }
+
+    /// 带后缀的进程名靠前缀认出来（WeChatAppEx / WeixinHelper 这类）
+    #[test]
+    fn prefix_match_handles_child_processes() {
+        assert_eq!(known_prefix("WeChatAppEx"), Some("微信"));
+        assert_eq!(known_prefix("WeixinHelper"), Some("微信"));
+        // 不能误伤：chromedriver 不是 Chrome，codeblocks 不是 VS Code
+        assert_eq!(known_prefix("chromedriver"), None);
+        assert_eq!(known_prefix("codeblocks"), None);
+    }
+
+    /// 中文软件名要覆盖常见的那一批，别让它们退化成文件名
+    #[test]
+    fn common_chinese_apps_are_named() {
+        for (stem, want) in [
+            ("bilibili", "哔哩哔哩"),
+            ("qqmusic", "QQ 音乐"),
+            ("cloudmusic", "网易云音乐"),
+            ("wemeet", "腾讯会议"),
+            ("todesk", "ToDesk"),
+            ("xunlei", "迅雷"),
+        ] {
+            assert_eq!(known(stem), Some(want), "{stem}");
+        }
     }
 
     /// 系统通用描述要判成"没信息量"，否则资源管理器会显示成

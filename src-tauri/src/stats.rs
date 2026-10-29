@@ -53,6 +53,13 @@ pub struct Acc {
     /// 这里按标题累计，聚合时取最大的那个当主标题，同时能说出"共 N 个页面"。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub titles: BTreeMap<String, u64>,
+    /// 这条站点是用哪些浏览器打开的（浏览器显示名 → 秒数）。
+    ///
+    /// 为什么需要：同一个域名可能今天用 Chrome 看、明天用 Edge 看，
+    /// 统计页只说"bilibili.com"就丢了"我平时用哪个浏览器"这个信息。
+    /// 按浏览器累计，聚合时取最大的那个当主浏览器，界面上写成「标题（Chrome）」。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub browsers: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -87,6 +94,9 @@ pub struct Slice {
     /// 这个域名下一共出现过多少个不同标题（>1 时界面会写"共 N 个页面"）
     #[serde(default)]
     pub pages: u32,
+    /// 打开这个站点用得最多的浏览器（空 = 不知道，界面就不加括号）
+    #[serde(default)]
+    pub browser: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -245,6 +255,8 @@ fn sample(shared: &Shared, cfg: &Config) {
     let mut category = String::from("app");
     // 站点标题：只在"浏览器 + 扩展刚上报"那一支里赋值，后面记录到 titles 里
     let mut site_title = String::new();
+    // 站点用哪个浏览器打开的（写进 Acc.browsers，聚合时选主浏览器）
+    let mut browser_name = String::new();
 
     // 浏览器且扩展刚上报过标签页 → 记到具体域名上
     if crate::matcher::BROWSERS.iter().any(|b| name.contains(b)) {
@@ -262,6 +274,7 @@ fn sample(shared: &Shared, cfg: &Config) {
                 label = d;
                 category = "site".to_string();
                 site_title = title.clone();
+                browser_name = crate::appname::display(&path, &name);
             }
         }
     }
@@ -299,6 +312,7 @@ fn sample(shared: &Shared, cfg: &Config) {
             secs: 0,
             hours: vec![0; 24],
             titles: BTreeMap::new(),
+            browsers: BTreeMap::new(),
         });
         e.secs += 1;
         if e.hours.len() < 24 {
@@ -310,6 +324,9 @@ fn sample(shared: &Shared, cfg: &Config) {
             let t = site_title.trim();
             if !t.is_empty() {
                 *e.titles.entry(t.to_string()).or_insert(0) += 1;
+            }
+            if !browser_name.is_empty() {
+                *e.browsers.entry(browser_name.clone()).or_insert(0) += 1;
             }
         }
     }
@@ -343,6 +360,7 @@ fn merge(
     dst: &mut BTreeMap<String, Slice>,
     src: &BTreeMap<String, Acc>,
     titles: &mut BTreeMap<String, BTreeMap<String, u64>>,
+    browsers: &mut BTreeMap<String, BTreeMap<String, u64>>,
 ) {
     for (k, v) in src.iter() {
         let e = dst.entry(k.clone()).or_insert_with(|| Slice {
@@ -352,12 +370,19 @@ fn merge(
             secs: 0,
             title: String::new(),
             pages: 0,
+            browser: String::new(),
         });
         e.secs += v.secs;
         if !v.titles.is_empty() {
             let slot = titles.entry(k.clone()).or_default();
             for (t, n) in v.titles.iter() {
                 *slot.entry(t.clone()).or_insert(0) += *n;
+            }
+        }
+        if !v.browsers.is_empty() {
+            let slot = browsers.entry(k.clone()).or_default();
+            for (b, n) in v.browsers.iter() {
+                *slot.entry(b.clone()).or_insert(0) += *n;
             }
         }
     }
@@ -367,8 +392,18 @@ fn merge(
 ///   · 主标题 = 累计时长最长的那一个（比"最后一次看到的"稳定得多）
 ///   · pages  = 不同标题数，界面用它提示"共 N 个页面"
 ///   · label  = 主标题（没有标题才退回域名）
-fn finalize_labels(slices: &mut [Slice], titles: &BTreeMap<String, BTreeMap<String, u64>>) {
+fn finalize_labels(
+    slices: &mut [Slice],
+    titles: &BTreeMap<String, BTreeMap<String, u64>>,
+    browsers: &BTreeMap<String, BTreeMap<String, u64>>,
+) {
     for s in slices.iter_mut() {
+        // 主浏览器：这个域名累计用得最久的那个（和主标题同一套口径）
+        if let Some(b) = browsers.get(&s.key) {
+            if let Some((name, _)) = b.iter().max_by_key(|(_, n)| **n) {
+                s.browser = name.clone();
+            }
+        }
         let Some(m) = titles.get(&s.key) else { continue };
         s.pages = m.len() as u32;
         if let Some((best, _)) = m.iter().max_by_key(|(_, n)| **n) {
@@ -391,6 +426,7 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let mut on: BTreeMap<String, Slice> = BTreeMap::new();
     let mut off: BTreeMap<String, Slice> = BTreeMap::new();
     let mut titles: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut browsers: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
     let mut on_hourly = [0u64; 24];
     let mut off_hourly = [0u64; 24];
 
@@ -405,8 +441,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
             } else {
                 load_day(&ds)
             };
-            merge(&mut on, &file.on, &mut titles);
-            merge(&mut off, &file.off, &mut titles);
+            merge(&mut on, &file.on, &mut titles, &mut browsers);
+            merge(&mut off, &file.off, &mut titles, &mut browsers);
             for acc in file.on.values() {
                 for (i, v) in acc.hours.iter().take(24).enumerate() {
                     on_hourly[i] += *v as u64;
@@ -426,8 +462,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
 
     let mut on: Vec<Slice> = on.into_values().collect();
     let mut off: Vec<Slice> = off.into_values().collect();
-    finalize_labels(&mut on, &titles);
-    finalize_labels(&mut off, &titles);
+    finalize_labels(&mut on, &titles, &browsers);
+    finalize_labels(&mut off, &titles, &browsers);
     on.sort_by(|a, b| b.secs.cmp(&a.secs));
     off.sort_by(|a, b| b.secs.cmp(&a.secs));
     Agg {
@@ -721,6 +757,7 @@ mod tests {
             secs: 300,
             title: String::new(),
             pages: 0,
+            browser: String::new(),
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("【教程】十分钟看懂 Rust".to_string(), 200u64);
@@ -729,7 +766,7 @@ mod tests {
         let mut titles = std::collections::BTreeMap::new();
         titles.insert("site|b23.tv".to_string(), m);
 
-        finalize_labels(&mut slices, &titles);
+        finalize_labels(&mut slices, &titles, &std::collections::BTreeMap::new());
         assert_eq!(slices.len(), 1, "同一域名只能有一行");
         assert_eq!(slices[0].label, "【教程】十分钟看懂 Rust");
         assert_eq!(slices[0].title, "【教程】十分钟看懂 Rust");
@@ -746,8 +783,9 @@ mod tests {
             secs: 10,
             title: String::new(),
             pages: 0,
+            browser: String::new(),
         }];
-        finalize_labels(&mut slices, &std::collections::BTreeMap::new());
+        finalize_labels(&mut slices, &std::collections::BTreeMap::new(), &std::collections::BTreeMap::new());
         assert_eq!(slices[0].label, "example.com");
         assert_eq!(slices[0].pages, 0);
     }
@@ -762,12 +800,13 @@ mod tests {
             secs: 99,
             title: String::new(),
             pages: 0,
+            browser: String::new(),
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("不该出现在软件行里".to_string(), 1u64);
         let mut titles = std::collections::BTreeMap::new();
         titles.insert("app|c:\\x\\chrome.exe".to_string(), m);
-        finalize_labels(&mut slices, &titles);
+        finalize_labels(&mut slices, &titles, &std::collections::BTreeMap::new());
         assert_eq!(slices[0].label, "Google Chrome");
     }
 
@@ -785,7 +824,7 @@ mod tests {
     #[test]
     fn titles_round_trip() {
         let mut f = DayFile::new("2026-10-29".into());
-        let mut acc = Acc { label: "d".into(), category: "site".into(), secs: 9, hours: vec![0; 24], titles: Default::default() };
+        let mut acc = Acc { label: "d".into(), category: "site".into(), secs: 9, hours: vec![0; 24], titles: Default::default(), browsers: Default::default() };
         acc.titles.insert("T".into(), 9);
         f.on.insert("site|d.com".into(), acc);
         let raw = serde_json::to_string(&f).unwrap();

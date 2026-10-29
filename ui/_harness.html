@@ -634,7 +634,7 @@ window.__itest = async () => {
   /** 清空所有已选时段（这一段用例反复重置状态用） */
   const wipeAll = async () => {
     const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
-    p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+    p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; }));
     await saveConfig(); await wait(130);
   };
 
@@ -1410,7 +1410,7 @@ window.__itest = async () => {
     const clearAll = async () => {
       const c = fc();
       const p = c.profiles.find((x) => x.id === c.active) || c.profiles[0];
-      p.days.forEach((day) => day.forEach((h) => { h.on = false; h.from = 0; h.to = 60; }));
+      p.days.forEach((day) => day.forEach((h) => { h.on = false; h.from = 0; h.to = 60; h.seg = ''; }));
       await saveConfig(); await wait(120);
     };
     for (const target of [0, 1, 2, 3]) {
@@ -2067,7 +2067,7 @@ window.__itest = async () => {
     };
     const clearAll = async () => {
       const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
-      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; }));
       await saveConfig(); await wait(130);
     };
     /** 从 src 天 h 点抓起来，依次经过 mids，最后在 dst 天松手 */
@@ -2230,7 +2230,7 @@ window.__itest = async () => {
     // 本块自己的清空函数（26g 里那个是块作用域，这里拿不到）
     const clearAll = async () => {
       const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
-      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; }));
       await saveConfig(); await wait(130);
     };
     // ① 色块上的字必须压得住色带（v0.1.16 把 .f 改成 position:relative 之后文字被盖住）
@@ -2345,7 +2345,7 @@ window.__itest = async () => {
     // 本块自己的清空函数（26g 里那个是块作用域，这里拿不到）
     const clearAll = async () => {
       const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
-      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; }));
       await saveConfig(); await wait(130);
     };
     await openFull();
@@ -2410,10 +2410,10 @@ window.__itest = async () => {
       start: '2026-10-01', end: '2026-10-29',
       on: [
         { key: 'app|c:/x/chrome.exe', label: 'Google Chrome', category: 'app', secs: 3600 },
-        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 600, title: '十分钟看懂 Rust', pages: 3 },
+        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 600, title: '十分钟看懂 Rust', pages: 3, browser: 'Google Chrome' },
       ],
       off: [
-        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 300, title: '十分钟看懂 Rust', pages: 3 },
+        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 300, title: '十分钟看懂 Rust', pages: 3, browser: 'Google Chrome' },
       ],
       onSecs: 4200, offSecs: 300,
       onHourly: new Array(24).fill(0), offHourly: new Array(24).fill(0),
@@ -2441,99 +2441,254 @@ window.__itest = async () => {
     await wait(220);
     const trs2 = [...document.querySelectorAll('#content table.tbl tbody tr')];
     out.push(['单独看已开启时也保留标题', trs2[1].children[1].textContent.indexOf('十分钟看懂 Rust') >= 0, true]);
+    // 网页条目要在名称后写明"用哪个浏览器打开"
+    {
+      const rows2 = [...document.querySelectorAll('#content table tr')];
+      const siteRow = rows2.find((tr) => tr.textContent.indexOf('十分钟看懂 Rust') >= 0);
+      out.push(['名称后带浏览器括号', !!siteRow && /（Google Chrome）/.test(siteRow.textContent), true]);
+      out.push(['括号里的浏览器不抢标题', !!siteRow
+        && siteRow.querySelector('.st-browser').textContent.trim(), '（Google Chrome）']);
+    }
     S.stats = null;
     S.statsTab = 'all';
     await Act.nav('overview');
     await wait(200);
   }
 
-  // ---- 26h5. 睡眠结束后自动启动：默认关 / 独立开关 / 清单编辑 / 校验 ----
+  // ---- 26h6. 进入自律时间自动打开：面板 / 排序 / 窗口形式 / 校验 ----
   {
-    const sl = () => S.data.config.settings.sleep;
-    // 夹具里没有 wake 字段：写进 S.data 之后必须 saveConfig，
-    // 否则下一次 pull 会被 STATE 里的旧配置覆盖（get_state 是深拷贝）
-    S.wakeDraft = [];
-    sl().wake = { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
-    await saveConfig();
-    await Act.nav('clock');
+    const r0 = () => S.data.config.rules[0];
+    await Act.nav('rules');
     await wait(260);
 
-    out.push(['睡眠卡片里有"自动启动"一节', /睡眠结束后自动启动/.test(
-      document.getElementById('sleepCard').textContent), true]);
-    out.push(['默认是关闭的（不该自己开程序）', !!sl().wake.enabled, false]);
-    out.push(['关着的时候不显示清单', !!document.getElementById('wakeDelay'), false]);
+    // ① 每条规则都有入口
+    const btn = document.querySelector('[data-act="rule-launch"]');
+    out.push(['规则卡片上有「自动打开」入口', !!btn, true]);
+    out.push(['入口文案', btn ? btn.textContent.trim() : '-', '自动打开']);
 
-    // ① 打开开关
-    document.querySelector('[data-act="wake-enable"]').click();
-    await wait(300);
-    out.push(['点开关后写进配置', sl().wake.enabled, true]);
-    out.push(['打开后才出现等待时间', !!document.getElementById('wakeDelay'), true]);
-    out.push(['默认等 20 秒再启动', +document.getElementById('wakeDelay').value, 20]);
-    out.push(['默认会尝试叫醒系统', !!document.getElementById('wakeSystem').checked, true]);
+    // ② 打开面板：默认关闭、空清单
+    btn.click();
+    await wait(240);
+    out.push(['面板标题', (document.querySelector('.modal-hd h3') || {}).textContent, '进入自律时间时自动打开']);
+    out.push(['默认是关闭的', S.launchDraft.enabled, false]);
+    out.push(['默认没有目标', S.launchDraft.items.length, 0]);
+    out.push(['空清单给出提示', !!document.querySelector('.lk-empty'), true]);
 
-    // ② 加两项：一个软件、一个网页
-    document.querySelector('[data-act="wake-add"]').click();
-    await wait(200);
-    out.push(['添加后出现一行', document.querySelectorAll('[data-wkrow]').length, 1]);
-    document.querySelector('[data-act="wake-add"]').click();
-    await wait(200);
-    out.push(['可以加第二行', document.querySelectorAll('[data-wkrow]').length, 2]);
+    // ③ 开开关（只改草稿，不落盘）
+    document.querySelector('[data-act="launch-toggle"]').click();
+    await wait(160);
+    out.push(['开关改的是草稿', S.launchDraft.enabled, true]);
+    out.push(['此时配置还没变', !!(r0().autolaunch && r0().autolaunch.enabled), false]);
 
-    const rows = () => [...document.querySelectorAll('[data-wkrow]')];
-    // 第 1 行：软件 + 参数 + 只在周一/周三
-    rows()[0].querySelector('[data-wk="target"]').value = 'C:/Apps/a.exe';
-    rows()[0].querySelector('[data-wk="args"]').value = '--silent --win "a b"';
-    rows()[0].querySelector('[data-wkday="0"]').click();
-    await wait(220);
-    rows()[0].querySelector('[data-wkday="2"]').click();
-    await wait(220);
-    // 第 2 行：网页
-    const r2 = rows()[1];
-    r2.querySelector('[data-wk="kind"]').value = 'url';
-    r2.querySelector('[data-wk="target"]').value = 'https://example.com/x';
+    // ④ 加两项：软件 + 网页
+    document.querySelector('[data-act="launch-add"]').click();
+    await wait(140);
+    document.querySelector('[data-act="launch-add"]').click();
+    await wait(140);
+    out.push(['加了两行', document.querySelectorAll('[data-lkrow]').length, 2]);
 
-    $('#wakeDelay').value = '35';
-    document.querySelector('[data-act="sleep-save"]').click();
+    {
+      const rows = [...document.querySelectorAll('[data-lkrow]')];
+      const t0 = rows[0].querySelector('[data-lk="target"]');
+      t0.value = 'C:\\Apps\\Code.exe';
+      rows[0].querySelector('[data-lk="args"]').value = '--new-window';
+      rows[0].querySelector('[data-lk="window"]').value = 'max';
+      // 第二行改成网页
+      const sel = rows[1].querySelector('[data-lk="kind"]');
+      sel.value = 'url';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(120);
+    }
+    {
+      const rows = [...document.querySelectorAll('[data-lkrow]')];
+      rows[1].querySelector('[data-lk="target"]').value = 'https://example.com/doc';
+      rows[1].querySelector('[data-lk="browser"]').value = 'chrome.exe';
+    }
+
+    // ⑤ 下移 / 上移：顺序就是排列顺序
+    document.querySelector('[data-act="launch-down"]').click();
+    await wait(160);
+    out.push(['下移后网页排到第一', S.launchDraft.items[0].kind, 'url']);
+    // 下移之后第一行是网页，它自己的「上移」是禁用的；
+    // 要把软件提回来，点的是**第二行**的「上移」——这正是真实用户会做的动作。
+    document.querySelectorAll('[data-act="launch-up"]')[1].click();
+    await wait(160);
+    out.push(['上移后软件回到第一', S.launchDraft.items[0].kind, 'app']);
+    out.push(['顺序换了但两项都在', S.launchDraft.items.map((x) => x.kind).join(','), 'app,url']);
+
+    // ⑥ 保存
+    document.querySelector('[data-act="launch-save"]').click();
     await wait(420);
-    const items = sl().wake.items;
-    out.push(['保存后两项都在', items.length, 2]);
+    const al = r0().autolaunch || {};
+    out.push(['保存后写进配置', al.enabled, true]);
+    out.push(['两项都存下来', (al.items || []).length, 2]);
     out.push(['软件项字段完整',
-      [items[0].kind, items[0].target, items[0].args].join('|'),
-      'app|C:/Apps/a.exe|--silent --win "a b"']);
-    out.push(['星期只记点了的那两天', JSON.stringify(items[0].days), '[0,2]']);
-    out.push(['网页项字段完整', [items[1].kind, items[1].target].join('|'), 'url|https://example.com/x']);
-    out.push(['网页项不写参数', items[1].args, '']);
-    out.push(['等待秒数一起保存', sl().wake.delaySecs, 35]);
+      `${al.items[0].kind}|${al.items[0].target}|${al.items[0].args}|${al.items[0].window}`,
+      'app|C:\\Apps\\Code.exe|--new-window|max']);
+    out.push(['网页项带浏览器',
+      `${al.items[1].kind}|${al.items[1].browser}`, 'url|chrome.exe']);
+    out.push(['关闭后回到列表', !!document.querySelector('.modal'), false]);
+    out.push(['卡片上显示项数', /自动打开 2 项/.test(
+      document.querySelector('.sl-item-meta').textContent), true]);
 
-    // ③ 非法网址被拦下（不能留一条永远失败的条目）
-    document.querySelector('[data-act="wake-add"]').click();
-    await wait(200);
-    const r3 = rows()[2];
-    r3.querySelector('[data-wk="kind"]').value = 'url';
-    r3.querySelector('[data-wk="target"]').value = 'file:///c:/x.html';
-    document.querySelector('[data-act="sleep-save"]').click();
-    await wait(420);
-    out.push(['非 http 网址被跳过', sl().wake.items.length, 2]);
-    out.push(['跳过时有提示', /不是 http/.test(document.getElementById('toastRoot').textContent), true]);
+    // ⑦ 非法网址被拦下（file:// 既不安全也没意义）
+    document.querySelector('[data-act="rule-launch"]').click();
+    await wait(220);
+    document.querySelector('[data-act="launch-add"]').click();
+    await wait(140);
+    {
+      const rows = [...document.querySelectorAll('[data-lkrow]')];
+      const last = rows[rows.length - 1];
+      const sel = last.querySelector('[data-lk="kind"]');
+      sel.value = 'url';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(120);
+    }
+    {
+      const rows = [...document.querySelectorAll('[data-lkrow]')];
+      rows[rows.length - 1].querySelector('[data-lk="target"]').value = 'file:///c:/x.html';
+    }
+    document.querySelector('[data-act="launch-save"]').click();
+    await wait(380);
+    out.push(['非 http 网址不会被存进去', r0().autolaunch.items.length, 2]);
+    out.push(['拦下时给了提示', /不是 http/.test(
+      (document.getElementById('toastRoot') || {}).textContent || ''), true]);
 
-    // ④ 删掉一项
-    document.querySelectorAll('[data-act="wake-del"]')[1].click();
-    await wait(360);
-    out.push(['删除后只剩一项', sl().wake.items.length, 1]);
-    out.push(['剩下的还是那条软件', sl().wake.items[0].target, 'C:/Apps/a.exe']);
+    // ⑧ 窗口形式只认三个合法值（前端写错也会被收敛）
+    out.push(['最大化被保留', r0().autolaunch.items[0].window, 'max']);
 
-    // ⑤ 关掉开关 → 清单收起来，但条目还在（下次打开不用重填）
-    document.querySelector('[data-act="wake-enable"]').click();
-    await wait(320);
-    out.push(['关掉后不再显示清单', !!document.getElementById('wakeDelay'), false]);
-    out.push(['关掉后条目仍然保留', (sl().wake.items || []).length, 1]);
-
-    // 收尾：恢复默认（默认关、空清单）
-    sl().wake = { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
-    STATE.config.settings.sleep.wake = sl().wake;
+    // 收尾：关掉，别影响后面的用例
+    r0().autolaunch = { enabled: false, items: [] };
     await saveConfig();
-    await Act.nav('overview');
-    await wait(200);
+    await Act.nav('clock');
+    await wait(180);
+  }
+
+  // ---- 26h5. 相邻 / 连续的时段必须保持为两个独立段 ----
+  {
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => {
+        hh.on = false; hh.from = 0; hh.to = 60; hh.seg = '';
+      }));
+      await saveConfig(); await wait(130);
+    };
+    const segsOf = (d) => ccSegs(pd()[d]);
+    const runsOf = (d) => document.querySelectorAll(`.cc-run[data-d="${d}"]`);
+    const colCenter = (d) => {
+      const r = document.querySelector(`.cc-cell[data-d="${d}"]`).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+
+    await openFull();
+    await clearAll();
+
+    // ① 拖出 09–10，再拖出**紧挨着**的 10–11：必须是两段
+    await Act.clockCommitRange(2, 9 * 60, 10 * 60, 'add');
+    await wait(220);
+    await Act.clockCommitRange(2, 10 * 60, 11 * 60, 'add');
+    await wait(240);
+    out.push(['相邻两段仍是两段', segsOf(2).length, 2]);
+    out.push(['第一段是 09–10', segsOf(2)[0].range, '09:00–10:00']);
+    out.push(['第二段是 10–11', segsOf(2)[1].range, '10:00–11:00']);
+    out.push(['两段的段标识不同', segsOf(2)[0].h0 !== segsOf(2)[1].h0, true]);
+    out.push(['两段的 id 确实不一样',
+      pd()[2][9].seg !== pd()[2][10].seg && !!pd()[2][9].seg && !!pd()[2][10].seg, true]);
+    out.push(['渲染出两个块，不是一整块', runsOf(2).length, 2]);
+    out.push(['合计时长仍然是 2 小时', ccDayMinutes(pd()[2]), 120]);
+    out.push(['块之间边界独立（第一块只到 10:00）',
+      runsOf(2)[0].dataset.h1, '9']);
+    out.push(['第二块从 10 点开始', runsOf(2)[1].dataset.h0, '10']);
+
+    // ② 右键第二段 → 只作用于第二段，目标写的是 10–11
+    fire('contextmenu', cell(2, 10), { clientY: gY(2, 10, 1), clientX: colCenter(2) });
+    await wait(180);
+    out.push(['右键第二段只认这一段', $('#ccTgt').textContent, '周三 10:00 – 11:00']);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await wait(120);
+
+    // ③ 边缘缩放只改被操作的那一段
+    {
+      const before = ccDayMinutes(pd()[2]);
+      fire('mousedown', cell(2, 10), {
+        clientY: ccSegEdgeY(2, { h0: 10, h1: 10, f0: 0, t1: 60 }).bottom - 2,
+        clientX: colCenter(2),
+      });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(2, 11, 3), clientX: colCenter(2),
+      }));
+      await wait(180);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['缩放第二段后它变成 10–12', segsOf(2)[1].range, '10:00–12:00']);
+      out.push(['第一段没被牵连', segsOf(2)[0].range, '09:00–10:00']);
+      out.push(['合计 +1 小时', ccDayMinutes(pd()[2]), before + 60]);
+    }
+
+    // ④ 整段搬走其中一段，另一段原地不动
+    {
+      await clearAll();
+      await Act.clockCommitRange(1, 9 * 60, 10 * 60, 'add');
+      await Act.clockCommitRange(1, 10 * 60, 11 * 60, 'add');
+      await wait(240);
+      const segB = pd()[1][10].seg;
+      fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 14, 1), clientX: colCenter(1),
+      }));
+      await wait(200);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(440);
+      const rest = segsOf(1);
+      // 搬走 A 之后：原处只剩 B，新位置多一个 A —— 一共两段，
+      // 而且它们**没有**因为相邻/同源而粘成一段。这本身就是断言的一部分。
+      out.push(['搬走一段后是"原处一段 + 新处一段"', rest.length, 2]);
+      out.push(['原处留下的是原来第二段', rest[0].range, '10:00–11:00']);
+      out.push(['留下的段 id 没变', pd()[1][10].seg, segB]);
+      out.push(['被搬走的段到了 14 点', pd()[1][14].on, true]);
+      out.push(['搬过去仍然是一段（不是被拆散）', rest[1].range, '14:00–15:00']);
+      out.push(['两段 id 仍然不同', pd()[1][10].seg !== pd()[1][14].seg, true]);
+    }
+
+    // ⑤ 三段连续：仍然是三段，不会粘成一整块
+    {
+      await clearAll();
+      for (const h of [9, 10, 11]) {
+        await Act.clockCommitRange(4, h * 60, (h + 1) * 60, 'add');
+        await wait(150);
+      }
+      await wait(200);
+      out.push(['连续三段仍是三段', segsOf(4).length, 3]);
+      out.push(['连续三段渲染三个块', runsOf(4).length, 3]);
+      out.push(['三段的 id 互不相同',
+        new Set([pd()[4][9].seg, pd()[4][10].seg, pd()[4][11].seg]).size, 3]);
+    }
+
+    // ⑥ 老配置（没有 seg）仍然按连续合并：升级不能把旧排班打碎
+    {
+      await clearAll();
+      pd()[6][9].on = true; pd()[6][9].from = 0; pd()[6][9].to = 60;
+      pd()[6][10].on = true; pd()[6][10].from = 0; pd()[6][10].to = 60;
+      pd()[6][9].seg = ''; pd()[6][10].seg = '';
+      await saveConfig(); render(); await wait(240);
+      out.push(['没有 seg 的老数据仍合并成一段', segsOf(6).length, 1]);
+      out.push(['老数据那一段是 09–11', segsOf(6)[0].range, '09:00–11:00']);
+    }
+
+    // ⑦ 取消其中一段，另一段不受影响
+    {
+      await clearAll();
+      await Act.clockCommitRange(0, 8 * 60, 9 * 60, 'add');
+      await Act.clockCommitRange(0, 9 * 60, 10 * 60, 'add');
+      await wait(220);
+      await Act.clockClearRange(0, 8, 8, '周一 08:00–09:00');
+      await wait(320);
+      out.push(['取消一段后只剩另一段', segsOf(0).length, 1]);
+      out.push(['剩下的是 09–10', segsOf(0)[0].range, '09:00–10:00']);
+      out.push(['被取消那一格的 seg 已清空', pd()[0][8].seg, '']);
+    }
+
+    await clearAll();
   }
 
   // ---- 26h4. 多段睡眠 + 生效周期（每天 / 仅工作日 / 指定）----
@@ -2647,22 +2802,6 @@ window.__itest = async () => {
     out.push(['切回第一段后表单跟着换', `${$('#sleepFrom').value}/${$('#sleepTo').value}`, '23:00/07:00']);
     out.push(['切回第一段后周期显示每天',
       document.querySelector('.sl-seg .active').textContent.trim(), '每天']);
-
-    // ⑨ 每段的启动清单是独立的
-    wins()[0].wake = { enabled: true, delaySecs: 20, wakeSystem: true, items: [
-      { id: 'a1', kind: 'app', target: 'C:/a.exe', args: '', days: [], enabled: true },
-    ] };
-    wins()[1].wake = { enabled: true, delaySecs: 20, wakeSystem: true, items: [
-      { id: 'b1', kind: 'url', target: 'https://b.example', args: '', days: [], enabled: true },
-    ] };
-    await saveConfig();
-    render(); await wait(300);
-    out.push(['第一段只看到自己的清单',
-      [...document.querySelectorAll('[data-wkrow]')].map((r) => r.dataset.wkrow).join(','), 'a1']);
-    document.querySelectorAll('[data-act="sleep-pick-seg"]')[1].click();
-    await wait(240);
-    out.push(['第二段只看到自己的清单',
-      [...document.querySelectorAll('[data-wkrow]')].map((r) => r.dataset.wkrow).join(','), 'b1']);
 
     // ⑩ 删段：删到只剩一段可以，再删就被拦下
     document.querySelectorAll('[data-act="sleep-del-seg"]')[1].click();
@@ -2795,7 +2934,7 @@ window.__itest = async () => {
     const runOfDay = (d) => document.querySelector(`.cc-run[data-d="${d}"]`);
     const clearAll = async () => {
       const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
-      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; }));
       await saveConfig(); await wait(130);
     };
 

@@ -26,6 +26,9 @@ pub struct Runtime {
     pub last_blocked: String,
     /// 上次把主窗口拉到前台的时间（毫秒），用于防抖
     pub last_focus: i64,
+    /// 最近一次「进入自律时间自动打开」的时间与说明（界面显示用）
+    pub launch_at: i64,
+    pub launch_note: String,
     /// 是否有规则正处于番茄休息段
     pub on_break: bool,
     pub in_break: bool,
@@ -80,6 +83,8 @@ impl Default for Runtime {
             wake_at: 0,
             last_blocked: String::new(),
             last_focus: 0,
+            launch_at: 0,
+            launch_note: String::new(),
             on_break: false,
             in_break: false,
             break_left: 0,

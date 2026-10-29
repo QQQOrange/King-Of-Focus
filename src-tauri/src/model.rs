@@ -153,7 +153,75 @@ pub struct Rule {
     pub brk: BreakCfg,
     /// 硬核锁定：生效期间不能退出程序、不能改设置、任务管理器会被关掉
     pub hard: bool,
+    /// 进入自律时间时自动打开的应用 / 网页（含排列顺序与窗口形式）
+    #[serde(default)]
+    pub autolaunch: AutoLaunchCfg,
 }
+
+/// 「进入自律时间时自动打开」的一组目标。
+///
+/// 触发点不是"开机"，而是**每一个专注段的开始**：
+/// 一个长自律时段里会有多个专注段 + 休息段，每次休息结束回到专注，
+/// 都重新对齐一次（已开着的切到前面，没开的才启动）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutoLaunchCfg {
+    /// 独立开关，默认关：这功能会自己拉窗口，不该在用户没同意时生效
+    pub enabled: bool,
+    /// **数组顺序就是桌面上从左到右的排列顺序**
+    pub items: Vec<LaunchItem>,
+}
+
+impl Default for AutoLaunchCfg {
+    fn default() -> Self {
+        AutoLaunchCfg { enabled: false, items: Vec::new() }
+    }
+}
+
+/// 要打开的一项（软件或网页）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LaunchItem {
+    pub id: String,
+    /// app = 可执行文件（可带参数）| url = 网页地址
+    pub kind: String,
+    /// app = exe 全路径；url = http(s) 地址
+    pub target: String,
+    /// 启动参数（只有 app 用得到，支持双引号）
+    pub args: String,
+    /// 打开后窗口怎么摆：normal（窗口化）| max（最大化）| min（最小化）
+    pub window: String,
+    /// url 用哪个浏览器打开（exe 名，空 = 系统默认浏览器）
+    pub browser: String,
+}
+
+impl Default for LaunchItem {
+    fn default() -> Self {
+        LaunchItem {
+            id: String::new(),
+            kind: "app".into(),
+            target: String::new(),
+            args: String::new(),
+            window: "normal".into(),
+            browser: String::new(),
+        }
+    }
+}
+
+impl LaunchItem {
+    pub fn is_url(&self) -> bool {
+        self.kind == "url"
+    }
+    /// 归一化后的窗口形式（非法值一律退回窗口化）
+    pub fn win_mode(&self) -> &'static str {
+        match self.window.as_str() {
+            "max" => "max",
+            "min" => "min",
+            _ => "normal",
+        }
+    }
+}
+
 
 impl Default for Rule {
     fn default() -> Self {
@@ -171,6 +239,7 @@ impl Default for Rule {
             extra_protected: vec![],
             brk: BreakCfg::default(),
             hard: true,
+            autolaunch: AutoLaunchCfg::default(),
         }
     }
 }
@@ -260,6 +329,14 @@ pub struct HourPlan {
     /// 选中窗口在这一小时里的结束分钟（1–60，60 = 到整点）
     #[serde(default = "hour_end")]
     pub to: u32,
+    /// 段标识：同一次设置写上来的连续小时共用一个 id。
+    ///
+    /// 为什么需要它：`on` + `from/to` 只能表达"这一小时选没选"，
+    /// 表达不了"这两段是**两段**"。于是两个独立时段只要时间上贴合，
+    /// 就会被当成一整段合并——用户明确说过这是 bug。
+    /// 有 id 之后，"相邻"不再等于"同一段"；空 id 是老配置，退回旧的连续合并。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seg: String,
 }
 
 /// `to` 的 serde 默认值：整点结束（旧配置没有这个字段时不能变成 0，
@@ -270,7 +347,7 @@ fn hour_end() -> u32 {
 
 impl Default for HourPlan {
     fn default() -> Self {
-        HourPlan { on: false, work: 50, brk: 10, from: 0, to: 60 }
+        HourPlan { on: false, work: 50, brk: 10, from: 0, to: 60, seg: String::new() }
     }
 }
 
@@ -706,9 +783,6 @@ pub struct SleepCfg {
     pub unlock_min: u32,
     /// 积分解锁的价格基数：每分钟多少分。0 = 这段睡眠不许用积分解锁
     pub unlock_price: i64,
-    /// 睡眠结束后的自动唤醒 / 自动启动（**单段模式**下的清单，兼容旧配置）
-    #[serde(default)]
-    pub wake: WakeCfg,
     /// 多段睡眠时段。
     ///
     /// 为空时退回"上面那套 from / to / countdownMin / shutdown / lockScreen / wake"
@@ -743,9 +817,6 @@ pub struct SleepWindow {
     pub shutdown: bool,
     /// 这一段落在里面之后多少分钟内关机
     pub countdown_min: u32,
-    /// 这一段专属的"结束后自动启动"清单
-    #[serde(default)]
-    pub wake: WakeCfg,
 }
 
 impl Default for SleepWindow {
@@ -759,7 +830,6 @@ impl Default for SleepWindow {
             lock_screen: true,
             shutdown: true,
             countdown_min: 10,
-            wake: WakeCfg::default(),
         }
     }
 }
@@ -857,66 +927,6 @@ impl SleepWindow {
     }
 }
 
-/// 睡眠结束后要自动打开的一项（软件或网页）
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", default)]
-pub struct WakeItem {
-    /// 稳定 id（前端生成）
-    pub id: String,
-    /// app（可执行文件 + 参数）| url（网页地址）
-    pub kind: String,
-    /// app = exe 全路径；url = http(s) 地址
-    pub target: String,
-    /// 启动参数（只有 app 用得到，按空格切，支持双引号）
-    pub args: String,
-    /// 只在哪几天生效：0=周一 … 6=周日。**空 = 每天**
-    ///
-    /// 为什么按星期区分：目前只有一套睡眠时段（比如 23:00–07:00），
-    /// 但工作日和周末"起床该开什么"往往不一样（上班开企业微信，周末开音乐）。
-    /// 用星期表达"不同的睡眠结束场景"，不用再多加一套时段模型。
-    #[serde(default)]
-    pub days: Vec<u8>,
-    pub enabled: bool,
-}
-
-impl Default for WakeItem {
-    fn default() -> Self {
-        WakeItem {
-            id: String::new(),
-            kind: "app".into(),
-            target: String::new(),
-            args: String::new(),
-            days: Vec::new(),
-            enabled: true,
-        }
-    }
-}
-
-/// 自动唤醒 / 自动启动的配置
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", default)]
-pub struct WakeCfg {
-    /// 独立开关，**默认关**：这功能会自己开程序，不该在用户没同意时生效
-    pub enabled: bool,
-    /// 系统恢复后再等几秒才启动（0..300，默认 20）。
-    /// 刚唤醒时网络 / 磁盘都还没就绪，立刻拉浏览器多半会失败或白屏。
-    pub delay_secs: u32,
-    /// 要不要用"可唤醒定时器"把系统从睡眠里叫醒（默认开）
-    pub wake_system: bool,
-    pub items: Vec<WakeItem>,
-}
-
-impl Default for WakeCfg {
-    fn default() -> Self {
-        WakeCfg {
-            enabled: false,
-            delay_secs: 20,
-            wake_system: true,
-            items: Vec::new(),
-        }
-    }
-}
-
 impl Default for SleepCfg {
     fn default() -> Self {
         SleepCfg {
@@ -928,7 +938,6 @@ impl Default for SleepCfg {
             lock_screen: true,
             unlock_min: 30,
             unlock_price: 10,
-            wake: WakeCfg::default(),
             // 默认**空** = 走旧的单段语义。老配置读进来就是这个状态，行为不变；
             // 用户在界面上点"添加时段"之后才会有 windows。
             windows: Vec::new(),
@@ -968,7 +977,6 @@ impl SleepCfg {
             lock_screen: self.lock_screen,
             shutdown: self.shutdown,
             countdown_min: self.countdown_min,
-            wake: self.wake.clone(),
         }
     }
 
@@ -1268,6 +1276,7 @@ impl Default for Config {
                 weekdays_19(9 * 60, 11 * 60 + 30),
                 weekdays_19(9 * 60, 11 * 60 + 30),
             ],
+            autolaunch: AutoLaunchCfg::default(),
             lock: Lock::default(),
             color: "#ff9f43".into(),
             extra_protected: vec![],

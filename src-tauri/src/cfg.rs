@@ -87,9 +87,60 @@ pub fn save(cfg: &Config) -> Result<(), String> {
     std::fs::write(&p, s).map_err(|e| format!("写入配置失败: {e}"))
 }
 
+/// 「进入自律时间自动打开」的归一化。
+///
+/// 三条硬规则：
+/// 1. 最多 12 项——再多就变成一次性拉满屏窗口，那不是"自动打开"是"轰炸"；
+/// 2. url 必须是 http(s)：`file://` 之类既能读本地文件又能当跳板，一律挡掉；
+/// 3. app 必须有目标路径，url 与 app 的 `window` 一律收敛到三个合法值，
+///    否则前端写错一个拼写，窗口就会停在"既没最大化也没还原"的怪状态。
+fn sanitize_autolaunch(a: &mut crate::model::AutoLaunchCfg) {
+    const MAX_ITEMS: usize = 12;
+    let mut out: Vec<crate::model::LaunchItem> = Vec::new();
+    for it in a.items.iter() {
+        let kind = if it.kind == "url" { "url" } else { "app" };
+        let target = it.target.trim().chars().take(400).collect::<String>();
+        if target.is_empty() {
+            continue;
+        }
+        if kind == "url" && !(target.starts_with("http://") || target.starts_with("https://")) {
+            continue;
+        }
+        let mut id = it.id.trim().chars().take(40).collect::<String>();
+        if id.is_empty() {
+            id = format!("i{}", out.len() + 1);
+        }
+        while out.iter().any(|x| x.id == id) {
+            id.push('_');
+        }
+        let window = match it.window.as_str() {
+            "max" => "max",
+            "min" => "min",
+            _ => "normal",
+        };
+        out.push(crate::model::LaunchItem {
+            id,
+            kind: kind.into(),
+            target,
+            args: if kind == "app" {
+                it.args.trim().chars().take(300).collect()
+            } else {
+                String::new()
+            },
+            window: window.into(),
+            browser: it.browser.trim().chars().take(200).collect(),
+        });
+        if out.len() >= MAX_ITEMS {
+            break;
+        }
+    }
+    a.items = out;
+}
+
 /// 兜底修正，避免前端传上来畸形数据把引擎搞坏
 pub fn sanitize(c: &mut Config) {
     for l in c.rules.iter_mut() {
+        sanitize_autolaunch(&mut l.autolaunch);
         if l.schedule.len() != 7 {
             l.schedule.resize(7, vec![]);
         }
@@ -130,7 +181,6 @@ pub fn sanitize(c: &mut Config) {
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
     sanitize_sleep(&mut c.settings.sleep);
-    sanitize_wake(&mut c.settings.sleep.wake);
     sanitize_quotes(&mut c.settings.custom_quotes);
     sanitize_quote_feeds(&mut c.settings.quote_feeds, &mut c.settings.quote_feed);
     sanitize_custom_browsers(&mut c.settings.custom_browsers);
@@ -198,50 +248,6 @@ fn sanitize_quotes(list: &mut Vec<String>) {
         }
     }
     *list = out;
-}
-
-/// 自动唤醒 / 自动启动归一化：夹参数、去非法目标、限量。
-///
-/// 这里挡的不是"用户手滑"，而是"配置被手改成危险值"：
-/// `target` 只接受 http(s) 或一个像路径的字符串；参数长度设上限，
-/// 免得一段几万字的命令行把 spawn 搞崩。
-fn sanitize_wake(w: &mut crate::model::WakeCfg) {
-    const MAX_ITEMS: usize = 12;
-    w.delay_secs = w.delay_secs.min(300);
-    let mut out: Vec<crate::model::WakeItem> = Vec::new();
-    for it in w.items.iter() {
-        let kind = if it.kind == "url" { "url" } else { "app" };
-        let target = it.target.trim().chars().take(400).collect::<String>();
-        if target.is_empty() {
-            continue;
-        }
-        if kind == "url" && !(target.starts_with("http://") || target.starts_with("https://")) {
-            continue;
-        }
-        let mut days: Vec<u8> = it.days.iter().copied().filter(|d| *d < 7).collect();
-        days.sort_unstable();
-        days.dedup();
-        let id = if it.id.trim().is_empty() {
-            format!("w{}", out.len() + 1)
-        } else {
-            it.id.trim().chars().take(40).collect()
-        };
-        if out.iter().any(|x| x.id == id) {
-            continue;
-        }
-        out.push(crate::model::WakeItem {
-            id,
-            kind: kind.into(),
-            target,
-            args: it.args.trim().chars().take(300).collect(),
-            days,
-            enabled: it.enabled,
-        });
-        if out.len() >= MAX_ITEMS {
-            break;
-        }
-    }
-    w.items = out;
 }
 
 /// 语录来源归一化：补内置、修 id、挡非法地址、限量，并把「当前来源」拉回合法值。
@@ -418,8 +424,6 @@ fn sanitize_sleep_windows(s: &mut SleepCfg) {
         while out.iter().any(|x| x.id == id) {
             id.push('_');
         }
-        let mut wake = w.wake.clone();
-        sanitize_wake(&mut wake);
         out.push(crate::model::SleepWindow {
             id,
             from,
@@ -429,7 +433,6 @@ fn sanitize_sleep_windows(s: &mut SleepCfg) {
             lock_screen: w.lock_screen,
             shutdown: w.shutdown,
             countdown_min: w.countdown_min.clamp(1, 120),
-            wake,
         });
         if out.len() >= MAX_WINDOWS {
             break;
@@ -514,7 +517,7 @@ mod tests {
     fn clock_migrates_legacy_hours_to_seven_days() {
         let mut c = Config::default();
         let mut hours = vec![HourPlan::default(); 24];
-        hours[9] = HourPlan { on: true, work: 45, brk: 15, from: 0, to: 60 };
+        hours[9] = HourPlan { on: true, work: 45, brk: 15, from: 0, to: 60, seg: String::new() };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             hours,
@@ -539,7 +542,7 @@ mod tests {
         // 上一版把单套方案直接摊在 ClockCfg.days 上
         let mut c = Config::default();
         let mut day = vec![HourPlan::default(); 24];
-        day[9] = HourPlan { on: true, work: 50, brk: 30, from: 0, to: 60 }; // work+brk > 60
+        day[9] = HourPlan { on: true, work: 50, brk: 30, from: 0, to: 60, seg: String::new() }; // work+brk > 60
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             days: vec![day],
@@ -571,11 +574,11 @@ mod tests {
         let mut a = ClockProfile::default();
         a.id = "work".into();
         a.name = "工作日强化".into();
-        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60 };
+        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60, seg: String::new() };
         let mut b = ClockProfile::default();
         b.id = "weekend".into();
         b.name = "周末轻松".into();
-        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60 };
+        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60, seg: String::new() };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             profiles: vec![a, b],
@@ -646,10 +649,10 @@ mod tests {
     fn clock_clamps_minute_window() {
         let mut c = Config::default();
         let day = &mut c.settings.focus_clock.profiles[0].days[0];
-        day[8] = HourPlan { on: true, work: 50, brk: 10, from: 90, to: 45 }; // from 越界且起>=止
-        day[9] = HourPlan { on: true, work: 50, brk: 10, from: 30, to: 20 }; // 起晚于止
-        day[10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 0 }; // to 越界
-        day[11] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 30 }; // 合法窗口
+        day[8] = HourPlan { on: true, work: 50, brk: 10, from: 90, to: 45, seg: String::new() }; // from 越界且起>=止
+        day[9] = HourPlan { on: true, work: 50, brk: 10, from: 30, to: 20, seg: String::new() }; // 起晚于止
+        day[10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 0, seg: String::new() }; // to 越界
+        day[11] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 30, seg: String::new() }; // 合法窗口
         sanitize(&mut c);
         let day = &c.settings.focus_clock.profiles[0].days[0];
         assert_eq!((day[8].from, day[8].to), (0, 60), "from 夹到 59 后仍起>=止，按整小时算");

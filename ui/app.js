@@ -635,6 +635,8 @@ function viewRules() {
         </div>
         <div class="sl-item-meta">
           ${l.apps.length} 个软件 · ${l.sites.length} 个网站 · ${l.exceptions.length} 条例外
+          ${l.autolaunch && l.autolaunch.enabled && (l.autolaunch.items || []).length
+    ? ` · <b style="color:var(--cc-fill)">自动打开 ${l.autolaunch.items.length} 项</b>` : ''}
         </div>
       </div>
       <div class="sl-item-act">
@@ -643,6 +645,8 @@ function viewRules() {
              title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，开关已锁定') : '启用 / 停用'}">
           <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
         </div>
+        <button class="btn btn-sm" data-act="rule-launch" data-id="${l.id}"
+          title="进入自律时间时自动打开这些软件 / 网页">自动打开</button>
         <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}" ${locked ? 'disabled' : ''}>删除</button>
       </div>
     </div>`;
@@ -1391,6 +1395,20 @@ function ccRenderRuns(root, override, only) {
     if (ov === null) return { ...base, on: false };
     return { ...base, on: true, from: ov.f, to: ov.t };
   };
+  // 这一小时属于哪一段。
+  //   · 没有预览 → 配置里的 seg
+  //   · 预览命中（正在拖的那一段）→ 统一标记 `__drag`，
+  //     于是它和旁边没动过的段 id 不同，必然被切成两块——
+  //     "拖一段，旁边那段不许跟着粘上来"就是靠这一条成立的。
+  //   · 预览返回 null（被清空）→ 空 id
+  const segOf = (d, h) => {
+    const base = (fc.days[d] && fc.days[d][h]) || {};
+    if (!override) return base.seg || '';
+    const ov = override(d, h);
+    if (ov === undefined) return base.seg || '';
+    if (ov === null) return '';
+    return '__drag';
+  };
   const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
   // 真实行高（px）：格子渲染出来了就以它为准，否则退回按粒度估算的常量
   const hourPx = (() => {
@@ -1422,6 +1440,7 @@ function ccRenderRuns(root, override, only) {
     }
     segs.push({
       d, h0, h1,
+      seg: segOf(d, h0),
       sig: mins.join(','),
       f0: Math.max(0, Math.min(59, Math.round(hourAt(d, h0).from || 0))),
       t1: Math.max(1, Math.min(60, Math.round(hourAt(d, h1).to == null ? 60 : hourAt(d, h1).to))),
@@ -1438,7 +1457,10 @@ function ccRenderRuns(root, override, only) {
       let start = from;
       for (let i = from + 1; i <= to; i++) {
         const prev = hourAt(d, i - 1), cur = hourAt(d, i);
-        const cont = (prev.to == null ? 60 : prev.to) >= 60 && (cur.from || 0) <= 0;
+        const cont = (prev.to == null ? 60 : prev.to) >= 60 && (cur.from || 0) <= 0
+          && ccSameSegId(segOf(d, i - 1), segOf(d, i));
+        // 只看时间上的连续是不够的：两个独立段可以首尾严丝合缝，
+        // 但它们是**两段**，必须各自成块（各自的圆角、标签、拖动范围）。
         if (!cont) {
           pushSeg(d, start, i - 1);
           start = i;
@@ -1665,6 +1687,48 @@ function ccNameDialog(mode) {
 
 /** 把一天拆成若干"连续时段"，连同摘要需要的统计值一起算出来。
  *  和 `ccDayRanges` 同一套连续性判据（上一小时排到整点、下一小时从整点开始）。 */
+/** 新段 id：只要求"同一毫秒内也不撞"，不做持久化解析 */
+let _ccSegSeq = 0;
+function ccNewSegId() {
+  _ccSegSeq += 1;
+  return 's' + Date.now().toString(36) + '_' + _ccSegSeq.toString(36);
+}
+
+/** 相邻两小时是否属于同一段。
+ *
+ *  有 `seg` 就看 id：**id 不同就是两段**，哪怕 09:00–10:00 与 10:00–11:00 完全贴合。
+ *  两边都没有 id（老配置）才退回"按连续性合并"的老行为——
+ *  老数据没有段的概念，只能这么退，否则升级后旧排班会碎成一小时一段。
+ *
+ *  一边有一边没有（手工改过配置）：按"不同段"处理，宁可分成两段，
+ *  也不要把用户明确分开的东西合起来。
+ */
+function ccSameSegId(x, y) {
+  const a = x || '';
+  const b = y || '';
+  if (!a && !b) return true;
+  return !!a && a === b;
+}
+
+function ccSameSeg(a, b) {
+  return ccSameSegId((a && a.seg) || '', (b && b.seg) || '');
+}
+
+/** 在 [lo,hi) 这段分钟区间里，找已经选中的小时用过的段 id。
+ *  只用于"扩展已有一段"时沿用 id；区间内没有已存在的段就返回空（= 新建一段）。
+ *
+ *  注意这里**不看区间外侧**：紧挨着另一段不算"同一段"，
+ *  这正是"相邻两段不许合并"的关键。 */
+function ccSegIdIn(day, lo, hi) {
+  for (let h = 0; h < 24; h++) {
+    const hs = h * 60;
+    if (hi <= hs || lo >= hs + 60) continue;
+    const p = day[h];
+    if (p && p.on && p.seg) return p.seg;
+  }
+  return '';
+}
+
 function ccSegs(day) {
   const out = [];
   let i = 0;
@@ -1674,7 +1738,8 @@ function ccSegs(day) {
     let end = i;
     while (end + 1 < 24 && day[end + 1].on
       && (day[end].to == null ? 60 : day[end].to) >= 60
-      && (day[end + 1].from || 0) <= 0) end++;
+      && (day[end + 1].from || 0) <= 0
+      && ccSameSeg(day[end], day[end + 1])) end++;
     const f = Math.max(0, Math.min(59, day[start].from || 0));
     const t = Math.max(1, Math.min(60, day[end].to == null ? 60 : day[end].to));
     let mins = 0;
@@ -2020,7 +2085,6 @@ function sleepCardHtml(rt) {
 
     ${sleepFormHtml(seg)}
 
-    ${wakeHtml(rt, seg)}
 
     <div class="row" style="margin-top:14px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-sm" data-act="sleep-save">保存睡眠设置</button>
@@ -2030,105 +2094,118 @@ function sleepCardHtml(rt) {
   </div>`;
 }
 
-/** 把清单里每一行当前输入同步回对象（不落盘）。
+/* ── 进入自律时间自动打开 ──────────────────────────────────
  *
- *  为什么需要它：加行 / 删行 / 点星期都会重绘，而重绘是从数据重建 DOM 的。
- *  如果不同步，用户刚敲进去、还没点保存的路径就被清空了。
+ * 编辑的是一份**草稿**（S.launchDraft），点保存才写回规则。
+ * 为什么不像睡眠那样即时保存：这里一次要改好几行（顺序、窗口形式），
+ * 每敲一个字就落盘会让"撤销"变得不可能，而且中途状态不完整。
  */
-function wakeSyncDom() {
-  const seg = sleepSelSeg();
-  const w = seg.wake || (seg.wake = { items: [] });
-  // 单段伪段：wake 是 settings.sleep.wake 的引用，写进去就等于写到全局，无需额外同步
-  if (seg.id === '__legacy') {
-    const s = clockCfgSleep();
-    if (s.wake !== w) s.wake = w;
-  }
-  const all = (w.items || []).concat(S.wakeDraft || []);
-  const byId = new Map(all.map((x) => [x.id, x]));
-  document.querySelectorAll('[data-wkrow]').forEach((row) => {
-    const it = byId.get(row.dataset.wkrow);
+
+/** 打开面板：把规则的清单深拷贝成草稿 */
+function openLaunchModal(id) {
+  const r = (S.data.config.rules || []).find((x) => x.id === id);
+  if (!r) return;
+  const a = r.autolaunch || {};
+  S.launchDraft = {
+    ruleId: id,
+    ruleName: r.name,
+    enabled: !!a.enabled,
+    items: (a.items || []).map((x, i) => ({
+      id: x.id || 'i' + (i + 1),
+      kind: x.kind === 'url' ? 'url' : 'app',
+      target: x.target || '',
+      args: x.args || '',
+      window: x.window || 'normal',
+      browser: x.browser || '',
+    })),
+  };
+  renderLaunchModal();
+}
+
+/** 把面板里每一行的输入同步回草稿（不落盘） */
+function launchSync() {
+  const d = S.launchDraft;
+  if (!d) return;
+  const byId = new Map(d.items.map((x) => [x.id, x]));
+  document.querySelectorAll('[data-lkrow]').forEach((row) => {
+    const it = byId.get(row.dataset.lkrow);
     if (!it) return;
-    const get = (k) => (row.querySelector('[data-wk="' + k + '"]') || {}).value;
-    it.kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+    const get = (k) => (row.querySelector('[data-lk="' + k + '"]') || {}).value;
+    const kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+    it.kind = kind;
     it.target = String(get('target') || '');
-    it.args = String(get('args') || '');
-    const en = row.querySelector('[data-wk="enabled"]');
-    if (en) it.enabled = !!en.checked;
+    it.args = kind === 'url' ? '' : String(get('args') || '');
+    it.window = get('window') || 'normal';
+    it.browser = kind === 'url' ? String(get('browser') || '') : '';
   });
 }
 
-/** 「睡眠结束后自动启动」那一块。
- *
- *  为什么放在睡眠卡片里而不是新开一页：它天然属于"这一轮睡眠的收尾动作"，
- *  离开睡眠时段单独讲反而要重复解释一遍"什么时候算结束"。
- */
-function wakeHtml(rt, seg) {
-  // 清单属于**这一段**：午睡结束后开 A、夜间结束后开 B 才成立。
-  // 单段模式下 seg 是伪段，它的 wake 就是 settings.sleep.wake（同一份）。
-  const w = ((seg || sleepSelSeg()).wake) || {};
-  // 新加的行先留在草稿里：空目标是过不了后端归一化的（会被丢掉），
-  // 直接写进配置等于"点了添加却什么都没加"。保存时再合并。
-  const items = (w.items || []).concat(S.wakeDraft || []);
-  const days = ['一', '二', '三', '四', '五', '六', '日'];
-  const rows = items.length
-    ? items.map((it, i) => {
-      const on = it.kind === 'url';
-      return `<div class="wk" data-wkrow="${esc(it.id)}">
-        <select data-wk="kind" data-i="${i}" title="这一项是软件还是网页">
-          <option value="app"${on ? '' : ' selected'}>软件</option>
-          <option value="url"${on ? ' selected' : ''}>网页</option>
+function renderLaunchModal() {
+  const d = S.launchDraft;
+  if (!d) return;
+  const WIN = [['normal', '窗口化'], ['max', '最大化'], ['min', '最小化']];
+  const rows = d.items.length
+    ? d.items.map((it, i) => {
+      const url = it.kind === 'url';
+      return `<div class="lk" data-lkrow="${esc(it.id)}">
+        <span class="lk-idx" title="桌面上的排列顺序">${i + 1}</span>
+        <select data-lk="kind" title="软件还是网页">
+          <option value="app"${url ? '' : ' selected'}>软件</option>
+          <option value="url"${url ? ' selected' : ''}>网页</option>
         </select>
-        <input type="text" data-wk="target" data-i="${i}" value="${esc(it.target)}"
-          placeholder="${on ? 'https://example.com' : 'C:\\Program Files\\App\\app.exe'}">
-        <input type="text" data-wk="args" data-i="${i}" value="${esc(it.args || '')}"
-          placeholder="启动参数（可空）" ${on ? 'disabled' : ''}>
-        <span class="wk-days" title="不选 = 每天">${days.map((d, k) => `<button
-          class="${(it.days || []).includes(k) ? 'on' : ''}" data-wkday="${k}" data-i="${i}">${d}</button>`).join('')}</span>
-        <label class="wk-en"><input type="checkbox" data-wk="enabled" data-i="${i}" ${it.enabled === false ? '' : 'checked'}></label>
-        <button class="btn btn-sm danger-ghost" data-act="wake-del" data-id="${esc(it.id)}">删</button>
+        <input type="text" data-lk="target" value="${esc(it.target)}"
+          placeholder="${url ? 'https://example.com' : 'C:\\Program Files\\App\\app.exe'}">
+        <input type="text" data-lk="args" value="${esc(it.args || '')}"
+          placeholder="参数" ${url ? 'disabled' : ''}>
+        <select data-lk="window" title="打开后的窗口形式">
+          ${WIN.map(([v, t]) => `<option value="${v}"${it.window === v ? ' selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <input type="text" data-lk="browser" value="${esc(it.browser || '')}"
+          placeholder="浏览器（可空）" ${url ? '' : 'disabled'}>
+        <span class="lk-ops">
+          <button class="btn btn-sm" data-act="launch-up" data-id="${esc(it.id)}" ${i === 0 ? 'disabled' : ''} title="上移">↑</button>
+          <button class="btn btn-sm" data-act="launch-down" data-id="${esc(it.id)}"
+            ${i === d.items.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+          <button class="btn btn-sm danger-ghost" data-act="launch-del" data-id="${esc(it.id)}">删</button>
+        </span>
       </div>`;
     }).join('')
-    : '<div class="wk-empty">还没添加。睡眠结束后想让电脑自己打开什么，就点下面的「＋ 添加一项」。</div>';
+    : '<div class="lk-empty">还没有目标。点下面的「＋ 添加一项」，可以加软件，也可以加网页。</div>';
 
-  const last = rt && rt.wakeAt
-    ? `<div class="hint" style="margin-top:8px">上次自动启动：${hhmm(rt.wakeAt)} · ${esc(rt.wakeNote || '')}</div>`
-    : '';
-  return `
-    <div class="sleep-sep"></div>
-    <div class="row" style="align-items:center;gap:10px">
-      <div style="flex:1">
-        <div class="card-title" style="font-size:13px">睡眠结束后自动启动</div>
-        <div class="hint" style="margin-top:4px;line-height:1.7">
-          睡眠时段结束后，等系统真的恢复过来，按下面的清单打开软件 / 网页。
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:760px">
+      <div class="modal-hd">
+        <h3>进入自律时间时自动打开</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px">
+          <div style="flex:1">
+            <div class="card-sub">规则「${esc(d.ruleName)}」</div>
+            <div class="hint" style="line-height:1.8">每到<b>一个专注段的开始</b>（含番茄休息结束回到专注）就对齐一次：</div>
+            <div class="hint" style="line-height:1.8">已经开着的窗口直接切到最上层，没开的才启动；软件启动时正好在自律时间里，也会立刻对齐。</div>
+          </div>
+          <div class="switch" data-act="launch-toggle" title="启用 / 停用"><input type="checkbox" ${d.enabled ? 'checked' : ''}><i></i></div>
         </div>
-        <div class="hint" style="line-height:1.7">
-          默认关闭；每一轮只跑一次，重复启动会被拦掉。
+
+        <div class="lk-list">${rows}</div>
+
+        <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-sm" data-act="launch-add">＋ 添加一项</button>
+          <span class="hint">序号就是桌面上的从左到右顺序；窗口形式支持窗口化 / 最大化 / 最小化。</span>
+        </div>
+        <div class="hint" style="margin-top:8px;line-height:1.8">
+          网页的「已打开就切过去」靠窗口标题里的域名判断，属于尽力而为；判不出来会新开一个标签页。
         </div>
       </div>
-      <div class="switch" data-act="wake-enable" title="启用 / 停用自动启动"><input type="checkbox" ${w.enabled ? 'checked' : ''}><i></i></div>
+      <div class="modal-ft">
+        <span class="hint" style="flex:1">最多 12 项；网页必须是 http(s) 地址</span>
+        <button class="btn" data-act="close-modal">取消</button>
+        <button class="btn btn-primary" data-act="launch-save">保存</button>
+      </div>
     </div>
-    ${w.enabled ? `
-    <div class="sleep-grid">
-      <label class="sf"><span class="sf-lab">恢复后等待</span>
-        <span class="sf-in">
-          <input type="number" id="wakeDelay" min="0" max="300" step="5" value="${w.delaySecs == null ? 20 : w.delaySecs}">
-          <em>秒再启动</em>
-          <em class="hint">（刚唤醒时网络还没就绪，等一下成功率高得多）</em>
-        </span>
-      </label>
-      <label class="sf"><span class="sf-lab">叫醒系统</span>
-        <span class="sf-in">
-          <input type="checkbox" id="wakeSystem" ${w.wakeSystem === false ? '' : 'checked'}>
-          <em>到点把电脑从睡眠里叫醒（需要管理员权限；失败也不影响你已经醒着的场景）</em>
-        </span>
-      </label>
-    </div>
-    <div class="wk-list">${rows}</div>
-    <div class="row" style="margin-top:8px;align-items:center">
-      <button class="btn btn-sm" data-act="wake-add">＋ 添加一项</button>
-      <span class="hint">星期不选 = 每天；软件请填 exe 全路径。</span>
-    </div>
-    ${last}` : ''}`;
+  </div>`;
 }
 
 /** 「完整展示」是否开着（默认开）。
@@ -2553,11 +2630,14 @@ function mergeSlices(a, b) {
       // 站点行带着"主标题"和"页面数"，合并两档数据时不能把它们丢掉，
       // 否则切到「汇总」标签后标题会变回域名、也不再提示"共 N 个页面"
       title: s.title || '', pages: s.pages || 0,
+      // 浏览器也要带过去：漏了它，切到「汇总」标签括号就没了
+      browser: s.browser || '',
     };
     cur.secs += s.secs;
     // 页面数取较大值：两个数据集统计的是同一批页面，取并集的上界即可
     cur.pages = Math.max(cur.pages, s.pages || 0);
     if (!cur.title && s.title) cur.title = s.title;
+    if (!cur.browser && s.browser) cur.browser = s.browser;
     map.set(s.key, cur);
   }
   return [...map.values()].sort((x, y) => y.secs - x.secs);
@@ -2590,7 +2670,8 @@ function viewStats() {
     ? cur.slices.slice(0, 30).map((s, i) => `<tr>
         <td><span class="badge ${s.category === 'site' ? 'blue' : 'gold'}">${s.category === 'site' ? '网页' : '软件'}</span></td>
         <td>
-          <div>${esc(s.label)}${s.category === 'site' && s.pages > 1
+          <div>${esc(s.label)}${s.category === 'site' && s.browser
+    ? ` <span class="st-browser" title="打开这个网站用的浏览器">（${esc(s.browser)}）</span>` : ''}${s.category === 'site' && s.pages > 1
     ? ` <span class="muted" style="font-size:11px">· 共 ${s.pages} 个页面</span>` : ''}</div>
           ${s.category === 'site' && String(s.key || '').indexOf('site|') === 0
     ? `<div class="muted" style="font-size:10.5px;line-height:1.4">${esc(String(s.key).slice(5))}</div>` : ''}
@@ -3122,8 +3203,9 @@ function viewHelp() {
     <div>每段都能单独设「生效周期」：每天、仅工作日、指定星期几。</div>
     <div>每天适合固定作息；仅工作日适合周末晚睡晚起；指定适合「只在周日晚上早睡」这类安排。</div>
     <div>切周期只改「哪几天生效」，时间、锁屏、开机后多久关机都不会被改动。</div>
-    <div>每段还有自己的「睡眠结束后自动启动」：默认关闭，打开后按清单打开软件 / 网页，睡眠结束后自动拉起。</div>
     <div>前提是程序在运行；睡眠时段之外它什么都不做。</div>
+    <div>睡眠到点后会锁定、会关机，但<b>不会</b>替你开机——软件叫不醒一台关着的电脑（那要在 BIOS 里设定时开机）。</div>
+    <div>想在自律时自动开好工作窗口，用「自律规则 → 自动打开」：那里会在每个专注段开始时把软件 / 网页摆好。</div>
   `)}
 
   ${sec('6 · 固化与积分', `
@@ -5162,7 +5244,7 @@ const Act = window.Act = {
     const prof = clockProfile();
     if (settingsFrozen()) { guardDiscipline('清空已选时段'); return; }
     let n = 0;
-    prof.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; n++; } }));
+    prof.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; p.seg = ''; n++; } }));
     await saveConfig();
     render();
     toast(n ? `已清空 ${n} 个小时段` : '当前没有已选时段', n ? 'ok' : 'err');
@@ -5181,7 +5263,7 @@ const Act = window.Act = {
     let n = 0;
     for (let h = h0; h <= h1; h++) {
       const p = prof.days[d][h];
-      if (p.on) { p.on = false; p.from = 0; p.to = 60; n++; }
+      if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; n++; }
     }
     if (!n) { toast('这一段本来就没选中', 'err'); return false; }
     const ok = await saveConfig();
@@ -5195,6 +5277,8 @@ const Act = window.Act = {
   async clockDaySelect(d) {
     const prof = clockProfile();
     const w = prof.defWork, b = prof.defBrk;
+    // 整天 = 一段：一个 id，避免"选中整天"之后被当成 24 个独立段
+    const segId = ccNewSegId();
     for (let h = 0; h < 24; h++) {
       const p = prof.days[d][h];
       p.on = true;
@@ -5202,6 +5286,7 @@ const Act = window.Act = {
       p.brk = b;
       p.from = 0;
       p.to = 60;
+      p.seg = segId;
     }
     const ok = await saveConfig();
     render();
@@ -5220,7 +5305,7 @@ const Act = window.Act = {
       return false;
     }
     let n = 0;
-    prof.days[d].forEach((p) => { if (p.on) { p.on = false; p.from = 0; p.to = 60; n++; } });
+    prof.days[d].forEach((p) => { if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; n++; } });
     if (!n) { toast(`${WD[d]} 本来就没有选中任何时段`, 'err'); return false; }
     const ok = await saveConfig();
     render();
@@ -5275,15 +5360,18 @@ const Act = window.Act = {
         const p = day[h];
         const r = ccHourResult(p, h, lo, hi, mode);
         if (!r) {
-          if (p.on) { p.on = false; p.from = 0; p.to = 60; }
+          if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; }
           continue;
         }
-        if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+        if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; p.seg = moveSeg; }
         p.on = true;
         p.from = r.f;
         p.to = r.t;
       }
     };
+    // 搬迁沿用原段的 id：搬过去还是"同一段"。
+    // 落点那一段是另一个 id，两者即使贴着也不会被合并。
+    const moveSeg = ccSegIdIn(prof.days[d0], from, to) || ccNewSegId();
     put(prof.days[d0], from, to, 'sub');
     put(prof.days[d1], nFrom, nTo, 'add');
     const ok = await saveConfig();
@@ -5318,6 +5406,11 @@ const Act = window.Act = {
     const prof = clockProfile();
     if (mode === 'sub' && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
     const days = prof.days[d];
+    // 本次操作写什么段 id：
+    //   · 区间里已经有段（扩展它）→ 沿用那个 id
+    //   · 没有（新拖一段）→ 生成新 id
+    // 只看区间**内部**，所以紧挨着别的段拖出来的新段永远是独立的一段。
+    const segId = ccSegIdIn(days, lo, hi) || ccNewSegId();
     let changed = 0;
     for (let h = 0; h < 24; h++) {
       const hs = h * 60;
@@ -5325,12 +5418,12 @@ const Act = window.Act = {
       const p = days[h];
       const r = ccHourResult(p, h, lo, hi, mode);
       if (!r) {
-        if (p.on) { p.on = false; p.from = 0; p.to = 60; changed++; }
+        if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; changed++; }
         continue;
       }
       const wasOn = p.on;
       const wasWin = p.on ? `${p.from || 0}-${p.to == null ? 60 : p.to}` : '';
-      if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+      if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; p.seg = segId; }
       p.on = true;
       p.from = r.f;
       p.to = r.t;
@@ -5360,9 +5453,14 @@ const Act = window.Act = {
       const keepR = { f: Math.max(pf, b), t: pt };
       if (keepL.t > keepL.f) { p.from = keepL.f; p.to = keepL.t; }
       else if (keepR.t > keepR.f) { p.from = keepR.f; p.to = keepR.t; }
-      else { p.on = false; p.from = 0; p.to = 60; }
+      else { p.on = false; p.from = 0; p.to = 60; p.seg = ''; }
     } else {
-      if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+      if (!p.on) {
+        p.work = prof.defWork;
+        p.brk = prof.defBrk;
+        // 单独点亮一格：紧挨着的已有段**不并进来**，它就是新的一段
+        p.seg = ccSegIdIn(prof.days[d], a, b) || ccNewSegId();
+      }
       p.from = p.on ? Math.min(pf, a) : a;
       p.to = p.on ? Math.max(pt, b) : b;
       p.on = true;
@@ -5399,6 +5497,16 @@ const Act = window.Act = {
       return false;
     }
     let n = 0;
+    // 一次设置 = 一段：整个矩形共用一个 id（跨天也是同一段的连续排布）。
+    // 若矩形里原本就有一整套同一 id 的段，沿用它，避免"改个时长就把段拆开"。
+    const ids = new Set();
+    for (let d = d0; d <= d1; d++) {
+      for (let h = h0; h <= h1; h++) {
+        const q = prof.days[d][h];
+        if (q.on && q.seg) ids.add(q.seg);
+      }
+    }
+    const segId = ids.size === 1 ? [...ids][0] : ccNewSegId();
     for (let d = d0; d <= d1; d++) {
       for (let h = h0; h <= h1; h++) {
         const p = prof.days[d][h];
@@ -5407,6 +5515,7 @@ const Act = window.Act = {
         p.brk = b;
         p.from = 0;
         p.to = 60;
+        p.seg = segId;
         n++;
       }
     }
@@ -5503,86 +5612,6 @@ const Act = window.Act = {
 
   /* ---- 睡眠管理 ---- */
 
-  async sleepEnable() {
-    const s = clockCfgSleep();
-    s.enabled = !s.enabled;
-    const ok = await saveConfig();
-    if (!ok) { render(); return; }
-    render();
-    toast(s.enabled
-      ? `睡眠管理已启用：${minToHm(s.from)} – ${minToHm(s.to)} 之间开机，${s.countdownMin} 分钟后自动关机`
-      : '睡眠管理已关闭：睡眠时段内不再锁定、也不会关机', 'ok');
-  },
-
-  /** 保存睡眠参数。全部走一遍校验再落盘，避免"存了一半"的非法状态。 */
-  /** 开 / 关「睡眠结束后自动启动」（独立开关，默认关） */
-  async wakeEnable() {
-    const s = clockCfgSleep();
-    s.wake = s.wake || { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
-    s.wake.enabled = !s.wake.enabled;
-    const ok = await saveConfig();
-    render();
-    if (!ok) { toast('开关没保存成功', 'err'); return; }
-    toast(s.wake.enabled
-      ? '已启用：睡眠时段结束后会自动打开清单里的软件 / 网页'
-      : '已关闭自动启动', 'ok');
-  },
-
-  /** 加一项空条目（真正的目标在保存时一起读） */
-  async wakeAdd() {
-    wakeSyncDom();
-    const s = clockCfgSleep();
-    s.wake = s.wake || { enabled: true, delaySecs: 20, wakeSystem: true, items: [] };
-    const n = (s.wake.items || []).length + (S.wakeDraft || []).length;
-    if (n >= 12) { toast('最多 12 项，先删掉一个', 'err'); return; }
-    S.wakeDraft = (S.wakeDraft || []).concat([{
-      id: 'w' + Date.now().toString(36), kind: 'app', target: '', args: '',
-      days: [], enabled: true,
-    }]);
-    render();
-  },
-
-  async wakeDel(id) {
-    wakeSyncDom();
-    // 草稿里的直接扔掉；已经在配置里的才需要落盘
-    if ((S.wakeDraft || []).some((x) => x.id === id)) {
-      S.wakeDraft = S.wakeDraft.filter((x) => x.id !== id);
-      render();
-      return;
-    }
-    const s = clockCfgSleep();
-    s.wake = s.wake || { items: [] };
-    s.wake.items = (s.wake.items || []).filter((x) => x.id !== id);
-    const ok = await saveConfig();
-    render();
-    if (!ok) toast('删除没保存成功', 'err');
-  },
-
-  /** 星期小按钮：切换"这一项在哪几天生效" */
-  async wakeToggleDay(id, day) {
-    wakeSyncDom();
-    const d = +day;
-    const flip = (it) => {
-      const set = new Set(it.days || []);
-      if (set.has(d)) set.delete(d); else set.add(d);
-      it.days = [...set].sort((a, b) => a - b);
-    };
-    const draft = (S.wakeDraft || []).find((x) => x.id === id);
-    if (draft) {
-      flip(draft);
-      // 草稿行不重绘：重绘会把它上面刚敲的路径清掉，只翻一下按钮状态
-      const b = document.querySelector('[data-wkrow="' + id + '"] [data-wkday="' + d + '"]');
-      if (b) b.classList.toggle('on', (draft.days || []).includes(d));
-      return;
-    }
-    const s = clockCfgSleep();
-    const it = (s.wake && s.wake.items || []).find((x) => x.id === id);
-    if (!it) return;
-    flip(it);
-    await saveConfig();
-    render();
-  },
-
   async sleepSave() {
     const s = clockCfgSleep();
     const seg = sleepSelSeg();
@@ -5666,6 +5695,118 @@ const Act = window.Act = {
     render();
     const head = isLegacy ? '' : `第 ${((s.windows || []).findIndex((x) => x.id === seg.id) + 1) || 1} 段：`;
     toast(`睡眠管理已更新 ${head}${minToHm(fromM)} – ${toM >= 1440 ? '24:00' : minToHm(toM)}（${sleepCycleText(seg)}），开机 ${count} 分钟后${shutdown ? '关机' : '只锁定'}`, 'ok');
+  },
+  async sleepToggleDay(k) {
+    sleepEnsureWindows();
+    const seg = sleepSelSeg();
+    const d = +k;
+    const days = (seg.days || []).slice();
+    const at = days.indexOf(d);
+    if (at >= 0) {
+      // 不允许把最后一天也取消：那会变成"一天都不生效"，
+      // 界面上是个幽灵段（看着有、其实永不触发）。想每天都生效请切「每天」。
+      if (days.length === 1) { toast('至少要选一天；想每天都生效请切到「每天」', 'err'); return; }
+      days.splice(at, 1);
+    } else {
+      days.push(d);
+    }
+    days.sort((a, b) => a - b);
+    seg.days = days;
+    S.sleepDaysLast = days.slice();
+    const ok = await saveConfig();
+    render();
+    if (!ok) toast('没保存成功', 'err');
+  },
+
+  async sleepEnable() {
+    const s = clockCfgSleep();
+    s.enabled = !s.enabled;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(s.enabled
+      ? `睡眠管理已启用：${minToHm(s.from)} – ${minToHm(s.to)} 之间开机，${s.countdownMin} 分钟后自动关机`
+      : '睡眠管理已关闭：睡眠时段内不再锁定、也不会关机', 'ok');
+  },
+
+  /** 保存睡眠参数。全部走一遍校验再落盘，避免"存了一半"的非法状态。 */
+  /* ---- 进入自律时间自动打开 ---- */
+
+  /** 面板里的开关（改草稿，不落盘） */
+  launchToggle() {
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    d.enabled = !d.enabled;
+    renderLaunchModal();
+  },
+
+  /** 加一项：默认软件、窗口化，按顺序排最后 */
+  launchAdd() {
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    if (d.items.length >= 12) { toast('最多 12 项，先删掉一个', 'err'); return; }
+    d.items.push({
+      id: 'i' + Date.now().toString(36),
+      kind: 'app',
+      target: '',
+      args: '',
+      window: 'normal',
+      browser: '',
+    });
+    renderLaunchModal();
+  },
+
+  launchDel(id) {
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    d.items = d.items.filter((x) => x.id !== id);
+    renderLaunchModal();
+  },
+
+  /** 上移 / 下移：数组顺序就是排列顺序，所以直接换位置 */
+  launchMove(id, dir) {
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    const i = d.items.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= d.items.length) return;
+    const t = d.items[i];
+    d.items[i] = d.items[j];
+    d.items[j] = t;
+    renderLaunchModal();
+  },
+
+  /** 保存：校验后写回规则 */
+  async launchSave() {
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    const keep = [];
+    for (const it of d.items) {
+      const target = (it.target || '').trim();
+      if (!target) continue;                       // 空行直接丢掉
+      if (it.kind === 'url' && !/^https?:\/\//i.test(target)) {
+        toast(`「${target}」不是 http(s) 地址，已跳过`, 'err');
+        continue;
+      }
+      keep.push({ ...it, target });
+    }
+    const rule = (S.data.config.rules || []).find((x) => x.id === d.ruleId);
+    if (!rule) { closeModal(); return; }
+    rule.autolaunch = { enabled: !!d.enabled, items: keep };
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    closeModal();
+    render();
+    toast(ok
+      ? (d.enabled
+        ? `已为「${rule.name}」配置 ${keep.length} 项自动打开`
+        : `已关闭「${rule.name}」的自动打开（清单保留 ${keep.length} 项）`)
+      : '没保存成功', ok ? 'ok' : 'err');
   },
 
   /** 添加一段新睡眠。**新段默认不锁屏**：多一段只是多一个"到点关机"，
@@ -5754,27 +5895,6 @@ const Act = window.Act = {
   },
 
   /** 指定模式里勾 / 取消某一天 */
-  async sleepToggleDay(k) {
-    sleepEnsureWindows();
-    const seg = sleepSelSeg();
-    const d = +k;
-    const days = (seg.days || []).slice();
-    const at = days.indexOf(d);
-    if (at >= 0) {
-      // 不允许把最后一天也取消：那会变成"一天都不生效"，
-      // 界面上是个幽灵段（看着有、其实永不触发）。想每天都生效请切「每天」。
-      if (days.length === 1) { toast('至少要选一天；想每天都生效请切到「每天」', 'err'); return; }
-      days.splice(at, 1);
-    } else {
-      days.push(d);
-    }
-    days.sort((a, b) => a - b);
-    seg.days = days;
-    S.sleepDaysLast = days.slice();
-    const ok = await saveConfig();
-    render();
-    if (!ok) toast('没保存成功', 'err');
-  },
 
   /** 锁屏浮层上的「积分解锁」 */
   async sleepUnlock() {
@@ -6442,16 +6562,19 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-fit') { await Act.clockFit(el.dataset.v === '1'); return; }
   if (act === 'sleep-enable') { await Act.sleepEnable(); return; }
   if (act === 'sleep-save') { await Act.sleepSave(); return; }
+  if (act === 'rule-launch') { openLaunchModal(el.dataset.id); return; }
+  if (act === 'launch-toggle') { Act.launchToggle(); return; }
+  if (act === 'launch-add') { Act.launchAdd(); return; }
+  if (act === 'launch-del') { Act.launchDel(el.dataset.id); return; }
+  if (act === 'launch-up') { Act.launchMove(el.dataset.id, -1); return; }
+  if (act === 'launch-down') { Act.launchMove(el.dataset.id, 1); return; }
+  if (act === 'launch-save') { await Act.launchSave(); return; }
   if (act === 'sleep-add-seg') { await Act.sleepAddSeg(); return; }
   if (act === 'sleep-del-seg') { await Act.sleepDelSeg(el.dataset.id); return; }
   if (act === 'sleep-pick-seg') { Act.sleepPickSeg(el.dataset.id); return; }
   if (act === 'sleep-cycle') { await Act.sleepCycle(el.dataset.v); return; }
   if (act === 'sleep-day') { await Act.sleepToggleDay(el.dataset.v); return; }
   if (act === 'sleep-unlock') { await Act.sleepUnlock(); return; }
-  if (act === 'wake-enable') { await Act.wakeEnable(); return; }
-  if (act === 'wake-add') { await Act.wakeAdd(); return; }
-  if (act === 'wake-del') { await Act.wakeDel(el.dataset.id); return; }
-  if (act && act.startsWith && act.indexOf('wake-day') === 0) { await Act.wakeToggleDay(act.slice(9), el.dataset.d); return; }
   if (act === 'clock-view-reset') { await Act.clockViewReset(); return; }
   // S.ccAnimIn 只在这一帧为真：完整图表页的入场动画不能每次重绘都重播，
   // 否则拖完一段松手（内部会 render 一次）整页就会重新淡入 = 闪一下。
@@ -7471,14 +7594,7 @@ document.addEventListener('contextmenu', (e) => {
 
 // 设置页的语录输入框：回车等于点「添加」
 // 自动启动的星期小按钮：点一下切换"这一天跑不跑"
-document.addEventListener('click', (e) => {
-  const b = e.target && e.target.closest ? e.target.closest('[data-wkday]') : null;
-  if (!b) return;
-  const row = b.closest('[data-wkrow]');
-  if (!row) return;
-  e.preventDefault();
-  Act.wakeToggleDay(row.dataset.wkrow, +b.dataset.wkday);
-});
+
 
 document.addEventListener('keydown', (e) => {
   if (!e.target || e.target.id !== 'setQuoteNew') return;

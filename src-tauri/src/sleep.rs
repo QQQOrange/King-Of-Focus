@@ -361,8 +361,6 @@ pub fn unlock(shared: &Arc<Shared>, minutes: u32) -> Result<Value, String> {
 pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
     std::thread::spawn(move || {
         let mut shown = false;
-        // 上一 tick 是否在睡眠时段里 / 这一 tick 之前是否睡过 —— 自动唤醒要用
-        let mut prev_in = false;
         loop {
             let ts = Local::now().timestamp();
             // 系统睡过去了（合盖 / 休眠）：这一轮重新给满倒计时
@@ -431,11 +429,6 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
                     shown = false;
                 }
             }
-            // ④ 睡眠时段结束后：自动唤醒 + 自动启动（独立开关，默认关）
-            //    prev_in / resumed / 开机时间三者任一成立才算"真的睡过"，
-            //    否则整夜没睡的人也会在 07:00 被拉一堆程序。
-            crate::wake::tick(&shared, &cfg, ts, prev_in, resumed);
-            prev_in = in_window;
 
             std::thread::sleep(Duration::from_secs(1));
         }

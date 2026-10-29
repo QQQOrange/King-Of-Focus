@@ -719,8 +719,35 @@
       'Booting or waking up inside sleep hours locks everything down and shuts down when the countdown ends; points are the only way to use it now.',
     '睡眠时段': 'Sleep window',
     /* —— 多段睡眠 + 生效周期 —— */
-    '现在不在任何睡眠时段内': 'Not inside any sleep window right now',
+    '睡眠到点后会锁定、会关机，但': 'Sleep hours lock the screen and shut down, but they never',
+    '替你开机——软件叫不醒一台关着的电脑（那要在 BIOS 里设定时开机）。':
+      'power the machine on — software cannot wake a powered-off PC (set an RTC alarm in the BIOS for that).',
+    '想在自律时自动开好工作窗口，用「自律规则 → 自动打开」：那里会在每个专注段开始时把软件 / 网页摆好。':
+      'To have work windows ready during focus time, use Rules → Auto-open: it arranges apps / pages at the start of every focus block.',    '现在不在任何睡眠时段内': 'Not inside any sleep window right now',
     '生效周期': 'Repeat',
+    /* —— 进入自律时间自动打开 —— */
+    '自动打开': 'Auto-open',
+    '进入自律时间时自动打开': 'Open on entering focus time',
+    '每到': 'At the start of',
+    '一个专注段的开始': 'every focus block',
+    '（含番茄休息结束回到专注）就对齐一次：': ' (including after a pomodoro break):',
+    '已经开着的窗口直接切到最上层，没开的才启动；软件启动时正好在自律时间里，也会立刻对齐。':
+      'Windows already open are brought to the front; only missing ones are launched. If the app starts while inside focus time, it aligns immediately.',
+    '软件': 'App',
+    '网页': 'Web page',
+    '窗口化': 'Windowed',
+    '最大化': 'Maximized',
+    '最小化': 'Minimized',
+    '参数': 'Args',
+    '浏览器（可空）': 'Browser (optional)',
+    '＋ 添加一项': '+ Add item',
+    '序号就是桌面上的从左到右顺序；窗口形式支持窗口化 / 最大化 / 最小化。':
+      'The number is the left-to-right order on screen; window mode supports windowed / maximized / minimized.',
+    '网页的「已打开就切过去」靠窗口标题里的域名判断，属于尽力而为；判不出来会新开一个标签页。':
+      'For web pages, "switch to it if already open" matches the domain in the window title — best effort; otherwise a new tab opens.',
+    '最多 12 项；网页必须是 http(s) 地址': 'Up to 12 items; web addresses must be http(s)',
+    '还没有目标。点下面的「＋ 添加一项」，可以加软件，也可以加网页。':
+      'Nothing yet. Use "+ Add item" to add an app or a web page.',
     '可以有多段：比如午睡 13:00–14:00 只关机不锁屏，夜间 23:00–07:00 才全屏锁定。点「＋ 添加时段」就多一段。':
       'Multiple windows are allowed: a 13:00–14:00 nap that only shuts down, plus 23:00–07:00 that also locks the screen.',
     '每段都能单独设「生效周期」：每天、仅工作日、指定星期几。':
@@ -1104,6 +1131,9 @@
   }
 
   var RULES = [
+    /* —— 自动打开 —— */
+    [/^规则「(.+)」$/, 'Rule "$1"'],
+    [/^ · 自动打开 (\d+) 项$/, ' · auto-opens $1'],
     /* —— 多段睡眠的动态文案 —— */
     [/^共 (\d+) 段睡眠$/, '$1 sleep windows'],
     [/^正在编辑第 (\d+) 段 · (.+)$/, 'Editing window $1 · $2'],
