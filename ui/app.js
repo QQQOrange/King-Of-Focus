@@ -3568,8 +3568,14 @@ function viewBrowsers() {
             ? `<button class="btn btn-sm btn-primary" data-act="browser-install" data-k="${b.key}">${b.ext === 'disabled' ? '去启用' : '安装插件'}</button>
                <button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>${pathBtn}`
             : `<button class="btn btn-sm" data-act="browser-page" data-k="${b.key}">扩展页</button>${pathBtn}`;
-      const hits = (b.hits || []).length
-        ? `<div class="hint">命中配置档：${b.hits.map((h) => `${esc(h.profile)}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
+      // 命中条目要带**版本号**：装了两份、或装的是旧版时，光看"启用/停用"分不出来，
+      // 用户排查"到底哪一份在生效"就只能靠这个。多份时再补一句提示。
+      const hitsList = b.hits || [];
+      const hits = hitsList.length
+        ? `<div class="hint">命中配置档：${hitsList.map((h) => `${esc(h.profile)}${h.version ? ` v${esc(h.version)}` : ''}（${h.enabled ? '启用' : '停用'}）`).join('、')}</div>`
+          + (hitsList.filter((h) => h.unpacked).length > 1
+            ? '<div class="hint">检测到多份解压加载记录，只保留一份即可；多余的可在扩展页移除，不影响拦截。</div>'
+            : '')
         : '';
       return `<div class="brow">
         <div class="brow-ico">${b.installed ? '◉' : '○'}</div>

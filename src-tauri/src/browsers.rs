@@ -190,6 +190,8 @@ pub struct ExtHit {
     pub profile: String,
     /// 扩展名（取自 manifest.name 或目录名）
     pub name: String,
+    /// 清单里的版本号（用于判断"装的是不是旧版"）
+    pub version: String,
     /// 扩展 ID
     pub id: String,
     pub enabled: bool,
@@ -197,6 +199,15 @@ pub struct ExtHit {
     pub path: String,
     /// 是否"加载已解压的扩展程序"装的（location = 4）
     pub unpacked: bool,
+}
+
+/// 从磁盘上的 manifest.json 解析出来的元信息
+#[derive(Default, Clone)]
+struct ExtMeta {
+    name: String,
+    version: String,
+    /// 名称没解析出来时，靠清单结构认人（permissions + service_worker + blocked.html）
+    shape_ours: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -481,15 +492,111 @@ fn user_data(d: &Def) -> Option<PathBuf> {
 ///
 /// 修法：`path` 指向的目录里就有真正的 `manifest.json`，直接读它。
 fn manifest_name_at(dir: &Path) -> String {
-    let f = dir.join("manifest.json");
+    meta_at(dir).name
+}
+
+/// 从目录里的 manifest.json 读「展示名 + 版本」。
+///
+/// 两个坑都会让"装了插件却说没装"：
+///
+/// 1. **`name` 是 `__MSG_extName__` 占位符**。MV3 清单普遍这么写，真名在
+///    `_locales/<default_locale>/messages.json` 里。直接把占位符拿去匹配关键词
+///    永远匹配不上——这版插件就长这样，所以必须解析。
+/// 2. **`_locales` 的目录名大小写/连字符不统一**（`zh_CN` / `zh-CN` / `zh_cn`），
+///    作者的 `default_locale` 也可能写错。所以按 default_locale → 常见写法 →
+///    目录里实际存在的任意语言，逐个试。
+fn meta_at(dir: &Path) -> ExtMeta {
+    let mut out = ExtMeta::default();
     // 扩展目录很深、文件很小，读一次几十微秒；外层有 15 秒缓存，不会拖慢界面
-    let Ok(bytes) = std::fs::read(&f) else {
-        return String::new();
+    let Ok(bytes) = std::fs::read(dir.join("manifest.json")) else {
+        return out;
     };
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return String::new();
+        return out;
     };
-    v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string()
+    out.version = v
+        .get("version")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let raw = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
+    let locale = v
+        .get("default_locale")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    out.name = resolve_msg(raw, dir, locale);
+
+    // 结构特征：名字解析不出来时，用来认出"这是我们的插件"（见 looks_like_ours_dir）
+    let perms = v
+        .get("permissions")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .any(|x| x == "declarativeNetRequest")
+        })
+        .unwrap_or(false);
+    let worker = v
+        .pointer("/background/service_worker")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    out.shape_ours = !locale.is_empty()
+        && perms
+        && worker == "background.js"
+        && dir.join("blocked.html").is_file();
+    out
+}
+
+/// 把 `__MSG_xxx__` 解析成 `_locales` 里的真名；不是占位符就原样返回。
+fn resolve_msg(raw: &str, dir: &Path, default_locale: &str) -> String {
+    let Some(key) = raw
+        .strip_prefix("__MSG_")
+        .and_then(|s| s.strip_suffix("__"))
+    else {
+        return raw.to_string();
+    };
+    let locales = dir.join("_locales");
+    let mut langs: Vec<String> = Vec::new();
+    if !default_locale.is_empty() {
+        langs.push(default_locale.to_string());
+    }
+    for x in ["zh_CN", "zh-CN", "zh_cn", "en", "en_US"] {
+        langs.push(x.to_string());
+    }
+    // 兜底：目录里实际存在的语言（按名字排序，保证结果稳定）
+    if let Ok(rd) = std::fs::read_dir(&locales) {
+        let mut rest: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        rest.sort();
+        langs.extend(rest);
+    }
+    for lang in langs {
+        let f = locales.join(&lang).join("messages.json");
+        let Ok(bytes) = std::fs::read(&f) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(obj) = v.as_object() else {
+            continue;
+        };
+        // messages.json 的键大小写敏感，但作者常把 extName 写成 extname，忽略大小写找一次
+        for (k, val) in obj {
+            if !k.eq_ignore_ascii_case(key) {
+                continue;
+            }
+            if let Some(m) = val.get("message").and_then(|x| x.as_str()) {
+                if !m.is_empty() {
+                    return m.to_string();
+                }
+            }
+        }
+    }
+    String::new()
 }
 
 /// `path` 可能是绝对路径，也可能是相对配置档目录的相对路径（商店安装就是后者）
@@ -508,14 +615,22 @@ fn looks_like_ours(name: &str) -> bool {
 }
 
 /// 判定单个 `extensions.settings` 条目是不是我们的扩展，是就返回展示名。
-fn entry_identity(e: &serde_json::Value, profile_dir: &Path) -> Option<String> {
+fn entry_identity(e: &serde_json::Value, profile_dir: &Path) -> Option<ExtMeta> {
     // 1) 条目里内嵌的 manifest（商店 / crx 安装）
     let inline = e
         .pointer("/manifest/name")
         .and_then(|x| x.as_str())
         .unwrap_or("");
     if looks_like_ours(inline) {
-        return Some(inline.to_string());
+        return Some(ExtMeta {
+            name: inline.to_string(),
+            version: e
+                .pointer("/manifest/version")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            shape_ours: true,
+        });
     }
 
     // 2) 条目里的 path（解压加载的扩展只能靠这个）
@@ -524,18 +639,37 @@ fn entry_identity(e: &serde_json::Value, profile_dir: &Path) -> Option<String> {
         return None;
     }
     let dir = resolve_ext_path(raw, profile_dir);
-    let on_disk = manifest_name_at(&dir);
-    if looks_like_ours(&on_disk) {
-        return Some(on_disk);
+    let meta = meta_at(&dir);
+    if looks_like_ours(&meta.name) {
+        return Some(meta);
+    }
+    // 2b) 名字没匹配上（`__MSG_` 解析失败、或用户改了文案）：按清单结构认人。
+    //     这一步是必须的——目录名可能完全不含 "kof"，只靠路径关键词会永久漏检。
+    if meta.shape_ours {
+        let name = if meta.name.trim().is_empty() {
+            "King Of Focus 网页拦截".to_string()
+        } else {
+            meta.name.clone()
+        };
+        return Some(ExtMeta {
+            name,
+            version: meta.version,
+            shape_ours: true,
+        });
     }
 
     // 3) 兜底：路径关键词（扩展已被删掉、只剩残留记录时，仍要能被认出来并提示"已失效"）
     let low = raw.to_lowercase();
     if PATH_HINTS.iter().any(|h| low.contains(h)) {
-        return Some(if on_disk.is_empty() {
+        let name = if meta.name.is_empty() {
             entry_name(e)
         } else {
-            on_disk
+            meta.name.clone()
+        };
+        return Some(ExtMeta {
+            name,
+            version: meta.version,
+            shape_ours: false,
         });
     }
     None
@@ -616,9 +750,10 @@ fn scan_profiles(root: &Path) -> Vec<ExtHit> {
                 if hits.iter().any(|h| h.profile == pname && h.id == *id) {
                     continue;
                 }
-                let Some(name) = entry_identity(e, &pdir) else {
+                let Some(meta) = entry_identity(e, &pdir) else {
                     continue;
                 };
+                let name = meta.name;
                 // state: 1 = 启用，0 = 停用；disable_reasons 非空也算停用。
                 // 解压加载的扩展可能压根不写 state —— 没写就是开着（默认 1）。
                 let state = e.get("state").and_then(|x| x.as_u64()).unwrap_or(1);
@@ -633,6 +768,7 @@ fn scan_profiles(root: &Path) -> Vec<ExtHit> {
                 hits.push(ExtHit {
                     profile: pname.clone(),
                     name,
+                    version: meta.version,
                     id: id.clone(),
                     enabled: state == 1 && reasons == 0,
                     path: if unpacked {
@@ -1550,6 +1686,200 @@ mod tests {
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert!(args.is_empty(), "冷启动不该带任何参数：{args:?}");
         assert_eq!(cmd.get_program().to_str().unwrap(), exe.to_str().unwrap());
+    }
+
+
+    /// 落一份 MV3 清单；`name` 原样写（可以是 `__MSG_xxx__`），`locales` 为
+    /// 语言目录 → messages.json 内容。
+    fn write_mv3_ext(
+        dir: &Path,
+        name: &str,
+        version: &str,
+        locales: &[(&str, &str)],
+        with_blocked: bool,
+    ) {
+        std::fs::create_dir_all(dir).unwrap();
+        serde_json::json!({
+            "manifest_version": 3,
+            "name": name,
+            "default_locale": "zh_CN",
+            "version": version,
+            "permissions": ["declarativeNetRequest", "storage"],
+            "background": { "service_worker": "background.js" },
+        });
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::json!({
+                "manifest_version": 3,
+                "name": name,
+                "default_locale": "zh_CN",
+                "version": version,
+                "permissions": ["declarativeNetRequest", "storage"],
+                "background": { "service_worker": "background.js" },
+                "action": { "default_popup": "popup.html" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for (lang, body) in locales {
+            let d = dir.join("_locales").join(lang);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("messages.json"), body).unwrap();
+        }
+        if with_blocked {
+            std::fs::write(dir.join("blocked.html"), "<html></html>").unwrap();
+        }
+        std::fs::write(dir.join("background.js"), "// worker\n").unwrap();
+    }
+
+    /// **"装了插件却说没装"的根因回归**。
+    ///
+    /// 真实安装位置是 `D://software//myself//extension`：
+    ///   · 目录名里没有 king / kof 任何关键词；
+    ///   · 清单里 `name` 是 `__MSG_extName__`，真名藏在 `_locales`。
+    /// 旧逻辑两条路都断（关键词匹配不上占位符、路径兜底也匹配不上），
+    /// 于是这个扩展永远不进 hits，界面一直报"未安装"。
+    #[test]
+    fn scan_resolves_msg_placeholder_with_plain_dir_name() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_msg_{}", std::process::id()));
+        let ext = tmp.join("extension"); // 故意不含 king / kof
+        write_mv3_ext(
+            &ext,
+            "__MSG_extName__",
+            "1.1.0",
+            &[(
+                "zh_CN",
+                r#"{"extName":{"message":"King Of Focus 网页拦截"}}"#,
+            )],
+            true,
+        );
+        write_chrome_pref(
+            &tmp,
+            "aideifmgppkhmgemokfjhlbomakaffec",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "占位符名字 + 中性目录名也必须认出来：{hits:?}");
+        assert!(hits[0].enabled, "解压加载无 state 应视为启用：{hits:?}");
+        assert!(
+            hits[0].name.contains("King Of Focus"),
+            "名字要来自 _locales，而不是占位符：{hits:?}"
+        );
+        assert_eq!(hits[0].version, "1.1.0", "版本要能读出来（判断是不是旧版）：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `default_locale` 写错（zh-CN）而目录实际是 zh_CN 时，也要能兜住。
+    #[test]
+    fn scan_tolerates_locale_dir_spelling() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_loc_{}", std::process::id()));
+        let ext = tmp.join("ext2");
+        write_mv3_ext(
+            &ext,
+            "__MSG_extName__",
+            "1.1.0",
+            &[("zh_CN", r#"{"extName":{"message":"King Of Focus 网页拦截"}}"#)],
+            false,
+        );
+        // 把 manifest 的 default_locale 改成不存在的 zh-CN
+        let mf = std::fs::read_to_string(ext.join("manifest.json")).unwrap();
+        std::fs::write(
+            ext.join("manifest.json"),
+            mf.replace("zh_CN", "zh-CN"),
+        )
+        .unwrap();
+        write_chrome_pref(
+            &tmp,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "语言目录写法不一致也要兜住：{hits:?}");
+        assert!(hits[0].name.contains("King Of Focus"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 名字完全解析不出来（没有 _locales）时，靠清单结构认人。
+    /// 这是最后一道保险：以后改文案、换语言都不会让插件"消失"。
+    #[test]
+    fn scan_falls_back_to_manifest_shape() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_shape_{}", std::process::id()));
+        let ext = tmp.join("somewhere");
+        write_mv3_ext(&ext, "__MSG_extName__", "1.2.3", &[], true);
+        write_chrome_pref(
+            &tmp,
+            "cccccccccccccccccccccccccccccccc",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+        let hits = scan_profiles(&tmp);
+        assert_eq!(hits.len(), 1, "结构特征应能兜住：{hits:?}");
+        assert!(
+            hits[0].name.contains("King Of Focus"),
+            "没名字时给规范名：{hits:?}"
+        );
+        assert_eq!(hits[0].version, "1.2.3");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 真机探针（默认不跑）：
+    /// `cargo test probe_real_ext -- --ignored --nocapture`
+    ///
+    /// 直接读本机 Edge / Chrome 的真实配置，把识别结果打出来。
+    /// 排查"装了插件却说没装"时，这是最快的取证方式——比看代码猜强。
+    #[test]
+    #[ignore]
+    fn probe_real_ext() {
+        let Ok(base) = std::env::var("LOCALAPPDATA") else {
+            return;
+        };
+        for (name, rel) in [
+            ("Edge", r"Microsoft\Edge\User Data"),
+            ("Chrome", r"Google\Chrome\User Data"),
+        ] {
+            let root = std::path::PathBuf::from(&base).join(rel);
+            if !root.is_dir() {
+                continue;
+            }
+            let hits = scan_profiles(&root);
+            println!("== {name}：识别到 {} 条", hits.len());
+            for h in &hits {
+                println!(
+                    "   profile={} name={:?} ver={:?} enabled={} unpacked={} path={}",
+                    h.profile, h.name, h.version, h.enabled, h.unpacked, h.path
+                );
+            }
+        }
+    }
+
+    /// 反例：同样用 declarativeNetRequest、但没有 blocked.html / 也不叫 background.js
+    /// 的**别的**拦截插件，不能被误认成我们的（否则会把它的存在当成"插件已装"）。
+    #[test]
+    fn scan_ignores_other_blockers() {
+        let tmp = std::env::temp_dir().join(format!("kof_brw_other_{}", std::process::id()));
+        let ext = tmp.join("adblock");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(
+            ext.join("manifest.json"),
+            serde_json::json!({
+                "manifest_version": 3,
+                "name": "Super Ad Blocker",
+                "version": "9.9.9",
+                "permissions": ["declarativeNetRequest"],
+                "background": { "service_worker": "worker.js" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(ext.join("blocked.html"), "<html></html>").unwrap();
+        write_chrome_pref(
+            &tmp,
+            "dddddddddddddddddddddddddddddddd",
+            unpacked_ours_entry(&ext.to_string_lossy()),
+        );
+        let hits = scan_profiles(&tmp);
+        assert!(hits.is_empty(), "别的拦截插件不能被认成我们的：{hits:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 给每个浏览器的 URL 都不能是空的窗口参数占位（防止改成"--new-window"这种）

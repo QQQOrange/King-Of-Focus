@@ -1223,6 +1223,29 @@ window.__itest = async () => {
   out.push(['设置路径走后端原生选取', window.__picked >= 1, true]);
   out.push(['设置路径已落盘保存', window.__setpath >= 1, true]);
 
+  // 17a. 命中条目要显示版本号：排查"装了两份 / 装的是旧版"时，
+  //      "启用/停用"分不出来哪一份在生效，版本号是唯一能对上的信息。
+  {
+    const before = STATE.browsers;
+    STATE.browsers = before.map((b) => (b.key === 'msedge'
+      ? {
+        ...b,
+        hits: [
+          { profile: 'Default', name: 'King Of Focus 网页拦截', version: '1.1.0', id: 'aaaaaaaa', enabled: true, path: 'D:////software////myself////extension（解压加载）', unpacked: true },
+          { profile: 'Default', name: 'King Of Focus 网页拦截', version: '1.1.0', id: 'bbbbbbbb', enabled: true, path: 'D:////software////myself////extension////extension（解压加载）', unpacked: true },
+        ],
+      }
+      : b));
+    await Act.nav('browsers');
+    await wait(280);
+    const hitTxt = [...document.querySelectorAll('.brow')].map((e) => e.textContent).join(' | ');
+    out.push(['插件页显示命中版本号', /v1\.1\.0/.test(hitTxt), true]);
+    out.push(['多份解压加载会给出提示', /多份解压加载记录/.test(hitTxt), true]);
+    STATE.browsers = before;
+    await Act.nav('browsers');
+    await wait(220);
+  }
+
   // 17b. 自定义浏览器：登记后立刻进列表、标记来源、可删除
   {
     await Act.nav('browsers');
