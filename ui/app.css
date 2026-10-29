@@ -45,6 +45,12 @@
      以后要调色只改这一处，不用满地找。 */
   --cc-block: #3f7cff;
 
+  /* 两种状态必须一眼分得开，否则"松手了没有"看不出来：
+   *   已设置（已落盘）  = --cc-block（蓝，冷色，安稳）
+   *   选中中（拖动预览） = --cc-pending（琥珀，暖色，警示"还没提交"）
+   * 色相相差 180°，色弱也能靠明度差区分；两者都足够饱和，缩略图里也认得出来。 */
+  --cc-pending: #ffb020;
+
   /* 深色 */
   --bg: #090b10;
   --bg-soft: #0d1017;
@@ -108,6 +114,7 @@
   --warn: #b45309;
   --cc-fill: #2f6df0;
   --cc-block: #2f6df0;
+  --cc-pending: #d97706;
 
   --bg: #f5f6fa;
   --bg-soft: #ffffff;
@@ -904,8 +911,17 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
 .cc-run i { display: block; width: 100%; }
 /* 起止分钟让出来的占位带：完全透明，就是"这一小时没选满"，不是另一种颜色 */
 .cc-run .cc-gap { background: transparent; }
-/* 整块唯一的填充色。没有渐变、没有浅色尾段、没有休息段改色。 */
-.cc-run .f { background: var(--cc-block); }
+/* 整块唯一的填充色。没有渐变、没有浅色尾段、没有休息段改色。
+ * 两个状态共用同一条色带，只换颜色：
+ *   .pending = 拖动中的预览（还没松手、还没落盘）→ 琥珀
+ *   没有 .pending = 已设置、已保存 → 蓝
+ * 去掉类时保留 background 过渡，于是"松手落位"会看到琥珀→蓝的一次变色，
+ * 等于给"设置成功"一个不用看提示条也能感知到的确认。 */
+.cc-run .f {
+  background: var(--cc-block);
+  transition: background-color .18s var(--mo-ease);
+}
+.cc-run.pending .f { background: var(--cc-pending); }
 /* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
 .cc-run-txt {
   position: absolute; top: 3px; left: 6px; right: 6px;
@@ -914,6 +930,16 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
+/* 块上两行字：第一行起止时间，第二行总时长（淡一档，主次分明）。
+ * 矮块（10/15 分钟）用行内版，时长跟在时间后面，靠 ellipsis 兜底。 */
+.cc-run-txt b { font-weight: inherit; }
+.cc-run-txt em {
+  font-style: normal; font-weight: 500; opacity: .84;
+  margin-left: 5px;
+}
+.cc-run-txt.two em { display: block; margin-left: 0; }
+/* 琥珀（选中中）底色偏亮，白字读不清 —— 换成深色字，两种主题都够对比 */
+.cc-run.pending .cc-run-txt { color: #24180a; text-shadow: none; }
 /* 短块（10 / 15 分钟 ≈ 13px 高）：缩到 8.5px 才塞得下一行，
    不加省略号——起止时间被截一半反而看不懂 */
 .cc-run-txt.tight {
@@ -1139,6 +1165,7 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   margin-right: 5px; vertical-align: -1px;
   background: var(--cc-block);
 }
+.cc-legend .sw.pending { background: var(--cc-pending); }
 
 /* 「通用时长」行：之后新框选 / 单击选中的时段都沿用这套专注 / 休息 */
 .cc-def {

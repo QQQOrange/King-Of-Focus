@@ -1330,8 +1330,11 @@ function clockProfile() {
  * `override(d,h)` 传入时，用它的返回值代替配置里的值（拖选预览用）。
  * `only` 传入时只重画这几天的块：跨天拖动落位 / 取消后需要把"指针掠过、
  * 但已经不是落点"的那几天收拾干净，而重建**全部**的块会把手上那一块也换掉，
- * 落位动画（FLIP）就没有起点可用了。 */
-function ccRenderRuns(root, override, only) {
+ * 落位动画（FLIP）就没有起点可用了。
+ *
+ * `pending` 传入 true 时，画出来的块带 `.pending`——**还没落盘的预览**（琥珀色）。
+ * 正式渲染永远不传，所以"落盘之后就是另一种颜色"这件事只有一处开关。 */
+function ccRenderRuns(root, override, only, pending) {
   const host = root || document;
   const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
   if (!grid) return;
@@ -1445,7 +1448,7 @@ function ccRenderRuns(root, override, only) {
       ? `<i class="cc-gap" style="flex:0 0 ${b.pct.toFixed(3)}%"></i>`
       : `<i class="f" style="flex:0 0 ${b.pct.toFixed(3)}%;border-radius:${b.radius}"></i>`)).join('');
     const run = document.createElement('div');
-    run.className = 'cc-run';
+    run.className = 'cc-run' + (pending ? ' pending' : '');
     run.dataset.d = String(d0);
     run.dataset.d1 = String(d0);
     run.dataset.h0 = String(h0);
@@ -1469,11 +1472,16 @@ function ccRenderRuns(root, override, only) {
     // 于是分两档：足够高用常规字号；不够高换成 .tight（8.5px、行高 1.1），
     // 在 13px 里正好放得下一行。位置跟着首个填色带走，
     // 不然 01:15 开始的块会把字写在上面那截空白里。
-    const spanPx = ((n * 60 - f0 - (60 - t1)) / 60) * ccHourH();
+    const spanMin = Math.max(0, Math.round(n * 60 - f0 - (60 - t1)));
+    const spanPx = (spanMin / 60) * ccHourH();
     const labTop = (f0 * unit).toFixed(3);
     const tight = spanPx < 20;
-    const label = `<span class="cc-run-txt${tight ? ' tight' : ''}"`
-      + ` style="top:calc(${labTop}% + ${tight ? 2 : 3}px)">${labStart} – ${labEnd}</span>`;
+    // 够高的块：时间一行、时长另起一行；矮块挤成一行，时长紧跟在后面。
+    // 时长用 ccDurText，跟着界面语言走（"3 小时 20 分" / "3 h 20 min"）。
+    const twoLine = spanPx >= 34;
+    const label = `<span class="cc-run-txt${tight ? ' tight' : ''}${twoLine ? ' two' : ''}"`
+      + ` style="top:calc(${labTop}% + ${tight ? 2 : 3}px)">`
+      + `<b>${labStart} – ${labEnd}</b><em>${ccDurText(spanMin)}</em></span>`;
     run.innerHTML = label + bands;
     grid.appendChild(run);
   };
@@ -1893,8 +1901,9 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
       </div>
       <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px;--cc-rows:${rows}">${grid}</div></div>
       <div class="cc-legend">
-        <span><i class="sw"></i>已选中（整块同色）</span>
-        <span class="hint">同一天相邻的时段会连成一整块；块里的空白就是没选中的分钟</span>
+        <span><i class="sw"></i>已设置（已保存）</span>
+        <span><i class="sw pending"></i>选中中（松手后才保存）</span>
+        <span class="hint">拖动时是琥珀色，松手落盘后变成蓝色；同一天相邻的时段会连成一整块</span>
       </div>
       <div class="cc-days">
         <div class="cc-days-hd"><span>每日时长</span><span>合计 ${ccMinText(0, totalMins).dur}</span></div>
@@ -5852,13 +5861,24 @@ function ccDayGeom(d) {
  *  指针滑出图表两侧时保持原来那一天（等于在周首 / 周末停住，不绕回另一头），
  *  既符合"一周就是一周"的直觉，也避免合成事件里 clientX=0 这类脏值把时段甩到周一。
  */
+/** 某一列的横向范围。取这一列的**第一格**，而不是写死 data-h="0"——
+ *  显示范围可能不从 0 点开始（例如只看 07:00–23:00），那时 data-h="0" 根本不存在，
+ *  跨天命中的列宽就会退化成"空数组"，于是拖到别的列永远算"没换天"。
+ *  （这就是"周二拖不到周三"的根因。） */
+function ccColBox(d) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return null;
+  const c = grid.querySelector(`.cc-cell[data-d="${d}"]`);
+  return c ? c.getBoundingClientRect() : null;
+}
+
 function ccDayAtX(clientX) {
   const grid = document.getElementById('ccGrid');
   if (!grid || typeof clientX !== 'number' || !isFinite(clientX)) return null;
   const cols = [];
   for (let d = 0; d < 7; d++) {
-    const c = grid.querySelector(`.cc-cell[data-d="${d}"][data-h="0"]`);
-    if (c) cols.push({ d, r: c.getBoundingClientRect() });
+    const r = ccColBox(d);
+    if (r) cols.push({ d, r });
   }
   if (!cols.length) return null;
   const left = cols[0].r.left;
@@ -6072,7 +6092,8 @@ function paintCcDrag() {
   //    必须把窗口传给渲染器：只改单元格的 .on 不够——
   //    每小时的起止分钟若仍从配置里读，02:15 起的那一块就会被判成
   //    "上一小时 :15 结束"，在小时边界断成两块。
-  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined));
+  // 预览一律用"选中中"的颜色（琥珀）：松手落盘后才会换成已设置的蓝。
+  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined), null, true);
 
   const h0 = Math.floor(lo / 60);
   const h1 = Math.floor((hi - 1) / 60);
@@ -6166,6 +6187,17 @@ function ccRestorePreview(days) {
   grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
   ccLiveTotals(null);
   ccResetLive();
+}
+
+/** 落盘之后：把仍然挂着的「选中中」琥珀块换回「已设置」的蓝。
+ *
+ *  只换类、不重建节点——重建会打断落位动画（FLIP 需要同一块继续存在），
+ *  而 CSS 上 `background-color` 有 180ms 过渡，于是这次换色本身就是"设置成功"的反馈。
+ */
+function ccSettleRuns() {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  grid.querySelectorAll('.cc-run.pending').forEach((r) => r.classList.remove('pending'));
 }
 
 /** 松手落位：优先 FLIP（从"手上那一块"的位置滑到最终位置），
@@ -6303,14 +6335,11 @@ function ccFlushDrag() {
     if (at != null) {
       dCur = at;
     } else if (typeof x === 'number') {
-      const grid = document.getElementById('ccGrid');
-      const c0 = grid && grid.querySelector('.cc-cell[data-d="0"][data-h="0"]');
-      const c6 = grid && grid.querySelector('.cc-cell[data-d="6"][data-h="0"]');
-      if (c0 && c6) {
-        const l = c0.getBoundingClientRect().left;
-        const r = c6.getBoundingClientRect().right;
-        if (x < l - 8 && dCur === 0) edgeX = -1;
-        if (x > r + 8 && dCur === 6) edgeX = 1;
+      const b0 = ccColBox(0);
+      const b6 = ccColBox(6);
+      if (b0 && b6) {
+        if (x < b0.left - 8 && dCur === 0) edgeX = -1;
+        if (x > b6.right + 8 && dCur === 6) edgeX = 1;
       }
     }
   }
@@ -6491,6 +6520,7 @@ async function ccDragEnd() {
     }
     if (!live) {
       if (ok) {
+        ccSettleRuns();         // 琥珀（选中中）→ 蓝（已设置）
         ccResetLive();          // 状态条回到摘要
         ccLiveTotals(null);     // 行数据已经是最终值，这里只做一次兜底对齐
       }

@@ -337,7 +337,13 @@ window.__itest = async () => {
     }
     const anyRun = document.querySelector('.cc-run');
     const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
-    out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]$/.test(txt.textContent.trim()) : false, true]);
+    out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]/.test(txt.textContent.trim()) : false, true]);
+    // 时长要写在块上（"09:00 – 12:00" + "3 小时"），而且是独立的 <em>，不是拼进时间里
+    out.push(['色块上另有一格写总时长',
+      txt && txt.querySelector('em') ? txt.querySelector('em').textContent.trim() : '(无)', '4 小时']);
+    out.push(['时长和起止时间是两段文字',
+      txt ? txt.querySelector('b').textContent.trim() : '(无)', '08:00 – 12:00']);
+    out.push(['够高的块把时长放到第二行', txt ? txt.classList.contains('two') : false, true]);
     out.push(['色块时间不含非法的 :60', txt ? !/:60/.test(txt.textContent) : false, true]);
     const wBand = anyRun ? anyRun.querySelector('i.f') : null;
     out.push(['整块只用一种填充色（无渐变）',
@@ -887,7 +893,9 @@ window.__itest = async () => {
   {
     const r = [...document.querySelectorAll('.cc-run')].find((x) => x.dataset.d === '3' && x.dataset.h0 === '9');
     const t = r ? r.querySelector('.cc-run-txt') : null;
-    out.push(['15 分钟块也显示时间', t ? t.textContent.trim() : '(无)', '09:15 – 09:30']);
+    out.push(['15 分钟块也显示时间', t && t.querySelector('b') ? t.querySelector('b').textContent.trim() : '(无)', '09:15 – 09:30']);
+    out.push(['15 分钟块也显示时长', t && t.querySelector('em') ? t.querySelector('em').textContent.trim() : '(无)', '15 分钟']);
+    out.push(['矮块时长不换行（挤在一行里）', t ? t.classList.contains('two') : true, false]);
     out.push(['短块用紧凑字号', t ? t.classList.contains('tight') : false, true]);
     out.push(['短块字号小于常规', t ? parseFloat(getComputedStyle(t).fontSize) < 10 : 99, true]);
     // 文字不能顶出块外（块高 ≈ 13px，行高 1.1 × 8.5 ≈ 9.4px）
@@ -2233,6 +2241,57 @@ window.__itest = async () => {
       await wait(320);
       out.push(['缩范围后拖动仍按绝对时间换算', live.indexOf('09:00 – 11:00') > 0, true]);
       out.push(['缩范围后落到的就是那个小时', pd()[2][9].on && pd()[2][10].on && pd()[2][8].on === false, true]);
+      await clearAll();
+    }
+
+    // 缩范围时的**跨天拖动**（v0.1.13 的回归）：ccDayAtX 曾写死 data-h="0"，
+    // 显示范围不从 0 点开始时列宽数组是空的 → 永远判定"没换天"，周二拖不到周三。
+    {
+      await clearAll();
+      const plan = (d, h) => { pd()[d][h].on = true; pd()[d][h].from = 0; pd()[d][h].to = 60; };
+      plan(1, 9); plan(1, 10);
+      await saveConfig(); render(); await wait(200);
+      fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(2, 9, 1), clientX: colCenter(2),
+      }));
+      await wait(170);
+      out.push(['缩范围时跨天拖动：状态条写成 周二 → 周三',
+        $('#clockLive').textContent.indexOf('周二 → 周三') > 0, true]);
+      out.push(['缩范围时跨天拖动：块已经挪到周三列',
+        (() => { const r = document.querySelector('.cc-run.carry'); return r ? +r.dataset.d : -1; })(), 2]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['缩范围时也能拖到周三', pd()[2][9].on && pd()[2][10].on, true]);
+      out.push(['缩范围拖动：周二已清空', pd()[1][9].on || pd()[1][10].on, false]);
+      out.push(['缩范围拖动：起止时间不变',
+        `${pd()[2][9].from}-${pd()[2][9].to}/${pd()[2][10].from}-${pd()[2][10].to}`, '0-60/0-60']);
+      out.push(['缩范围拖动：总时长不变', ccDayMinutes(pd()[2]), 120]);
+      await clearAll();
+    }
+
+    // 两种状态两种颜色：选中中（未落盘）= 琥珀，已设置 = 蓝
+    {
+      await clearAll();
+      pd()[1][9].on = true; pd()[1][9].from = 0; pd()[1][9].to = 60;
+      await saveConfig(); render(); await wait(200);
+      const bg = (el) => (el ? getComputedStyle(el.querySelector('i.f')).backgroundColor : '-');
+      const blue = bg(document.querySelector('.cc-run[data-d="1"]'));
+      out.push(['已设置的块是蓝色系', blue, 'rgb(63, 124, 255)']);
+      fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 10, 1), clientX: colCenter(1),
+      }));
+      await wait(180);
+      const pend = document.querySelector('.cc-run.pending');
+      const amber = bg(pend);
+      out.push(['拖动中的块带 pending 标记', !!pend, true]);
+      out.push(['拖动中是琥珀色（与已设置明显不同）', amber, 'rgb(255, 176, 32)']);
+      out.push(['两态颜色确实不同', amber !== blue, true]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['落盘后不再有待提交色块', document.querySelectorAll('.cc-run.pending').length, 0]);
+      out.push(['落盘后立刻回到蓝色', bg(document.querySelector('.cc-run[data-d="1"]')), blue]);
       await clearAll();
     }
 
