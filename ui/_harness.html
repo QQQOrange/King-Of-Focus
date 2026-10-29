@@ -594,8 +594,15 @@ window.__itest = async () => {
     out.push(['连点两下也不改结构', snap() === before, true]);
   }
 
-  // 1b. 框选后右键落在选区内 → 目标默认取整个框选（核心流程）。
-  //     这里自己先框一次（周三 19:00–22:00，3 格），不依赖前面用例留下的选区。
+  /** 清空所有已选时段（这一段用例反复重置状态用） */
+  const wipeAll = async () => {
+    const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+    p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+    await saveConfig(); await wait(130);
+  };
+
+  // 1b. 右键落在**已有时段里** → 只针对这一段（核心：不再出现整天 / 整列选项）
+  //     先把 19–22 清掉，再拖出一条 19:00–22:00，确保 20 点落在"段内部"。
   await Act.clockCommitRange(2, 19 * 60, 22 * 60, 'sub');
   await wait(150);
   fire('mousedown', cell(2, 19), { clientY: gY(2, 19, 0) });
@@ -606,57 +613,128 @@ window.__itest = async () => {
   out.push(['这次框选覆盖三格', S.ccRect ? (S.ccRect.h1 - S.ccRect.h0 + 1) : -1, 3]);
   fire('contextmenu', cell(2, 20), { clientX: 420, clientY: 420 });
   await wait(150);
-  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent.indexOf('周三') >= 0]);
-  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, '3']);
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  await wait(80);
-
-  // 2. 单击：任何位置都不改结构（周一 8 点原本是整小时选中）
-  {
-    const before = JSON.stringify(pd()[0].map((p) => [p.on, p.from, p.to]));
-    fireQ('mousedown', cell(0, 8), 0);
-    fireQ('mouseup', document, 0);
-    await wait(250);
-    out.push(['单击已选中的格子不改结构',
-      JSON.stringify(pd()[0].map((p) => [p.on, p.from, p.to])) === before, true]);
-    out.push(['单击后这一小时仍是整小时',
-      `${pd()[0][8].on && pd()[0][8].from}-${pd()[0][8].to}`, '0-60']);
-    out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
-  }
-
-  // 2b. 右键已选中的单格：预填这一格自身的时长（50/10），而不是通用值
-  fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
-  await wait(120);
-  out.push(['ON 单格预填自身时长', $('#ccW').value === '50' && $('#ccB').value === '10']);
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  await wait(80);
-
-  // 3. 右键菜单：周六 14 点（原本关）→ 预填通用时长，手动设为 45/15
-  fire('contextmenu', cell(5, 14), { clientX: 420, clientY: 420 });
-  await wait(120);
-  const menu = document.querySelector('.cc-modal');
-  out.push(['右键弹出模态菜单', !!menu]);
-  if (menu) {
-    out.push(['目标默认这一格', $('#ccTgt').textContent, '周六 14:00 – 15:00']);
-    out.push(['OFF 格预填通用时长 45/15', $('#ccW').value === '45' && $('#ccB').value === '15']);
-    $('#ccW').value = '45';
-    $('#ccB').value = '15';
-    $('#ccApply').click();
-    await wait(250);
-  }
-  out.push(['右键设置生效', (() => { const p = pd()[5][14]; return p.on && p.work === 45 && p.brk === 15; })()]);
-  out.push(['应用后菜单关闭', !document.querySelector('.cc-modal')]);
-
-  // 4. 右键 + "这一列"：周日 20 点 → 60/0 套用到周日全天
-  fire('contextmenu', cell(6, 20), { clientX: 420, clientY: 420 });
-  await wait(120);
-  document.querySelector('[data-scope="col"]').click();
-  out.push(['整列目标文案', $('#ccTgt').textContent, '周日 00:00 – 24:00']);
-  $('#ccW').value = '60';
-  $('#ccB').value = '0';
+  out.push(['段内右键 → 标题是「时段设置」', document.querySelector('.cc-modal h3').textContent, '时段设置']);
+  out.push(['段内右键 → 目标就是这一整段', $('#ccTgt').textContent, '周三 19:00 – 22:00']);
+  out.push(['段内右键 → 只算 1 段', $('#ccCnt').textContent, '1']);
+  out.push(['段内右键 → 没有整天 / 整列选项',
+    !!document.querySelector('[data-scope="col"],[data-day-act]'), false]);
+  out.push(['段内右键 → 预填这一段的时长（不是通用值）',
+    `${$('#ccW').value}/${$('#ccB').value}`, `${pd()[2][19].work}/${pd()[2][19].brk}`]);
+  $('#ccW').value = '40';
+  $('#ccB').value = '20';
   $('#ccApply').click();
-  await wait(250);
-  out.push(['周日整列 24 段全开且不休息', pd()[6].every((p) => p.on && p.work === 60 && p.brk === 0)]);
+  await wait(280);
+  out.push(['段内应用只改这一段', [19, 20, 21].every((h) => pd()[2][h].on && pd()[2][h].work === 40 && pd()[2][h].brk === 20), true]);
+  out.push(['段内应用不碰同一天的其它段', pd()[2][8].work, 50]);
+  out.push(['段内应用后菜单关闭', !document.querySelector('.cc-modal')]);
+
+  // 1c. 只有一格的段：右键仍然只作用这一格，不会扩成整天
+  fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });   // 周一 8–12 里面
+  await wait(140);
+  out.push(['长段右键 → 目标是整段而不是单格', $('#ccTgt').textContent, '周一 08:00 – 12:00']);
+  out.push(['长段右键 → 1 段', $('#ccCnt').textContent, '1']);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(90);
+
+  // 1d. 跨日界（0:00 起点）的段：提示写清"只作用于这一天"，不牵连前一天
+  {
+    await wipeAll();
+    const plan = (h, f, t) => { pd()[4][h].on = true; pd()[4][h].from = f; pd()[4][h].to = t; };
+    plan(0, 0, 60); plan(1, 0, 30);            // 周五 00:00–01:30
+    await saveConfig(); render(); await wait(200);
+    fire('contextmenu', cell(4, 0), { clientY: gY(4, 0, 1), clientX: 420 });
+    await wait(140);
+    out.push(['日界段 → 目标带日期，不跨天', $('#ccTgt').textContent, '周五 00:00 – 01:30']);
+    out.push(['日界段 → 是 1 段', $('#ccCnt').textContent, '1']);
+    out.push(['日界段 → 明说只作用于这一天',
+      document.querySelector('.cc-modal .note').textContent.indexOf('不会牵连相邻那天') > 0, true]);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await wait(90);
+    await wipeAll();
+    await Act.clockCommitRange(0, 8 * 60, 12 * 60, 'add');
+    await Act.clockCommitRange(2, 13 * 60, 18 * 60, 'add');
+    await wait(180);
+  }
+
+  // 1e. 一天里有多段时：右键哪一段就只改哪一段，别的段一动不动
+  {
+    await wipeAll();
+    await Act.clockCommitRange(1, 8 * 60, 10 * 60, 'add');    // 周二 08–10
+    await Act.clockCommitRange(1, 12 * 60, 14 * 60, 'add');   // 周二 12–14
+    await wait(180);
+    fire('contextmenu', cell(1, 8), { clientY: gY(1, 8, 1), clientX: 420 });
+    await wait(150);
+    out.push(['多段共存 → 目标仍是右键那一段', $('#ccTgt').textContent, '周二 08:00 – 10:00']);
+    out.push(['多段共存 → 只算 1 段', $('#ccCnt').textContent, '1']);
+    out.push(['多段共存 → 没有批量 / 整天这类跨级选项',
+      !!document.querySelector('[data-seg-scope],[data-scope],[data-day-act]'), false]);
+    const otherBefore = pd()[1][12].work;
+    $('#ccW').value = '30'; $('#ccB').value = '0';
+    $('#ccApply').click();
+    await wait(280);
+    out.push(['多段共存 → 只改点中的这一段', [pd()[1][8].work, pd()[1][12].work], [30, otherBefore]]);
+    out.push(['多段共存 → 另一段的窗口原样', `${pd()[1][12].on}/${pd()[1][12].from}-${pd()[1][12].to}`, 'true/0-60']);
+  }
+
+  // 1f. 右键**日期表头** → 整天；作用范围只有这一天
+  {
+    await wipeAll();
+    await Act.clockCommitRange(0, 8 * 60, 12 * 60, 'add');
+    await Act.clockCommitRange(1, 8 * 60, 12 * 60, 'add');
+    await wait(180);
+    const before1 = pd()[1].filter((p) => p.on).length;
+    const dhSun = document.querySelectorAll('.cc-dh')[6];
+    out.push(['表头个数', document.querySelectorAll('.cc-dh').length, 7]);
+    fire('contextmenu', dhSun, { clientX: 420, clientY: 60 });
+    await wait(150);
+    out.push(['表头右键 → 标题是「整天设置」', document.querySelector('.cc-modal h3').textContent, '整天设置']);
+    out.push(['表头右键 → 目标是这一天 00:00–24:00', $('#ccTgt').textContent, '周日 00:00 – 24:00']);
+    out.push(['整天菜单里没有"这一格/框选"这类跨级选项',
+      !!document.querySelector('[data-scope]'), false]);
+    document.querySelector('[data-day-act="select"]').click();
+    await wait(300);
+    out.push(['选中整天 → 24 段全开', pd()[6].every((p) => p.on && p.from === 0 && p.to === 60), true]);
+    out.push(['选中整天 → 其它天不动', pd()[1].filter((p) => p.on).length, before1]);
+    // 再开表头，只改时长（不抹平边界）
+    fire('contextmenu', document.querySelectorAll('.cc-dh')[6], { clientX: 420, clientY: 60 });
+    await wait(150);
+    const otherDays = [pd()[0][8].work, pd()[1][8].work];
+    $('#ccW').value = '60';
+    $('#ccB').value = '0';
+    $('#ccApply').click();
+    await wait(300);
+    out.push(['整天应用 → 24 段全是 60/0', pd()[6].every((p) => p.on && p.work === 60 && p.brk === 0), true]);
+    out.push(['整天应用 → 别的天没被改', [pd()[0][8].work, pd()[1][8].work], otherDays]);
+  }
+
+  // 1g. 「取消这一段」：两步确认，且只清这一段
+  {
+    await wipeAll();
+    await Act.clockCommitRange(3, 9 * 60, 11 * 60, 'add');
+    await Act.clockCommitRange(3, 14 * 60, 15 * 60, 'add');
+    await wait(180);
+    fire('contextmenu', cell(3, 9), { clientY: gY(3, 9, 1), clientX: 420 });
+    await wait(150);
+    document.querySelector('#ccSegDel').click();
+    await wait(80);
+    out.push(['取消这一段 → 第一次点击只是"上膛"',
+      document.querySelector('#ccSegDel').dataset.armed, '1']);
+    out.push(['上膛后段还在', pd()[3][9].on && pd()[3][10].on, true]);
+    document.querySelector('#ccSegDel').click();
+    await wait(300);
+    out.push(['确认后这一段被清掉', pd()[3][9].on || pd()[3][10].on, false]);
+    out.push(['取消这一段不影响同一天别的段', pd()[3][14].on, true]);
+  }
+
+  // 4. 空白格右键：只有"这一格"，没有整天 / 整列
+  fire('contextmenu', cell(5, 14), { clientX: 420, clientY: 420 });
+  await wait(140);
+  out.push(['空格右键 → 标题是「格子设置」', document.querySelector('.cc-modal h3').textContent, '格子设置']);
+  out.push(['空格右键 → 目标只有这一格', $('#ccTgt').textContent, '周六 14:00 – 15:00']);
+  out.push(['空格右键 → 没有整天 / 整列选项',
+    !!document.querySelector('[data-scope="col"],[data-day-act]'), false]);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await wait(90);
 
   // 5. 快捷预设按钮 + work+brk 超限夹紧
   fire('contextmenu', cell(3, 6), { clientX: 420, clientY: 420 });
@@ -2012,6 +2090,99 @@ window.__itest = async () => {
       render();
       await wait(160);
     }
+  }
+
+  // ---- 26i. 积分 / 帮助 / 关于：解锁只针对"当前这一段" ----
+  {
+    const boot = S.data.runtime;
+    const bootPts = S.data.points;
+    const setRt = (o, balance) => {
+      S.data.runtime.sleep = o.sleep;
+      S.data.runtime.disciplineOn = !!o.disciplineOn;
+      S.data.runtime.breakOn = !!o.breakOn;
+      // 余额给足：菜单里的行会按"付不付得起"切换 data-act，余额不够就全成了 noop
+      S.data.points = Object.assign({}, S.data.points, { balance: balance == null ? 9999 : balance });
+    };
+    await Act.nav('overview');
+    await wait(200);
+
+    // ① 积分卡：两种价格并列
+    const cardTxt = [...document.querySelectorAll('.card')]
+      .find((c) => (c.querySelector('.card-title') || {}).textContent.indexOf('积分兑换') === 0);
+    out.push(['积分卡把睡眠买断也摆出来', !!cardTxt && cardTxt.textContent.indexOf('睡眠时段') > 0, true]);
+    out.push(['积分卡写明"只作用于正在生效的那一段"',
+      !!cardTxt && cardTxt.textContent.indexOf('不会改排班') > 0, true]);
+
+    // ② 两种时段都没生效：弹窗明确说"不需要解锁"，不摆套餐
+    setRt({ sleep: { enabled: true, inWindow: false }, disciplineOn: false });
+    render();
+    Act.openUnlock();
+    await wait(60);
+    out.push(['没有生效时段时不摆解锁套餐', !!document.querySelector('[data-act="do-unlock"]'), false]);
+    out.push(['没有生效时段时给出解释',
+      document.querySelector('#modalRoot .note').textContent.indexOf('不需要解锁') > 0, true]);
+    closeModal();
+    await wait(60);
+
+    // ③ 自律时段生效中：只出现自律选项
+    setRt({ sleep: { enabled: true, inWindow: false }, disciplineOn: true });
+    render();
+    Act.openUnlock();
+    await wait(60);
+    out.push(['自律生效 → 5/10/15 三档',
+      document.querySelectorAll('[data-act="do-unlock"]').length, 3]);
+    out.push(['自律生效 → 没有睡眠买断行', !!document.querySelector('[data-act="do-unlock-sleep"]'), false]);
+    out.push(['自律生效 → 选项写的是"这一轮"',
+      document.querySelector('[data-act="do-unlock"]').textContent.indexOf('这一轮') > 0, true]);
+    closeModal();
+    await wait(60);
+
+    // ④ 睡眠时段生效中：出现买断行（走 sleep_unlock，不是 points_unlock）
+    setRt({
+      sleep: { enabled: true, inWindow: true, price: 300, unlockMin: 30, balance: 9999 },
+      disciplineOn: false,
+    });
+    render();
+    Act.openUnlock();
+    await wait(60);
+    out.push(['睡眠生效 → 出现买断行', !!document.querySelector('[data-act="do-unlock-sleep"]'), true]);
+    out.push(['睡眠生效 → 买断行写明分钟数与价格',
+      document.querySelector('[data-act="do-unlock-sleep"]').textContent.replace(/\s+/g, ' ').indexOf('买断 30 分钟') > 0, true]);
+    out.push(['睡眠生效 → 自律套餐不该出现', !!document.querySelector('[data-act="do-unlock"]'), false]);
+    closeModal();
+    await wait(60);
+
+    // 恢复测试初始的运行时
+    S.data.runtime.sleep = boot.sleep;
+    S.data.runtime.disciplineOn = boot.disciplineOn;
+    S.data.runtime.breakOn = boot.breakOn;
+    S.data.points = bootPts;
+    render();
+
+    // ⑤ 帮助页：三档右键语义写在文档里
+    await Act.nav('help');
+    await wait(200);
+    const helpTxt = document.querySelector('#content').textContent;
+    out.push(['帮助写明右键表头 = 整天', helpTxt.indexOf('右键日期表头') > 0, true]);
+    out.push(['帮助写明右键某一段 = 时段', helpTxt.indexOf('右键某一段') > 0, true]);
+    out.push(['帮助写明右键空白格 = 格子', helpTxt.indexOf('右键空白格') > 0, true]);
+    out.push(['帮助写明贴日界不牵连相邻天', helpTxt.indexOf('不会牵连相邻那天') > 0, true]);
+
+    // ⑥ 关于页：版本要点 + 使用手册入口（点了能跳转）
+    await Act.nav('about');
+    await wait(200);
+    const aboutTxt = document.querySelector('#content').textContent;
+    out.push(['关于页列出本版本要点', aboutTxt.indexOf('这个版本改了什么') > 0, true]);
+    out.push(['关于页的要点提到右键三档', aboutTxt.indexOf('右键分三档') > 0, true]);
+    const helpBtn = document.querySelector('[data-act="open-help"]');
+    out.push(['关于页有使用手册入口', !!helpBtn, true]);
+    if (helpBtn) {
+      helpBtn.click();
+      await wait(220);
+      out.push(['手册入口能跳到帮助页', S.view, 'help']);
+    }
+    await Act.nav('clock');
+    await wait(160);
   }
 
   // ---- 26g. 完整图表的显示范围（只影响画哪一段，不影响判定）----

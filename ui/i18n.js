@@ -741,6 +741,115 @@
     '到': 'To',
     '全天': 'Full day',
     '睡眠时段已用积分解锁至': 'Sleep hours unlocked until',
+    /* —— 积分 / 帮助 / 关于（右键语义、睡眠、显示范围）—— */
+    '专注 1 分钟 = 1 分。': '1 focus minute = 1 point.',
+    '积分只用来解开正在生效的那一段时间：自律时段按分钟买，睡眠时段按整段买断。':
+      'Points only unlock the window running right now: discipline hours by the minute, sleep hours as a fixed block.',
+    '都只影响当下这一轮，不会改排班，也不会连带别的时段。':
+      'Both affect only the current round; your schedule and other windows stay untouched.',
+    '分/分钟': 'pts/min',
+    '未开启': 'Off',
+    '在「自律时段 → 睡眠管理」里开启': 'Enable it under Hours → Sleep hours',
+    '4 · 生效时间段：右键改哪里，就只改哪里': '4 · Right-click edits exactly what you clicked',
+    '完整图表里有三种右键目标，每张菜单顶部都写着"作用于 …"，三档互不越界。':
+      'The full chart has three right-click targets; every menu states "Applies to …" and never crosses levels.',
+    '右键日期表头（周一 / 周二…）= 整天：只作用于这一天 0:00–24:00，可「选中整天」「清空整天」或只改专注 / 休息。':
+      'Right-click a day header: the whole day, 0:00–24:00 only — select all, clear, or change focus / break.',
+    '右键某一段 = 时段：只作用于这一段（段首到段尾，跨小时也完整），可改时长、起止分钟，或「取消这一段」（两步确认）。':
+      'Right-click a window: that window only (start to end, whole hours included) — change rhythm, start/end minutes, or remove it.',
+    '右键空白格 = 格子：只作用于这一小时，把它选上并设定起止分钟。':
+      'Right-click an empty cell: that hour only — select it and set its start/end minutes.',
+    '一句话：点得越具体，作用范围越小——不会出现"右键一段、却把一整天重排"的情况。':
+      'In short: the more specific the click, the smaller the scope — no more "right-clicked one window, re-arranged the whole day".',
+    '拖选是"从起点到终点的一段连续区间"，松手即提交；贴着 0:00 / 24:00 的段只属于当天，不会牵连相邻那天。':
+      'Dragging selects one continuous span and commits on release; windows touching 0:00 / 24:00 belong to that day alone.',
+    '图表顶部还能设「显示范围」：只看 07:00–23:00 也行，只影响显示，范围外的时段照样生效。':
+      'The chart can show a sub-range too (e.g. 07:00–23:00); display only — windows outside still apply.',
+    '5 · 睡眠管理': '5 · Sleep hours',
+    '和自律时段是两件事：那边管"白天什么时候不许玩"，这里管"夜里这台机器该关着了"。':
+      'Separate from discipline hours: those govern daytime play, this governs when the machine should be off.',
+    '到了睡眠时段，开机 / 唤醒后会全屏锁定、限制所有功能，倒计时（默认 10 分钟，可改）结束自动关机。':
+      'Inside sleep hours, booting or waking up locks the screen and limits everything; a countdown (10 min by default) ends in a shutdown.',
+    '锁定期内设置改不了、程序也退不掉。想现在用，只能用积分解锁买断一段时间（价格在卡片里配）。':
+      'While locked, settings cannot change and the app cannot quit; points are the only way to buy time (price is set in the card).',
+    '前提是程序在运行；睡眠时段之外它什么都不做。':
+      'It only works while the app is running, and does nothing outside the window.',
+    '「固化」打开后，生效期间不能退出程序、不能改任何设置，任务管理器会被自动关掉；进程被杀掉会被守护进程在 2 秒内拉回来。':
+      'With hard lock on you cannot quit or change settings while it is active; Task Manager is closed and a guard restarts the app within 2 s if killed.',
+    '解除只有两条路：时段结束，或者用积分解锁。':
+      'Only two ways out: the window ends, or you unlock it with points.',
+    '专注每分钟 +1 分；自律时段按分钟买（15 分/分钟起，当天第 n 次 ×1.4）。':
+      '+1 point per focus minute; discipline hours are bought per minute (from 15 pts/min, ×1.4 for the n-th unlock of the day).',
+    '睡眠时段按段买断（单价 × 分钟数，各自在卡片里配）。':
+      'Sleep hours are bought as a block (price × minutes, configured in the card).',
+    '固化只在自律时间内生效，且自律时段本身的结束时间就是最晚解封时刻，不会把自己永久锁死。':
+      'Hard lock only applies during hours and never outlives the window itself.',
+    '选一个目标窗口，其余区域被遮罩盖住；不透明度 20%–100% 实时可调，没有任何动画，开关是瞬时到位。':
+      'Pick a target window and everything else is covered; opacity 20%–100% is live and there is no animation — toggling is instant.',
+    '两种开启方式：全局快捷键（默认 Ctrl+Alt+K，可在遮罩页改，被占用会报错），或者「跟随自律模式」——自律一开始自动开、结束自动关。':
+      'Two ways to turn it on: the global hotkey (Ctrl+Alt+K by default, editable on the mask page) or "follow discipline mode" — on when discipline starts, off when it ends.',
+    '右键怎么只改了一段？': 'Why did right-click change only one window?',
+    '这是设计：段右键只管那一段；要改整天请右键日期表头。':
+      'By design: a window menu touches only that window; right-click the day header for the whole day.',
+    '用「总览 → 积分兑换」解锁当前这一段（固化了才需要）。':
+      'Use Overview → Points to unlock the current window (only needed under hard lock).',
+    '右键怎么用、积分怎么算、睡眠时段怎么生效，都在这里':
+      'How right-click works, how points are priced, how sleep hours behave',
+    '这个版本改了什么': 'What changed in this version',
+    '只列会改变你手感的几条，细节看「帮助」。': 'Only the changes you can feel; see Help for details.',
+    '修复': 'Fixes',
+    '跨天拖动不再在中间那天多出幽灵时段（02:10–03:10 拖走就是拖走）':
+      'Cross-day drags no longer leave ghost windows on days you merely passed',
+    '交互': 'Interaction',
+    '右键分三档：表头 = 整天、段 = 只这一段、空白格 = 这一格':
+      'Right-click has three levels: day header = whole day, window = that window, empty cell = that cell',
+    '图表显示范围；睡眠时段（锁定 + 倒计时关机 + 积分解锁）':
+      'Chart display range; sleep hours (lock + countdown shutdown + points unlock)',
+    /* —— 三张右键菜单（帧内文案，弹窗出现时才渲染）—— */
+    '时段设置': 'Window settings',
+    '格子设置': 'Cell settings',
+    '整天设置': 'Whole-day settings',
+    '选中整天': 'Select whole day',
+    '清空整天': 'Clear whole day',
+    '应用到整天': 'Apply to whole day',
+    '取消这一段': 'Remove this window',
+    '再点一次，确认取消': 'Click again to confirm',
+    '应用': 'Apply',
+    '作用于 ': 'Applies to ',
+    ' 段）': ' windows)',
+    ' 段 · ': ' windows · ',
+    '一段': 'one window',
+    '一整天': 'one whole day',
+    '。菜单只改这一段，': '. The menu only edits this window,',
+    '不会': 'and never ',
+    '动这一天的其它时段，也没有整天级别的选项。': 'touches the rest of the day — there is no whole-day option here.',
+    '：只作用于': ': applies to ',
+    '，不会牵连相邻那天。': ' only, never the neighbouring day.',
+    '起止分钟只改这一段的首 / 尾小时（': 'Start/end minutes only touch the first / last hour of this window (',
+    ' 与 ': ' and ',
+    ' 那两格），中间小时保持整点。': '), the hours in between stay on the hour.',
+    '同时设为通用时长（之后新选的时段沿用）': 'Also save as the default rhythm',
+    '休息期间不拦截、不遮罩；排不满 60 分钟的尾段算继续专注。':
+      'Breaks are never blocked or masked; a short tail counts as more focus.',
+    '这一格是': 'This cell is ',
+    '空白的': 'empty',
+    '）没选中）。应用会把它选上；只想改别的范围请在图上拖一段，再右键那一段。':
+      '). Applying selects it; to edit a range, drag it on the chart first.',
+    '起止分钟只对': 'Start/end minutes apply to ',
+    '这一格': 'this cell',
+    '生效：0 和 60 就是整小时（例如 8:15–8:45）。': ' only: 0 and 60 mean the whole hour (e.g. 8:15–8:45).',
+    '想改一整段？右键那一段。想改一整天？右键顶部日期表头。':
+      'Want a whole window? Right-click it. A whole day? Right-click the day header.',
+    '这是': 'This is ',
+    '，其余六天原样不动。': '; the other six days stay untouched.',
+    '想改某一段的起止分钟，请直接在图上右键那一段。':
+      'To change start/end minutes of one window, right-click that window on the chart.',
+    '「应用到整天」只改': '"Apply to whole day" only changes ',
+    '，不会动已有时段的起止分钟（例如 02:10–03:10 仍然是 02:10 开始）。要让整天变成整点，用「选中整天」重排。':
+      ', leaving existing start/end minutes alone (02:10–03:10 still starts at 02:10). To snap the day to whole hours, use "Select whole day".',
+    '专注 ': 'Focus ',
+    '休息 ': 'Break ',
+    ' 分': ' min',
     '每 N 天生成一次，从锚点日算起，报告覆盖上一个完整 N 天':
       'Every N days from the anchor date, covering the previous N full days',
     '每个「自律周期」和每段「休息」结束前各提醒一次：主界面弹提示，HUD 上对应的倒计时会变金色闪烁。':
@@ -886,6 +995,10 @@
   }
 
   var RULES = [
+    /* —— 积分 / 关于 里的动态文案 —— */
+    [/^今天第 n 次 ×1\.4（第 1 次 (\d+)，第 2 次 (\d+)，第 3 次 (\d+)）$/,
+      'n-th unlock ×1.4 today (1st $1, 2nd $2, 3rd $3)'],
+    [/^剩余额度 (.+)$/, 'Remaining quota $1'],
     /* —— 睡眠管理 —— */
     [/^锁定中 · (\d+) 分 (\d+) 秒后自动关机$/, 'Locked · shuts down in $1 min $2 s'],
     [/^锁定中 · 只锁屏，不关机（([0-9]{2}:[0-9]{2}) – ([0-9]{2}:[0-9]{2})）$/, 'Locked · no shutdown ($1 – $2)'],

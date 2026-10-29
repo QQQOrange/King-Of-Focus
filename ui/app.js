@@ -339,6 +339,9 @@ function viewOverview() {
   const next = rt.nextChange;
   const locked = !!rt.locked;
   const pts = d.points || { balance: 0, price: 15, count: 0, unlockUntil: 0 };
+  // 睡眠时段也吃积分（按段买断），卡片上要把两套价格摆在一起，用户才知道钱花在哪
+  const sl = (d.config && d.config.settings && d.config.settings.sleep) || {};
+  const sleepPts = sl.enabled && +sl.unlockPrice > 0 ? +sl.unlockPrice * (+sl.unlockMin || 30) : 0;
 
   const phase = rt.breakOn ? '休息中' : on ? '专注中' : '自由时间';
   const phaseLeft = rt.breakLeft || 0;
@@ -426,13 +429,24 @@ function viewOverview() {
 
   <div class="card">
     <div class="card-title">积分兑换 <span class="badge gold">${pts.balance} 分</span></div>
-    <div class="card-sub">
-      专注 1 分钟 = 1 分。用积分可以强行解锁：当前单价 <b>${pts.price} 分 / 分钟</b>，
-      今天第 n 次解锁单价 ×1.4（第 1 次 ${pts.price}，第 2 次 ${Math.round(pts.price * 1.4)}，第 3 次 ${Math.round(pts.price * 1.96)}）。
+    <div class="card-sub">专注 1 分钟 = 1 分。</div>
+    <div class="card-sub">积分只用来解开正在生效的那一段时间：自律时段按分钟买，睡眠时段按整段买断。</div>
+    <div class="card-sub">都只影响当下这一轮，不会改排班，也不会连带别的时段。</div>
+    <div class="grid-2" style="margin:12px 0 4px">
+      <div class="mini">
+        <div class="l">自律时段</div>
+        <div class="v" style="color:var(--gold)">${pts.price}<span style="font-size:12px;font-weight:400"> 分/分钟</span></div>
+        <div class="l" style="margin-top:6px">今天第 n 次 ×1.4（第 1 次 ${pts.price}，第 2 次 ${Math.round(pts.price * 1.4)}，第 3 次 ${Math.round(pts.price * 1.96)}）</div>
+      </div>
+      <div class="mini">
+        <div class="l">睡眠时段</div>
+        <div class="v" style="color:${sleepPts ? 'var(--gold)' : 'var(--text-2)'}">${sleepPts ? `${sleepPts}<span style="font-size:12px;font-weight:400"> 分</span>` : '未开启'}</div>
+        <div class="l" style="margin-top:6px">${sleepPts ? `一次买断 ${sl.unlockMin} 分钟（单价 ${sl.unlockPrice} 分/分钟）` : '在「自律时段 → 睡眠管理」里开启'}</div>
+      </div>
     </div>
     <div class="row" style="align-items:center">
       <button class="btn btn-primary" data-act="open-unlock">用积分解锁</button>
-      <span class="hint">${on || rt.breakOn ? '解锁期间所有拦截暂停，倒计时结束自动恢复' : '现在没有生效的自律规则，暂时不需要解锁'}</span>
+      <span class="hint">${on || rt.breakOn ? '解锁期间所有拦截暂停，倒计时结束自动恢复' : (sl.enabled ? '现在不在自律 / 睡眠时段里，暂时不需要解锁' : '现在没有生效的自律规则，暂时不需要解锁')}</span>
     </div>
   </div>
 
@@ -2562,6 +2576,20 @@ function viewAbout() {
       <div><div style="font-size:12.5px">配置文件</div><div class="hint" style="margin-top:4px">${esc(d.configPath)}</div></div>
       <button class="btn btn-sm" data-act="open-cfg">打开</button>
     </div>
+    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+      <div><div style="font-size:12.5px">使用手册</div><div class="hint" style="margin-top:4px">右键怎么用、积分怎么算、睡眠时段怎么生效，都在这里</div></div>
+      <button class="btn btn-sm" data-act="open-help">打开</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">这个版本改了什么</div>
+    <div class="card-sub">只列会改变你手感的几条，细节看「帮助」。</div>
+    <div class="evlist">
+      <div class="ev"><span class="t">修复</span><span class="n">跨天拖动不再在中间那天多出幽灵时段（02:10–03:10 拖走就是拖走）</span></div>
+      <div class="ev"><span class="t">交互</span><span class="n">右键分三档：表头 = 整天、段 = 只这一段、空白格 = 这一格</span></div>
+      <div class="ev"><span class="t">新增</span><span class="n">图表显示范围；睡眠时段（锁定 + 倒计时关机 + 积分解锁）</span></div>
+    </div>
   </div>
 
   <div class="card">
@@ -2747,39 +2775,57 @@ function viewHelp() {
     休息提醒可以单独关。触发时主界面弹提示、HUD 上的倒计时变金色闪烁。
   `)}
 
-  ${sec('4 · 固化与积分', `
-    「固化」打开后，生效期间不能退出程序、不能改任何设置，任务管理器会被自动关掉；
-    进程被杀掉会被守护进程在 2 秒内拉回来。<br>
-    解除只有两条路：<b>时段结束</b> 或 <b>用积分解锁</b>。
-    专注每分钟 +1 分，解锁单价 15 分/分钟、当天第 n 次 ×1.4。
-    <br>注意：固化只在自律时间内生效，且自律时段本身的结束时间就是最晚解封时刻，不会把自己永久锁死。
+  ${sec('4 · 生效时间段：右键改哪里，就只改哪里', `
+     <div>完整图表里有三种右键目标，每张菜单顶部都写着"作用于 …"，三档互不越界。</div>
+    <div class="note" style="margin:10px 0 0;line-height:2">
+      <div>右键日期表头（周一 / 周二…）= 整天：只作用于这一天 0:00–24:00，可「选中整天」「清空整天」或只改专注 / 休息。</div>
+      <div>右键某一段 = 时段：只作用于这一段（段首到段尾，跨小时也完整），可改时长、起止分钟，或「取消这一段」（两步确认）。</div>
+      <div>右键空白格 = 格子：只作用于这一小时，把它选上并设定起止分钟。</div>
+    </div>
+    <div>一句话：点得越具体，作用范围越小——不会出现"右键一段、却把一整天重排"的情况。</div>
+    <div>拖选是"从起点到终点的一段连续区间"，松手即提交；贴着 0:00 / 24:00 的段只属于当天，不会牵连相邻那天。</div>
+    <div>图表顶部还能设「显示范围」：只看 07:00–23:00 也行，只影响显示，范围外的时段照样生效。</div>
   `)}
 
-  ${sec('5 · 专注遮罩', `
-    选一个目标窗口，其余区域被遮罩盖住，遮罩从窗口边缘扩散到铺满整块显示器。
-    透明度 / 留白 / 圆角 / 动画时长都能实时调。<br>
-    两种开启方式：全局快捷键（默认 <b>Ctrl+Alt+K</b>，可在遮罩页改，被占用会报错）；
-    或者「进入指定应用自动开启」——切到这些应用就自己盖、切走自动关。
+  ${sec('5 · 睡眠管理', `
+    <div>和自律时段是两件事：那边管"白天什么时候不许玩"，这里管"夜里这台机器该关着了"。</div>
+    <div>到了睡眠时段，开机 / 唤醒后会全屏锁定、限制所有功能，倒计时（默认 10 分钟，可改）结束自动关机。</div>
+    <div>锁定期内设置改不了、程序也退不掉。想现在用，只能用积分解锁买断一段时间（价格在卡片里配）。</div>
+    <div>前提是程序在运行；睡眠时段之外它什么都不做。</div>
   `)}
 
-  ${sec('6 · 统计与报告', `
+  ${sec('6 · 固化与积分', `
+    <div>「固化」打开后，生效期间不能退出程序、不能改任何设置，任务管理器会被自动关掉；进程被杀掉会被守护进程在 2 秒内拉回来。</div>
+    <div>解除只有两条路：时段结束，或者用积分解锁。</div>
+    <div>专注每分钟 +1 分；自律时段按分钟买（15 分/分钟起，当天第 n 次 ×1.4）。</div>
+    <div>睡眠时段按段买断（单价 × 分钟数，各自在卡片里配）。</div>
+    <div>固化只在自律时间内生效，且自律时段本身的结束时间就是最晚解封时刻，不会把自己永久锁死。</div>
+  `)}
+
+  ${sec('7 · 专注遮罩', `
+    <div>选一个目标窗口，其余区域被遮罩盖住；不透明度 20%–100% 实时可调，没有任何动画，开关是瞬时到位。</div>
+    <div>两种开启方式：全局快捷键（默认 Ctrl+Alt+K，可在遮罩页改，被占用会报错），或者「跟随自律模式」——自律一开始自动开、结束自动关。</div>
+  `)}
+
+  ${sec('8 · 统计与报告', `
     每秒采样一次前台窗口；按「自律模式开启 / 未开启」两套数据独立记录，互不混合。
     前台是浏览器且插件上报过，就记到域名上，否则记到 exe 上。<br>
     报告在日/周/月/年结束后自动生成（程序没开会下次启动补齐），也可以手动生成。
     三种口径：只看开启、只看未开启、两者汇总（同一应用/域名秒数直接相加）。
   `)}
 
-  ${sec('7 · 备份与云同步', `
+  ${sec('9 · 备份与云同步', `
     本地备份在软件目录下的 <code>king of focus back</code>，写盘前加密（设了密码用 AES-256-GCM，
     没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。<br>
     云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。
     「立即同步」只同步自律规则和设置，不做版本归档。
   `)}
 
-  ${sec('8 · 常见问题', `
+  ${sec('10 · 常见问题', `
     <b>拦截没反应？</b> 目标程序是管理员权限，就右键以管理员身份运行本程序。<br>
     <b>网页没拦住？</b> 插件没装或没连上，看侧边栏「浏览器插件」状态。<br>
-    <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁，或者把自律规则开关关掉（固化了就关不掉）。<br>
+    <b>右键怎么只改了一段？</b> 这是设计：段右键只管那一段；要改整天请右键日期表头。<br>
+    <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁当前这一段（固化了才需要）。<br>
     <b>数据在哪？</b> 全在软件目录的 <code>king of focus data</code>，整个文件夹拷走就能迁移。
   `)}
 
@@ -3717,12 +3763,50 @@ const Act = window.Act = {
   },
 
   /* ---- 积分 ---- */
+  /** 用积分解锁。
+   *
+   *  只解"现在正生效的那一段"——所以选项按当前状态给，不摆一堆通用套餐：
+   *    · 睡眠时段内 → 买断一次（单价 × 分钟数），走 sleep_unlock
+   *    · 自律时段内 → 按分钟买（5/10/15），走 points_unlock
+   *    · 都不在     → 明确告诉他现在没有什么要解，别白花积分
+   */
   openUnlock() {
     const p = S.data.points;
-    const opts = [5, 10, 15];
+    const rt = S.data.runtime || {};
+    const st = rt.sleep || {};
+    const inSleep = !!(st.enabled && st.inWindow && st.price > 0);
+    const inDisc = !!(rt.disciplineOn || rt.breakOn);
+    const rows = [];
+
+    if (inSleep) {
+      const okS = p.balance >= st.price;
+      rows.push(`<div class="list-row" style="cursor:pointer;${okS ? '' : 'opacity:.45'}"
+          data-act="${okS ? 'do-unlock-sleep' : 'noop'}">
+        <span class="badge ${okS ? 'gold' : 'red'}">睡眠时段</span>
+        <span class="grow">买断 ${st.unlockMin} 分钟（这一轮睡眠解除锁定，也不关机）</span>
+        <span class="tnum" style="color:${okS ? 'var(--gold)' : 'var(--red)'}">${st.price} 分</span>
+      </div>`);
+    }
+    if (inDisc) {
+      [5, 10, 15].forEach((m) => {
+        const cost = p.price * m;
+        const ok = p.balance >= cost;
+        rows.push(`<div class="list-row" style="cursor:pointer;${ok ? '' : 'opacity:.45'}"
+            data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}">
+          <span class="badge ${ok ? 'gold' : 'red'}">自律时段</span>
+          <span class="grow">解锁 ${m} 分钟自由时间（只解现在这一轮，排班不动）</span>
+          <span class="tnum" style="color:${ok ? 'var(--gold)' : 'var(--red)'}">${cost} 分</span>
+        </div>`);
+      });
+    }
+    if (!rows.length) {
+      rows.push(`<div class="note">现在没有正在生效的自律时段或睡眠时段，<b>不需要解锁</b>。
+        到点了再回来——积分不会自己跑掉。</div>`);
+    }
+
     $('#modalRoot').innerHTML = `
     <div class="modal-mask" data-act="close-modal-bg">
-      <div class="modal" style="width:560px">
+      <div class="modal" style="width:580px">
         <div class="modal-hd">
           <h3>用积分解锁</h3>
           <button class="close-x" data-act="close-modal">×</button>
@@ -3730,27 +3814,20 @@ const Act = window.Act = {
         <div class="modal-bd">
           <div class="row" style="gap:14px;margin-bottom:16px">
             <div class="mini" style="flex:1"><div class="l">当前积分</div><div class="v" style="color:var(--gold)">${p.balance}</div></div>
-            <div class="mini" style="flex:1"><div class="l">当前单价</div><div class="v">${p.price} <span style="font-size:12px;font-weight:400">分/分钟</span></div></div>
+            <div class="mini" style="flex:1"><div class="l">自律单价</div><div class="v">${p.price} <span style="font-size:12px;font-weight:400">分/分钟</span></div></div>
+            <div class="mini" style="flex:1"><div class="l">睡眠买断</div><div class="v">${inSleep ? st.price : '—'} <span style="font-size:12px;font-weight:400">分</span></div></div>
           </div>
-          ${opts.map((m) => {
-            const cost = p.price * m;
-            const ok = p.balance >= cost;
-            return `<div class="list-row" style="cursor:pointer;${ok ? '' : 'opacity:.45'}"
-                data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}">
-              <span class="badge ${ok ? 'gold' : 'red'}">${m} 分钟</span>
-              <span class="grow">解锁 ${m} 分钟自由时间</span>
-              <span class="tnum" style="color:${ok ? 'var(--gold)' : 'var(--red)'}">${cost} 分</span>
-            </div>`;
-          }).join('')}
+          ${rows.join('')}
           <div class="note" style="margin-top:14px">
-            解锁期间所有拦截暂停、可以退出程序；倒计时结束自动恢复固化。<br>
-            今天已经解锁 ${p.count} 次，每多一次单价 ×1.4。提前结束不退还积分。
+            解锁只作用于<b>当前这一段</b>：自律时段按分钟买、单价随当天次数 ×1.4；
+            睡眠时段一次买断，到期后如果还在时段内会自动重新锁定。提前结束不退还积分。
           </div>
         </div>
         <div class="modal-ft"><button class="btn" data-act="close-modal">取消</button></div>
       </div>
     </div>`;
   },
+
   async pointsUnlock(min) {
     try {
       const r = await invoke('points_unlock', { minutes: min });
@@ -4635,6 +4712,89 @@ const Act = window.Act = {
     toast(n ? `已清空 ${n} 个小时段` : '当前没有已选时段', n ? 'ok' : 'err');
   },
 
+  /** 取消某一天的某几段（右键"取消这一段"用）。
+   *  只动这几段覆盖的小时，其它时段原样保留——所以它和"清空全部"是两件事。 */
+  async clockClearRange(d, h0, h1, label) {
+    const prof = clockProfile();
+    const wdNow = (new Date().getDay() + 6) % 7;
+    const hourNow = new Date().getHours();
+    if (settingsFrozen() && wdNow === d && hourNow >= h0 && hourNow <= h1) {
+      guardDiscipline('取消正在生效的这一段');
+      return false;
+    }
+    let n = 0;
+    for (let h = h0; h <= h1; h++) {
+      const p = prof.days[d][h];
+      if (p.on) { p.on = false; p.from = 0; p.to = 60; n++; }
+    }
+    if (!n) { toast('这一段本来就没选中', 'err'); return false; }
+    const ok = await saveConfig();
+    render();
+    if (!ok) return false;
+    toast(`已取消 ${label || `${WD[d]} ${pad(h0)}:00 – ${pad(h1)}:00`}（${n} 个小时段）`, 'ok');
+    return true;
+  },
+
+  /** 整天：选中 0:00–24:00（沿用这套的通用时长） */
+  async clockDaySelect(d) {
+    const prof = clockProfile();
+    const w = prof.defWork, b = prof.defBrk;
+    for (let h = 0; h < 24; h++) {
+      const p = prof.days[d][h];
+      p.on = true;
+      p.work = w;
+      p.brk = b;
+      p.from = 0;
+      p.to = 60;
+    }
+    const ok = await saveConfig();
+    render();
+    if (!ok) return false;
+    toast(`${WD[d]} 整天已选中（0:00–24:00，专注 ${w} 分${b ? ` / 休息 ${b} 分` : ''}）`, 'ok');
+    return true;
+  },
+
+  /** 整天：清空这一天（其它六天不动） */
+  async clockDayClear(d) {
+    const prof = clockProfile();
+    const wdNow = (new Date().getDay() + 6) % 7;
+    const hourNow = new Date().getHours();
+    if (settingsFrozen() && wdNow === d && prof.days[d][hourNow].on) {
+      guardDiscipline('清空今天正在生效的时段');
+      return false;
+    }
+    let n = 0;
+    prof.days[d].forEach((p) => { if (p.on) { p.on = false; p.from = 0; p.to = 60; n++; } });
+    if (!n) { toast(`${WD[d]} 本来就没有选中任何时段`, 'err'); return false; }
+    const ok = await saveConfig();
+    render();
+    if (!ok) return false;
+    toast(`已清空 ${WD[d]} 的 ${n} 个小时段`, 'ok');
+    return true;
+  },
+
+  /** 整天：只改专注 / 休息，**不动**起止分钟（02:10 这种边界不会被抹平） */
+  async clockDayWB(d, w, b, defToo) {
+    const prof = clockProfile();
+    let n = 0;
+    for (let h = 0; h < 24; h++) {
+      const p = prof.days[d][h];
+      // 没选中的小时也记下来：等它被选上时就是这套时长（和"通用时长"是一个意思，
+      // 但只影响这一天，不会波及别的天）
+      p.work = w;
+      p.brk = b;
+      if (p.on) n++;
+    }
+    if (defToo) { prof.defWork = w; prof.defBrk = b; }
+    const ok = await saveConfig();
+    render();
+    if (!ok) return false;
+    toast(n
+      ? `${WD[d]} 整天：专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}，改了 ${n} 个小时段，起止分钟保持不变`
+      : `${WD[d]} 这一天还没有选中时段；时长已记下，选中后即生效`, 'ok');
+    return true;
+  },
+
   /** 提交一次自由拖选：[lo,hi) 是当天的一段连续分钟区间。
    *
    *  `mode = 'add'` → 并入这一天的选中范围；`'sub'` → 从原有选中里抹掉这一段。
@@ -4914,6 +5074,7 @@ const Act = window.Act = {
     const mins = st.unlockMin || 30;
     try {
       const r = await invoke('sleep_unlock', { minutes: mins });
+      closeModal();
       toast(`已用 ${r.spent} 积分解锁 ${r.minutes} 分钟（余额 ${r.balance}）`, 'ok');
       await pull();
       render();
@@ -5446,7 +5607,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'break-kind') { Act.breakKind(el.dataset.k); return; }
   if (act === 'mask-save') { await Act.maskSave(); return; }
   if (act === 'open-unlock') { Act.openUnlock(); return; }
+  if (act === 'open-help') { await Act.nav('help'); return; }
   if (act === 'do-unlock') { await Act.pointsUnlock(+el.dataset.min); return; }
+  if (act === 'do-unlock-sleep') { await Act.sleepUnlock(); return; }
   if (act === 'noop') { toast('积分不够，先去专注赚点分', 'err'); return; }
   if (act === 'save-editor') { await Act.saveEditor(); return; }
   if (act === 'del-app') { S.editing.apps.splice(+el.dataset.i, 1); renderEditor(); return; }
@@ -6052,6 +6215,14 @@ function ccMinText(lo, hi) {
 }
 
 /** 按下：锚定一个粒度，并据此决定是"加选"还是"抹掉" */
+/** 当天**覆盖这一小时**的那一段（合成事件没有真实坐标时兜底用）。
+ *  只要这一小时里有一段（哪怕它只占后半截），就认为右键的目的是那一段。 */
+function ccSegAtHour(d, h) {
+  const day = clockProfile().days[d];
+  if (!day) return null;
+  return ccSegs(day).find((s) => s.h0 <= h && s.h1 >= h) || null;
+}
+
 /** 当天包含 atMin（绝对分钟）的那一段；没有就返回 null */
 function ccSegAt(d, atMin) {
   const day = clockProfile().days[d];
@@ -6609,115 +6780,208 @@ function ccBuildSegRows(t) {
   return rows;
 }
 
-function ccOpenMenu(d, h, x, y) {
-  ccCloseMenu();
-  const fc = clockProfile();
-  const r = S.ccRect;
-  const hasRect = !!r;
-  // 默认目标：这一格在上次框选的矩形里 → 整个矩形；否则只作用这一格。
-  // 矩形要和这一格的 15 分钟窗口有交集才算"落在选区内"——
-  // 只比 (d,h) 会把"框选没盖到的那 15 分钟"也算进去（比如框住 13:00–15:15，
-  // 右键点 15:15–15:30 那半格，目标却显示成整片框选）。
-  let t = { d0: d, d1: d, h0: h, h1: h };
-  if (hasRect && d >= Math.min(r.d0, r.d1) && d <= Math.max(r.d0, r.d1)
-    && h >= Math.min(r.h0, r.h1) && h <= Math.max(r.h0, r.h1)) {
-    const r0 = Math.min(r.h0, r.h1), r1 = Math.max(r.h0, r.h1);
-    const qA2 = (r.h1 >= r.h0) ? r.qA : r.qB, qB2 = (r.h1 >= r.h0) ? r.qB : r.qA;
-    const rw = ccRectWindows(Math.min(r.d0, r.d1), Math.max(r.d0, r.d1), r0, r1, qA2 == null ? 0 : qA2, qB2 == null ? ccQCnt() - 1 : qB2);
-    const w = rw.get(`${d},${h}`);
-    if (w) t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: r0, h1: r1 };
-  }
-  const p = fc.days[d][h];
-  // 输入框预填：只作用这一格且这一格已选中 → 用这一格的值；否则用「通用」时长
-  const prefill = (single) => {
-    const one = single && p.on;
-    return { w: one ? (p.work || CC_DEF_W) : fc.defWork, b: one ? (p.brk || CC_DEF_B) : fc.defBrk };
-  };
-  // 起止分钟预填：单格看这一格的窗口；多格看首/尾小时的窗口（没选中按整点）。
-  // 框选带了锚点刻度时用框选窗口的首/尾（与拖动一致）。
-  const prefillWin = () => {
-    const single = t.d0 === t.d1 && t.h0 === t.h1;
-    if (hasRect && r.qA != null && t.d0 === Math.min(r.d0, r.d1) && t.d1 === Math.max(r.d0, r.d1)
-      && t.h0 === Math.min(r.h0, r.h1) && t.h1 === Math.max(r.h0, r.h1)) {
-      return { f: qStart(r.qA), t: qEnd(r.qB) };
-    }
-    if (single) {
-      const one = p.on ? p : null;
-      return { f: one ? ccSnapWin(one.from, one.to).f : 0, t: one ? ccSnapWin(one.from, one.to).t : 60 };
-    }
-    const pf = fc.days[t.d0][t.h0], pt = fc.days[t.d1][t.h1];
-    return {
-      f: pf && pf.on ? ccSnapWin(pf.from, pf.to).f : 0,
-      t: pt && pt.on ? ccSnapWin(pt.from, pt.to).t : 60,
-    };
-  };
-  const pre = prefill(t.d0 === t.d1 && t.h0 === t.h1);
-  const preW = prefillWin();
+/* ───────── 右键：三种目标，互不混淆 ─────────
+ *
+ * 以前只有一个入口：右键任何格子都弹「时段设置」，里面还挂着一排
+ * 「当前框选 / 这一格 / 这一列（一整天）」的切换 —— 于是"右键点某一段"，
+ * 弹出来的却是"整天"级别的选项，手一滑就把一整天重排了。
+ *
+ * 现在按**点在哪**决定菜单，三档互斥，任何一张都不出现跨级选项：
+ *   ① 日期表头 `.cc-dh`  → 整天：只作用于这一天 0:00–24:00
+ *   ② 已有时段内部        → 时段：只作用于这一段（段首到段尾，跨小时也完整，
+ *                          贴着 0:00 / 24:00 也不会牵连相邻那天）
+ *   ③ 空白格子            → 选区：这一格，或当前拖选的连续范围
+ *
+ * 每张菜单顶部都写死"作用于 …"，所以"改了哪一段"永远是能读出来的。
+ */
 
-  $('#modalRoot').innerHTML = `
+const CC_WB_PRESETS = [[25, 5], [45, 15], [50, 10], [60, 0]];
+
+/** 三张菜单共用的弹窗外壳 */
+function ccMenuShell(title, sub, body, foot) {
+  return `
     <div class="modal-mask" data-act="close-modal-bg">
       <div class="modal cc-modal">
         <div class="modal-hd">
-          <h3>时段设置</h3>
+          <h3>${esc(title)}</h3>
           <button class="close-x" data-act="close-modal">×</button>
         </div>
         <div class="modal-bd">
-          <div class="cc-menu-tgt">作用于 <b id="ccTgt">${esc(ccRectText(t.d0, t.d1, t.h0, t.h1, preW.f, preW.t))}</b>（共 <b id="ccCnt">${(t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1)}</b> 段）</div>
-          <div class="cc-menu-scope">
-            <button class="chip-btn${hasRect ? ' active' : ''}" data-scope="rect"${hasRect ? '' : ' disabled title="先拖动框选一片区域"'}>当前框选</button>
-            <button class="chip-btn${hasRect ? '' : ' active'}" data-scope="cell">这一格</button>
-            <button class="chip-btn" data-scope="col">这一列（一整天）</button>
-          </div>
-
-          <div class="cc-tl-list" id="ccTlList">
-            <div class="cc-tl-hd">
-              <span class="cc-tl-c-idx">#</span>
-              <span class="cc-tl-c-day">星期</span>
-              <span class="cc-tl-c-time">起止时间</span>
-              <span class="cc-tl-c-type">类型</span>
-              <span class="cc-tl-c-note">备注</span>
-              <span class="cc-tl-c-act">状态</span>
-            </div>
-            <div id="ccTlRows"></div>
-          </div>
-
-          <div class="cc-menu-row">
-            <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${pre.w}"> 分</label>
-            <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${pre.b}"> 分</label>
-          </div>
-          <div class="cc-menu-scope">
-            ${[[25, 5], [45, 15], [50, 10], [60, 0]].map(([w, b]) =>
-    `<button class="chip-btn" data-wb="${w},${b}">${b ? `${w} / ${b}` : '不休息'}</button>`).join('')}
-          </div>
-          <div class="cc-menu-row win">
-            <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${preW.f}"> 到</label>
-            <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${preW.t}"> 分</label>
-          </div>
-          <div class="cc-menu-hint">起止分钟只改目标范围的<b>首 / 尾小时</b>：起始分钟改第一个小时从第几分钟开始，结束分钟改最后一个小时到第几分钟结束（填 0 和 60 = 整点）。比整小时更细的边界就这样设，比如 8:15–11:45。</div>
-          <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
-          <div class="cc-menu-hint">应用后会顺便开启这些时段；休息期间不拦截、不遮罩。排不满 60 分钟的尾段算继续专注。</div>
+          ${sub ? `<div class="cc-menu-tgt">${sub}</div>` : ''}
+          ${body}
         </div>
-        <div class="modal-ft">
-          <button class="btn" data-act="cc-close">取消</button>
-          <button class="btn btn-primary" id="ccApply">应用</button>
-        </div>
+        <div class="modal-ft">${foot}</div>
       </div>
     </div>`;
+}
+
+/** 专注 / 休息输入 + 预设（三张菜单一样） */
+function ccWbHtml(w, b) {
+  return `
+    <div class="cc-menu-row">
+      <label>专注 <input type="number" id="ccW" min="1" max="60" step="1" value="${w}"> 分</label>
+      <label>休息 <input type="number" id="ccB" min="0" max="60" step="1" value="${b}"> 分</label>
+    </div>
+    <div class="cc-menu-scope">
+      ${CC_WB_PRESETS.map(([x, y]) => `<button class="chip-btn" data-wb="${x},${y}">${y ? `${x} / ${y}` : '不休息'}</button>`).join('')}
+    </div>`;
+}
+
+/** 读输入框里的专注 / 休息（夹紧、休息不能挤掉专注） */
+function ccReadWb() {
+  let w = Math.round(Number(($('#ccW') || {}).value) || 0);
+  let b = Math.round(Number(($('#ccB') || {}).value) || 0);
+  w = Math.max(1, Math.min(60, w));
+  b = Math.max(0, Math.min(60, b));
+  if (b > 0 && w + b > 60) b = 60 - w;
+  return { w, b };
+}
+
+/** 统一的菜单交互委托（预设 / 关闭 / 交给各自的 handler）
+ *
+ *  用 AbortController 一次性绑定：#modalRoot 是常驻节点，innerHTML 换不掉它身上的监听，
+ *  逐次 addEventListener 会越积越多（点一下应用执行 N 次）。
+ */
+function ccBindMenu(handler) {
+  if (window.__ccMenuCtrl) window.__ccMenuCtrl.abort();
+  window.__ccMenuCtrl = new AbortController();
+  $('#modalRoot').addEventListener('click', async (e) => {
+    const wb = e.target.closest('[data-wb]');
+    if (wb) {
+      const [w2, b2] = wb.dataset.wb.split(',').map(Number);
+      if ($('#ccW')) $('#ccW').value = w2;
+      if ($('#ccB')) $('#ccB').value = b2;
+      return;
+    }
+    if (e.target.closest('[data-act="cc-close"]')) { ccCloseMenu(); return; }
+    await handler(e);
+  }, { signal: window.__ccMenuCtrl.signal });
+}
+
+/** 一段的文案：周三 02:10 – 03:10 */
+function ccSegText(d, seg) {
+  const a = seg.h0 * 60 + seg.f0;
+  const b = seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1);
+  return `${WD[d]} ${ccMinText(a, b).range}`;
+}
+
+/** ② 右键落在**已有时段**里 → 只针对这一段 */
+function ccOpenSegMenu(d, seg) {
+  ccCloseMenu();
+  const prof = clockProfile();
+  const a = seg.h0 * 60 + seg.f0;
+  const b = seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1);
+
+  // 说明：这里**只认右键点中的这一段**。
+  // 拖选是"一段连续区间"，而连续区间一旦提交就必然合成一段（见 ccSegs），
+  // 所以不存在"框选一次命中好几段"的情况；真有好几段时，右键哪段就只改哪段。
+
+  const edge = [];
+  if (a === 0) edge.push('起点是 0:00（日界）');
+  if (b === 1440) edge.push('终点是 24:00（日界）');
+
+  const sub = `作用于 <b id="ccTgt">${esc(ccSegText(d, seg))}</b>（<b id="ccCnt">1</b> 段 · ${ccMinText(a, b).dur}）`;
+  const body = `
+    <div class="note" style="line-height:1.8">
+      这是<b>一段</b>：${esc(ccSegText(d, seg))}。菜单只改这一段，
+      <b>不会</b>动这一天的其它时段，也没有整天级别的选项。
+      ${edge.length ? `<br>${esc(edge.join('、'))}：只作用于${WD[d]}，不会牵连相邻那天。` : ''}
+    </div>
+    ${ccWbHtml(seg.work || prof.defWork, seg.brk || CC_DEF_B)}
+    <div class="cc-menu-row win" id="ccWinRow">
+      <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${seg.f0}"> 到</label>
+      <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${seg.t1}"> 分</label>
+    </div>
+    <div class="cc-menu-hint" id="ccWinHint">起止分钟只改这一段的首 / 尾小时（${WD[d]} ${pad(seg.h0)}:00 与 ${pad(seg.h1)}:00 那两格），中间小时保持整点。</div>
+    <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
+    <div class="cc-menu-hint">休息期间不拦截、不遮罩；排不满 60 分钟的尾段算继续专注。</div>`;
+  const foot = `
+    <button class="btn btn-danger" id="ccSegDel" data-armed="0">取消这一段</button>
+    <span style="flex:1"></span>
+    <button class="btn" data-act="cc-close">取消</button>
+    <button class="btn btn-primary" id="ccApply">应用</button>`;
+
+  $('#modalRoot').innerHTML = ccMenuShell('时段设置', sub, body, foot);
   ccMenu = $('#modalRoot');
   $('#ccW') && $('#ccW').focus();
 
-  // ---- 垂直刻度列表：渲染 + 就地刷新 ----
-  // 列表是"从上到下、每行一个 15 分钟刻度"，替代主网格里那条
-  // "一条横条从左到右划分 4 段"（.cc-q）：横条只有颜色看不出信息，
-  // 这里每行都给起止时间、类型、备注，并可直接开关这一段。
+  ccBindMenu(async (e) => {
+    // 取消这一段：两步确认，避免手滑
+    const del = e.target.closest('#ccSegDel');
+    if (del) {
+      if (del.dataset.armed !== '1') {
+        del.dataset.armed = '1';
+        del.textContent = '再点一次，确认取消';
+        return;
+      }
+      await Act.clockClearRange(d, seg.h0, seg.h1, ccSegText(d, seg));
+      ccCloseMenu();
+      return;
+    }
+    if (!e.target.closest('#ccApply')) return;
+
+    const { w, b } = ccReadWb();
+    const defToo = !!($('#ccDefToo') || {}).checked;
+    const f2 = Math.round(Number(($('#ccFrom') || {}).value) || 0);
+    const t2 = Math.round(Number(($('#ccTo') || {}).value) || 0);
+    const snap = ccSnapWin(f2, t2);
+    if (snap.f >= snap.t) { toast('起始分钟要小于结束分钟', 'err'); return; }
+    const ok = await Act.clockSetWB(d, d, seg.h0, seg.h1, w, b, defToo, snap.f, snap.t);
+    if (ok === false) { toast('起始分钟要小于结束分钟', 'err'); return; }
+    ccCloseMenu();
+  });
+}
+
+/** ③ 右键点在**空白格子**上 → 只作用这一格（不再是"这一列"或"整个框选"） */
+function ccOpenCellMenu(d, h) {
+  ccCloseMenu();
+  const fc = clockProfile();
+  const p = fc.days[d][h];
+  const pre = p.on
+    ? { w: p.work || CC_DEF_W, b: p.brk || CC_DEF_B }
+    : { w: fc.defWork, b: fc.defBrk };
+  const snap = p.on ? ccSnapWin(p.from, p.to) : { f: 0, t: 60 };
+  const t = { d0: d, d1: d, h0: h, h1: h };
+
+  const sub = `作用于 <b id="ccTgt">${esc(ccRectText(d, d, h, h, snap.f, snap.t))}</b>（<b id="ccCnt">1</b> 段）`;
+  const body = `
+    <div class="note" style="line-height:1.8">
+      这一格是<b>空白的</b>（${WD[d]} ${pad(h)}:00 – ${pad(h + 1)}:00 没选中）。
+      应用会把它选上；只想改别的范围请在图上拖一段，再右键那一段。
+    </div>
+    <div class="cc-tl-list" id="ccTlList">
+      <div class="cc-tl-hd">
+        <span class="cc-tl-c-idx">#</span>
+        <span class="cc-tl-c-day">星期</span>
+        <span class="cc-tl-c-time">起止时间</span>
+        <span class="cc-tl-c-type">类型</span>
+        <span class="cc-tl-c-note">备注</span>
+        <span class="cc-tl-c-act">状态</span>
+      </div>
+      <div id="ccTlRows"></div>
+    </div>
+    ${ccWbHtml(pre.w, pre.b)}
+    <div class="cc-menu-row win">
+      <label>起止分钟 从 <input type="number" id="ccFrom" min="0" max="59" step="1" value="${snap.f}"> 到</label>
+      <label><input type="number" id="ccTo" min="1" max="60" step="1" value="${snap.t}"> 分</label>
+    </div>
+    <div class="cc-menu-hint">起止分钟只对<b>这一格</b>生效：0 和 60 就是整小时（例如 8:15–8:45）。</div>
+    <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
+    <div class="cc-hint-sep">想改一整段？右键那一段。想改一整天？右键顶部日期表头。</div>`;
+  const foot = `
+    <span style="flex:1"></span>
+    <button class="btn" data-act="cc-close">取消</button>
+    <button class="btn btn-primary" id="ccApply">应用</button>`;
+
+  $('#modalRoot').innerHTML = ccMenuShell('格子设置', sub, body, foot);
+  ccMenu = $('#modalRoot');
+  $('#ccW') && $('#ccW').focus();
+
   const renderTlRows = () => {
     const box = $('#ccTlRows');
     if (!box) return;
     const segs = ccBuildSegments(t);
-    if (!segs.length) {
-      box.innerHTML = '<div class="cc-tl-empty">这个范围里没有可设置的刻度</div>';
-      return;
-    }
+    if (!segs.length) { box.innerHTML = '<div class="cc-tl-empty">这个范围里没有可设置的刻度</div>'; return; }
     box.innerHTML = segs.map((s, i) => `
       <div class="cc-tl-row ${s.on ? 'on' : 'off'} type-${s.type}">
         <span class="cc-tl-idx">${i + 1}</span>
@@ -6734,81 +6998,71 @@ function ccOpenMenu(d, h, x, y) {
   renderTlRows();
   window.__ccRenderTlRows = renderTlRows;
 
-  const tgt = $('#ccTgt');
-  const cnt = $('#ccCnt');
-  const updTgt = (scope) => {
-    if (scope === 'cell') t = { d0: d, d1: d, h0: h, h1: h };
-    else if (scope === 'col') t = { d0: d, d1: d, h0: 0, h1: 23 };
-    else if (hasRect) t = { d0: Math.min(r.d0, r.d1), d1: Math.max(r.d0, r.d1), h0: Math.min(r.h0, r.h1), h1: Math.max(r.h0, r.h1) };
-    else return;
-    const qw = prefillWin();
-    tgt.textContent = ccRectText(t.d0, t.d1, t.h0, t.h1, qw.f, qw.t);
-    cnt.textContent = (t.d1 - t.d0 + 1) * (t.h1 - t.h0 + 1);
-    // 目标范围变了，输入框也跟着换：单格看这一格的值，多格看通用时长
-    const q = prefill(t.d0 === t.d1 && t.h0 === t.h1);
-    $('#ccW').value = q.w;
-    $('#ccB').value = q.b;
-    $('#ccFrom').value = qw.f;
-    $('#ccTo').value = qw.t;
-    // 目标范围变了，垂直刻度列表也要跟着换
-    if (typeof renderTlRows === 'function') renderTlRows();
-  };
-
-  // 模态内部交互：scope / wb / apply / 关闭 全在这里处理。
-  // 用 AbortController 一次性委托，避免每次 ccOpenMenu 都 addEventListener 累积
-  // （#modalRoot 是常驻 DOM 节点，innerHTML 替换不会清掉挂在它身上的监听器）。
-  // 旧的 controller 在下次 ccOpenMenu / ccCloseMenu 时被 abort 掉。
-  if (window.__ccMenuCtrl) window.__ccMenuCtrl.abort();
-  window.__ccMenuCtrl = new AbortController();
-  $('#modalRoot').addEventListener('click', async (e) => {
-    // 垂直刻度列表里的单段开关：直接切换那 15 分钟
+  ccBindMenu(async (e) => {
     const tl = e.target.closest('[data-tl]');
     if (tl) {
       const [dd, hh, qq] = tl.dataset.tl.split(',').map(Number);
       await Act.clockToggleQ(dd, hh, qq);
-      if (typeof window.__ccRenderTlRows === 'function') window.__ccRenderTlRows();
+      renderTlRows();
       return;
     }
-    const sc = e.target.closest('[data-scope]');
-    if (sc && !sc.disabled) {
-      $('#modalRoot').querySelectorAll('[data-scope]').forEach((b) => b.classList.toggle('active', b === sc));
-      updTgt(sc.dataset.scope);
-      return;
-    }
-    const wb = e.target.closest('[data-wb]');
-    if (wb) {
-      const [w2, b2] = wb.dataset.wb.split(',').map(Number);
-      $('#ccW').value = w2;
-      $('#ccB').value = b2;
-      return;
-    }
-    if (e.target.closest('#ccApply')) {
-      let w2 = Math.round(Number($('#ccW').value) || 0);
-      let b2 = Math.round(Number($('#ccB').value) || 0);
-      w2 = Math.max(1, Math.min(60, w2));
-      b2 = Math.max(0, Math.min(60, b2));
-      if (b2 > 0 && w2 + b2 > 60) b2 = 60 - w2;
-      let f2 = Math.round(Number($('#ccFrom').value) || 0);
-      let t2 = Math.round(Number($('#ccTo').value) || 0);
-      // 对齐 15 分钟刻度（边界向下/向上取整，零碎时间才对得齐）
-      const snap = ccSnapWin(f2, t2);
-      f2 = snap.f; t2 = snap.t;
-      // 单格时起止分钟在同一小时里，必须起早于止；多格时分别作用于首/尾小时
-      if (t.d0 === t.d1 && t.h0 === t.h1 && f2 >= t2) {
-        toast('起始分钟要小于结束分钟', 'err');
-        return;
-      }
-      const ok = await Act.clockSetWB(t.d0, t.d1, t.h0, t.h1, w2, b2, $('#ccDefToo').checked, f2, t2);
-      if (ok === false) {
-        // 兜底：直连 Act 的非法起止（菜单里的校验被绕过时）也不改配置、不关菜单
-        toast('起始分钟要小于结束分钟', 'err');
-        return;
-      }
+    if (!e.target.closest('#ccApply')) return;
+    const { w, b } = ccReadWb();
+    let f2 = Math.round(Number(($('#ccFrom') || {}).value) || 0);
+    let t2 = Math.round(Number(($('#ccTo') || {}).value) || 0);
+    const sn = ccSnapWin(f2, t2);
+    f2 = sn.f; t2 = sn.t;
+    if (f2 >= t2) { toast('起始分钟要小于结束分钟', 'err'); return; }
+    const ok = await Act.clockSetWB(d, d, h, h, w, b, !!($('#ccDefToo') || {}).checked, f2, t2);
+    if (ok === false) { toast('起始分钟要小于结束分钟', 'err'); return; }
+    ccCloseMenu();
+  });
+}
+
+/** ① 右键点**日期表头** → 整天（0:00–24:00，只这一天） */
+function ccOpenDayMenu(d) {
+  ccCloseMenu();
+  const prof = clockProfile();
+  const day = prof.days[d];
+  const segs = ccSegs(day);
+  const mins = ccDayMinutes(day);
+  const w = prof.defWork, b = prof.defBrk;
+
+  const sub = `作用于 <b id="ccTgt">${WD[d]} 00:00 – 24:00</b>（整天 · ${segs.length} 段 · ${mins ? ccMinText(0, mins).dur : '空'}）`;
+  const body = `
+    <div class="note" style="line-height:1.8">
+      这是<b>一整天</b>：${WD[d]} 0:00–24:00。<b>只作用于这一天</b>，其余六天原样不动。
+      想改某一段的起止分钟，请直接在图上右键那一段。
+    </div>
+    <div class="cc-menu-scope" style="margin-top:10px">
+      <button class="chip-btn" data-day-act="select">选中整天</button>
+      <button class="chip-btn" data-day-act="clear">清空整天</button>
+    </div>
+    ${ccWbHtml(w, b)}
+    <div class="cc-menu-hint">「应用到整天」只改<b>专注 / 休息</b>，不会动已有时段的起止分钟（例如 02:10–03:10 仍然是 02:10 开始）。要让整天变成整点，用「选中整天」重排。</div>
+    <label class="cc-menu-def"><input type="checkbox" id="ccDefToo"> 同时设为通用时长（之后新选的时段沿用）</label>`;
+  const foot = `
+    <span style="flex:1"></span>
+    <button class="btn" data-act="cc-close">取消</button>
+    <button class="btn btn-primary" id="ccApply">应用到整天</button>`;
+
+  $('#modalRoot').innerHTML = ccMenuShell('整天设置', sub, body, foot);
+  ccMenu = $('#modalRoot');
+  $('#ccW') && $('#ccW').focus();
+
+  ccBindMenu(async (e) => {
+    const da = e.target.closest('[data-day-act]');
+    if (da) {
+      if (da.dataset.dayAct === 'select') await Act.clockDaySelect(d);
+      else await Act.clockDayClear(d);
       ccCloseMenu();
       return;
     }
-    if (e.target.closest('[data-act="cc-close"]')) ccCloseMenu();
-  }, { signal: window.__ccMenuCtrl.signal });
+    if (!e.target.closest('#ccApply')) return;
+    const { w: w2, b: b2 } = ccReadWb();
+    const ok = await Act.clockDayWB(d, w2, b2, !!($('#ccDefToo') || {}).checked);
+    if (ok !== false) ccCloseMenu();
+  });
 }
 
 /* 全局屏蔽 WebView 自带的右键菜单。
@@ -6823,10 +7077,34 @@ document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { captu
 document.addEventListener('contextmenu', (e) => {
   // 拖动中按右键 = 取消这次拖动，且不弹菜单（否则会一边拖一边弹窗）
   if (S.ccDrag) { e.preventDefault(); ccCancelDrag(); return; }
+  if (!S.data) { ccCloseMenu(); return; }
+
+  // ① 日期表头 → 整天设置（只这一天）
+  const dh = e.target.closest('.cc-dh');
+  if (dh) {
+    e.preventDefault();
+    const idx = [...document.querySelectorAll('.cc-dh')].indexOf(dh);
+    if (idx >= 0) ccOpenDayMenu(idx);
+    return;
+  }
+
+  // ② / ③ 格子：落在已有时段里 → 只改这一段；空白 → 这一格 / 当前框选
   const cell = e.target.closest('.cc-cell');
   if (!cell) { ccCloseMenu(); return; }
   e.preventDefault();
-  ccOpenMenu(+cell.dataset.d, +cell.dataset.h, e.clientX, e.clientY);
+  const d = +cell.dataset.d;
+  const h = +cell.dataset.h;
+  // 真实右键：按指针落在哪一个最小粒度判断（02:00–02:10 那截空白就是空白）。
+  // 没有真实坐标（脚本 / 自动化合成的 contextmenu）：退回"这一小时里有段就算段"，
+  // 否则坐标一偏就会把"段"认成"空白格"，菜单跟着错。
+  const box = cell.getBoundingClientRect();
+  const real = e.clientY >= box.top - 2 && e.clientY <= box.bottom + 2
+    && e.clientX >= box.left - 2 && e.clientX <= box.right + 2;
+  const seg = real
+    ? ccSegAt(d, ccGrainAt(d, e.clientY).idx * ccStep())
+    : ccSegAtHour(d, h);
+  if (seg) ccOpenSegMenu(d, seg);
+  else ccOpenCellMenu(d, h);
 });
 
 // 点模态外面 = 关菜单（模态自带 data-act="close-modal-bg"，这里兜底）
