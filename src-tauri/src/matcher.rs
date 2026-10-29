@@ -105,6 +105,26 @@ pub const BROWSERS: [&str; 16] = [
     "zen",
 ];
 
+/// 用户自己登记的浏览器进程名（小写、不含 .exe）。
+/// 内置清单认不出小众套壳，但"自律时段里打开浏览器要被拦"必须对它们同样成立。
+static EXTRA_BROWSERS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_extra_browsers(list: Vec<String>) {
+    if let Ok(mut g) = EXTRA_BROWSERS.lock() {
+        *g = list.into_iter()
+            .map(|x| x.trim().to_lowercase())
+            .filter(|x| !x.is_empty())
+            .collect();
+    }
+}
+
 pub fn is_browser(app: &WinApp) -> bool {
-    BROWSERS.iter().any(|b| app.name.contains(b))
+    if BROWSERS.iter().any(|b| app.name.contains(b)) {
+        return true;
+    }
+    let name = app.name.to_lowercase();
+    EXTRA_BROWSERS
+        .lock()
+        .map(|g| g.iter().any(|x| name.contains(x.as_str())))
+        .unwrap_or(false)
 }

@@ -35,7 +35,16 @@ fn fetch() -> Option<(String, String)> {
     if text.is_empty() || text.chars().count() > 70 {
         return None;
     }
-    let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    // 出处尽量给全：一言同时给「作品名」和「作者」，只有作品名时也照实标。
+    // 界面把它显示成 "—— 作者《作品》 · 一言"，让人一眼知道这句是从哪来的。
+    let work = v.get("from").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let who = v.get("from_who").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let from = match (who.is_empty(), work.is_empty()) {
+        (false, false) => format!("{who}《{work}》"),
+        (false, true) => who,
+        (true, false) => format!("《{work}》"),
+        (true, true) => String::new(),
+    };
     Some((text, from))
 }
 

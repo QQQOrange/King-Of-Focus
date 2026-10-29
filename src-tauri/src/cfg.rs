@@ -127,11 +127,49 @@ pub fn sanitize(c: &mut Config) {
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
     sanitize_quotes(&mut c.settings.custom_quotes);
+    sanitize_custom_browsers(&mut c.settings.custom_browsers);
 
     // 语言只有两档；写错（或老配置没有这个键）一律回落简体中文
     if !matches!(c.settings.lang.as_str(), "zh-CN" | "en") {
         c.settings.lang = "zh-CN".into();
     }
+}
+
+/// 自定义浏览器归一化：去掉空名/空路径、按 exe 去重、补 id、限量。
+///
+/// 这是唯一入口（保存、备份恢复、云同步下载都会走到），
+/// 不在这一层收口的话，一条没有 exe 的条目会让扫描线程一直去碰不存在的路径。
+fn sanitize_custom_browsers(list: &mut Vec<crate::model::CustomBrowser>) {
+    const MAX: usize = 16;
+    let mut out: Vec<crate::model::CustomBrowser> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for b in list.iter() {
+        let name: String = b.name.trim().chars().take(40).collect();
+        let exe = b.exe.trim().to_string();
+        if name.is_empty() || exe.is_empty() {
+            continue;
+        }
+        let key = exe.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let id = if b.id.trim().is_empty() {
+            format!("c{}", out.len() + 1)
+        } else {
+            b.id.trim().chars().take(40).collect()
+        };
+        out.push(crate::model::CustomBrowser {
+            id,
+            name,
+            exe,
+            ext_page: b.ext_page.trim().chars().take(200).collect(),
+        });
+        if out.len() >= MAX {
+            break;
+        }
+    }
+    *list = out;
 }
 
 /// 自定义语录归一化：去空白、去空行、去重、限长限量。

@@ -192,7 +192,7 @@ pub fn decrypt(envelope: &str, pass: &str) -> Result<String, String> {
                 .map_err(|_| "密码不对，或者备份文件被改动过".to_string())?;
             String::from_utf8(plain).map_err(|_| "内容不是 UTF-8".into())
         }
-        _ => Err("不是 King of Focus 的备份文件".into()),
+        _ => Err("不是 King Of Focus 的备份文件".into()),
     }
 }
 

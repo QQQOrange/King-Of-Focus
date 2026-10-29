@@ -1,8 +1,8 @@
-/* King of Focus — 前端逻辑 */
+/* King Of Focus — 前端逻辑 */
 'use strict';
 
 const T = window.__TAURI__;
-const invoke = T && T.core ? T.core.invoke : async () => { throw new Error('需要在 King of Focus 中运行'); };
+const invoke = T && T.core ? T.core.invoke : async () => { throw new Error('需要在 King Of Focus 中运行'); };
 
 /* 多语言：I.t 查词典，I.apply 在每次渲染后翻译 DOM。
  * 用 I 而不是 T，因为 T 已经被 Tauri 的全局对象占了。 */
@@ -278,8 +278,9 @@ function renderChrome() {
  */
 const QUOTE_SRC = {
   custom: '我写的',
-  net: '网络 · 一言',
-  local: '内置',
+  // 联网的句子来自「一言」公开接口，把站点写出来，用户一眼知道出处
+  net: '一言 · hitokoto.cn',
+  local: '内置句子',
   empty: '还没有语录',
 };
 
@@ -365,11 +366,13 @@ function viewOverview() {
       <div class="qmeta">
         <span class="qsrc ${q.src}">${QUOTE_SRC[q.src] || q.src}</span>
         ${q.from ? `<span class="qfrom">—— ${esc(q.from)}</span>` : ''}
+        ${q.src === 'net' ? '<span class="qhint">（来自 hitokoto.cn 公开接口）</span>' : ''}
       </div>
     </div>
     <div class="qops">
       <button class="btn btn-sm" data-act="quote-next" title="换一条（自己写的和联网的都会轮换）">换一条</button>
       <button class="btn btn-sm" data-act="quote-manage">我的语录${qN ? ` · ${qN}` : ''}</button>
+      <button class="btn btn-sm" data-act="quote-add-new" title="直接写一句新的">＋ 添加</button>
     </div>
   </section>
 
@@ -2328,7 +2331,7 @@ function viewAbout() {
     <div style="display:flex;gap:18px;align-items:center">
       <div class="brand-mark" style="width:72px;height:72px;border-radius:20px"><img src="logo.png" alt="" /></div>
       <div>
-        <div style="font-size:22px;font-weight:700;letter-spacing:.3px">${esc(d.appName || 'King of Focus')}</div>
+        <div style="font-size:22px;font-weight:700;letter-spacing:.3px">${esc(d.appName || 'King Of Focus')}</div>
         <div class="hint" style="margin-top:6px">
           版本 <b style="color:var(--gold)">v${esc(d.version)}</b>
           <span class="muted">·</span> 本版本更新时间 <b>${esc(d.buildDate)}</b>
@@ -2596,6 +2599,9 @@ function browserMeta(ext) {
   if (ext === 'enabled') return { txt: '插件已启用', cls: 'green' };
   if (ext === 'disabled') return { txt: '插件被停用', cls: 'gold' };
   if (ext === 'unsupported') return { txt: '不支持本插件', cls: '' };
+  // 自定义浏览器：用户数据目录不一定在标准位置，扩展状态没法可靠探测，
+  // 与其瞎猜"未安装"，不如老实写"需自行确认"
+  if (ext === 'manual') return { txt: '插件需自检', cls: 'blue' };
   return { txt: '插件未安装', cls: 'red' };
 }
 
@@ -2608,6 +2614,26 @@ function viewBrowsers() {
   const broken = installed.filter((b) => b.ext === 'notInstalled' || b.ext === 'disabled');
   const ok = installed.filter((b) => b.ext === 'enabled');
 
+  const customs = list.filter((b) => b.custom);
+  const customRows = customs.length
+    ? customs.map((b) => `<div class="brow">
+        <div class="brow-ico">${b.installed ? '◉' : '○'}</div>
+        <div class="brow-main">
+          <div class="brow-name">
+            <span class="bname">${esc(b.name)}</span>
+            <span class="badge ${b.installed ? 'green' : 'red'}">${b.installed ? '路径有效' : '路径失效'}</span>
+            <span class="badge blue">自定义添加</span>
+            ${b.running ? '<span class="badge blue">运行中</span>' : ''}
+          </div>
+          <div class="hint" style="word-break:break-all">${esc(b.exe || '')}</div>
+        </div>
+        <div class="brow-act">
+          ${b.extPage ? `<button class="btn btn-sm" data-act="browser-page" data-k="${esc(b.key)}">扩展页</button>` : ''}
+          <button class="btn btn-sm danger-ghost" data-act="custom-browser-del" data-id="${esc(String(b.key).replace('custom:', ''))}">删除</button>
+        </div>
+      </div>`).join('')
+    : '<div class="hint" style="margin-top:10px">还没有登记任何自定义浏览器。</div>';
+
   const rows = list.length
     ? list.map((b) => {
       const m = browserMeta(b.ext);
@@ -2618,7 +2644,9 @@ function viewBrowsers() {
       const pathTitle = b.exe
         ? `当前：${b.exe}${b.exeSource === 'custom' ? '（自定义，点此重新选择；在弹出的输入框留空可清除、回退自动检测）' : ''}`
         : '没找到主程序，点这里手动指定 .exe';
-      const pathBtn = `<button class="btn btn-sm btn-ghost" data-act="browser-setpath" data-k="${b.key}" title="${esc(pathTitle)}">${b.exeSource === 'custom' ? '重设路径' : '设置路径'}</button>`;
+      const pathBtn = b.custom
+        ? `<button class="btn btn-sm danger-ghost" data-act="custom-browser-del" data-id="${esc(String(b.key).replace('custom:', ''))}">删除</button>`
+        : `<button class="btn btn-sm btn-ghost" data-act="browser-setpath" data-k="${b.key}" title="${esc(pathTitle)}">${b.exeSource === 'custom' ? '重设路径' : '设置路径'}</button>`;
       const act = !b.installed
         ? `<span class="muted" style="font-size:12px">未安装</span>${pathBtn}`
         : b.ext === 'unsupported'
@@ -2638,7 +2666,7 @@ function viewBrowsers() {
             <span class="badge ${b.installed ? 'green' : ''}">${b.installed ? '已安装' : '未安装'}</span>
             ${b.installed ? `<span class="badge ${m.cls}">${m.txt}</span>` : ''}
             ${b.running ? '<span class="badge blue">运行中</span>' : ''}
-            ${b.exeSource === 'custom' ? '<span class="badge blue">自定义路径</span>' : ''}
+            ${b.custom ? '<span class="badge blue">自定义添加</span>' : (b.exeSource === 'custom' ? '<span class="badge blue">自定义路径</span>' : '')}
             ${b.exeSource === 'none' && b.installed ? '<span class="badge">未找到主程序</span>' : ''}
           </div>
           <div class="hint">${esc(b.note || '')}</div>
@@ -2670,6 +2698,31 @@ function viewBrowsers() {
     </div>` : ''}
     ${extFolderPanel(d.extInfo)}
     <div style="margin-top:6px">${rows}</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">自定义浏览器</div>
+    <div class="card-sub">
+      清单里没有的浏览器（公司内部壳、某些国产套壳）在这里登记主程序路径。
+      登记后它会被<b>当作浏览器</b>处理：自律时段里打开它同样会被关闭，
+      「浏览器巡检」也认得它。插件状态无法自动探测，需要你自己确认。
+    </div>
+    ${customRows}
+    <div class="row" style="gap:8px;margin-top:14px;align-items:flex-end;flex-wrap:wrap">
+      <label style="flex:1;min-width:150px">
+        <div class="hint" style="margin-bottom:4px">名称</div>
+        <input type="text" id="cbName" maxlength="40" placeholder="例如：公司内部浏览器" style="width:100%" />
+      </label>
+      <label style="flex:2;min-width:240px">
+        <div class="hint" style="margin-bottom:4px">主程序路径</div>
+        <input type="text" id="cbExe" placeholder="C:\\...\\browser.exe" style="width:100%" />
+      </label>
+      <button class="btn btn-sm" data-act="custom-browser-pick">选择 exe</button>
+      <button class="btn btn-sm btn-primary" data-act="custom-browser-save">添加</button>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      保存时会校验 .exe 是否存在；登记后立即重新检测，不需要重启软件。
+    </div>
   </div>
 
   <div class="card">
@@ -3541,6 +3594,15 @@ const Act = window.Act = {
     render();
   },
 
+  /** 直接从 Hub 写一句新的：打开面板并把光标放进输入框 */
+  quoteAddNew() {
+    Act.quoteManage();
+    setTimeout(() => {
+      const inp = $('#quoteNew');
+      if (inp) { inp.focus(); inp.scrollIntoView({ block: 'nearest' }); }
+    }, 60);
+  },
+
   quoteManage() {
     S.quoteEdit = ((S.data.config.settings || {}).customQuotes || []).slice();
     renderQuoteModal();
@@ -3913,7 +3975,7 @@ const Act = window.Act = {
   async forceQuit() {
     // 强制退出不弹确认框（语义就是"立刻走"），但要有一次防误触的确认，
     // 否则点一下界面就整个程序没了。
-    if (!confirm('确定要强制退出 King of Focus 吗？\n（等同于按 Ctrl+Alt+F4）')) return;
+    if (!confirm('确定要强制退出 King Of Focus 吗？\n（等同于按 Ctrl+Alt+F4）')) return;
     try { await invoke('force_quit'); } catch (e) { toast(String(e), 'err'); }
   },
   async openCfg() { await invoke('open_config_dir'); },
@@ -3969,6 +4031,56 @@ const Act = window.Act = {
   /** 手动指定浏览器主程序路径。
    *  主通道走后端 `pick_path`（tauri_plugin_dialog 原生文件选择框，与自律规则页"选择 exe"同一条已验证链路）。
    *  后端对话框不可用时退回输入框，保证任何情况下都能设/清除，不被一个对话框堵死。 */
+  /** 自定义浏览器：选 exe（选择器优先，取不到就退回粘贴） */
+  async customBrowserPick() {
+    let picked = null;
+    try {
+      picked = await withTimeout(
+        invoke('pick_path', { kind: 'file' }),
+        300000,
+        '选择文件超时'
+      );
+    } catch (e) {
+      picked = null;
+    }
+    if (!picked) return;
+    const box = $('#cbExe');
+    if (box) box.value = String(picked);
+    const nm = $('#cbName');
+    if (nm && !nm.value.trim()) {
+      // 名称空着就先用文件名兜底，省得用户再想一个
+      nm.value = String(picked).split(/[\\/]/).pop().replace(/\.exe$/i, '');
+    }
+  },
+
+  async customBrowserSave() {
+    const name = (($('#cbName') || {}).value || '').trim();
+    const exe = (($('#cbExe') || {}).value || '').trim();
+    if (!name) { toast('先给这个浏览器起个名字', 'err'); return; }
+    if (!exe) { toast('先选择或粘贴主程序路径', 'err'); return; }
+    try {
+      await invoke('browser_custom_save', { id: '', name, exe, extPage: '' });
+      if ($('#cbName')) $('#cbName').value = '';
+      if ($('#cbExe')) $('#cbExe').value = '';
+      toast('已添加，正在重新检测…', 'ok');
+      await Act.browserScan();
+    } catch (e) {
+      toast(String(e && e.message ? e.message : e), 'err');
+    }
+  },
+
+  async customBrowserDel(id) {
+    if (!id) return;
+    if (!confirm('删除这个自定义浏览器？只是不再登记它，不会动浏览器本身。')) return;
+    try {
+      await invoke('browser_custom_remove', { id });
+      toast('已删除', 'ok');
+      await Act.browserScan();
+    } catch (e) {
+      toast(String(e && e.message ? e.message : e), 'err');
+    }
+  },
+
   async browserSetPath(key) {
     let picked = null;
     try {
@@ -4199,6 +4311,38 @@ const Act = window.Act = {
    *  每个小时各自只存一个窗口 [from,to)，所以同一小时里的两段会被并成一段
    *  （这是数据模型的固有限制，右键菜单里仍可以精细改起止分钟）。
    */
+  /** 把某一天 [from,to) 这一段整体平移到 [nFrom,nTo)。
+   *
+   *  先清原区间、再写新区间，全程只写一次盘、只重绘一次；
+   *  两段重叠也没关系——顺序是"先删后加"，重叠部分最后是被写上的。 */
+  async clockMoveSeg(d, from, to, nFrom, nTo) {
+    const prof = clockProfile();
+    if (settingsFrozen()) { guardDiscipline('调整已选中的时段'); render(); return; }
+    const days = prof.days[d];
+    const put = (lo, hi, mode) => {
+      for (let h = 0; h < 24; h++) {
+        const hs = h * 60;
+        if (hi <= hs || lo >= hs + 60) continue;
+        const p = days[h];
+        const r = ccHourResult(p, h, lo, hi, mode);
+        if (!r) {
+          if (p.on) { p.on = false; p.from = 0; p.to = 60; }
+          continue;
+        }
+        if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; }
+        p.on = true;
+        p.from = r.f;
+        p.to = r.t;
+      }
+    };
+    put(from, to, 'sub');
+    put(nFrom, nTo, 'add');
+    await saveConfig();
+    render();
+    const t = ccMinText(nFrom, nTo);
+    toast(`已把 ${WD[d]} 的时段移到 ${t.range}（共 ${t.dur}）`, 'ok');
+  },
+
   async clockCommitRange(d, lo, hi, mode) {
     const prof = clockProfile();
     if (mode === 'sub' && settingsFrozen()) { guardDiscipline('取消已选中的时段'); render(); return; }
@@ -4921,6 +5065,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'stats-refresh') { await Act.refreshStats(); return; }
   if (act === 'quote-next') { Act.quoteNext(); return; }
   if (act === 'quote-manage') { Act.quoteManage(); return; }
+  if (act === 'quote-add-new') { Act.quoteAddNew(); return; }
   if (act === 'quote-add') { Act.quoteAdd(); return; }
   if (act === 'quote-del') { Act.quoteDel(+el.dataset.i); return; }
   if (act === 'quote-save') { await Act.quoteSave(); return; }
@@ -4972,6 +5117,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'browser-scan') { await Act.browserScan(); return; }
   if (act === 'browser-page') { await Act.browserPage(el.dataset.k, el); return; }
   if (act === 'browser-setpath') { await Act.browserSetPath(el.dataset.k); return; }
+  if (act === 'custom-browser-pick') { await Act.customBrowserPick(); return; }
+  if (act === 'custom-browser-save') { await Act.customBrowserSave(); return; }
+  if (act === 'custom-browser-del') { await Act.customBrowserDel(el.dataset.id); return; }
   if (act === 'browser-install') { await Act.browserInstall(el.dataset.k); return; }
   if (act === 'browser-rescan') { await Act.browserRescan(); return; }
   if (act === 'browser-guide') { await Act.browserGuide(null); return; }
@@ -5075,6 +5223,16 @@ function ccDragRange(dg) {
   const n = ccDayGrains();
   const a = Math.max(0, Math.min(n - 1, dg.anchor));
   const c = Math.max(0, Math.min(n - 1, dg.cur));
+
+  if (dg.mode === 'move') {
+    // 整段平移：长度固定，只按"拖了多远"平移；撞到 0:00 / 24:00 就贴边停下
+    let lo = dg.segFrom + (c - a) * st;
+    let hi = dg.segTo + (c - a) * st;
+    if (lo < 0) { hi -= lo; lo = 0; }
+    if (hi > 1440) { lo -= hi - 1440; hi = 1440; }
+    return { lo: Math.max(0, lo), hi: Math.min(1440, hi) };
+  }
+
   const lo = Math.min(a, c);
   const hi = Math.max(a, c) + 1;
   return { lo: lo * st, hi: Math.min(1440, hi * st) };
@@ -5113,6 +5271,33 @@ function paintCcDrag() {
   if (!grid) return;
   const { lo, hi } = ccDragRange(dg);
   const prof = clockProfile();
+
+  if (dg.mode === 'move') {
+    // 平移预览：原段还留在原处（拖动中不该先消失），这里只画出**落点**。
+    grid.querySelectorAll('.cc-drag').forEach((el) => el.remove());
+    const h0 = Math.floor(lo / 60);
+    const h1 = Math.floor((hi - 1) / 60);
+    const span = (h1 - h0 + 1) * 60;
+    const box = document.createElement('div');
+    box.className = 'cc-drag';
+    box.style.gridColumn = `${dg.d + 2}`;
+    box.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
+    box.style.position = 'relative';
+    box.innerHTML = `<i style="position:absolute;left:0;right:0;`
+      + `top:${(((lo - h0 * 60) / span) * 100).toFixed(2)}%;`
+      + `height:${(((hi - lo) / span) * 100).toFixed(2)}%"></i>`;
+    grid.appendChild(box);
+
+    const lab = $('#clockLive');
+    if (lab) {
+      const t = ccMinText(lo, hi);
+      const edge = lo <= 0 && dg.cur < dg.anchor ? ' · 已到当日 0:00'
+        : (hi >= 1440 && dg.cur > dg.anchor ? ' · 已到当日 24:00' : '');
+      lab.innerHTML = `移动 <b>${WD[dg.d]} ${t.range}</b> · 共 ${t.dur}${edge}`;
+    }
+    grid.classList.add('dragging');
+    return;
+  }
   grid.querySelectorAll(`.cc-cell[data-d="${dg.d}"]`).forEach((c) => {
     const h = +c.dataset.h;
     ccPaintCell(c, dg.d, h, ccHourResult(prof.days[dg.d][h], h, lo, hi, dg.mode));
@@ -5145,13 +5330,30 @@ function ccMinText(lo, hi) {
 /** 按下：锚定一个粒度，并据此决定是"加选"还是"抹掉" */
 function ccDragBegin(d, clientY) {
   const { idx, edge } = ccGrainAt(d, clientY);
-  const per = ccQCnt();
-  const h = Math.floor(idx / per);
-  const p = clockProfile().days[d][h];
-  const grainFrom = (idx % per) * ccStep();
-  const grainTo = grainFrom + ccStep();
-  const covered = !!(p && p.on && (p.from || 0) < grainTo && grainFrom < (p.to == null ? 60 : p.to));
-  S.ccDrag = { d, anchor: idx, cur: idx, edge, mode: covered ? 'sub' : 'add', moved: false };
+  const st = ccStep();
+  const atMin = idx * st;
+  const day = clockProfile().days[d];
+
+  // 按下的位置落在某一段里 → 拖动 = **整段平移**（段的长度不变，只换位置）；
+  // 落在空白 → 拖动 = 新建一段。
+  //
+  // 以前"落在已选中的格子上"是 sub（抹掉），再加一句"没拖动就算单击 → 取消这一格"，
+  // 结果在段中间点一下就把一整段从中间劈开、点中的那块消失。现在点击什么都不改。
+  const seg = ccSegs(day).find((sg) => {
+    const from = sg.h0 * 60 + sg.f0;
+    const to = sg.h1 * 60 + (sg.t1 >= 60 ? 60 : sg.t1);
+    return atMin >= from && atMin < to;
+  });
+
+  if (seg) {
+    S.ccDrag = {
+      d, anchor: idx, cur: idx, edge, mode: 'move', moved: false, startY: clientY,
+      segFrom: seg.h0 * 60 + seg.f0,
+      segTo: seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1),
+    };
+  } else {
+    S.ccDrag = { d, anchor: idx, cur: idx, edge, mode: 'add', moved: false, startY: clientY };
+  }
   paintCcDrag();
 }
 
@@ -5160,11 +5362,16 @@ function ccDragMove(clientY) {
   const dg = S.ccDrag;
   if (!dg) return;
   const { idx, edge } = ccGrainAt(dg.d, clientY);
-  if (idx === dg.cur && edge === dg.edge) return;
-  if (idx !== dg.anchor) dg.moved = true;
-  dg.cur = idx;
-  dg.edge = edge;
-  paintCcDrag();
+  // 拖动判据是"指针真的动过"（3px），不是"格子变了"：
+  // 否则想选这一格（15 分钟）就只能靠单击，而单击现在是不允许改结构的。
+  if (!dg.moved && typeof dg.startY === 'number' && Math.abs(clientY - dg.startY) >= 3) {
+    dg.moved = true;
+  }
+  if (idx !== dg.cur || edge !== dg.edge) {
+    dg.cur = idx;
+    dg.edge = edge;
+    paintCcDrag();
+  }
 }
 
 /** 松手：没动过 = 单击（开关那一格）；动过 = 提交这段区间 */
@@ -5177,12 +5384,6 @@ async function ccDragEnd() {
   if (grid) grid.classList.remove('dragging');
 
   const per = ccQCnt();
-  if (!dg.moved) {
-    // 单击不"续用"上一次的拖选范围，否则随后右键会把目标错认成那一片
-    S.ccRect = null;
-    await Act.clockToggleQ(dg.d, Math.floor(dg.anchor / per), dg.anchor % per);
-    return;
-  }
   const { lo, hi } = ccDragRange(dg);
   const h0 = Math.floor(lo / 60), h1 = Math.floor((hi - 1) / 60);
   // 留给右键菜单的"当前选区"：用粒度坐标表示，和旧版一致
@@ -5191,6 +5392,18 @@ async function ccDragEnd() {
     qA: Math.floor((lo - h0 * 60) / ccStep()),
     qB: Math.ceil((hi - h1 * 60) / ccStep()) - 1,
   };
+
+  if (!dg.moved) {
+    // 单击：**不改任何时段**，只把选区记下来给右键菜单用。
+    // （这条是硬规则：点击不得改变时段的数量与结构。）
+    return;
+  }
+
+  if (dg.mode === 'move') {
+    if (lo === dg.segFrom && hi === dg.segTo) { render(); return; }
+    await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, lo, hi);
+    return;
+  }
   await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
 }
 

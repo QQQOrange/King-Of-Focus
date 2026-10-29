@@ -19,7 +19,7 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
                 return;
             }
         };
-        println!("[King of Focus] 扩展服务已监听 http://{addr}");
+        println!("[King Of Focus] 扩展服务已监听 http://{addr}");
         // 每个请求单独一个线程：本地服务里有些处理会读盘（扫浏览器配置档），
         // 单线程轮询会让"某个慢请求"堵住后面的心跳，插件就会被误判成掉线。
         for request in server.incoming_requests() {
@@ -61,7 +61,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
     }
 
     match path.as_str() {
-        "/api/ping" => reply(req, 200, json!({"ok": true, "app": "King of Focus", "v": 1}).to_string()),
+        "/api/ping" => reply(req, 200, json!({"ok": true, "app": "King Of Focus", "v": 1}).to_string()),
         // 仅 KOF_DEBUG=1 时开放，供自动化验收脚本驱动遮罩（与 UI 走同一函数）
         "/api/debug/mask" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
@@ -92,8 +92,6 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         "flyoutHits": crate::mask::FLYOUT_HITS.load(std::sync::atomic::Ordering::Relaxed),
                         "flyoutCover": crate::mask::FLYOUT_COVER.load(std::sync::atomic::Ordering::Relaxed),
                         "passWins": crate::mask::PASS_WINS.load(std::sync::atomic::Ordering::Relaxed),
-                        // 浮层打开期间"隐身"的放行窗口数量（>0 说明横条已不参与合成）
-                        "muted": crate::mask::muted_count(),
                         "drop": crate::mask::RAISE_DROP.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .to_string(),
@@ -344,7 +342,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
             req,
             200,
             json!({
-                "app": "King of Focus",
+                "app": "King Of Focus",
                 "usage": "浏览器扩展通过 /api/state 获取当前生效的网站规则",
                 "endpoints": ["/api/ping", "/api/state", "/api/heartbeat", "/api/report"]
             })

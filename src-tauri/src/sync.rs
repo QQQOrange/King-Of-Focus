@@ -85,7 +85,7 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     }
     let body = net::get_text(&remote_url(&c.settings.sync), auth_of(&c.settings.sync).as_deref(), None)?;
     let v: serde_json::Value =
-        serde_json::from_str(&body).map_err(|_| "云端文件不是 King of Focus 的配置".to_string())?;
+        serde_json::from_str(&body).map_err(|_| "云端文件不是 King Of Focus 的配置".to_string())?;
     if v.get("app").and_then(|x| x.as_str()) != Some("king-of-focus") {
         return Err("云端文件的格式不认识（app 字段不匹配）".into());
     }

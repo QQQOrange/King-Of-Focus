@@ -477,98 +477,6 @@ unsafe fn collect_pass_through() -> Vec<Hwnd> {
     ctx.out
 }
 
-/* ───────── 外壳浮层打开时，把放行窗口"隐身" ─────────
- *
- * 问题：lazytyper 的语音横条是个自动置顶的小窗，平时被我们特意提到遮罩之上
- * （它本来就该显示）。但开始菜单一打开，它就只剩"开始菜单底边与任务栏之间"
- * 那一条缝能露出来；再叠加主循环每 50ms 抬一次遮罩、它自己又不停抢 TOPMOST，
- * 两边来回拉锯，缝隙里的那一段就持续闪烁。
- *
- * 只靠 z 序是赢不了的——对方随时可以再抬一次。所以这里换个思路：
- * 浮层打开期间直接让这些窗口**不参与合成**（DWM cloak）。窗口状态一点没变，
- * 不触发 WM_SHOWWINDOW、不丢焦点、程序自己也察觉不到，只是画面上没有它，
- * 缝里自然无物可闪。浮层一关立刻放出来。
- *
- * 兜底：cloak 不可用时退化为 ShowWindow(SW_HIDE)，关闭时 SW_SHOWNOACTIVATE 还原。
- * 另外每个隐身都记时间，超过 MUTE_MAX_SECS 自动放出——万一程序在浮层开着的时候
- * 崩了，用户的横条不能从此永久消失。
- */
-/// 存 `isize` 而不是 `Hwnd`：裸指针不是 Send，静态表里放不了（和 OVERLAY_HWNDS 一个道理）。
-static MUTED_WINS: Mutex<Vec<(isize, bool, Instant)>> = Mutex::new(Vec::new());
-
-/// 隐身最长多久（秒）。到点无条件放出，防"崩一次就永久隐身"。
-const MUTE_MAX_SECS: u64 = 300;
-
-unsafe fn set_cloak(h: Hwnd, on: bool) -> bool {
-    if h.is_null() || IsWindow(h) == 0 {
-        return false;
-    }
-    let v: i32 = i32::from(on);
-    DwmSetWindowAttribute(h, DWMWA_CLOAK, &v as *const i32 as *const core::ffi::c_void, 4) >= 0
-}
-
-/// 把一批窗口从画面上摘掉（重复调用安全）
-unsafe fn mute_pass(list: &[Hwnd]) {
-    let mut g = match MUTED_WINS.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let now = Instant::now();
-    let mut expired: Vec<(isize, bool)> = Vec::new();
-    g.retain(|(h, cloaked, at)| {
-        if now.duration_since(*at).as_secs() < MUTE_MAX_SECS {
-            true
-        } else {
-            expired.push((*h, *cloaked));
-            false
-        }
-    });
-    for (h, cloaked) in expired {
-        let hw = h as Hwnd;
-        if cloaked {
-            set_cloak(hw, false);
-        } else if IsWindow(hw) != 0 {
-            ShowWindow(hw, SW_SHOWNOACTIVATE);
-        }
-    }
-    for h in list {
-        if h.is_null() || IsWindow(*h) == 0 || IsWindowVisible(*h) == 0 {
-            continue;
-        }
-        let key = *h as isize;
-        if g.iter().any(|(x, _, _)| *x == key) {
-            continue;
-        }
-        if set_cloak(*h, true) {
-            g.push((key, true, now));
-        } else {
-            ShowWindow(*h, SW_HIDE);
-            g.push((key, false, now));
-        }
-    }
-}
-
-/// 把之前隐身的窗口全部放出来
-unsafe fn unmute_pass() {
-    let mut g = match MUTED_WINS.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    for (h, cloaked, _) in g.drain(..) {
-        let hw = h as Hwnd;
-        if cloaked {
-            set_cloak(hw, false);
-        } else if IsWindow(hw) != 0 {
-            ShowWindow(hw, SW_SHOWNOACTIVATE);
-        }
-    }
-}
-
-/// 给诊断接口用：当前隐身了几个窗口
-pub fn muted_count() -> usize {
-    MUTED_WINS.lock().map(|g| g.len()).unwrap_or(0)
-}
-
 fn set_except(list: &[Hwnd]) {
     for i in 0..EXCEPT_HWNDS.len() {
         let v = list.get(i).map(|h| *h as isize).unwrap_or(0);
@@ -755,12 +663,9 @@ extern "system" {
 #[link(name = "dwmapi")]
 extern "system" {
     fn DwmGetWindowAttribute(h: Hwnd, attr: u32, pv: *mut core::ffi::c_void, size: u32) -> i32;
-    fn DwmSetWindowAttribute(h: Hwnd, attr: u32, pv: *const core::ffi::c_void, size: u32) -> i32;
 }
 
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
-/// 让窗口"存在但 DWM 不合成它"。窗口状态一切不变，只是画面不上屏。
-const DWMWA_CLOAK: u32 = 13;
 
 #[link(name = "gdi32")]
 extern "system" {
@@ -1412,7 +1317,7 @@ unsafe fn root_window(h: Hwnd) -> Hwnd {
 }
 
 /// 本程序主窗口句柄（由 main/cmds 在启动、测试、预览时写入）。
-/// 遮罩允许把洞挖在自己身上——用户明确要求"专注遮罩也要盖住 King of Focus 自己"。
+/// 遮罩允许把洞挖在自己身上——用户明确要求"专注遮罩也要盖住 King Of Focus 自己"。
 pub static SELF_MAIN: AtomicIsize = AtomicIsize::new(0);
 
 /// 把主窗口抬到置顶带的最前面。
@@ -1745,7 +1650,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut last_hole: Option<Rect> = None;
         let mut last_top = Instant::now();
         let mut followed_key: isize = 0;
-        let mut last_diag = Instant::now();
         // 帧率诊断（每秒结算一次）：重画次数 + 单次重画耗时
         let mut stat_n = 0u32;
         let mut stat_paint_us = 0u64;
@@ -2000,8 +1904,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 // 不做这一步，用户用过的窗口会一直挂在我们制造的 topmost 上。
                 release_raised(&mut raised, &[]);
                 clear_except();
-                // 浮层期间隐身过的横条，关遮罩时必须放出来
-                unmute_pass();
                 // 被我们摘掉置顶的外部窗口也要还回去，别留在普通层级
                 restore_demoted();
                 popups.clear();
@@ -2013,7 +1915,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 // 不刷新的话，用户点了关闭、界面「自查」还会显示"已开启"好几百毫秒，
                 // 看起来就像"关不掉"。
                 {
-                    last_diag = Instant::now();
                     let report = format!(
                         "on={} painted=false{} 置顶={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} 窗口=(0,0,0,0) 覆盖层=0 副屏={}",
                         on,
@@ -2186,39 +2087,25 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_top = Instant::now();
                 let anchor = last_tgt as Hwnd;
                 if flyout_now {
-                    // 外壳浮层（Start / 搜索）打开：
-                    //   ① 让放行窗口（lazytyper 横条）**不参与合成**——
-                    //      它夹在开始菜单与任务栏之间，只从缝里露一条；
-                    //      只靠 z 序压不住（对方随时再抢 TOPMOST），
-                    //      一抢一压就是那条缝里持续闪烁的来源。
-                    //   ② 再把遮罩抬到最前面，压住其它自动置顶的小窗。
-                    mute_pass(&pass_wins);
+                    // 外壳浮层（Start / 搜索）打开：遮罩抬到最前面，压住其它自动置顶的小窗。
                     for o in overlays.iter_mut() {
                         o.raise_top();
                         FLYOUT_COVER.fetch_add(1, Ordering::Relaxed);
                     }
                 } else {
-                    // 浮层关掉：立刻把隐身过的横条放出来
-                    unmute_pass();
                     for o in overlays.iter_mut() {
                         o.anchor_under(anchor, &self_wins);
                     }
                 }
-                // 放行程序（lazytyper 语音弹条）在这一层的处理，取决于外壳浮层开没开：
-                //   · 没开 → 每 50ms 兜底顶一次。摘顶扫描和 anchor_under 之间有几个
-                //     毫秒的空档，弹条刚好在那会儿被摘下来就会闪，这里补一刀。
-                //   · 开了（Start 菜单 / 搜索 / 输入法面板）→ **反过来压下去**。
-                //     它本来被特意提到遮罩之上，浮层一开就只能从"开始菜单与任务栏
-                //     之间那条缝"里露出，主循环再顶回去就是持续闪烁。
-                //     压到遮罩下面之后它被遮罩盖住，也不再和主循环拉锯。
+
+                // 放行程序（lazytyper 语音弹条）**任何情况下都保持显示**：
+                // 之前试过浮层打开时让它隐身（DWM cloak / SW_HIDE）来消掉"缝里闪"，
+                // 但那等于把用户的横条藏起来，而且浮层一开一关就是一次可见性抖动。
+                // 现在只有一个方向的动作 —— 始终把它顶到遮罩之上，不去摘它的置顶、
+                // 也不压到遮罩下面，所以不存在"遮罩压 / 横条顶"的对拉，也就不会闪。
                 PASS_WINS.store(pass_wins.len() as u32, Ordering::Relaxed);
-                // 浮层打开时什么都不做：遮罩已经抬到最前面（见上面的 raise_top），
-                // 弹窗自然被盖住。这里若再去 ensure_above，就成了"遮罩压、主循环顶"
-                // 的对拉，弹窗会在缝里一闪一闪。
-                if !flyout_now {
-                    for h in pass_wins.iter() {
-                        ensure_above(*h, &mut raised);
-                    }
+                for h in pass_wins.iter() {
+                    ensure_above(*h, &mut raised);
                 }
             }
 
@@ -2226,7 +2113,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             // 诊断快照不限流：这里每秒才走到几次（事件驱动），
             // 而界面「自查」要靠它立刻反映开关状态，节流会让"刚点开"看起来没反应。
             {
-                last_diag = Instant::now();
                 let mut parts = Vec::new();
                 for (i, o) in overlays.iter().enumerate() {
                     let mut r = Rect { left: 0, top: 0, right: 0, bottom: 0 };

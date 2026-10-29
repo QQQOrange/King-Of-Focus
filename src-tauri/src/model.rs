@@ -658,6 +658,20 @@ impl Default for StatsCfg {
     }
 }
 
+/// 用户自己登记的浏览器（不在内置清单里的）。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CustomBrowser {
+    /// 稳定标识（前端生成）；空则由 sanitize 补
+    pub id: String,
+    /// 显示名
+    pub name: String,
+    /// 主程序绝对路径
+    pub exe: String,
+    /// 扩展管理页地址（可空）
+    pub ext_page: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -679,7 +693,7 @@ pub struct Settings {
     pub run_as_admin: bool,
     /// 关闭窗口时最小化到托盘
     pub close_to_tray: bool,
-    /// 主窗口置顶：让 King of Focus 始终浮在其它窗口上面。
+    /// 主窗口置顶：让 King Of Focus 始终浮在其它窗口上面。
     ///
     /// 之前程序只会在各种场合把它 `set_always_on_top(false)`（遮罩接管、
     /// 选中目标窗口、点托盘图标……），却从来没有把它设回 true，
@@ -711,6 +725,16 @@ pub struct Settings {
     pub browser_exe: std::collections::HashMap<String, String>,
     /// 外观：system | dark | light
     pub theme: String,
+    /// 用户自己添加的浏览器（内置清单里没有的）。
+    ///
+    /// 内置清单只覆盖主流 Chromium / Firefox 系；有些用户用的是小众套壳
+    /// （公司内部浏览器、某些国产壳），自动检测认不出来，于是"自律时段里
+    /// 打开浏览器会被关闭"这条对它们完全失效。这里让用户手动登记。
+    ///
+    /// `id` 由前端生成（c + 时间戳）；`exe` 是主程序绝对路径，保存时校验存在。
+    /// `extPage` 可空 —— 填了就在列表里给出"扩展页"按钮。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_browsers: Vec<CustomBrowser>,
     /// 界面语言：zh-CN（默认）| en。
     /// 浏览器插件通过 /api/state 读这个值，跟着软件走同一套语言。
     pub lang: String,
@@ -768,6 +792,7 @@ impl Default for Settings {
             notify: NotifyCfg::default(),
             backup: BackupCfg::default(),
             custom_quotes: Vec::new(),
+            custom_browsers: Vec::new(),
         }
     }
 }
@@ -890,6 +915,21 @@ mod tests {
         c.settings.lang = "en".into();
         crate::cfg::sanitize(&mut c);
         assert_eq!(c.settings.lang, "en", "en 要保留");
+    }
+
+    /// 自定义浏览器：空名/空路径要剔掉、按 exe 去重、id 自动补
+    #[test]
+    fn custom_browsers_are_sanitized() {
+        let mut c = Config::default();
+        c.settings.custom_browsers = vec![
+            CustomBrowser { id: String::new(), name: "  公司浏览器  ".into(), exe: " C:////a////b.exe ".into(), ext_page: String::new() },
+            CustomBrowser { id: String::new(), name: "空路径".into(), exe: "   ".into(), ext_page: String::new() },
+            CustomBrowser { id: String::new(), name: "重复".into(), exe: "c:////A////B.EXE".into(), ext_page: String::new() },
+        ];
+        crate::cfg::sanitize(&mut c);
+        assert_eq!(c.settings.custom_browsers.len(), 1, "空的与重复的都要剔掉");
+        assert_eq!(c.settings.custom_browsers[0].name, "公司浏览器");
+        assert!(!c.settings.custom_browsers[0].id.is_empty(), "id 要自动补");
     }
 
     /// mode 三值：写错的一律回落 blacklist（最保守）

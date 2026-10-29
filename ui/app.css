@@ -1,5 +1,5 @@
 /* ============================================================
-   King of Focus — 主题令牌
+   King Of Focus — 主题令牌
    深色为默认，[data-theme="light"] 覆盖为浅色；
    data-theme="system" 时由 JS 根据 prefers-color-scheme 解析成 light/dark
    ============================================================ */
@@ -1726,3 +1726,6 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 }
 .rule-kind-row .rk-lab { font-size: 12px; font-weight: 600; color: var(--text-2); }
 .rule-kind-row .rk-note { font-size: 11px; color: var(--text-3); }
+
+/* 语录出处的小字提示：比出处更淡一档，只用来交代"这条是从哪取的" */
+.hub-quote .qhint { color: var(--text-3); opacity: .75; font-size: 10.5px; }

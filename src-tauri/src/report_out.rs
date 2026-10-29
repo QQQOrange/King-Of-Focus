@@ -122,7 +122,7 @@ pub fn blocks(r: &Report) -> Vec<Blk> {
 
     v.push(Blk::H2("说明".into()));
     v.push(Blk::P(
-        "本报告由 King of Focus 在本地按小时采样生成，不包含任何窗口标题或网页内容，只统计程序名与域名。"
+        "本报告由 King Of Focus 在本地按小时采样生成，不包含任何窗口标题或网页内容，只统计程序名与域名。"
             .into(),
     ));
     v.push(Blk::P(

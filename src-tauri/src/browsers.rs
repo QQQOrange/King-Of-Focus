@@ -219,6 +219,8 @@ pub struct BrowserInfo {
     pub hits: Vec<ExtHit>,
     /// 给人看的补充说明
     pub note: String,
+    /// 是不是用户自己登记的浏览器（内置清单里没有的）
+    pub custom: bool,
 }
 
 impl BrowserInfo {
@@ -235,6 +237,7 @@ impl BrowserInfo {
             data_dir: String::new(),
             hits: vec![],
             note: String::new(),
+            custom: false,
         }
     }
 }
@@ -245,7 +248,8 @@ impl BrowserInfo {
 /// 走参数会把签名污染得到处都是。保存配置后由 `set_custom_exe` 刷新。
 static CUSTOM_EXE: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-/// 更新自定义路径表并让扫描缓存失效（改完路径要立刻反映到界面）
+/// 用户自己登记的浏览器（id / 显示名 / exe 绝对路径 / 扩展页地址）。
+///
 pub fn set_custom_exe(map: std::collections::HashMap<String, String>) {
     if let Ok(mut g) = CUSTOM_EXE.lock() {
         g.clear();
@@ -264,9 +268,46 @@ fn custom_for(key: &str) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
+/// 和 CUSTOM_EXE 分开：那个是"给内置浏览器换路径"，这里是"内置清单里根本没有的浏览器"。
+/// 扫描、拦截判定（matcher::is_browser）、界面渲染三处都要用。
+static CUSTOM_LIST: Mutex<Vec<(String, String, String, String)>> = Mutex::new(Vec::new());
+
+/// 整表覆盖（启动时从配置同步）
+pub fn set_custom_browsers_all(list: Vec<(String, String, String, String)>) {
+    if let Ok(mut g) = CUSTOM_LIST.lock() {
+        *g = list;
+    }
+    invalidate();
+}
+
 /* ---------------- 缓存 ---------------- */
 
 static CACHE: Mutex<Option<(Instant, Vec<BrowserInfo>)>> = Mutex::new(None);
+
+fn invalidate() {
+    // 拦截判定读的是 matcher 自己的表，这里顺手同步一次；
+    // 否则用户新加的自定义浏览器要等下一次重启才会被"当作浏览器"处理。
+    crate::matcher::set_extra_browsers(custom_exe_stems());
+    if let Ok(mut c) = CACHE.lock() {
+        *c = None;
+    }
+}
+
+/// 自定义浏览器的进程名（小写，不含 .exe），给拦截判定用
+pub fn custom_exe_stems() -> Vec<String> {
+    let g = match CUSTOM_LIST.lock() {
+        Ok(g) => g.clone(),
+        Err(_) => return Vec::new(),
+    };
+    g.iter()
+        .filter_map(|(_, _, exe, _)| {
+            std::path::Path::new(exe)
+                .file_stem()
+                .map(|x| x.to_string_lossy().to_lowercase())
+        })
+        .filter(|x| !x.is_empty())
+        .collect()
+}
 
 /// 扫描（带缓存）。`force = true` 时忽略缓存重新读盘。
 pub fn scan(force: bool) -> Vec<BrowserInfo> {
@@ -296,7 +337,27 @@ pub fn snapshot() -> Vec<BrowserInfo> {
             return v.clone();
         }
     }
-    DEFS.iter().map(BrowserInfo::blank).collect()
+    let mut v: Vec<BrowserInfo> = DEFS.iter().map(BrowserInfo::blank).collect();
+    // 缓存还没热起来时，也不能把用户自己登记的浏览器漏掉
+    if let Ok(g) = CUSTOM_LIST.lock() {
+        for (id, name, exe, ext_page) in g.iter() {
+            v.push(BrowserInfo {
+                key: format!("custom:{id}"),
+                name: name.clone(),
+                installed: std::path::Path::new(exe).is_file(),
+                exe: exe.clone(),
+                exe_source: "custom".into(),
+                ext: "manual".into(),
+                running: false,
+                ext_page: ext_page.clone(),
+                data_dir: String::new(),
+                hits: vec![],
+                note: "自定义浏览器：等待首次扫描".into(),
+                custom: true,
+            });
+        }
+    }
+    v
 }
 
 /// 后台预热线程：启动时立刻扫一次，之后每 10 秒刷新缓存。
@@ -705,6 +766,44 @@ fn full_scan() -> Vec<BrowserInfo> {
             }
         }
     }
+    // ---- 用户自己登记的浏览器 ----
+    // 内置清单认不出来它们，但"自律时段里打开浏览器会被关"必须对它们也成立，
+    // 否则用户填了却不起作用。
+    let customs: Vec<(String, String, String, String)> = CUSTOM_LIST
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    for (id, name, exe, ext_page) in customs {
+        let path = std::path::PathBuf::from(&exe);
+        let installed = path.is_file();
+        let stem = path
+            .file_stem()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let running_now = !stem.is_empty()
+            && running.iter().any(|n| n.to_lowercase() == stem);
+        out.push(BrowserInfo {
+            key: format!("custom:{id}"),
+            name,
+            installed,
+            exe,
+            exe_source: "custom".into(),
+            // 扩展状态无法自动判定（用户数据目录不一定在标准位置），
+            // 用 manual 标出来，界面上写清楚"需自己确认"
+            ext: "manual".into(),
+            running: running_now,
+            ext_page,
+            data_dir: String::new(),
+            hits: vec![],
+            note: if installed {
+                "自定义浏览器：参与自律时段拦截与启动；插件状态请自行确认".into()
+            } else {
+                "自定义浏览器：路径已失效，请重新指定主程序".into()
+            },
+            custom: true,
+        });
+    }
+
     // 扫盘超过 200ms 才记一笔，排查"界面是不是被扫盘拖慢"时有用
     if t0.elapsed().as_millis() > 200 {
         crate::mask::mlog(&format!("scan 耗时 {}ms", t0.elapsed().as_millis()));
@@ -1204,7 +1303,7 @@ pub fn guard_step(
                         app,
                         "app",
                         "无法关闭浏览器",
-                        "权限不足：这个浏览器可能是以管理员身份运行的。<br>用管理员身份重启 King of Focus 后即可拦住。",
+                        "权限不足：这个浏览器可能是以管理员身份运行的。<br>用管理员身份重启 King Of Focus 后即可拦住。",
                         "浏览器巡检",
                         4,
                     );
@@ -1275,7 +1374,7 @@ mod tests {
     fn scan_reads_chrome_extensions_settings() {
         let tmp = std::env::temp_dir().join(format!("kof_brw_chrome_{}", std::process::id()));
         let ext = tmp.join("ext");
-        write_manifest(&ext, "King of Focus 网页拦截");
+        write_manifest(&ext, "King Of Focus 网页拦截");
         let _ = std::fs::remove_file(tmp.join("Secure Preferences"));
         write_chrome_pref(
             &tmp,
@@ -1295,7 +1394,7 @@ mod tests {
     fn scan_reads_opera_extensions_opsettings() {
         let tmp = std::env::temp_dir().join(format!("kof_brw_opera_{}", std::process::id()));
         let ext = tmp.join("ext");
-        write_manifest(&ext, "King of Focus 网页拦截");
+        write_manifest(&ext, "King Of Focus 网页拦截");
         write_opera_pref(
             &tmp,
             "edpcikhfaamopgineppbimjhjgnbgdhp",
@@ -1305,7 +1404,7 @@ mod tests {
         assert_eq!(hits.len(), 1, "Opera opsettings 条目应被识别：{hits:?}");
         assert!(hits[0].enabled, "Opera 解压加载无 state/disabled 应视为启用：{hits:?}");
         assert!(hits[0].unpacked, "location=4 应判为解压加载：{hits:?}");
-        assert!(hits[0].name.contains("King of Focus"), "名字来自磁盘 manifest：{hits:?}");
+        assert!(hits[0].name.contains("King Of Focus"), "名字来自磁盘 manifest：{hits:?}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1314,7 +1413,7 @@ mod tests {
     fn scan_dedups_across_settings_and_opsettings() {
         let tmp = std::env::temp_dir().join(format!("kof_brw_dedup_{}", std::process::id()));
         let ext = tmp.join("ext");
-        write_manifest(&ext, "King of Focus 网页拦截");
+        write_manifest(&ext, "King Of Focus 网页拦截");
         let entry = unpacked_ours_entry(&ext.to_string_lossy());
         // 同 id 同时出现在 settings 和 opsettings
         let v = serde_json::json!({
@@ -1335,7 +1434,7 @@ mod tests {
     fn opera_unpacked_without_state_counts_as_enabled() {
         let tmp = std::env::temp_dir().join(format!("kof_brw_state_{}", std::process::id()));
         let ext = tmp.join("ext");
-        write_manifest(&ext, "King of Focus 网页拦截");
+        write_manifest(&ext, "King Of Focus 网页拦截");
         // 故意不写 state、不写 disable_reasons（Opera 解压加载实测如此）
         let entry = serde_json::json!({
             "location": 4,
@@ -1354,7 +1453,7 @@ mod tests {
     fn opera_with_disable_reasons_counts_as_disabled() {
         let tmp = std::env::temp_dir().join(format!("kof_brw_dis_{}", std::process::id()));
         let ext = tmp.join("ext");
-        write_manifest(&ext, "King of Focus 网页拦截");
+        write_manifest(&ext, "King Of Focus 网页拦截");
         let entry = serde_json::json!({
             "location": 4,
             "path": ext.to_string_lossy(),

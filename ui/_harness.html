@@ -11,7 +11,7 @@
     <div class="brand">
       <div class="brand-mark"><img src="logo.png" alt="KOF" /></div>
       <div class="brand-text">
-        <div class="brand-name">King of Focus</div>
+        <div class="brand-name">King Of Focus</div>
         <div class="brand-sub">专注由你掌控</div>
       </div>
     </div>
@@ -117,7 +117,7 @@ const STATE = {
   pid: 1, points: { balance: 12, earned: 40, unlockUntil: 0, count: 0, price: 15 },
   version: '0.1.0', buildDate: '2026-10-28', developer: 'QQQOrange',
   repoUrl: 'https://github.com/QQQOrange/King-Of-Focus', tokenDocUrl: '',
-  appName: 'King of Focus', hasToken: false, configPath: 'D:\\x\\config.json',
+  appName: 'King Of Focus', hasToken: false, configPath: 'D:\\x\\config.json',
   dataPath: 'D:\\x', now: '2026-10-27 09:00', weekday: '1',
 };
 window.__TAURI__ = {
@@ -153,13 +153,35 @@ window.__TAURI__ = {
       STATE.config.settings.runAsAdmin = !!args.enabled;
       return null;
     }
-    if (cmd === 'browsers_scan') return {
-      list: [
-        { key: 'msedge', name: 'Microsoft Edge', installed: true, exe: 'C:\\Fake\\msedge.exe', exeSource: 'auto', ext: 'enabled', running: false, extPage: 'edge://extensions', dataDir: 'D:\\x', hits: [], note: '已启用' },
-        { key: 'chrome', name: 'Google Chrome', installed: true, exe: '', exeSource: 'none', ext: 'notInstalled', running: false, extPage: 'chrome://extensions', dataDir: 'D:\\x', hits: [], note: '未找到主程序' },
-      ],
-      installed: 2, broken: 1,
-    };
+    if (cmd === 'browsers_scan') {
+      const list = STATE.browsers || [];
+      return {
+        list,
+        installed: list.filter((b) => b.installed).length,
+        broken: list.filter((b) => b.installed && (b.ext === 'notInstalled' || b.ext === 'disabled')).length,
+      };
+    }
+    // 自定义浏览器：添加 / 删除（真实后端会校验 exe 是否存在，这里只验前端链路）
+    if (cmd === 'browser_custom_save') {
+      STATE.config.settings.customBrowsers = STATE.config.settings.customBrowsers || [];
+      const id = 'c' + (STATE.config.settings.customBrowsers.length + 1);
+      STATE.config.settings.customBrowsers.push({
+        id, name: args.name, exe: args.exe, extPage: args.extPage || '',
+      });
+      const one = {
+        key: 'custom:' + id, name: args.name, installed: true, exe: args.exe,
+        exeSource: 'custom', ext: 'manual', running: false, extPage: args.extPage || '',
+        dataDir: '', hits: [], note: '自定义浏览器：参与自律时段拦截与启动；插件状态请自行确认', custom: true,
+      };
+      STATE.browsers = (STATE.browsers || []).concat([one]);
+      return { ok: true, id, name: args.name };
+    }
+    if (cmd === 'browser_custom_remove') {
+      STATE.browsers = (STATE.browsers || []).filter((b) => b.key !== 'custom:' + args.id);
+      STATE.config.settings.customBrowsers = (STATE.config.settings.customBrowsers || [])
+        .filter((b) => b.id !== args.id);
+      return { ok: true };
+    }
     // 浏览器自定义主程序路径：让"设置路径"链路可被前端回归验证
     if (cmd === 'pick_path') { window.__picked = (window.__picked || 0) + 1; return 'C:\\Picked\\chrome.exe'; }
     if (cmd === 'browser_set_path') { window.__setpath = (window.__setpath || 0) + 1; return '已保存：' + (args.path || '(清除)'); }
@@ -374,22 +396,46 @@ window.__itest = async () => {
     const r = cell(d, h).getBoundingClientRect();
     return r.top + r.height * ((q + 0.5) / ccQCnt());
   };
-  fire('mousedown', cell(2, 13), { clientY: gY(2, 13, 0) });
+  // 起点必须选**空白**（周三 16:00）：落在已有段里按下去，现在是"整段平移"。
+  fire('mousedown', cell(2, 16), { clientY: gY(2, 16, 0) });
   const liveAnchor = $('#clockLive').textContent;
-  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(2, 15, 2) }));
-  await wait(150);           // 等一帧 rAF
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(2, 18, 2) }));
+  await wait(150);
   const liveDuringDrag = $('#clockLive').textContent;
   document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   await wait(250);
-  out.push(['按下即出现一格的起始选区', liveAnchor, '选中 周三 13:00 – 13:15 · 共 15 分钟']);
-  out.push(['向下拖：实时显示起止与总时长', liveDuringDrag, '选中 周三 13:00 – 15:45 · 共 2 小时 45 分']);
-  out.push(['拖到的三小时全部选中', [13, 14, 15].every((h) => pd()[2][h].on), true]);
-  out.push(['首小时 0 分起、尾小时 45 分止', `${pd()[2][13].from}-${pd()[2][15].to}`, '0-45']);
-  out.push(['拖选不跨天（周四不动）', pd()[3][13].on, false]);
-  out.push(['拖选沿用通用时长 45/15', (() => { const p = pd()[2][14]; return p.work === 45 && p.brk === 15; })()]);
+  out.push(['按下即出现一格的起始选区', liveAnchor, '选中 周三 16:00 – 16:15 · 共 15 分钟']);
+  out.push(['向下拖：实时显示起止与总时长', liveDuringDrag, '选中 周三 16:00 – 18:45 · 共 2 小时 45 分']);
+  out.push(['拖到的三小时全部选中', [16, 17, 18].every((h) => pd()[2][h].on), true]);
+  out.push(['首小时 0 分起、尾小时 45 分止', `${pd()[2][16].from}-${pd()[2][18].to}`, '0-45']);
+  out.push(['拖选不跨天（周四不动）', pd()[3][16].on, false]);
+  out.push(['拖选沿用通用时长 45/15', (() => { const p = pd()[2][17]; return p.work === 45 && p.brk === 15; })()]);
   out.push(['原有选中保留自定义值', pd()[0][8].work === 50 && pd()[0][8].brk === 10]);
-  const dragRun = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.h0 === '13' && r.dataset.h1 === '15');
+  const dragRun = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.h0 === '16' && r.dataset.h1 === '18');
   out.push(['三小时连成一整块', dragRun ? `${dragRun.dataset.d}-${dragRun.dataset.d1}` : '(无)', '2-2']);
+
+  // 1-1b. 在已有段里按住往上拖 = **整段平移**（段数、长度都不变）
+  {
+    const segs0 = ccSegs(pd()[2]);
+    const before = segs0.find((x) => x.h0 === 16);
+    const cnt0 = segs0.length;
+    const len0 = before ? before.mins : 0;
+    const start0 = before ? before.h0 * 60 + before.f0 : 0;
+
+    fire('mousedown', cell(2, 16), { clientY: gY(2, 16, 1) });
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(2, 15, 3) }));
+    await wait(150);
+    const liveMove = $('#clockLive').textContent;
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(250);
+
+    const segs1 = ccSegs(pd()[2]);
+    const after = segs1.find((x) => x.h0 <= 16 && x.h1 >= 16) || segs1[0];
+    out.push(['段内拖动提示"移动"', liveMove.indexOf('移动') === 0, true]);
+    out.push(['平移不改段数', segs1.length, cnt0]);
+    out.push(['平移不改长度', after ? after.mins : -1, len0]);
+    out.push(['平移后确实挪了位置', after ? (after.h0 * 60 + after.f0) !== start0 : false, true]);
+  }
 
   // 1-2. 反向伸缩：从 20:30 按住往上拖到 19:15（周日，原本全空）
   fire('mousedown', cell(6, 20), { clientY: gY(6, 20, 2) });
@@ -480,43 +526,56 @@ window.__itest = async () => {
   void cell(2, 13).offsetHeight; // 强制样式重算
   out.push(['拖选/hover 时刻度浮现', q0 ? getComputedStyle(q0).opacity : '', '1']);
   cell(2, 13).classList.remove('qshow');
-  // 单击刻度 = 挖掉那 15 分钟（周三 13:00–15:15 里挖掉 14:00–14:15 → 13:00–14:00 与 14:15–15:15）
-  fireQ('mousedown', cell(2, 14), 0); // 刻度 0 = 14:00–14:15
-  fireQ('mouseup', document, 0);
-  await wait(250);
-  const p214 = pd()[2][14];
-  out.push(['单击刻度挖掉 15 分钟', (() => { const p = pd()[2][14]; return p.on && p.from === 15 && p.to === 60; })() || (p214.on && p214.from === 15 && p214.to === 60)]);
-  out.push(['挖掉后相邻小时不受影响', pd()[2][13].on === true && pd()[2][15].on === true]);
-  out.push(['挖掉后周三仍有两条区间', $('#clockLive').textContent.indexOf('13:00') >= 0 && $('#clockLive').textContent.indexOf('14:15') >= 0]);
-  // 再点一次刻度补回去（选中 = 并上窗口）
-  fireQ('mousedown', cell(2, 14), 0);
-  fireQ('mouseup', document, 0);
-  await wait(250);
-  out.push(['单击刻度再补回 15 分钟', (() => { const p = pd()[2][14]; return p.on && p.from === 0 && p.to === 60; })()]);
+  // 单击**不改变任何时段**：以前在这里点一下会把 13:00–15:15 从中间劈开、
+  // 点中的 15 分钟消失；现在点击只记选区（给右键菜单用），配置一个字都不动。
+  {
+    const snap = () => JSON.stringify(pd()[2].map((p) => [p.on, p.from, p.to]));
+    const before = snap();
+    const segsBefore = ccSegs(pd()[2]).length;
+    // 打在 16:00–18:45 这一段中间（这一段是上一条用例建出来的）
+    fireQ('mousedown', cell(2, 17), 0);
+    fireQ('mouseup', document, 0);
+    await wait(250);
+    out.push(['单击已选中格：配置一字未改', snap() === before, true]);
+    out.push(['单击后段数不变', ccSegs(pd()[2]).length, segsBefore]);
+    out.push(['单击后这一段仍然开着',
+      pd()[2][17].on && pd()[2][18].on, true]);
+    // 再点一下同一位置，依然不该有任何变化
+    fireQ('mousedown', cell(2, 17), 0);
+    fireQ('mouseup', document, 0);
+    await wait(200);
+    out.push(['连点两下也不改结构', snap() === before, true]);
+  }
 
-  // 1b. 框选后右键落在选区内 → 目标默认取整个矩形（核心流程）。
-  //     注意：S.ccRect 会被前序测试（1a/2/3/…）更新过，这里按"当前最近一次框选"断言。
-  const lastRect = S.ccRect;
-  const rectTxt = lastRect
-    ? (lastRect.d0 === lastRect.d1
-      ? WD[lastRect.d0]
-      : `${WD[Math.min(lastRect.d0, lastRect.d1)]} – ${WD[Math.max(lastRect.d0, lastRect.d1)]}`)
-    : '';
-  fire('contextmenu', cell(2, 14), { clientX: 420, clientY: 420 });
+  // 1b. 框选后右键落在选区内 → 目标默认取整个框选（核心流程）。
+  //     这里自己先框一次（周三 19:00–22:00，3 格），不依赖前面用例留下的选区。
+  await Act.clockCommitRange(2, 19 * 60, 22 * 60, 'sub');
+  await wait(150);
+  fire('mousedown', cell(2, 19), { clientY: gY(2, 19, 0) });
+  document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(2, 21, 3) }));
   await wait(120);
-  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent.indexOf(rectTxt) >= 0]);
-  const expectCnt = lastRect ? (Math.abs(lastRect.d1 - lastRect.d0) + 1) * (Math.abs(lastRect.h1 - lastRect.h0) + 1) : 1;
-  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, String(expectCnt)]);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  await wait(240);
+  out.push(['这次框选覆盖三格', S.ccRect ? (S.ccRect.h1 - S.ccRect.h0 + 1) : -1, 3]);
+  fire('contextmenu', cell(2, 20), { clientX: 420, clientY: 420 });
+  await wait(150);
+  out.push(['选区内右键 → 目标为整个框选', $('#ccTgt').textContent.indexOf('周三') >= 0]);
+  out.push(['选区内右键 → 段数', $('#ccCnt').textContent, '3']);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
 
-  // 2. 单击关格：周一 8 点（原本开着）→ 新交互下"单击"= 开关那 15 分钟刻度，
-  //    从已选中的整小时（0–60）起笔会挖掉 00:00–00:15，剩 00:15–01:00 仍开着
-  fireQ('mousedown', cell(0, 8), 0);
-  fireQ('mouseup', document, 0);
-  await wait(250);
-  out.push(['单击挖掉起笔那 15 分钟', (() => { const p = pd()[0][8]; return p.on && p.from === 15 && p.to === 60; })()]);
-  out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
+  // 2. 单击：任何位置都不改结构（周一 8 点原本是整小时选中）
+  {
+    const before = JSON.stringify(pd()[0].map((p) => [p.on, p.from, p.to]));
+    fireQ('mousedown', cell(0, 8), 0);
+    fireQ('mouseup', document, 0);
+    await wait(250);
+    out.push(['单击已选中的格子不改结构',
+      JSON.stringify(pd()[0].map((p) => [p.on, p.from, p.to])) === before, true]);
+    out.push(['单击后这一小时仍是整小时',
+      `${pd()[0][8].on && pd()[0][8].from}-${pd()[0][8].to}`, '0-60']);
+    out.push(['单击不影响同列其它格', pd()[0][9].on === true]);
+  }
 
   // 2b. 右键已选中的单格：预填这一格自身的时长（50/10），而不是通用值
   fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
@@ -956,6 +1015,42 @@ window.__itest = async () => {
   out.push(['设置路径走后端原生选取', window.__picked >= 1, true]);
   out.push(['设置路径已落盘保存', window.__setpath >= 1, true]);
 
+  // 17b. 自定义浏览器：登记后立刻进列表、标记来源、可删除
+  {
+    await Act.nav('browsers');
+    await wait(260);
+    const titles = [...document.querySelectorAll('.card-title')].map((e) => e.textContent.trim());
+    out.push(['浏览器页有「自定义浏览器」卡片', titles.includes('自定义浏览器'), true]);
+    out.push(['有名称与路径输入框',
+      !!document.querySelector('#cbName') && !!document.querySelector('#cbExe'), true]);
+
+    document.querySelector('#cbName').value = '公司内部浏览器';
+    document.querySelector('#cbExe').value = 'C:\\Corp\\browser.exe';
+    document.querySelector('[data-act="custom-browser-save"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(450);
+
+    const names = () => [...document.querySelectorAll('.brow-name .bname')].map((e) => e.textContent.trim());
+    out.push(['添加后出现在浏览器列表', names().includes('公司内部浏览器'), true]);
+    out.push(['写进了配置', (STATE.config.settings.customBrowsers || []).length, 1]);
+    out.push(['输入框已清空（可以接着加下一个）',
+      document.querySelector('#cbName').value === '' && document.querySelector('#cbExe').value === '', true]);
+
+    const badges = [...document.querySelectorAll('.brow-name .badge')].map((e) => e.textContent.trim());
+    out.push(['自定义项标了「自定义添加」', badges.includes('自定义添加'), true]);
+    out.push(['自定义项的插件状态写「插件需自检」', badges.includes('插件需自检'), true]);
+
+    // 删除
+    const rc = window.confirm;
+    window.confirm = () => true;
+    document.querySelector('[data-act="custom-browser-del"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(450);
+    window.confirm = rc;
+    out.push(['删除后从列表消失', names().includes('公司内部浏览器'), false]);
+    out.push(['删除后配置也清了', (STATE.config.settings.customBrowsers || []).length, 0]);
+  }
+
   // 18. 「扩展页」按钮：点击后必须走后端 browser_open_ext 并带上浏览器 key
   window.__openExt = 0; window.__openExtKey = '';
   const extBtn = document.querySelector('[data-act="browser-page"]');
@@ -1166,11 +1261,26 @@ window.__itest = async () => {
     out.push(['切到 10 分钟 → 行高 78px',
       Math.round(c.getBoundingClientRect().height), 78]);
     out.push(['粒度写进了配置', fc().granularity, 10]);
-    // 10 分钟粒度下单击最细一格 = 10 分钟
-    clickFrac(c, 0.5 / 6);
+    // 10 分钟粒度：单击不改结构；拖一格 = 20 分钟（一格 10 分钟起、到下一格止）
+    await Act.clockCommitRange(6, 3 * 60, 4 * 60, 'sub');
+    await wait(150);
+    const c6 = cell(6, 3);
+    const rb6 = c6.getBoundingClientRect();
+    const y6 = (k) => rb6.top + rb6.height * ((k + 0.5) / 6);
+    const snap6 = () => JSON.stringify(pd()[6].map((p) => [p.on, p.from, p.to]));
+
+    const b6 = snap6();
+    fire('mousedown', c6, { clientY: y6(0) });
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     await wait(200);
-    const p10 = pd()[2][9];
-    out.push(['10 分钟粒度下单击 = 选中 10 分钟', p10.on && p10.to - p10.from, 10]);
+    out.push(['10 分钟粒度下单击不改结构', snap6() === b6, true]);
+
+    fire('mousedown', c6, { clientY: y6(0) });
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: y6(1) }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(250);
+    const p10 = pd()[6][3];
+    out.push(['10 分钟粒度下拖一格 = 20 分钟', p10.on && p10.to - p10.from, 20]);
     await Act.clockGran(15);
     await wait(220);
     out.push(['切回 15 分钟 → 每小时 4 格', cell(2, 9).querySelectorAll('.cc-q').length, 4]);
@@ -1389,7 +1499,9 @@ window.__itest = async () => {
     await wait(200);
     out.push(['再换一条轮到联网语录',
       document.querySelector('.hub-quote .qtext').textContent, '你今天做的事，是你明天想成为的人。']);
-    out.push(['联网语录标明来源', document.querySelector('.hub-quote .qsrc').textContent, '网络 · 一言']);
+    out.push(['联网语录标明来源站点', document.querySelector('.hub-quote .qsrc').textContent, '一言 · hitokoto.cn']);
+    out.push(['联网语录写清"来自哪个接口"',
+      /hitokoto\.cn/.test((document.querySelector('.hub-quote .qhint') || {}).textContent || ''), true]);
     out.push(['联网语录带出处',
       (document.querySelector('.hub-quote .qfrom') || {}).textContent, '—— 关于自律']);
 
@@ -1540,6 +1652,19 @@ window.__itest = async () => {
 
     await Act.nav('settings');
     await wait(250);
+  }
+
+  // ---- 26h. 品牌名：严格写作 King Of Focus ----
+  {
+    out.push(['侧栏品牌名', (document.querySelector('.brand-name') || {}).textContent, 'King Of Focus']);
+    out.push(['页面上不该再出现小写 of',
+      [...document.querySelectorAll('body *')]
+        .filter((e) => e.tagName !== 'SCRIPT' && e.tagName !== 'STYLE')
+        .some((e) => /King of Focus/.test(e.textContent || '')), false]);
+    out.push(['关于页也用同一写法',
+      (() => { S.view = 'about'; render(); return document.querySelector('#content').textContent.indexOf('King Of Focus') >= 0; })(), true]);
+    S.view = 'settings';
+    render();
   }
 
   // ---- 27. 专注计时弹窗（HUD）：四角可选 + 透明度可调 + 落盘 ----

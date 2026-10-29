@@ -349,6 +349,7 @@ pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     let config = shared.config();
     // 浏览器自定义路径要同步给扫描/打开扩展页那一侧
     crate::browsers::set_custom_exe(config.settings.browser_exe.clone());
+    sync_custom_browsers(&config);
     let m = &*shared.mask;
     m.opacity.store(config.settings.mask.opacity.min(100), Ordering::Relaxed);
     m.block_click.store(config.settings.mask.block_click, Ordering::Relaxed);
@@ -496,6 +497,7 @@ pub fn browser_set_path(
             *w = c.clone();
         }
         crate::browsers::set_custom_exe(c.settings.browser_exe.clone());
+        sync_custom_browsers(&c);
         return Ok("已清除自定义路径，改为自动检测".into());
     }
 
@@ -507,7 +509,95 @@ pub fn browser_set_path(
         *w = c.clone();
     }
     crate::browsers::set_custom_exe(c.settings.browser_exe.clone());
+    sync_custom_browsers(&c);
     Ok(format!("已保存：{normalized}"))
+}
+
+/// 把配置里的自定义浏览器同步进扫描器（启动与保存两处都要走）
+fn sync_custom_browsers(c: &crate::model::Config) {
+    let list: Vec<(String, String, String, String)> = c
+        .settings
+        .custom_browsers
+        .iter()
+        .map(|b| (b.id.clone(), b.name.clone(), b.exe.clone(), b.ext_page.clone()))
+        .collect();
+    crate::browsers::set_custom_browsers_all(list);
+}
+
+/// 新增或修改一个自定义浏览器（exe 必须存在，避免登记一个点不开的路径）。
+#[tauri::command]
+pub fn browser_custom_save(
+    shared: State<'_, Arc<Shared>>,
+    id: String,
+    name: String,
+    exe: String,
+    ext_page: String,
+) -> Result<Value, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("请给这个浏览器起个名字".into());
+    }
+    let p = crate::browsers::validate_exe(&exe)?;
+    let normalized = p.to_string_lossy().to_string();
+
+    let mut c = shared.config();
+    let cid = if id.trim().is_empty() {
+        format!("c{}", chrono::Local::now().timestamp_millis())
+    } else {
+        id.trim().to_string()
+    };
+    let page = ext_page.trim().to_string();
+    if let Some(b) = c.settings.custom_browsers.iter_mut().find(|b| b.id == cid) {
+        b.name = name.clone();
+        b.exe = normalized.clone();
+        b.ext_page = page.clone();
+    } else {
+        if c.settings.custom_browsers.len() >= 16 {
+            return Err("最多登记 16 个自定义浏览器".into());
+        }
+        c.settings.custom_browsers.push(crate::model::CustomBrowser {
+            id: cid.clone(),
+            name: name.clone(),
+            exe: normalized.clone(),
+            ext_page: page,
+        });
+    }
+    crate::cfg::sanitize(&mut c);
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    let list: Vec<(String, String, String, String)> = c
+        .settings
+        .custom_browsers
+        .iter()
+        .map(|b| (b.id.clone(), b.name.clone(), b.exe.clone(), b.ext_page.clone()))
+        .collect();
+    crate::browsers::set_custom_browsers_all(list);
+    Ok(json!({"ok": true, "id": cid, "name": name, "exe": normalized}))
+}
+
+/// 删掉一个自定义浏览器
+#[tauri::command]
+pub fn browser_custom_remove(shared: State<'_, Arc<Shared>>, id: String) -> Result<Value, String> {
+    let mut c = shared.config();
+    let before = c.settings.custom_browsers.len();
+    c.settings.custom_browsers.retain(|b| b.id != id);
+    if c.settings.custom_browsers.len() == before {
+        return Err("没找到这条记录".into());
+    }
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c.clone();
+    }
+    let list: Vec<(String, String, String, String)> = c
+        .settings
+        .custom_browsers
+        .iter()
+        .map(|b| (b.id.clone(), b.name.clone(), b.exe.clone(), b.ext_page.clone()))
+        .collect();
+    crate::browsers::set_custom_browsers_all(list);
+    Ok(json!({"ok": true}))
 }
 
 /// 校验一个路径但不保存（供界面在选完文件后即时提示）

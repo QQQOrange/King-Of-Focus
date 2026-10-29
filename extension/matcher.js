@@ -1,4 +1,4 @@
-/* King of Focus — 网站规则匹配器
+/* King Of Focus — 网站规则匹配器
  *
  * 独立成文件的原因：declarativeNetRequest 只能拦「新发起的请求」，
  * 已经打开的标签页不会自己消失。要关掉它们，必须有一个和服务端

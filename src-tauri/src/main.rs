@@ -223,14 +223,14 @@ fn main() {
 
             let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
             let mask_item = MenuItem::with_id(app, "mask", "开关专注遮罩", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出 King of Focus", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 King Of Focus", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &mask_item, &quit])?;
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
 
             let sh_menu = shared.clone();
             TrayIconBuilder::with_id("kof")
                 .icon(icon)
-                .tooltip("King of Focus")
+                .tooltip("King Of Focus")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -361,7 +361,7 @@ fn main() {
             // 强制退出监听：Ctrl+Alt+F4（任意前台）/ Alt+F4（本程序在前台）
             crate::forcequit::start(app.handle().clone(), shared.clone());
 
-            // 记住主窗口句柄：遮罩允许把洞挖在本程序身上（盖住 King of Focus 自己）
+            // 记住主窗口句柄：遮罩允许把洞挖在本程序身上（盖住 King Of Focus 自己）
             if let Some(w) = app.get_webview_window("main") {
                 if let Ok(h) = w.hwnd() {
                     mask::SELF_MAIN.store(h.0 as isize, std::sync::atomic::Ordering::Relaxed);
@@ -400,6 +400,8 @@ fn main() {
             cmds::browser_ext_info,
             cmds::browser_set_path,
             cmds::browser_check_path,
+            cmds::browser_custom_save,
+            cmds::browser_custom_remove,
             cmds::quit_app,
             cmds::force_quit,
             cmds::hide_window,
@@ -438,7 +440,7 @@ fn main() {
             cmds::open_url,
         ])
         .build(tauri::generate_context!())
-        .expect("King of Focus 启动失败")
+        .expect("King Of Focus 启动失败")
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 stats::flush(&shared_exit);

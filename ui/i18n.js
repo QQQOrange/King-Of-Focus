@@ -456,6 +456,36 @@
     '检查更新': 'Check for updates',
     '更新检测': 'Updates',
 
+    /* —— 自定义浏览器 —— */
+    '＋ 添加': '+ Add',
+    '直接写一句新的': 'Write a new one',
+    '（来自 hitokoto.cn 公开接口）': ' (from the hitokoto.cn public API)',
+    '内置句子': 'Built-in line',
+    '自定义浏览器': 'Custom browser',
+    '名称': 'Name',
+    '主程序路径': 'Executable path',
+    '选择 exe': 'Pick exe',
+    '添加': 'Add',
+    '路径有效': 'Path OK',
+    '路径失效': 'Path missing',
+    '自定义添加': 'Added manually',
+    '插件需自检': 'Check manually',
+    '还没有登记任何自定义浏览器。': 'No custom browser registered yet.',
+    '当作浏览器': 'treated as a browser',
+    '处理：自律时段里打开它同样会被关闭， 「浏览器巡检」也认得它。插件状态无法自动探测，需要你自己确认。':
+      ': it gets closed during discipline hours too, and the browser scan counts it. The extension state cannot be probed automatically, so check it yourself.',
+    '清单里没有的浏览器（公司内部壳、某些国产套壳）在这里登记主程序路径。 登记后它会被':
+      'Register the executable of a browser that is not in the built-in list (in-house shells, minor Chromium forks). Once registered it is',
+    '保存时会校验 .exe 是否存在；登记后立即重新检测，不需要重启软件。':
+      'The .exe is verified when saving; a rescan runs immediately, no restart needed.',
+    '删除这个自定义浏览器？只是不再登记它，不会动浏览器本身。':
+      'Remove this custom browser? It only stops being registered; the browser itself is untouched.',
+    '已添加，正在重新检测…': 'Added — rescanning…',
+    '已删除': 'Removed',
+    '先给这个浏览器起个名字': 'Give this browser a name first',
+    '先选择或粘贴主程序路径': 'Pick or paste the executable path first',
+    '最多登记 16 个自定义浏览器': 'Up to 16 custom browsers',
+
     /* —— 关于页 —— */
     '本版本更新时间': 'Released',
     '开发者': 'Author',

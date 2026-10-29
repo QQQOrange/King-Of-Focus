@@ -34,11 +34,11 @@ const EXT_I18N = {
     'blocked.url': '目标地址',
     'blocked.mode': '当前模式',
     'blocked.mode.white': '白名单 · 只允许名单里的网站',
-    'blocked.foot': 'King of Focus · 专注由你掌控',
+    'blocked.foot': 'King Of Focus · 专注由你掌控',
     'blocked.unknownRule': '网站自律规则',
     'blocked.tip1': '想改名单？在主程序里打开「规则 → 网站」。',
     'blocked.tip2': '如果这不是你想要的，说明时间表需要调整。',
-    'blocked.docTitle': '已被 King of Focus 拦截',
+    'blocked.docTitle': '已被 King Of Focus 拦截',
   },
   en: {
     'status.checking': 'Checking…',
@@ -65,11 +65,11 @@ const EXT_I18N = {
     'blocked.url': 'Address',
     'blocked.mode': 'Mode',
     'blocked.mode.white': 'Allowlist · listed sites only',
-    'blocked.foot': 'King of Focus · Stay in control',
+    'blocked.foot': 'King Of Focus · Stay in control',
     'blocked.unknownRule': 'Site rules',
     'blocked.tip1': 'Change the list in the app: Rules → Sites.',
     'blocked.tip2': 'If this is not what you want, adjust your hours.',
-    'blocked.docTitle': 'Blocked by King of Focus',
+    'blocked.docTitle': 'Blocked by King Of Focus',
   },
 };
 
