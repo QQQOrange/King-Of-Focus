@@ -169,6 +169,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "hbBrowser": rt.hb_browser,
                 "siteUrl": rt.site_url,
                 "siteTitle": rt.site_title,
+                "wakeNote": rt.wake_note,
+                "wakeAt": rt.wake_at,
                 "locked": rt.locked,
                 "lockUntil": rt.lock_until,
                 "lockUntilText": rt.lock_until_text,

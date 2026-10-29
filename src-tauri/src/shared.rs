@@ -31,6 +31,10 @@ pub struct Runtime {
     pub in_break: bool,
     /// 当前番茄阶段剩余秒数
     pub break_left: i64,
+    /// 最近一次「睡眠结束自动启动」的结果（空 = 还没跑过）
+    pub wake_note: String,
+    /// 那次执行的时间（unix 秒）
+    pub wake_at: i64,
     /// 是否处于固化（硬锁）状态
     pub locked: bool,
     pub lock_until: i64,
@@ -72,6 +76,8 @@ impl Default for Runtime {
             site_ts: 0,
             site_browser: String::new(),
             next_change: 0,
+            wake_note: String::new(),
+            wake_at: 0,
             last_blocked: String::new(),
             last_focus: 0,
             on_break: false,

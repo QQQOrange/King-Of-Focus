@@ -130,6 +130,7 @@ pub fn sanitize(c: &mut Config) {
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
     sanitize_sleep(&mut c.settings.sleep);
+    sanitize_wake(&mut c.settings.sleep.wake);
     sanitize_quotes(&mut c.settings.custom_quotes);
     sanitize_quote_feeds(&mut c.settings.quote_feeds, &mut c.settings.quote_feed);
     sanitize_custom_browsers(&mut c.settings.custom_browsers);
@@ -197,6 +198,50 @@ fn sanitize_quotes(list: &mut Vec<String>) {
         }
     }
     *list = out;
+}
+
+/// 自动唤醒 / 自动启动归一化：夹参数、去非法目标、限量。
+///
+/// 这里挡的不是"用户手滑"，而是"配置被手改成危险值"：
+/// `target` 只接受 http(s) 或一个像路径的字符串；参数长度设上限，
+/// 免得一段几万字的命令行把 spawn 搞崩。
+fn sanitize_wake(w: &mut crate::model::WakeCfg) {
+    const MAX_ITEMS: usize = 12;
+    w.delay_secs = w.delay_secs.min(300);
+    let mut out: Vec<crate::model::WakeItem> = Vec::new();
+    for it in w.items.iter() {
+        let kind = if it.kind == "url" { "url" } else { "app" };
+        let target = it.target.trim().chars().take(400).collect::<String>();
+        if target.is_empty() {
+            continue;
+        }
+        if kind == "url" && !(target.starts_with("http://") || target.starts_with("https://")) {
+            continue;
+        }
+        let mut days: Vec<u8> = it.days.iter().copied().filter(|d| *d < 7).collect();
+        days.sort_unstable();
+        days.dedup();
+        let id = if it.id.trim().is_empty() {
+            format!("w{}", out.len() + 1)
+        } else {
+            it.id.trim().chars().take(40).collect()
+        };
+        if out.iter().any(|x| x.id == id) {
+            continue;
+        }
+        out.push(crate::model::WakeItem {
+            id,
+            kind: kind.into(),
+            target,
+            args: it.args.trim().chars().take(300).collect(),
+            days,
+            enabled: it.enabled,
+        });
+        if out.len() >= MAX_ITEMS {
+            break;
+        }
+    }
+    w.items = out;
 }
 
 /// 语录来源归一化：补内置、修 id、挡非法地址、限量，并把「当前来源」拉回合法值。

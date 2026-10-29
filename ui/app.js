@@ -1891,12 +1891,108 @@ function sleepCardHtml(rt) {
       </label>
     </div>
 
+    ${wakeHtml(rt)}
+
     <div class="row" style="margin-top:14px;align-items:center">
       <button class="btn btn-sm" data-act="sleep-save">保存睡眠设置</button>
       <span class="hint">判定只看当前时刻是否在睡眠时段内，与自律时段、自律规则完全独立。</span>
       <span class="hint">关机指令发出后 30 秒内仍可用积分解锁撤回；解锁到期后如果还在时段内，会重新开始倒计时。</span>
     </div>
   </div>`;
+}
+
+/** 把清单里每一行当前输入同步回对象（不落盘）。
+ *
+ *  为什么需要它：加行 / 删行 / 点星期都会重绘，而重绘是从数据重建 DOM 的。
+ *  如果不同步，用户刚敲进去、还没点保存的路径就被清空了。
+ */
+function wakeSyncDom() {
+  const s = clockCfgSleep();
+  const w = s.wake || (s.wake = { items: [] });
+  const all = (w.items || []).concat(S.wakeDraft || []);
+  const byId = new Map(all.map((x) => [x.id, x]));
+  document.querySelectorAll('[data-wkrow]').forEach((row) => {
+    const it = byId.get(row.dataset.wkrow);
+    if (!it) return;
+    const get = (k) => (row.querySelector('[data-wk="' + k + '"]') || {}).value;
+    it.kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+    it.target = String(get('target') || '');
+    it.args = String(get('args') || '');
+    const en = row.querySelector('[data-wk="enabled"]');
+    if (en) it.enabled = !!en.checked;
+  });
+}
+
+/** 「睡眠结束后自动启动」那一块。
+ *
+ *  为什么放在睡眠卡片里而不是新开一页：它天然属于"这一轮睡眠的收尾动作"，
+ *  离开睡眠时段单独讲反而要重复解释一遍"什么时候算结束"。
+ */
+function wakeHtml(rt) {
+  const w = (clockCfgSleep().wake) || {};
+  // 新加的行先留在草稿里：空目标是过不了后端归一化的（会被丢掉），
+  // 直接写进配置等于"点了添加却什么都没加"。保存时再合并。
+  const items = (w.items || []).concat(S.wakeDraft || []);
+  const days = ['一', '二', '三', '四', '五', '六', '日'];
+  const rows = items.length
+    ? items.map((it, i) => {
+      const on = it.kind === 'url';
+      return `<div class="wk" data-wkrow="${esc(it.id)}">
+        <select data-wk="kind" data-i="${i}" title="这一项是软件还是网页">
+          <option value="app"${on ? '' : ' selected'}>软件</option>
+          <option value="url"${on ? ' selected' : ''}>网页</option>
+        </select>
+        <input type="text" data-wk="target" data-i="${i}" value="${esc(it.target)}"
+          placeholder="${on ? 'https://example.com' : 'C:\\Program Files\\App\\app.exe'}">
+        <input type="text" data-wk="args" data-i="${i}" value="${esc(it.args || '')}"
+          placeholder="启动参数（可空）" ${on ? 'disabled' : ''}>
+        <span class="wk-days" title="不选 = 每天">${days.map((d, k) => `<button
+          class="${(it.days || []).includes(k) ? 'on' : ''}" data-wkday="${k}" data-i="${i}">${d}</button>`).join('')}</span>
+        <label class="wk-en"><input type="checkbox" data-wk="enabled" data-i="${i}" ${it.enabled === false ? '' : 'checked'}></label>
+        <button class="btn btn-sm danger-ghost" data-act="wake-del" data-id="${esc(it.id)}">删</button>
+      </div>`;
+    }).join('')
+    : '<div class="wk-empty">还没添加。睡眠结束后想让电脑自己打开什么，就点下面的「＋ 添加一项」。</div>';
+
+  const last = rt && rt.wakeAt
+    ? `<div class="hint" style="margin-top:8px">上次自动启动：${hhmm(rt.wakeAt)} · ${esc(rt.wakeNote || '')}</div>`
+    : '';
+  return `
+    <div class="sleep-sep"></div>
+    <div class="row" style="align-items:center;gap:10px">
+      <div style="flex:1">
+        <div class="card-title" style="font-size:13px">睡眠结束后自动启动</div>
+        <div class="hint" style="margin-top:4px;line-height:1.7">
+          睡眠时段结束后，等系统真的恢复过来，按下面的清单打开软件 / 网页。
+        </div>
+        <div class="hint" style="line-height:1.7">
+          默认关闭；每一轮只跑一次，重复启动会被拦掉。
+        </div>
+      </div>
+      <div class="switch" data-act="wake-enable" title="启用 / 停用自动启动"><input type="checkbox" ${w.enabled ? 'checked' : ''}><i></i></div>
+    </div>
+    ${w.enabled ? `
+    <div class="sleep-grid">
+      <label class="sf"><span class="sf-lab">恢复后等待</span>
+        <span class="sf-in">
+          <input type="number" id="wakeDelay" min="0" max="300" step="5" value="${w.delaySecs == null ? 20 : w.delaySecs}">
+          <em>秒再启动</em>
+          <em class="hint">（刚唤醒时网络还没就绪，等一下成功率高得多）</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">叫醒系统</span>
+        <span class="sf-in">
+          <input type="checkbox" id="wakeSystem" ${w.wakeSystem === false ? '' : 'checked'}>
+          <em>到点把电脑从睡眠里叫醒（需要管理员权限；失败也不影响你已经醒着的场景）</em>
+        </span>
+      </label>
+    </div>
+    <div class="wk-list">${rows}</div>
+    <div class="row" style="margin-top:8px;align-items:center">
+      <button class="btn btn-sm" data-act="wake-add">＋ 添加一项</button>
+      <span class="hint">星期不选 = 每天；软件请填 exe 全路径。</span>
+    </div>
+    ${last}` : ''}`;
 }
 
 /** 「完整展示」是否开着（默认开）。
@@ -2316,8 +2412,16 @@ function boundsOf(range) {
 function mergeSlices(a, b) {
   const map = new Map();
   for (const s of [...a, ...b]) {
-    const cur = map.get(s.key) || { key: s.key, label: s.label, category: s.category, secs: 0 };
+    const cur = map.get(s.key) || {
+      key: s.key, label: s.label, category: s.category, secs: 0,
+      // 站点行带着"主标题"和"页面数"，合并两档数据时不能把它们丢掉，
+      // 否则切到「汇总」标签后标题会变回域名、也不再提示"共 N 个页面"
+      title: s.title || '', pages: s.pages || 0,
+    };
     cur.secs += s.secs;
+    // 页面数取较大值：两个数据集统计的是同一批页面，取并集的上界即可
+    cur.pages = Math.max(cur.pages, s.pages || 0);
+    if (!cur.title && s.title) cur.title = s.title;
     map.set(s.key, cur);
   }
   return [...map.values()].sort((x, y) => y.secs - x.secs);
@@ -2349,7 +2453,12 @@ function viewStats() {
   const rows = cur.slices.length
     ? cur.slices.slice(0, 30).map((s, i) => `<tr>
         <td><span class="badge ${s.category === 'site' ? 'blue' : 'gold'}">${s.category === 'site' ? '网页' : '软件'}</span></td>
-        <td>${esc(s.label)}</td>
+        <td>
+          <div>${esc(s.label)}${s.category === 'site' && s.pages > 1
+    ? ` <span class="muted" style="font-size:11px">· 共 ${s.pages} 个页面</span>` : ''}</div>
+          ${s.category === 'site' && String(s.key || '').indexOf('site|') === 0
+    ? `<div class="muted" style="font-size:10.5px;line-height:1.4">${esc(String(s.key).slice(5))}</div>` : ''}
+        </td>
         <td class="tnum">${fmtDur(s.secs)}</td>
         <td class="tnum muted">${cur.total ? ((s.secs / cur.total) * 100).toFixed(1) : '0.0'}%</td>
       </tr>`).join('')
@@ -2383,7 +2492,7 @@ function viewStats() {
         ? '这里<b>只统计自律模式开启时段</b>内的前台使用时长，与"未开启"的数据完全隔离。'
         : S.statsTab === 'off'
           ? '这里<b>只统计自律模式未生效时段</b>内的前台使用时长，与"已开启"的数据完全隔离。'
-          : '汇总口径：把「已开启」与「未开启」两个数据集里<b>同一个应用 / 同一个域名</b>的秒数直接相加，不做任何加权；扇区大小 = 该项在所选时间段内的前台使用总时长占比。'}
+          : '汇总口径：把「已开启」与「未开启」两个数据集里同一个应用 / 同一个域名的秒数直接相加，不做任何加权；扇区大小 = 该项在所选时间段内的前台使用总时长占比。'}
     </div>
     ${cur.slices.length ? `
     <div class="chart-wrap">
@@ -2873,6 +2982,7 @@ function viewHelp() {
     <div>和自律时段是两件事：那边管"白天什么时候不许玩"，这里管"夜里这台机器该关着了"。</div>
     <div>到了睡眠时段，开机 / 唤醒后会全屏锁定、限制所有功能，倒计时（默认 10 分钟，可改）结束自动关机。</div>
     <div>锁定期内设置改不了、程序也退不掉。想现在用，只能用积分解锁买断一段时间（价格在卡片里配）。</div>
+    <div>卡片里还有「睡眠结束后自动启动」：默认关闭，打开后可以按星期配一组要打开的软件 / 网页，睡眠结束后自动拉起。</div>
     <div>前提是程序在运行；睡眠时段之外它什么都不做。</div>
   `)}
 
@@ -2892,6 +3002,7 @@ function viewHelp() {
   ${sec('8 · 统计与报告', `
     每秒采样一次前台窗口；按「自律模式开启 / 未开启」两套数据独立记录，互不混合。
     前台是浏览器且插件上报过，就记到域名上，否则记到 exe 上。<br>
+    统计页显示的是<b>软件名</b>（取自程序版本信息）和<b>页面标题</b>，同一个网址下的多个页面会按网址归并成一行。<br>
     报告在日/周/月/年结束后自动生成（程序没开会下次启动补齐），也可以手动生成。
     三种口径：只看开启、只看未开启、两者汇总（同一应用/域名秒数直接相加）。
   `)}
@@ -5264,6 +5375,74 @@ const Act = window.Act = {
   },
 
   /** 保存睡眠参数。全部走一遍校验再落盘，避免"存了一半"的非法状态。 */
+  /** 开 / 关「睡眠结束后自动启动」（独立开关，默认关） */
+  async wakeEnable() {
+    const s = clockCfgSleep();
+    s.wake = s.wake || { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
+    s.wake.enabled = !s.wake.enabled;
+    const ok = await saveConfig();
+    render();
+    if (!ok) { toast('开关没保存成功', 'err'); return; }
+    toast(s.wake.enabled
+      ? '已启用：睡眠时段结束后会自动打开清单里的软件 / 网页'
+      : '已关闭自动启动', 'ok');
+  },
+
+  /** 加一项空条目（真正的目标在保存时一起读） */
+  async wakeAdd() {
+    wakeSyncDom();
+    const s = clockCfgSleep();
+    s.wake = s.wake || { enabled: true, delaySecs: 20, wakeSystem: true, items: [] };
+    const n = (s.wake.items || []).length + (S.wakeDraft || []).length;
+    if (n >= 12) { toast('最多 12 项，先删掉一个', 'err'); return; }
+    S.wakeDraft = (S.wakeDraft || []).concat([{
+      id: 'w' + Date.now().toString(36), kind: 'app', target: '', args: '',
+      days: [], enabled: true,
+    }]);
+    render();
+  },
+
+  async wakeDel(id) {
+    wakeSyncDom();
+    // 草稿里的直接扔掉；已经在配置里的才需要落盘
+    if ((S.wakeDraft || []).some((x) => x.id === id)) {
+      S.wakeDraft = S.wakeDraft.filter((x) => x.id !== id);
+      render();
+      return;
+    }
+    const s = clockCfgSleep();
+    s.wake = s.wake || { items: [] };
+    s.wake.items = (s.wake.items || []).filter((x) => x.id !== id);
+    const ok = await saveConfig();
+    render();
+    if (!ok) toast('删除没保存成功', 'err');
+  },
+
+  /** 星期小按钮：切换"这一项在哪几天生效" */
+  async wakeToggleDay(id, day) {
+    wakeSyncDom();
+    const d = +day;
+    const flip = (it) => {
+      const set = new Set(it.days || []);
+      if (set.has(d)) set.delete(d); else set.add(d);
+      it.days = [...set].sort((a, b) => a - b);
+    };
+    const draft = (S.wakeDraft || []).find((x) => x.id === id);
+    if (draft) {
+      flip(draft);
+      // 草稿行不重绘：重绘会把它上面刚敲的路径清掉，只翻一下按钮状态
+      const b = document.querySelector('[data-wkrow="' + id + '"] [data-wkday="' + d + '"]');
+      if (b) b.classList.toggle('on', (draft.days || []).includes(d));
+      return;
+    }
+    const s = clockCfgSleep();
+    const it = (s.wake && s.wake.items || []).find((x) => x.id === id);
+    if (!it) return;
+    flip(it);
+    await saveConfig();
+    render();
+  },
+
   async sleepSave() {
     const s = clockCfgSleep();
     const fromM = hmToMin(($('#sleepFrom') || {}).value);
@@ -5289,6 +5468,36 @@ const Act = window.Act = {
     s.unlockMin = umin;
     s.shutdown = shutdown;
     s.lockScreen = lock;
+
+    // 自动启动那一块：开关在别处即时保存，这里只收"延迟 / 叫醒 / 每一行"
+    if (s.wake) {
+      const dl = Math.round(+($('#wakeDelay') || {}).value);
+      if (Number.isFinite(dl) && dl >= 0 && dl <= 300) s.wake.delaySecs = dl;
+      const ws = $('#wakeSystem');
+      if (ws) s.wake.wakeSystem = !!ws.checked;
+      const rows = [...document.querySelectorAll('[data-wkrow]')];
+      // 草稿行也要能保存：否则"新加的那一项"永远写不进去
+      const byId = new Map((s.wake.items || []).concat(S.wakeDraft || []).map((x) => [x.id, x]));
+      const next = [];
+      for (const row of rows) {
+        const id = row.dataset.wkrow;
+        const it = byId.get(id);
+        if (!it) continue;
+        const get = (k) => (row.querySelector('[data-wk="' + k + '"]') || {}).value;
+        const kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+        const target = String(get('target') || '').trim();
+        const args = String(get('args') || '').trim();
+        const en = (row.querySelector('[data-wk="enabled"]') || {}).checked;
+        if (!target) continue;                       // 空行直接丢掉，不写进配置
+        if (kind === 'url' && !/^https?:\/\//i.test(target)) {
+          toast(`「${target}」不是 http(s) 地址，已跳过`, 'err');
+          continue;
+        }
+        next.push({ ...it, kind, target, args: kind === 'url' ? '' : args, enabled: en !== false });
+      }
+      s.wake.items = next;
+      S.wakeDraft = [];
+    }
     const ok = await saveConfig();
     if (!ok) { render(); return; }
     render();
@@ -5962,6 +6171,10 @@ document.addEventListener('click', async (e) => {
   if (act === 'sleep-enable') { await Act.sleepEnable(); return; }
   if (act === 'sleep-save') { await Act.sleepSave(); return; }
   if (act === 'sleep-unlock') { await Act.sleepUnlock(); return; }
+  if (act === 'wake-enable') { await Act.wakeEnable(); return; }
+  if (act === 'wake-add') { await Act.wakeAdd(); return; }
+  if (act === 'wake-del') { await Act.wakeDel(el.dataset.id); return; }
+  if (act && act.startsWith && act.indexOf('wake-day') === 0) { await Act.wakeToggleDay(act.slice(9), el.dataset.d); return; }
   if (act === 'clock-view-reset') { await Act.clockViewReset(); return; }
   // S.ccAnimIn 只在这一帧为真：完整图表页的入场动画不能每次重绘都重播，
   // 否则拖完一段松手（内部会 render 一次）整页就会重新淡入 = 闪一下。
@@ -6980,6 +7193,16 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // 设置页的语录输入框：回车等于点「添加」
+// 自动启动的星期小按钮：点一下切换"这一天跑不跑"
+document.addEventListener('click', (e) => {
+  const b = e.target && e.target.closest ? e.target.closest('[data-wkday]') : null;
+  if (!b) return;
+  const row = b.closest('[data-wkrow]');
+  if (!row) return;
+  e.preventDefault();
+  Act.wakeToggleDay(row.dataset.wkrow, +b.dataset.wkday);
+});
+
 document.addEventListener('keydown', (e) => {
   if (!e.target || e.target.id !== 'setQuoteNew') return;
   if (e.key !== 'Enter') return;

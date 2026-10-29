@@ -706,6 +706,69 @@ pub struct SleepCfg {
     pub unlock_min: u32,
     /// 积分解锁的价格基数：每分钟多少分。0 = 这段睡眠不许用积分解锁
     pub unlock_price: i64,
+    /// 睡眠结束后的自动唤醒 / 自动启动
+    #[serde(default)]
+    pub wake: WakeCfg,
+}
+
+/// 睡眠结束后要自动打开的一项（软件或网页）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WakeItem {
+    /// 稳定 id（前端生成）
+    pub id: String,
+    /// app（可执行文件 + 参数）| url（网页地址）
+    pub kind: String,
+    /// app = exe 全路径；url = http(s) 地址
+    pub target: String,
+    /// 启动参数（只有 app 用得到，按空格切，支持双引号）
+    pub args: String,
+    /// 只在哪几天生效：0=周一 … 6=周日。**空 = 每天**
+    ///
+    /// 为什么按星期区分：目前只有一套睡眠时段（比如 23:00–07:00），
+    /// 但工作日和周末"起床该开什么"往往不一样（上班开企业微信，周末开音乐）。
+    /// 用星期表达"不同的睡眠结束场景"，不用再多加一套时段模型。
+    #[serde(default)]
+    pub days: Vec<u8>,
+    pub enabled: bool,
+}
+
+impl Default for WakeItem {
+    fn default() -> Self {
+        WakeItem {
+            id: String::new(),
+            kind: "app".into(),
+            target: String::new(),
+            args: String::new(),
+            days: Vec::new(),
+            enabled: true,
+        }
+    }
+}
+
+/// 自动唤醒 / 自动启动的配置
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WakeCfg {
+    /// 独立开关，**默认关**：这功能会自己开程序，不该在用户没同意时生效
+    pub enabled: bool,
+    /// 系统恢复后再等几秒才启动（0..300，默认 20）。
+    /// 刚唤醒时网络 / 磁盘都还没就绪，立刻拉浏览器多半会失败或白屏。
+    pub delay_secs: u32,
+    /// 要不要用"可唤醒定时器"把系统从睡眠里叫醒（默认开）
+    pub wake_system: bool,
+    pub items: Vec<WakeItem>,
+}
+
+impl Default for WakeCfg {
+    fn default() -> Self {
+        WakeCfg {
+            enabled: false,
+            delay_secs: 20,
+            wake_system: true,
+            items: Vec::new(),
+        }
+    }
 }
 
 impl Default for SleepCfg {
@@ -719,6 +782,7 @@ impl Default for SleepCfg {
             lock_screen: true,
             unlock_min: 30,
             unlock_price: 10,
+            wake: WakeCfg::default(),
         }
     }
 }

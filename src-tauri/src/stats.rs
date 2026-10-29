@@ -46,6 +46,13 @@ pub struct Acc {
     pub secs: u64,
     /// 24 个小时桶
     pub hours: Vec<u32>,
+    /// 同一个域名下出现过的**页面标题**及各自秒数。
+    ///
+    /// 为什么要单独存：一个域名（b23.tv、github.com）下面可能是几十个不同标题的页面，
+    /// 只留最后一次看到的标题会让统计页的"名字"随采样时机乱跳。
+    /// 这里按标题累计，聚合时取最大的那个当主标题，同时能说出"共 N 个页面"。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub titles: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -70,9 +77,16 @@ impl DayFile {
 #[serde(rename_all = "camelCase", default)]
 pub struct Slice {
     pub key: String,
+    /// 界面直接显示的名字：软件 = 友好名，网址 = 主标题（没有标题才退回域名）
     pub label: String,
     pub category: String,
     pub secs: u64,
+    /// 网站的主标题（占时最长的那一个）
+    #[serde(default)]
+    pub title: String,
+    /// 这个域名下一共出现过多少个不同标题（>1 时界面会写"共 N 个页面"）
+    #[serde(default)]
+    pub pages: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -229,19 +243,25 @@ fn sample(shared: &Shared, cfg: &Config) {
     let mut key = String::new();
     let mut label = String::new();
     let mut category = String::from("app");
+    // 站点标题：只在"浏览器 + 扩展刚上报"那一支里赋值，后面记录到 titles 里
+    let mut site_title = String::new();
 
     // 浏览器且扩展刚上报过标签页 → 记到具体域名上
     if crate::matcher::BROWSERS.iter().any(|b| name.contains(b)) {
-        let (url, ts) = match shared.rt.lock() {
-            Ok(rt) => (rt.site_url.clone(), rt.site_ts),
-            Err(_) => (String::new(), 0),
+        let (url, ts, title) = match shared.rt.lock() {
+            Ok(rt) => (rt.site_url.clone(), rt.site_ts, rt.site_title.clone()),
+            Err(_) => (String::new(), 0, String::new()),
         };
         if !url.is_empty() && now.timestamp() - ts <= 300 {
             let d = domain_of(&url);
             if !d.is_empty() && d.contains('.') {
                 key = format!("site|{d}");
+                // label 先放域名：它才是"聚合口径"。
+                // 真正的展示名在 aggregate 里换成主标题（见 finalize_labels），
+                // 因为一个域名下会有很多标题，必须按全区间累计之后再选。
                 label = d;
                 category = "site".to_string();
+                site_title = title.clone();
             }
         }
     }
@@ -252,7 +272,12 @@ fn sample(shared: &Shared, cfg: &Config) {
             return;
         }
         key = format!("app|{}", ident.to_lowercase());
-        label = if name.is_empty() { ident } else { name };
+        // 文件名（chrome / Code / msedge）不是"软件名"，读版本信息里的 FileDescription
+        label = if path.is_empty() {
+            crate::appname::display("", &name)
+        } else {
+            crate::appname::display(&path, &name)
+        };
     }
 
     // 「自律模式是否开启」必须和其它模块同一个口径：
@@ -273,12 +298,20 @@ fn sample(shared: &Shared, cfg: &Config) {
             category: category.clone(),
             secs: 0,
             hours: vec![0; 24],
+            titles: BTreeMap::new(),
         });
         e.secs += 1;
         if e.hours.len() < 24 {
             e.hours.resize(24, 0);
         }
         e.hours[hour] += 1;
+        // 站点：按标题累计，"同一网址多个标题"最后由聚合层归并成一行
+        if e.category == "site" {
+            let t = site_title.trim();
+            if !t.is_empty() {
+                *e.titles.entry(t.to_string()).or_insert(0) += 1;
+            }
+        }
     }
     shared.stats_dirty.store(true, Ordering::Relaxed);
 }
@@ -306,15 +339,44 @@ pub fn flush(shared: &Shared) {
     }
 }
 
-fn merge(dst: &mut BTreeMap<String, Slice>, src: &BTreeMap<String, Acc>) {
+fn merge(
+    dst: &mut BTreeMap<String, Slice>,
+    src: &BTreeMap<String, Acc>,
+    titles: &mut BTreeMap<String, BTreeMap<String, u64>>,
+) {
     for (k, v) in src.iter() {
         let e = dst.entry(k.clone()).or_insert_with(|| Slice {
             key: k.clone(),
             label: v.label.clone(),
             category: v.category.clone(),
             secs: 0,
+            title: String::new(),
+            pages: 0,
         });
         e.secs += v.secs;
+        if !v.titles.is_empty() {
+            let slot = titles.entry(k.clone()).or_default();
+            for (t, n) in v.titles.iter() {
+                *slot.entry(t.clone()).or_insert(0) += *n;
+            }
+        }
+    }
+}
+
+/// 把"同一域名下的多个标题"归并成一行：
+///   · 主标题 = 累计时长最长的那一个（比"最后一次看到的"稳定得多）
+///   · pages  = 不同标题数，界面用它提示"共 N 个页面"
+///   · label  = 主标题（没有标题才退回域名）
+fn finalize_labels(slices: &mut [Slice], titles: &BTreeMap<String, BTreeMap<String, u64>>) {
+    for s in slices.iter_mut() {
+        let Some(m) = titles.get(&s.key) else { continue };
+        s.pages = m.len() as u32;
+        if let Some((best, _)) = m.iter().max_by_key(|(_, n)| **n) {
+            s.title = best.clone();
+            if s.category == "site" {
+                s.label = best.clone();
+            }
+        }
     }
 }
 
@@ -328,6 +390,7 @@ pub struct Agg {
 pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let mut on: BTreeMap<String, Slice> = BTreeMap::new();
     let mut off: BTreeMap<String, Slice> = BTreeMap::new();
+    let mut titles: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
     let mut on_hourly = [0u64; 24];
     let mut off_hourly = [0u64; 24];
 
@@ -342,8 +405,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
             } else {
                 load_day(&ds)
             };
-            merge(&mut on, &file.on);
-            merge(&mut off, &file.off);
+            merge(&mut on, &file.on, &mut titles);
+            merge(&mut off, &file.off, &mut titles);
             for acc in file.on.values() {
                 for (i, v) in acc.hours.iter().take(24).enumerate() {
                     on_hourly[i] += *v as u64;
@@ -363,6 +426,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
 
     let mut on: Vec<Slice> = on.into_values().collect();
     let mut off: Vec<Slice> = off.into_values().collect();
+    finalize_labels(&mut on, &titles);
+    finalize_labels(&mut off, &titles);
     on.sort_by(|a, b| b.secs.cmp(&a.secs));
     off.sort_by(|a, b| b.secs.cmp(&a.secs));
     Agg {
@@ -646,6 +711,88 @@ fn run_due(shared: &Shared) {
 
 #[cfg(test)]
 mod tests {
+    /// 同一域名下的多个标题要归并成一行：主标题取累计最久的，pages 报总数
+    #[test]
+    fn titles_merge_into_one_row() {
+        let mut slices = vec![Slice {
+            key: "site|b23.tv".into(),
+            label: "b23.tv".into(),
+            category: "site".into(),
+            secs: 300,
+            title: String::new(),
+            pages: 0,
+        }];
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("【教程】十分钟看懂 Rust".to_string(), 200u64);
+        m.insert("某个视频".to_string(), 60u64);
+        m.insert("另一个视频".to_string(), 40u64);
+        let mut titles = std::collections::BTreeMap::new();
+        titles.insert("site|b23.tv".to_string(), m);
+
+        finalize_labels(&mut slices, &titles);
+        assert_eq!(slices.len(), 1, "同一域名只能有一行");
+        assert_eq!(slices[0].label, "【教程】十分钟看懂 Rust");
+        assert_eq!(slices[0].title, "【教程】十分钟看懂 Rust");
+        assert_eq!(slices[0].pages, 3);
+    }
+
+    /// 没有标题时（老数据 / 扩展没报）退回域名，不能变成空名字
+    #[test]
+    fn site_without_title_keeps_domain() {
+        let mut slices = vec![Slice {
+            key: "site|example.com".into(),
+            label: "example.com".into(),
+            category: "site".into(),
+            secs: 10,
+            title: String::new(),
+            pages: 0,
+        }];
+        finalize_labels(&mut slices, &std::collections::BTreeMap::new());
+        assert_eq!(slices[0].label, "example.com");
+        assert_eq!(slices[0].pages, 0);
+    }
+
+    /// 软件的 label 不受 title 影响（软件没有"标题"这个概念）
+    #[test]
+    fn app_label_is_not_overwritten() {
+        let mut slices = vec![Slice {
+            key: "app|c:\\x\\chrome.exe".into(),
+            label: "Google Chrome".into(),
+            category: "app".into(),
+            secs: 99,
+            title: String::new(),
+            pages: 0,
+        }];
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("不该出现在软件行里".to_string(), 1u64);
+        let mut titles = std::collections::BTreeMap::new();
+        titles.insert("app|c:\\x\\chrome.exe".to_string(), m);
+        finalize_labels(&mut slices, &titles);
+        assert_eq!(slices[0].label, "Google Chrome");
+    }
+
+    /// 老数据（没有 titles 字段）必须还能读，否则升级后历史全丢
+    #[test]
+    fn old_day_file_still_parses() {
+        // 路径里不放反斜杠：这里只关心"字段缺失能不能读"，别把 JSON 转义也搅进来
+        let raw = r#"{"on":{"app|c:/a.exe":{"label":"a","category":"app","secs":5,"hours":[1]}},"off":{}}"#;
+        let f: DayFile = serde_json::from_str(raw).expect("老格式要能读");
+        assert_eq!(f.on.len(), 1);
+        assert!(f.on.values().next().unwrap().titles.is_empty());
+    }
+
+    /// 新数据写出再读回来，titles 不能丢
+    #[test]
+    fn titles_round_trip() {
+        let mut f = DayFile::new("2026-10-29".into());
+        let mut acc = Acc { label: "d".into(), category: "site".into(), secs: 9, hours: vec![0; 24], titles: Default::default() };
+        acc.titles.insert("T".into(), 9);
+        f.on.insert("site|d.com".into(), acc);
+        let raw = serde_json::to_string(&f).unwrap();
+        let back: DayFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.on["site|d.com"].titles["T"], 9);
+    }
+
     use super::*;
 
     /// 标题生成不能因为日期字符串短一点就 panic。

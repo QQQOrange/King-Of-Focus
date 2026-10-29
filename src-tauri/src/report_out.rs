@@ -365,10 +365,10 @@ mod tests {
             on_secs: 11_700,
             off_secs: 74_700,
             on: vec![
-                Slice { key: "app|code.exe".into(), label: "Code".into(), category: "app".into(), secs: 7_200 },
-                Slice { key: "site|github.com".into(), label: "github.com".into(), category: "site".into(), secs: 4_500 },
+                Slice { key: "app|code.exe".into(), label: "Code".into(), category: "app".into(), secs: 7_200, ..Default::default() },
+                Slice { key: "site|github.com".into(), label: "github.com".into(), category: "site".into(), secs: 4_500, ..Default::default() },
             ],
-            off: vec![Slice { key: "app|chrome.exe".into(), label: "Chrome".into(), category: "app".into(), secs: 74_700 }],
+            off: vec![Slice { key: "app|chrome.exe".into(), label: "Chrome".into(), category: "app".into(), secs: 74_700, ..Default::default() }],
         }
     }
 

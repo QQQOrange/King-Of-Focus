@@ -2404,6 +2404,138 @@ window.__itest = async () => {
     await clearAll();
   }
 
+  // ---- 26h4. 统计页：软件名 / 网址标题 / 同域名多标题归并 ----
+  {
+    S.stats = {
+      start: '2026-10-01', end: '2026-10-29',
+      on: [
+        { key: 'app|c:/x/chrome.exe', label: 'Google Chrome', category: 'app', secs: 3600 },
+        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 600, title: '十分钟看懂 Rust', pages: 3 },
+      ],
+      off: [
+        { key: 'site|b23.tv', label: '十分钟看懂 Rust', category: 'site', secs: 300, title: '十分钟看懂 Rust', pages: 3 },
+      ],
+      onSecs: 4200, offSecs: 300,
+      onHourly: new Array(24).fill(0), offHourly: new Array(24).fill(0),
+    };
+    S.statsTab = 'all';
+    await Act.nav('stats');
+    await wait(320);
+    const trs = [...document.querySelectorAll('#content table.tbl tbody tr')];
+    const cell = (i, n) => (trs[i] ? trs[i].children[n].textContent.replace(/\s+/g, ' ').trim() : '-');
+    out.push(['明细里有两条', trs.length, 2]);
+    // 第 1 行：软件显示"软件名"而不是 exe 文件名
+    out.push(['软件行显示软件名', cell(0, 1), 'Google Chrome']);
+    out.push(['软件行不是 exe 文件名（chrome.exe）', /chrome\.exe/i.test(cell(0, 1)), false]);
+    // 第 2 行：网址显示标题 + 页面数 + 域名副标题
+    out.push(['网址行显示的是标题', cell(1, 1).indexOf('十分钟看懂 Rust') === 0, true]);
+    out.push(['网址行不再把域名当主名字', cell(1, 1).indexOf('b23.tv') > 5, true]);
+    out.push(['同一网址多个标题会提示页面数', /共 3 个页面/.test(cell(1, 1)), true]);
+    out.push(['域名作为副标题保留（聚合口径看得见）', /b23\.tv/.test(cell(1, 1)), true]);
+    // 汇总：同一域名只占一行（on 600 + off 300）
+    out.push(['同一网址在两档数据里仍然只有一行', trs.length, 2]);
+    out.push(['两档秒数相加', cell(1, 2), fmtDur(900)]);
+    // 切到「只看已开启」也不丢标题
+    S.statsTab = 'on';
+    render();
+    await wait(220);
+    const trs2 = [...document.querySelectorAll('#content table.tbl tbody tr')];
+    out.push(['单独看已开启时也保留标题', trs2[1].children[1].textContent.indexOf('十分钟看懂 Rust') >= 0, true]);
+    S.stats = null;
+    S.statsTab = 'all';
+    await Act.nav('overview');
+    await wait(200);
+  }
+
+  // ---- 26h5. 睡眠结束后自动启动：默认关 / 独立开关 / 清单编辑 / 校验 ----
+  {
+    const sl = () => S.data.config.settings.sleep;
+    // 夹具里没有 wake 字段：写进 S.data 之后必须 saveConfig，
+    // 否则下一次 pull 会被 STATE 里的旧配置覆盖（get_state 是深拷贝）
+    S.wakeDraft = [];
+    sl().wake = { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
+    await saveConfig();
+    await Act.nav('clock');
+    await wait(260);
+
+    out.push(['睡眠卡片里有"自动启动"一节', /睡眠结束后自动启动/.test(
+      document.getElementById('sleepCard').textContent), true]);
+    out.push(['默认是关闭的（不该自己开程序）', !!sl().wake.enabled, false]);
+    out.push(['关着的时候不显示清单', !!document.getElementById('wakeDelay'), false]);
+
+    // ① 打开开关
+    document.querySelector('[data-act="wake-enable"]').click();
+    await wait(300);
+    out.push(['点开关后写进配置', sl().wake.enabled, true]);
+    out.push(['打开后才出现等待时间', !!document.getElementById('wakeDelay'), true]);
+    out.push(['默认等 20 秒再启动', +document.getElementById('wakeDelay').value, 20]);
+    out.push(['默认会尝试叫醒系统', !!document.getElementById('wakeSystem').checked, true]);
+
+    // ② 加两项：一个软件、一个网页
+    document.querySelector('[data-act="wake-add"]').click();
+    await wait(200);
+    out.push(['添加后出现一行', document.querySelectorAll('[data-wkrow]').length, 1]);
+    document.querySelector('[data-act="wake-add"]').click();
+    await wait(200);
+    out.push(['可以加第二行', document.querySelectorAll('[data-wkrow]').length, 2]);
+
+    const rows = () => [...document.querySelectorAll('[data-wkrow]')];
+    // 第 1 行：软件 + 参数 + 只在周一/周三
+    rows()[0].querySelector('[data-wk="target"]').value = 'C:/Apps/a.exe';
+    rows()[0].querySelector('[data-wk="args"]').value = '--silent --win "a b"';
+    rows()[0].querySelector('[data-wkday="0"]').click();
+    await wait(220);
+    rows()[0].querySelector('[data-wkday="2"]').click();
+    await wait(220);
+    // 第 2 行：网页
+    const r2 = rows()[1];
+    r2.querySelector('[data-wk="kind"]').value = 'url';
+    r2.querySelector('[data-wk="target"]').value = 'https://example.com/x';
+
+    $('#wakeDelay').value = '35';
+    document.querySelector('[data-act="sleep-save"]').click();
+    await wait(420);
+    const items = sl().wake.items;
+    out.push(['保存后两项都在', items.length, 2]);
+    out.push(['软件项字段完整',
+      [items[0].kind, items[0].target, items[0].args].join('|'),
+      'app|C:/Apps/a.exe|--silent --win "a b"']);
+    out.push(['星期只记点了的那两天', JSON.stringify(items[0].days), '[0,2]']);
+    out.push(['网页项字段完整', [items[1].kind, items[1].target].join('|'), 'url|https://example.com/x']);
+    out.push(['网页项不写参数', items[1].args, '']);
+    out.push(['等待秒数一起保存', sl().wake.delaySecs, 35]);
+
+    // ③ 非法网址被拦下（不能留一条永远失败的条目）
+    document.querySelector('[data-act="wake-add"]').click();
+    await wait(200);
+    const r3 = rows()[2];
+    r3.querySelector('[data-wk="kind"]').value = 'url';
+    r3.querySelector('[data-wk="target"]').value = 'file:///c:/x.html';
+    document.querySelector('[data-act="sleep-save"]').click();
+    await wait(420);
+    out.push(['非 http 网址被跳过', sl().wake.items.length, 2]);
+    out.push(['跳过时有提示', /不是 http/.test(document.getElementById('toastRoot').textContent), true]);
+
+    // ④ 删掉一项
+    document.querySelectorAll('[data-act="wake-del"]')[1].click();
+    await wait(360);
+    out.push(['删除后只剩一项', sl().wake.items.length, 1]);
+    out.push(['剩下的还是那条软件', sl().wake.items[0].target, 'C:/Apps/a.exe']);
+
+    // ⑤ 关掉开关 → 清单收起来，但条目还在（下次打开不用重填）
+    document.querySelector('[data-act="wake-enable"]').click();
+    await wait(320);
+    out.push(['关掉后不再显示清单', !!document.getElementById('wakeDelay'), false]);
+    out.push(['关掉后条目仍然保留', (sl().wake.items || []).length, 1]);
+
+    // 收尾：恢复默认（默认关、空清单）
+    sl().wake = { enabled: false, delaySecs: 20, wakeSystem: true, items: [] };
+    STATE.config.settings.sleep.wake = sl().wake;
+    await saveConfig();
+    await Act.nav('overview');
+    await wait(200);
+  }
+
   // ---- 26i. 积分 / 帮助 / 关于：解锁只针对"当前这一段" ----
   {
     const boot = S.data.runtime;

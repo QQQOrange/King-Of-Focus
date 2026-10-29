@@ -144,6 +144,10 @@
     '还在': 'still',
     '两种状态汇总': 'Both states combined',
     '只统计自律模式开启时段': 'Only while discipline is on',
+    '汇总口径：把「已开启」与「未开启」两个数据集里同一个应用 / 同一个域名的秒数直接相加，不做任何加权；扇区大小 = 该项在所选时间段内的前台使用总时长占比。':
+      'How it adds up: seconds for the same app / domain are summed across "on" and "off" with no weighting; slice size = that share of foreground time.',
+    '共': 'in total',
+    '个页面': 'pages',
     '合计': 'Total',
     '官网': 'Website',
     '本周专注': 'Focus this week',
@@ -815,7 +819,29 @@
     '图表显示范围；睡眠时段（锁定 + 倒计时关机 + 积分解锁）':
       'Chart display range; sleep hours (lock + countdown shutdown + points unlock)',
     /* —— 语录来源 —— */
-    '完整展示': 'Fit all',
+    '卡片里还有「睡眠结束后自动启动」：默认关闭，打开后可以按星期配一组要打开的软件 / 网页，睡眠结束后自动拉起。':
+      'The card also has "Launch after sleep": off by default; once on you can list apps / pages (optionally per weekday) to open when sleep hours end.',
+    '软件名': 'app name',
+    '页面标题': 'page title',    '统计页显示的是': 'The stats page shows the',
+    '（取自程序版本信息）和': '(read from the exe version info) and the',
+    '，同一个网址下的多个页面会按网址归并成一行。': '; pages under the same domain are merged into one row.',    '睡眠结束后自动启动': 'Launch after sleep',
+    '睡眠时段结束后，等系统真的恢复过来，按下面的清单打开软件 / 网页。':
+      'When sleep hours end and the system is really back, open the apps / pages listed below.',
+    '默认关闭；每一轮只跑一次，重复启动会被拦掉。':
+      'Off by default; each round runs once — repeated launches are suppressed.',
+    '恢复后等待': 'Wait after resume',
+    '秒再启动': 's before launch',
+    '叫醒系统': 'Wake the system',
+    '到点把电脑从睡眠里叫醒（需要管理员权限；失败也不影响你已经醒着的场景）':
+      'Wake the machine from sleep at that moment (needs admin; if it fails, the already-awake case still works)',
+    '软件': 'App',
+    '网页': 'Web',
+    '启动参数（可空）': 'Arguments (optional)',
+    '＋ 添加一项': '+ Add an item',
+    '星期不选 = 每天；软件请填 exe 全路径。': 'Leave weekdays empty for every day; use the full exe path for apps.',
+    '删除没保存成功': 'Delete was not saved',
+    '开关没保存成功': 'The switch was not saved',
+        '完整展示': 'Fit all',
     '开': 'On',
     '关': 'Off',
     '一次铺满，不用滚动': 'Fits at once, no scrolling',
