@@ -170,6 +170,19 @@
       'Switching a set switches both its timetable and which rules it governs.',
     '同一天相邻的时段会连成一整块；块里的空白就是没选中的分钟':
       'Adjacent windows on the same day merge into one block; gaps are unselected minutes.',
+    /* 完整图表的分步说明：被 <b> 切成多段，逐段翻 */
+    '空白处按住拖动': 'Drag on empty space',
+    '= 新建一段（按当前粒度吸附，夹在 0:00–24:00，最少一格）；':
+      'to create a window (snaps to the current step, clamped to 0:00–24:00, at least one cell);',
+    '在已有的条上按住拖动': 'Drag an existing strip',
+    '= 整段搬走，长度不变，撞到日界会贴边停下；':
+      'to move the whole window — same length, it stops at the day boundary;',
+    '单击': 'A single click',
+    '= 只记下选区，': 'only remembers the selection, ',
+    '不改': 'never changes',
+    '时段的数量与结构；': 'the number or shape of windows;',
+    '右键格子': 'Right-click a cell',
+    '= 细调专注 / 休息时长与起止分钟。': 'to fine-tune focus / break length and exact minutes.',
     '点任意一条会打开独立弹窗，用图表方式查看和调整时间分布。':
       'Tap any entry to open a chart and adjust the distribution.',
     '只影响「自律时段」页怎么排时间，不改变判定口径。':
@@ -876,6 +889,7 @@
     [/^例外 \((\d+)\)$/, 'Exceptions ($1)'],
     [/^我的语录 · (\d+)$/, 'My quotes · $1'],
     [/^每周 (\d+) 小时 · (\d+) 段$/, '$1 h / week · $2 windows'],
+    [/^每周 (\d+) 小时 (\d+) 分 · (\d+) 段$/, '$1 h $2 min / week · $3 windows'],
     [/^每周 (\d+) 分钟 · (\d+) 段$/, '$1 min / week · $2 windows'],
     [/^专注 (\d+) 分 \/ 休息 (\d+) 分 · 不足 1 轮$/, 'Focus $1 / break $2 min · less than 1 round'],
     [/^专注 (\d+) 分 \/ 休息 (\d+) 分 · 不足 1 轮 · (\d+) 分钟$/, 'Focus $1 / break $2 min · under 1 round · $3 min'],

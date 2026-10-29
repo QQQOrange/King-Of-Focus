@@ -127,7 +127,25 @@ function toast(msg, kind) {
   el.className = 'toast ' + (kind || '');
   el.textContent = L(msg);
   $('#toastRoot').appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  // 先播退场（淡出 + 上移），再真正移除——直接 remove 会"啪"地消失
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 150);
+  }, 3050);
+}
+
+/* ---------------- 动效偏好 ----------------
+ * 两条降级路径，规则写在 app.css 末尾的「动效规范」一节：
+ *   · 系统开了"减少动态效果" → 装饰性动画全部关掉
+ *   · 低配设备（核数、内存都低）→ 同上，但保留拖拽/落位这类功能性过渡
+ * 只降不删：信息与可操作性一点不少，只是不动了。
+ */
+function applyMotionPref() {
+  const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const cores = navigator.hardwareConcurrency || 8;
+  const mem = navigator.deviceMemory || 8;
+  const low = reduce || (cores <= 4 && mem <= 4);
+  document.documentElement.dataset.motion = low ? 'low' : 'full';
 }
 
 /* ---------------- 自律权限 ----------------
@@ -314,7 +332,7 @@ function quoteView() {
 /* ---------------- 视图：总览 ---------------- */
 function viewOverview() {
   const d = S.data;
-  if (!d) return '<div class="empty">加载中…</div>';
+  if (!d) return '<div class="empty is-loading">加载中…</div>';
   const rt = d.runtime;
   const on = rt.disciplineOn;
   const next = rt.nextChange;
@@ -1686,9 +1704,10 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
       </div>
       <div class="tl-legend">
         <span class="hint">
-          <b>按下就是一段</b>：按住后立刻选中一格（${step} 分钟），不松手上下滑就能伸缩，
-          经过的时间自动并入同一段；拖动中显示起止时间与总时长，到 0 点 / 24 点会提示。
-          <b>单击</b> = 开关那 ${step} 分钟；从已有条上按下 = 取消；<b>右键格子</b> = 细调专注 / 休息时长与起止分钟。
+          <b>空白处按住拖动</b> = 新建一段（按当前粒度吸附，夹在 0:00–24:00，最少一格）；
+          <b>在已有的条上按住拖动</b> = 整段搬走，长度不变，撞到日界会贴边停下；
+          <b>单击</b> = 只记下选区，<b>不改</b>时段的数量与结构；
+          <b>右键格子</b> = 细调专注 / 休息时长与起止分钟。
         </span>
         <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
       </div>
@@ -3106,7 +3125,10 @@ function drawPie(canvas, slices, total, opts) {
 
 /* ---------------- 渲染调度 ---------------- */
 function render() {
-  if (!S.data && S.view !== 'reports') { $('#content').innerHTML = '<div class="empty">加载中…</div>'; return; }
+  if (!S.data && S.view !== 'reports') { $('#content').innerHTML = '<div class="empty is-loading">加载中…</div>'; return; }
+  // 只有真的换了页面才播入场：数据每 1.5s 刷一次，动画不能跟着重播
+  const viewChanged = S._renderedView !== S.view;
+  S._renderedView = S.view;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
   $('#pageTitle').textContent = VIEW_TITLES[S.view];
 
@@ -3134,6 +3156,18 @@ function render() {
 
   // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
   applyLangView();
+
+  if (viewChanged) {
+    const box = $('#content');
+    if (box) {
+      box.classList.remove('view-in');
+      void box.offsetWidth;          // 强制重排，让动画能重新播放
+      box.classList.add('view-in');
+      clearTimeout(S._viewInTimer);
+      // 动画最长 340 + 72(错峰) ≈ 412ms，600ms 后撤类，避免影响后续 hover
+      S._viewInTimer = setTimeout(() => box.classList.remove('view-in'), 600);
+    }
+  }
 }
 
 /* ---------------- 复制与扩展目录面板 ---------------- */
@@ -3174,7 +3208,7 @@ function withTimeout(p, ms, hint) {
 function extFolderPanel(info) {
   const i = info || (S.data && S.data.extInfo) || {};
   const exists = !!i.exists;
-  return `<div class="ext-box">
+  return `<div class="ext-box reveal-in">
     <div class="ext-head">
       <div class="ext-title">扩展文件夹</div>
       <span class="badge ${exists ? 'green' : 'red'}">${exists ? '目录已就绪' : '目录未找到'}</span>
@@ -4803,7 +4837,33 @@ function syncEditorInputs() {
 }
 
 /* ---------------- 弹层 ---------------- */
-function closeModal() { $('#modalRoot').innerHTML = ''; }
+/** 关弹窗：先播一段退场再移除。
+ *
+ *  退场只有 120ms，但这段窗口里可能已经开了下一个弹窗（语录面板、导出面板
+ *  之间是来回切的；自动化脚本里更常见）。所以监听一次子节点变化：
+ *  一旦有人改写了 #modalRoot，就取消这次清理——宁可动画少播一帧，
+ *  也不能把刚打开的新弹窗删掉。 */
+function closeModal() {
+  const root = $('#modalRoot');
+  if (!root) return;
+  const mask = root.querySelector('.modal-mask');
+  if (!mask) { root.innerHTML = ''; return; }
+  mask.classList.add('closing');
+  const box = mask.querySelector('.modal');
+  if (box) box.classList.add('closing');
+
+  let tid = 0;
+  const obs = new MutationObserver(() => {
+    // 期间有新内容写进来（新弹窗）→ 放弃这次清理
+    obs.disconnect();
+    clearTimeout(tid);
+  });
+  obs.observe(root, { childList: true, subtree: true });
+  tid = setTimeout(() => {
+    obs.disconnect();
+    if (root.querySelector('.modal-mask') === mask) root.innerHTML = '';
+  }, 120);
+}
 
 function renderPicker() {
   const list = (S.picker || []).filter((w) => w.title);
@@ -5314,74 +5374,188 @@ function ccHourResult(p, h, lo, hi, mode) {
   return f < t ? { f, t } : null;
 }
 
-/** 拖拽预览：只改被拖的那一天，不写配置 */
+/* ───────── 拖拽预览：把"这一天的虚拟状态"画出来 ─────────
+ *
+ * 这一轮修的就是这里：以前 move 模式只在落点画一个虚线框、原块纹丝不动，
+ * 松手才一下跳过去 —— 看起来像"卡住"，也不符合"抓着东西搬走"的直觉。
+ *
+ * 现在只有一个口径：预览 = **虚拟的一天**（24 个小时各自的窗口）。
+ * 把它写进 DOM，再走与正式渲染**完全相同**的 ccRenderRuns，
+ * 于是：
+ *   · 被拖的那一块真的跟着指针走（半透明、微微抬起）
+ *   · 块上的起止时间、每格刻度、每日时长、合计全部实时联动
+ *   · 松手提交后是同一条代码路径画出来的，不会"跳一下"
+ */
+
+/** 预览下这一天 24 小时各自的窗口（null = 这一小时没选中） */
+function ccPreviewWins(dg, lo, hi) {
+  const prof = clockProfile();
+  const day = prof.days[dg.d] || [];
+  if (dg.mode === 'move') {
+    // 整段平移：先把当天其它段原样抄过来（它们不能因为这次拖动而消失），
+    // 再把"原段"覆盖到的小时清空，最后按落点铺上（与已有窗口取并集，
+    // 这样预览和 clockMoveSeg 的 sub → add 完全一致）。
+    const wins = day.map((p) => (p && p.on
+      ? { f: p.from || 0, t: p.to == null ? 60 : p.to }
+      : null));
+    const s0 = Math.floor(dg.segFrom / 60);
+    const s1 = Math.floor((dg.segTo - 1) / 60);
+    for (let h = s0; h <= s1; h++) wins[h] = null;
+    for (let h = 0; h < 24; h++) {
+      const hs = h * 60;
+      const a = Math.max(lo, hs), b = Math.min(hi, hs + 60);
+      if (b <= a) continue;
+      const prev = wins[h];
+      wins[h] = prev
+        ? { f: Math.min(prev.f, a - hs), t: Math.max(prev.t, b - hs) }
+        : { f: a - hs, t: b - hs };
+    }
+    return wins;
+  }
+  // 新建 / 抹除：逐小时套用同一份判定（本次没碰到的小时原样保留）
+  return new Array(24).fill(null).map((_, h) => ccHourResult(day[h], h, lo, hi, dg.mode));
+}
+
+/** 虚拟的一天里被选中多少分钟 */
+function ccWinsMinutes(wins) {
+  return (wins || []).reduce((n, w) => n + (w ? Math.max(0, w.t - w.f) : 0), 0);
+}
+
+/** 「合计 x」：拖拽中的实时文案也要跟着语言走 */
+function ccTotalText(m) {
+  return I18N.getLang() === 'en' ? `Total ${ccDurText(m)}` : `合计 ${ccMinText(0, m).dur}`;
+}
+
+/** 每日时长 / 合计：跟着预览实时联动（松手后整体重绘会覆盖，不必手动还原） */
+function ccLiveTotals(d, wins) {
+  const prof = clockProfile();
+  const per = prof.days.map((day, i) => (wins && i === d ? ccWinsMinutes(wins) : ccDayMinutes(day)));
+  const total = per.reduce((a, b) => a + b, 0);
+  const hd = document.querySelector('.cc-days-hd');
+  if (hd && hd.lastElementChild) hd.lastElementChild.textContent = ccTotalText(total);
+  const row = document.querySelectorAll('.cc-days .cc-day')[d];
+  if (!row) return;
+  const bar = row.querySelector('.bar i');
+  if (bar) bar.style.width = `${(per[d] / 1440 * 100).toFixed(1)}%`;
+  const v = row.querySelector('.v');
+  if (v) v.textContent = per[d] ? ccDurText(per[d]) : '—';
+}
+
+/** 拖拽预览：写 DOM（绝不写配置），并把被搬的那一块标成"抓起来了" */
 function paintCcDrag() {
   const dg = S.ccDrag;
   if (!dg) return;
   const grid = document.getElementById('ccGrid');
   if (!grid) return;
   const { lo, hi } = ccDragRange(dg);
-  const prof = clockProfile();
+  const wins = ccPreviewWins(dg, lo, hi);
 
-  if (dg.mode === 'move') {
-    // 平移预览：原段还留在原处（拖动中不该先消失），这里只画出**落点**。
-    grid.querySelectorAll('.cc-drag').forEach((el) => el.remove());
-    const h0 = Math.floor(lo / 60);
-    const h1 = Math.floor((hi - 1) / 60);
-    const span = (h1 - h0 + 1) * 60;
-    const box = document.createElement('div');
-    box.className = 'cc-drag';
-    box.style.gridColumn = `${dg.d + 2}`;
-    box.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
-    box.style.position = 'relative';
-    box.innerHTML = `<i style="position:absolute;left:0;right:0;`
-      + `top:${(((lo - h0 * 60) / span) * 100).toFixed(2)}%;`
-      + `height:${(((hi - lo) / span) * 100).toFixed(2)}%"></i>`;
-    grid.appendChild(box);
-
-    const lab = $('#clockLive');
-    if (lab) {
-      const t = ccMinText(lo, hi);
-      const edge = lo <= 0 && dg.cur < dg.anchor ? ' · 已到当日 0:00'
-        : (hi >= 1440 && dg.cur > dg.anchor ? ' · 已到当日 24:00' : '');
-      lab.innerHTML = `移动 <b>${WD[dg.d]} ${t.range}</b> · 共 ${t.dur}${edge}`;
-    }
-    grid.classList.add('dragging');
-    return;
-  }
+  // 1) 格子与细分刻度
   grid.querySelectorAll(`.cc-cell[data-d="${dg.d}"]`).forEach((c) => {
     const h = +c.dataset.h;
-    ccPaintCell(c, dg.d, h, ccHourResult(prof.days[dg.d][h], h, lo, hi, dg.mode));
+    ccPaintCell(c, dg.d, h, wins[h]);
   });
-  // 整块也按同一份计算结果重画：预览的起止分钟 = 提交后写进去的值，
-  // 所以松开时画面不会"跳一下"。
-  ccRenderRuns(document, (d, h) => (d === dg.d
-    ? ccHourResult(prof.days[d][h], h, lo, hi, dg.mode)
-    : undefined));
+  // 2) 整块（块上的起止时间也在这里跟着变）
+  //    这里必须把 wins 传给渲染器：只改单元格的 .on 不够——
+  //    每小时的起止分钟若仍从配置里读，02:15 起的那一块就会被判成
+  //    "上一小时 :15 就结束"，在小时边界断成两块。
+  ccRenderRuns(document, (d, h) => (d === dg.d ? (wins[h] || null) : undefined));
 
-  const lab = $('#clockLive');
+  const h0 = Math.floor(lo / 60);
+  const h1 = Math.floor((hi - 1) / 60);
+  // 3) 被搬走的那一块：半透明 + 抬起，一眼看出"它在我手上"
+  //    判定用"这一块的时间范围完整盖住了落点区间"，而不是只看小时重叠——
+  //    否则同一天里恰好挨着的另一段也会被标上半透明。
+  grid.querySelectorAll('.cc-run').forEach((r) => {
+    const rFrom = +r.dataset.h0 * 60 + (+r.dataset.f0 || 0);
+    const rTo = +r.dataset.h1 * 60 + (+r.dataset.t1 || 60);
+    const hit = +r.dataset.d === dg.d && rFrom <= lo && rTo >= hi;
+    r.classList.toggle('carry', dg.mode === 'move' && hit);
+  });
+  // 4) 原位留一条虚线占位：告诉用户它原本在哪，松手前不"凭空消失"
+  grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
+  if (dg.mode === 'move') {
+    const s0 = Math.floor(dg.segFrom / 60), s1 = Math.floor((dg.segTo - 1) / 60);
+    const span = (s1 - s0 + 1) * 60;
+    const slot = document.createElement('div');
+    slot.className = 'cc-slot';
+    slot.style.gridColumn = `${dg.d + 2}`;
+    slot.style.gridRow = `${s0 + 2} / ${s1 + 3}`;
+    slot.innerHTML = `<i style="top:${(((dg.segFrom - s0 * 60) / span) * 100).toFixed(2)}%;`
+      + `height:${(((dg.segTo - dg.segFrom) / span) * 100).toFixed(2)}%"></i>`;
+    grid.appendChild(slot);
+  }
+  // 5) 每日时长 / 合计
+  ccLiveTotals(dg.d, wins);
+
+  // 6) 状态条
   const isEn = I18N.getLang() === 'en';
-  const verb = dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
-    : dg.mode === 'move' ? (isEn ? 'Move' : '移动')
+  const verb = dg.mode === 'move' ? (isEn ? 'Move' : '移动')
+    : dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
       : (isEn ? 'Select' : '选中');
   const dayTxt = I18N.t(WD[dg.d]);
   const durTxt = ccDurText(hi - lo);
-
+  const rg = ccMinText(lo, hi).range;
+  const edge = dg.edge < 0 ? (isEn ? ' · clamped at 0:00' : ' · 已到当日 0:00')
+    : (dg.edge > 0 ? (isEn ? ' · clamped at 24:00' : ' · 已到当日 24:00') : '');
+  const lab = $('#clockLive');
   if (lab) {
-    const edge = dg.edge < 0 ? (isEn ? ' · clamped at 0:00' : ' · 已到当日 0:00')
-      : (dg.edge > 0 ? (isEn ? ' · clamped at 24:00' : ' · 已到当日 24:00') : '');
-    const rg = ccMinText(lo, hi).range;
     lab.innerHTML = isEn
       ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edge}`
       : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edge}`;
   }
-
-  // 浮层跟着指针走（位置变化由 CSS transform 过渡负责平滑）
-  if (typeof dg.lastY === 'number') {
-    ccGhostSet(`${verb} ${dayTxt} ${ccMinText(lo, hi).range} · ${durTxt}`,
-      dg.lastX != null ? dg.lastX + 16 : 240, dg.lastY - 14);
-  }
+  // 7) 跟随指针的浮层（同一格内的小位移由 ccFlushDrag 单独更新，不重排）
+  ccGhostSet(`${verb} ${dayTxt} ${rg} · ${durTxt}`,
+    (dg.lastX != null ? dg.lastX : 240) + 16, (dg.lastY != null ? dg.lastY : 0) - 14);
   grid.classList.add('dragging');
+}
+
+/** 状态条还原成"当前排班摘要"（会跟着当前语言走） */
+function ccResetLive() {
+  const lab = $('#clockLive');
+  if (!lab) return;
+  lab.textContent = clockRangeText();
+  I18N.apply(lab);
+}
+
+/** 撤回预览：按**配置里的真实值**把这一天重画（单击不改结构时用） */
+function ccRestorePreview(d) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
+  const day = clockProfile().days[d] || [];
+  grid.querySelectorAll(`.cc-cell[data-d="${d}"]`).forEach((c) => {
+    const h = +c.dataset.h;
+    const p = day[h];
+    ccPaintCell(c, d, h, p && p.on ? { f: p.from || 0, t: p.to == null ? 60 : p.to } : null);
+  });
+  ccRenderRuns(document);
+  ccLiveTotals(d, null);
+  ccResetLive();
+}
+
+/** 松手落位：优先 FLIP（从"手上那一块"的位置滑到最终位置），
+ *  位置本来就重合时退化成一次轻微的 settle —— 两种都不会让视图跳变。 */
+function ccLandRun(fromRect, d, h0, h1) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  const run = [...grid.querySelectorAll('.cc-run')].find((r) => +r.dataset.d === d
+    && +r.dataset.h1 >= h0 && +r.dataset.h0 <= h1);
+  if (!run) return;
+  const to = run.getBoundingClientRect();
+  const dx = fromRect ? fromRect.left - to.left : 0;
+  const dy = fromRect ? fromRect.top - to.top : 0;
+  if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+    run.style.transition = 'none';
+    run.style.transform = `translate(${dx.toFixed(2)}px, ${dy.toFixed(2)}px)`;
+    void run.offsetWidth;   // 先把起点落下来，下一步才有过渡
+    run.style.transition = 'transform .24s cubic-bezier(.22, .61, .36, 1), opacity .18s linear';
+    run.style.transform = '';
+    setTimeout(() => { run.style.transition = ''; run.style.transform = ''; }, 320);
+    return;
+  }
+  run.classList.add('land');
+  setTimeout(() => run.classList.remove('land'), 320);
 }
 
 /** 时长文案（语言感知）：中文 "1 小时 45 分"，英文 "1 h 45 min" */
@@ -5435,7 +5609,18 @@ function ccGhostSet(text, x, y) {
     el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     void el.offsetWidth;   // 先落一个初始位置，后续才有"从这滑到那"的过渡
   }
-  el.textContent = text;
+  if (text != null) el.textContent = text;
+  el.classList.remove('out');   // 上一次的退场可能还没走完，复用时先复活
+  el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+}
+
+/** 只挪浮层：同一格内移动时不重排整张表，但浮层必须继续跟手 */
+function ccGhostMove() {
+  const dg = S.ccDrag;
+  const el = document.getElementById('ccGhost');
+  if (!dg || !el) return;
+  const x = (dg.lastX != null ? dg.lastX : 240) + 16;
+  const y = (dg.lastY != null ? dg.lastY : 0) - 14;
   el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
 }
 
@@ -5443,18 +5628,58 @@ function ccGhostDrop() {
   const el = document.getElementById('ccGhost');
   if (!el) return;
   el.classList.add('out');
-  setTimeout(() => el.remove(), 160);
+  setTimeout(() => el.remove(), 180);
 }
 
-function ccDragBegin(d, clientY) {
+/* ── 拖动重绘的帧调度 ──
+ * 一只 120Hz 的鼠标每秒会发 120 次 mousemove，每次都重排整张表太浪费。
+ * 这里把"重算 + 重绘"合并到下一帧；同时挂一个 40ms 的兜底定时器 ——
+ * 窗口在后台、或某些无头渲染环境里 requestAnimationFrame 不会推进，
+ * 只靠 rAF 会让拖动"半路不动"。
+ */
+let ccPaintRaf = 0;
+let ccPaintTimer = 0;
+
+function ccFlushDrag() {
+  if (ccPaintRaf) { cancelAnimationFrame(ccPaintRaf); ccPaintRaf = 0; }
+  if (ccPaintTimer) { clearTimeout(ccPaintTimer); ccPaintTimer = 0; }
+  const dg = S.ccDrag;
+  if (!dg || dg.pendingY == null) return;
+  const y = dg.pendingY;
+  const x = dg.pendingX;
+  dg.pendingY = null;
+  dg.pendingX = null;
+  const { idx, edge } = ccGrainAt(dg.d, y);
+  dg.lastY = y;
+  if (typeof x === 'number') dg.lastX = x;
+  const changed = idx !== dg.cur || edge !== dg.edge;
+  dg.cur = idx;
+  dg.edge = edge;
+  // 落到新的粒度 → 重排；仍在同一格 → 只挪浮层（省掉一次重排）
+  if (changed) paintCcDrag();
+  else ccGhostMove();
+}
+
+function ccScheduleDrag() {
+  if (ccPaintRaf || ccPaintTimer) return;
+  ccPaintRaf = requestAnimationFrame(ccFlushDrag);
+  ccPaintTimer = setTimeout(ccFlushDrag, 40);
+}
+
+function ccDragBegin(d, clientY, clientX) {
   const { idx, edge } = ccGrainAt(d, clientY);
   const st = ccStep();
   const atMin = idx * st;
-  const day = clockProfile().days[d];
 
   // 拖动期间：整页进入"抓取"状态，并清掉原生 tooltip（否则悬停提示会跳出来挡路）
   document.body.classList.add('cc-dragging');
   document.querySelectorAll('#ccGrid .cc-cell[title]').forEach((c) => c.removeAttribute('title'));
+  // 悬停高亮/可抓光标在拖动期间都不该再出现
+  const gr = document.getElementById('ccGrid');
+  if (gr) {
+    gr.classList.remove('over-seg');
+    gr.querySelectorAll('.cc-run.over').forEach((r) => r.classList.remove('over'));
+  }
 
   // 按下的位置落在某一段里 → 拖动 = **整段平移**（段的长度不变，只换位置）；
   // 落在空白 → 拖动 = 新建一段。
@@ -5462,61 +5687,62 @@ function ccDragBegin(d, clientY) {
   // 以前"落在已选中的格子上"是 sub（抹掉），再加一句"没拖动就算单击 → 取消这一格"，
   // 结果在段中间点一下就把一整段从中间劈开、点中的那块消失。现在点击什么都不改。
   const seg = ccSegAt(d, atMin);
-  if (day && !seg) {
-    // 空白处按下 = 新建；把上次残留的 hover 状态收掉
-    const gr = document.getElementById('ccGrid');
-    if (gr) gr.classList.remove('over-seg');
-  }
 
   if (seg) {
     S.ccDrag = {
-      d, anchor: idx, cur: idx, edge, mode: 'move', moved: false, startY: clientY,
+      d, anchor: idx, cur: idx, edge, mode: 'move', moved: false,
+      startY: clientY, lastX: clientX, lastY: clientY,
       segFrom: seg.h0 * 60 + seg.f0,
       segTo: seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1),
     };
   } else {
-    S.ccDrag = { d, anchor: idx, cur: idx, edge, mode: 'add', moved: false, startY: clientY };
+    S.ccDrag = {
+      d, anchor: idx, cur: idx, edge, mode: 'add', moved: false,
+      startY: clientY, lastX: clientX, lastY: clientY,
+    };
   }
   paintCcDrag();
 }
 
-/** 移动：粒度变了才重画（刻度不变就什么都没变，天然去抖） */
+/** 移动：只记下最新坐标并排一次帧，真正的重算在 ccFlushDrag 里做 */
 function ccDragMove(clientY, clientX) {
   const dg = S.ccDrag;
   if (!dg) return;
-  if (typeof clientX === 'number') dg.lastX = clientX;
-  dg.lastY = clientY;
-  const { idx, edge } = ccGrainAt(dg.d, clientY);
-  // 拖动判据是"指针真的动过"（3px），不是"格子变了"：
-  // 否则想选这一格（15 分钟）就只能靠单击，而单击现在是不允许改结构的。
-  if (!dg.moved && typeof dg.startY === 'number' && Math.abs(clientY - dg.startY) >= 3) {
-    dg.moved = true;
-  }
-  if (idx !== dg.cur || edge !== dg.edge) {
-    dg.cur = idx;
-    dg.edge = edge;
-    paintCcDrag();
-  }
+  dg.pendingY = clientY;
+  if (typeof clientX === 'number') dg.pendingX = clientX;
+  // "真的动过"按位移算（3px）：同一格内稍微一拖也算拖动，不必跨过整格
+  if (!dg.moved && Math.abs(clientY - dg.startY) >= 3) dg.moved = true;
+  ccScheduleDrag();
 }
 
-/** 松手：没动过 = 单击（开关那一格）；动过 = 提交这段区间 */
+/** 松手：没动过 = 单击（不改结构）；动过 = 提交这段区间 */
 async function ccDragEnd() {
   const dg = S.ccDrag;
   if (!dg) return;
+  // 先把还没落地的那一帧刷掉：提交的区间必须等于用户最后看到的那一块
+  ccFlushDrag();
   S.ccDrag = null;
+
+  // 记下"手上那一块"的位置，松手后用它做 FLIP 落位
+  const carried = dg.mode === 'move' ? document.querySelector('#ccGrid .cc-run.carry') : null;
+  const fromRect = carried ? carried.getBoundingClientRect() : null;
+  const scroller = document.querySelector('#ccDetail .cc-scroll');
+  const scrollTop = scroller ? scroller.scrollTop : 0;
+
   document.querySelectorAll('.cc-cell.qshow').forEach((c) => c.classList.remove('qshow'));
   const grid = document.getElementById('ccGrid');
   if (grid) {
     grid.classList.remove('dragging');
     grid.classList.remove('over-seg');
+    grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
+    grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
   }
   document.body.classList.remove('cc-dragging');
   ccGhostDrop();
 
-  const per = ccQCnt();
   const { lo, hi } = ccDragRange(dg);
   const h0 = Math.floor(lo / 60), h1 = Math.floor((hi - 1) / 60);
-  // 留给右键菜单的"当前选区"：用粒度坐标表示，和旧版一致
+  // 留给右键菜单的"当前选区""：用粒度坐标表示，和旧版一致
   S.ccRect = {
     d0: dg.d, d1: dg.d, h0, h1,
     qA: Math.floor((lo - h0 * 60) / ccStep()),
@@ -5525,32 +5751,30 @@ async function ccDragEnd() {
 
   if (!dg.moved) {
     // 单击：**不改任何时段**，只把选区记下来给右键菜单用。
-    // （这条是硬规则：点击不得改变时段的数量与结构。）
+    // （这条是硬规则：点击不得改变时段的数量与结构。）预览也要撤回去。
+    ccRestorePreview(dg.d);
+    if (scroller) scroller.scrollTop = scrollTop;
     return;
   }
-
-  const land = () => {
-    // 松手后给刚生成的那一块一点"落位"反馈（只动涉及的小时，别让整张表一起跳）
-    setTimeout(() => {
-      document.querySelectorAll('#ccGrid .cc-run').forEach((r) => {
-        if (+r.dataset.d === dg.d && +r.dataset.h1 >= h0 && +r.dataset.h0 <= h1) {
-          r.classList.add('land');
-        }
-      });
-      setTimeout(() => {
-        document.querySelectorAll('#ccGrid .cc-run.land').forEach((r) => r.classList.remove('land'));
-      }, 280);
-    }, 24);
-  };
 
   if (dg.mode === 'move') {
-    if (lo === dg.segFrom && hi === dg.segTo) { render(); return; }
+    if (lo === dg.segFrom && hi === dg.segTo) {
+      // 原地放下：什么都不用提交，只把预览换成真实渲染
+      ccRestorePreview(dg.d);
+      render();
+      // render 换掉了整个面板，滚动位置要在**换完**之后还原
+      const sc0 = document.querySelector('#ccDetail .cc-scroll');
+      if (sc0) sc0.scrollTop = scrollTop;
+      return;
+    }
     await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, lo, hi);
-    land();
-    return;
+  } else {
+    await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
   }
-  await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
-  land();
+  // 提交后整体重绘会把滚动位置打回顶部，这里还原，免得"一松手视线就跑了"
+  const sc2 = document.querySelector('#ccDetail .cc-scroll');
+  if (sc2) sc2.scrollTop = scrollTop;
+  ccLandRun(fromRect, dg.d, h0, h1);
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -5558,12 +5782,20 @@ document.addEventListener('mousedown', (e) => {
   if (!cell || e.button !== 0) return;
   e.preventDefault();
   cell.classList.add('qshow');
-  ccDragBegin(+cell.dataset.d, e.clientY);
+  ccDragBegin(+cell.dataset.d, e.clientY, e.clientX);
 });
 
 document.addEventListener('mousemove', (e) => {
   if (S.ccDrag) { e.preventDefault(); ccDragMove(e.clientY, e.clientX); }
 });
+
+// 拖动期间禁掉滚轮：图表一滚动，指针与刻度就错位了（拖完自然恢复）
+document.addEventListener('wheel', (e) => {
+  if (S.ccDrag) e.preventDefault();
+}, { passive: false });
+
+// 指针在窗口外松开时收不到 mouseup：失焦即视为松手，避免"卡在抓取状态"
+window.addEventListener('blur', () => { if (S.ccDrag) ccDragEnd(); });
 
 // 设置页的语录输入框：回车等于点「添加」
 document.addEventListener('keydown', (e) => {
@@ -5573,16 +5805,51 @@ document.addEventListener('keydown', (e) => {
   Act.setQuoteAdd();
 });
 
+/** 悬停到某一段上：整段轻微抬起 + 光标变 grab，预告"按住能整段搬走"。
+ *  用 key 缓存，避免在同一个段里每移动一像素就操作一次 DOM。 */
+function ccMarkHoverSeg(d, seg) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  const key = seg ? `${d}:${seg.h0}:${seg.h1}` : '';
+  // 缓存只是为了省掉重复的 DOM 操作，但类可能被别处（按下、重绘）清掉，
+  // 所以"同一个 key 且状态确实还在"才跳过。
+  const marked = !!grid.querySelector('.cc-run.over');
+  if (S.ccHoverKey === key && marked === !!seg) return;
+  S.ccHoverKey = key;
+  grid.querySelectorAll('.cc-run.over').forEach((r) => r.classList.remove('over'));
+  if (!seg) return;
+  const run = [...grid.querySelectorAll('.cc-run')].find((r) => +r.dataset.d === d
+    && +r.dataset.h0 === seg.h0 && +r.dataset.h1 === seg.h1);
+  if (run) run.classList.add('over');
+}
+
 document.addEventListener('mouseover', (e) => {
   const gr = document.getElementById('ccGrid');
   if (S.ccDrag) { if (gr) gr.classList.remove('over-seg'); return; }
   const cell = e.target.closest('.cc-cell');
-  if (!cell) { if (gr) gr.classList.remove('over-seg'); return; }
+  if (!cell) {
+    if (gr) gr.classList.remove('over-seg');
+    ccMarkHoverSeg(0, null);
+    return;
+  }
   const d = +cell.dataset.d;
   const g = ccGrainAt(d, e.clientY);
-  // 悬停在某一段上 → 光标变"可抓"，预告"按住能整段搬走"
-  if (gr) gr.classList.toggle('over-seg', !!ccSegAt(d, g.idx * ccStep()));
+  const seg = ccSegAt(d, g.idx * ccStep());
+  if (gr) gr.classList.toggle('over-seg', !!seg);
+  ccMarkHoverSeg(d, seg);
   ccHoverTip(cell, d, +cell.dataset.h, g.idx % ccQCnt());
+});
+
+// 指针离开日历 → 收起"可抓"状态
+document.addEventListener('mouseout', (e) => {
+  if (S.ccDrag) return;
+  const to = e.relatedTarget;
+  if (to && to.closest && to.closest('#ccGrid')) return;
+  const gr = document.getElementById('ccGrid');
+  if (gr && e.target.closest && e.target.closest('#ccGrid')) {
+    gr.classList.remove('over-seg');
+    ccMarkHoverSeg(0, null);
+  }
 });
 
 document.addEventListener('mouseup', async () => { await ccDragEnd(); });
@@ -5595,7 +5862,7 @@ document.addEventListener('touchstart', (e) => {
   if (!cell || e.touches.length !== 1) return;
   e.preventDefault();
   cell.classList.add('qshow');
-  ccDragBegin(+cell.dataset.d, e.touches[0].clientY);
+  ccDragBegin(+cell.dataset.d, e.touches[0].clientY, e.touches[0].clientX);
 }, { passive: false });
 
 document.addEventListener('touchmove', (e) => {
@@ -6065,6 +6332,7 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   S.customStart = todayStr();
   S.customEnd = todayStr();
   I.setLang(langPref());
+  applyMotionPref();
   render();
   applyLang();
   setInterval(pull, 1500);

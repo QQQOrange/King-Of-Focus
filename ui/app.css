@@ -10,6 +10,26 @@
   --r-sm: 9px;
   --r-pill: 999px;
 
+  /* ── 动效令牌 ──────────────────────────────────────────────
+   * 全站只用这四档时长、三条曲线。加动画时优先用变量，
+   * 不要就地写 .13s / .17s / .21s —— 那种"每个地方都不一样"的时长
+   * 是界面看起来不精致的主要原因（快慢不一，读起来像卡顿）。
+   *   fast   120ms  即时反馈：hover、按下、光标变化
+   *   base   180ms  状态切换：颜色、展开收起、选中
+   *   slow   260ms  位移与落位：图表块、面板进出
+   *   slower 340ms  入场：整页、弹窗
+   *   ease       标准曲线（先快后慢），大多数场景用它
+   *   ease-out   入场（起步快、收尾极缓）
+   *   ease-in    退场（起步慢、末段加速）
+   */
+  --mo-fast: 120ms;
+  --mo-base: 180ms;
+  --mo-slow: 260ms;
+  --mo-slower: 340ms;
+  --mo-ease: cubic-bezier(.22, .61, .36, 1);
+  --mo-ease-out: cubic-bezier(.16, 1, .3, 1);
+  --mo-ease-in: cubic-bezier(.4, 0, .85, .3);
+
   /* 主色调：蓝（变量名沿用 gold 是为了不动几十处引用，值已全部换成蓝） */
   --gold: #4d8dff;
   --gold-2: #2f6df0;
@@ -809,6 +829,40 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   will-change: transform;
 }
 .cc-ghost.out { opacity: 0; }
+
+/* ── 抓住 / 拖动中的视觉 ─────────────────────────────────────
+ * 三件事必须同时成立，手感才像"抓起一个东西在搬"：
+ *   ① 被抓住的那一块半透明、微微抬起（看得出"它此刻不在原位"）
+ *   ② 原位留一条虚线占位（看得出"它原来在哪"）
+ *   ③ 悬停在某一段上时轻微放大（还没按就知道能抓）
+ */
+.cc-run {
+  transition: transform .14s var(--mo-ease), filter .14s linear, opacity .12s linear;
+}
+.cc-run.over { transform: scale(1.02); filter: brightness(1.08); }
+.cc-run.carry {
+  opacity: .72; z-index: 4;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, .45)) brightness(1.06);
+  /* 每次落到新的一格，块是被重建的：给一段极短的"落格"动画，
+     视觉上就成了"滑过去"而不是"瞬移"。 */
+  animation: ccCarry .13s var(--mo-ease);
+}
+@keyframes ccCarry {
+  from { transform: scale(1.015); opacity: .55; }
+  to { transform: none; opacity: .72; }
+}
+/* 原位占位：只画虚线轮廓 + 极淡的底，表明"这一段被拿走了" */
+.cc-slot {
+  position: relative; z-index: 1; pointer-events: none;
+  animation: ccSlotIn .16s var(--mo-ease);
+}
+.cc-slot i {
+  position: absolute; left: 2px; right: 2px;
+  border: 1px dashed rgba(125, 176, 255, .5);
+  border-radius: 4px;
+  background: rgba(125, 176, 255, .05);
+}
+@keyframes ccSlotIn { from { opacity: 0 } to { opacity: 1 } }
 /* 选中态不画在格子上：格子之间 6px 间距，半透明底叠两次会留下一条亮缝，
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-top-color: transparent; z-index: 3; }
@@ -1663,18 +1717,7 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 /* 弹出面板里的说明文字统一行距，避免一挤一松 */
 .modal-bd .hint { line-height: 1.75; }
 
-/* 系统设置里开了"减少动态效果"：只保留必要的状态变化，不做位移/缩放 */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-    scroll-behavior: auto !important;
-  }
-  .btn:active { transform: none; }
-  .modal { animation: none; }
-  .modal-mask { animation: none; }
-}
+/* 减少动态效果的处理统一放在文件末尾的「动效规范」一节（唯一一处） */
 
 /* ══════════ Hub 顶部：激励语录 ══════════
  * 一块安静的长条，不抢 hero 的注意力：引号做水印，正文 14px，
@@ -1761,4 +1804,121 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   from { opacity: .5; transform: scaleY(.9); }
   to { opacity: 1; transform: none; }
 }
-.cc-run.land { animation: ccLand .22s cubic-bezier(.22, .61, .36, 1); transform-origin: center; }
+.cc-run.land { animation: ccLand var(--mo-slow) var(--mo-ease); transform-origin: center; }
+
+/* ══════════════════════════════════════════════════════════
+   动效规范（统一时长 / 曲线 / 层级）
+   ──────────────────────────────────────────────────────────
+   令牌在 :root（--mo-fast / --mo-base / --mo-slow / --mo-slower
+   与三条曲线）。这一节只放**跨组件复用**的动画，组件自己的
+   hover 反馈就近写在组件里，但时长和曲线一律走令牌。
+
+   四条硬规则：
+     ① 只动 opacity / transform / filter —— 不触发布局，掉帧最少
+     ② 入场位移 ≤ 6px、缩放 ≤ 2%：宁可克制，不要"整屏在动"
+     ③ 一次交互只动一处：hover 变色就不位移，位移就不再变色
+     ④ 所有入场动画都能被 reduced-motion / 低配降级一次性关掉
+   ══════════════════════════════════════════════════════════ */
+
+@keyframes moFade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes moRise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+@keyframes moPopIn { from { opacity: 0; transform: scale(.985) } to { opacity: 1; transform: none } }
+@keyframes moToastIn { from { opacity: 0; transform: translateY(10px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes moToastOut { from { opacity: 1; transform: none } to { opacity: 0; transform: translateY(-6px) scale(.98) } }
+@keyframes moBarGrow { from { transform: scaleX(0) } to { transform: none } }
+@keyframes moShimmer { from { background-position: -220px 0 } to { background-position: 220px 0 } }
+
+/* ① 页面切换：内容整体淡入，前四个直接子块轻微错峰（不位移，避免影响布局测量） */
+#content.view-in > * { animation: moFade var(--mo-slower) var(--mo-ease-out) both; }
+#content.view-in > *:nth-child(2) { animation-delay: 18ms; }
+#content.view-in > *:nth-child(3) { animation-delay: 36ms; }
+#content.view-in > *:nth-child(4) { animation-delay: 54ms; }
+#content.view-in > *:nth-child(n+5) { animation-delay: 72ms; }
+
+/* ② 完整图表页（整页面板）：淡入 + 极轻微的放大，像"从卡片里展开" */
+.cc-detail { animation: moPopIn var(--mo-fast) var(--mo-ease-out); }
+
+/* ③ 列表与卡片：入场时轻轻浮起；hover 只改边框与底色，不再位移 */
+.card, .sl-item, .rep-item, .hub-quote {
+  transition: border-color var(--mo-base) var(--mo-ease),
+              background var(--mo-base) var(--mo-ease),
+              box-shadow var(--mo-base) var(--mo-ease);
+}
+.view-in .sl-item, .view-in .rep-item { animation: moRise var(--mo-slow) var(--mo-ease-out) both; }
+.view-in .sl-item:nth-child(2), .view-in .rep-item:nth-child(2) { animation-delay: 24ms; }
+.view-in .sl-item:nth-child(3), .view-in .rep-item:nth-child(3) { animation-delay: 48ms; }
+.view-in .sl-item:nth-child(n+4), .view-in .rep-item:nth-child(n+4) { animation-delay: 72ms; }
+
+/* ④ 图表数据变化：进度条从 0 长出来，数值变化不再"瞬间跳" */
+.cc-day .bar i { animation: moBarGrow var(--mo-slow) var(--mo-ease-out); transform-origin: left center; }
+/* 每日时长的进度条统一用强调色（原来那条渐变和"色块只有一种颜色"的规矩打架） */
+.cc-day .bar i { background: var(--cc-block); }
+
+/* ⑤ 按钮：hover 抬 1px、按下压回并轻微收缩。位移剂量刻意很小——
+   日历、列表上到处是按钮，动多了会显得吵。 */
+.btn { transition: background var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease),
+                    transform var(--mo-fast) var(--mo-ease), box-shadow var(--mo-fast) var(--mo-ease); }
+.btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px -12px rgba(0, 0, 0, .8); }
+.btn:active:not(:disabled) { transform: translateY(0) scale(.985); box-shadow: none; }
+
+/* ⑥ 空状态 / 加载：淡入 + 一道缓慢的呼吸，别让页面看起来"卡死了" */
+.empty { animation: moFade var(--mo-slow) var(--mo-ease-out); }
+.empty .ico { animation: moFade var(--mo-slower) var(--mo-ease-out) both; }
+.is-loading { position: relative; overflow: hidden; }
+.is-loading::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(125, 176, 255, .12), transparent);
+  background-size: 220px 100%; background-repeat: no-repeat;
+  animation: moShimmer 1.15s linear infinite;
+}
+
+/* ⑦ 弹窗：遮罩淡入、面板轻微上浮；关闭时先播一段再真正移除 */
+.modal-mask { animation: moFade var(--mo-base) var(--mo-ease) both; }
+.modal { animation: moRise var(--mo-base) var(--mo-ease-out); }
+.modal.closing { animation: moFade var(--mo-fast) var(--mo-ease-in) reverse both; }
+.modal-mask.closing { animation: moFade var(--mo-fast) var(--mo-ease-in) reverse both; }
+
+/* ⑧ 提示条：从右下淡入；消失时先淡出再移除（避免"啪"地消失） */
+.toast { animation: moToastIn var(--mo-base) var(--mo-ease-out) both; }
+.toast.out { animation: moToastOut var(--mo-fast) var(--mo-ease-in) both; }
+
+/* ⑨ 折叠面板（扩展目录、语录列表这类后插进来的块） */
+.reveal-in { animation: moRise var(--mo-slow) var(--mo-ease-out) both; }
+
+/* ⑩ 微型图：悬停时轻微抬起，点到就展开完整图表 */
+.cc-mini { transition: border-color var(--mo-base) var(--mo-ease), transform var(--mo-base) var(--mo-ease); }
+.cc-mini:hover { transform: translateY(-1px); }
+
+/* ── 降级 ───────────────────────────────────────────────────
+ * 两条路：
+ *   · 系统开了"减少动态效果" → 全部关掉（只保留颜色变化，信息不丢）
+ *   · JS 判定为低配设备 → 挂 html[data-motion="low"]，关掉装饰性动画，
+ *     但**保留**拖拽浮层、落位这类"有功能的"过渡（关了反而难用）
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .btn:hover:not(:disabled) { transform: none; }
+  .cc-mini:hover { transform: none; }
+  .modal, .modal-mask, .cc-detail { animation: none; }
+}
+
+html[data-motion="low"] #content.view-in > *,
+html[data-motion="low"] .view-in .sl-item,
+html[data-motion="low"] .view-in .rep-item,
+html[data-motion="low"] .cc-detail,
+html[data-motion="low"] .empty,
+html[data-motion="low"] .empty .ico,
+html[data-motion="low"] .reveal-in {
+  animation: none;
+}
+html[data-motion="low"] .btn:hover:not(:disabled),
+html[data-motion="low"] .cc-mini:hover { transform: none; }
+html[data-motion="low"] .is-loading::after { animation-duration: 2s; }
+html[data-motion="low"] .cc-day .bar i { animation: none; }
+html[data-motion="low"] .cc-run.over { transform: none; }
+html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }

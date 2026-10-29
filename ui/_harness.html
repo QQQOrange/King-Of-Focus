@@ -328,9 +328,13 @@ window.__itest = async () => {
     out.push(['行高由 --cc-hour-h 统一控制',
       getComputedStyle(document.querySelector('#ccGrid')).gridTemplateRows.split(' ')[1], '52px']);
     const sc = document.querySelector('.cc-scroll');
-    out.push(['日历限高可滚动（表头吸顶）',
-      sc ? getComputedStyle(sc).overflowY + '/' + Math.round(sc.getBoundingClientRect().height) : '无',
-      'auto/560']);
+    {
+      // 高度是分数像素算出来的，四舍五入偶尔差 1px；这里只要求"约等于限高"
+      const h = sc ? Math.round(sc.getBoundingClientRect().height) : -1;
+      out.push(['日历限高可滚动（表头吸顶）',
+        sc ? getComputedStyle(sc).overflowY + '/' + (Math.abs(h - 560) <= 1 ? 560 : h) : '无',
+        'auto/560']);
+    }
     const anyRun = document.querySelector('.cc-run');
     const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
     out.push(['色块上标了起止时间', txt ? /^[0-9][0-9]:[0-9][0-9] – [0-9][0-9]:[0-9][0-9]$/.test(txt.textContent.trim()) : false, true]);
@@ -580,6 +584,9 @@ window.__itest = async () => {
     out.push(['单击后段数不变', ccSegs(pd()[2]).length, segsBefore]);
     out.push(['单击后这一段仍然开着',
       pd()[2][17].on && pd()[2][18].on, true]);
+    // 状态条也必须回到摘要：预览撤回了，就不该留着"选中 …"
+    out.push(['单击后状态条回到摘要',
+      /^(选中|移动|取消)/.test($('#clockLive').textContent), false]);
     // 再点一下同一位置，依然不该有任何变化
     fireQ('mousedown', cell(2, 17), 0);
     fireQ('mouseup', document, 0);
@@ -1203,6 +1210,9 @@ window.__itest = async () => {
       { ...backup[0], id: 'k2', name: '只允许这几个', mode: 'whitelist' },
       { ...backup[0], id: 'k3', name: '黑白同时', mode: 'both' },
     ];
+    // 写回桩后端：否则 1.5s 一次的 get_state（返回深拷贝）会把这三条覆盖掉，
+    // 偶发出现"点编辑没反应"——这是测试桩的时序问题，不是产品行为。
+    await saveConfig();
     S.view = 'rules';
     render();
     await wait(200);
@@ -1234,6 +1244,7 @@ window.__itest = async () => {
     await wait(120);
 
     S.data.config.rules = backup;
+    await saveConfig();
     render();
     await wait(150);
   }
@@ -1250,12 +1261,17 @@ window.__itest = async () => {
   out.push(['自律时段页说明与自律规则是包含关系', clockTxt.includes('只在自律时间'), true]);
   out.push(['自律时段页不再声称「规则按自己时段走」', clockTxt.includes('按它自己的时段走'), false]);
 
-  /** 在格子的 frac 位置按下再松开（frac 0..1 = 整格高度的位置） */
-  const clickFrac = (el, frac) => {
+  /** 在格子的 frac 位置按下、往下挪 4px、再松开（frac 0..1 = 整格高度的位置）。
+   *  为什么不再是"单击"：单击已经不允许改变结构，只有真的拖动才会新建一段。
+   *  4px 小于半格（13px），所以仍然落在同一格刻度里。 */
+  const tinyDragFrac = async (el, frac) => {
     const r = el.getBoundingClientRect();
     const y = r.top + r.height * frac;
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientY: y }));
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientY: y }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: y + 4 }));
+    await wait(60);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientY: y + 4 }));
+    await wait(160);
   };
   /** 取某天第一条色带的顶部相对该小时格的比例（0 = 格顶、1 = 格底） */
   const bandTopRatio = (d, h) => {
@@ -1282,8 +1298,7 @@ window.__itest = async () => {
     };
     for (const target of [0, 1, 2, 3]) {
       await clearAll();
-      clickFrac(cell(2, 9), (target + 0.5) / 4);
-      await wait(180);
+      await tinyDragFrac(cell(2, 9), (target + 0.5) / 4);
       const ratio = bandTopRatio(2, 9);
       const want = target / 4;
       out.push([`点第 ${target + 1} 格 → 条子顶部在 ${Math.round(want * 100)}%`,
@@ -1610,6 +1625,143 @@ window.__itest = async () => {
       const row = qs ? qs.closest('.row') : null;
       return row ? /任何方式/.test(row.textContent) : false;
     })(), true]);
+  }
+
+  // ---- 26f-2. 拖拽实时联动（这一轮的重点）----
+  {
+    // 前面几段在设置页，这里先回到「完整图表」
+    await openFull();
+    await wait(280);
+    const emptyAt = () => {
+      for (let d = 0; d < 7; d++) {
+        for (let h = 0; h < 24; h++) if (!pd()[d][h].on) return { d, h };
+      }
+      return null;
+    };
+    const dayRow = (d) => document.querySelectorAll('.cc-days .cc-day')[d];
+    const totalEl = () => document.querySelector('.cc-days-hd').lastElementChild;
+    const spot = emptyAt();
+    out.push(['还有空白格可以起笔', !!spot, true]);
+
+    if (spot) {
+      const v0 = dayRow(spot.d).querySelector('.v').textContent;
+      const t0 = totalEl().textContent;
+      // 从空白处按下 → 往下拖两小时
+      fire('mousedown', cell(spot.d, spot.h), { clientY: gY(spot.d, spot.h, 1), clientX: 400 });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(spot.d, Math.min(23, spot.h + 2), 0), clientX: 402,
+      }));
+      await wait(160);
+      // ① 每日时长与合计必须**在拖动中**就变（不是松手才变）
+      out.push(['拖动中：每日时长实时变化',
+        dayRow(spot.d).querySelector('.v').textContent !== v0, true]);
+      out.push(['拖动中：合计实时变化', totalEl().textContent !== t0, true]);
+      const runD = [...document.querySelectorAll('#ccGrid .cc-run')].find((r) => +r.dataset.d === spot.d);
+      const labelD = runD ? runD.querySelector('.cc-run-txt') : null;
+      out.push(['拖动中：块上有起止时间', !!labelD, true]);
+      const labelDuring = labelD ? labelD.textContent : '';
+      // 形如 "03:15 – 05:00"：冒号在第 3 位、中间有 – 就算对
+      out.push(['拖动中：块上的时间在实时更新',
+        labelDuring.indexOf(':') === 2 && labelDuring.indexOf(' – ') > 0, true]);
+      // ② 旧的"只在落点画虚线框"必须彻底消失
+      out.push(['拖动中不再有金色虚线框', document.querySelectorAll('.cc-drag').length, 0]);
+      // 拖动中状态条里的区间，就是松手后应该落下来的区间
+      const liveRange = $('#clockLive').textContent.split('·')[0].trim().split(' ').slice(-3).join(' ');
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(320);
+      // ③ 提交后的块与拖动中看到的一致（视图 = 数据）
+      const labelOk = [...document.querySelectorAll('#ccGrid .cc-run-txt')]
+        .some((n) => n.textContent.indexOf(liveRange) >= 0);
+      out.push(['松手后块上的时间与预览一致',
+        liveRange.length > 0 && labelOk, true]);
+      out.push(['松手后回到摘要文案', /移动|选中|取消/.test($('#clockLive').textContent), false]);
+
+      // ④ 抓着整段搬：半透明 + 原位虚线占位 + 真的跟着指针走
+      const segs = ccSegs(pd()[spot.d]);
+      const seg = segs[0];
+      out.push(['刚建好的段可以被抓', !!seg, true]);
+      if (seg) {
+        // 悬停：整段轻微放大 + 光标可抓。落点必须取段**内部**的中点，
+        // 不能取格子顶部——段可能从 00:15 才开始，格顶那一格是没选中的。
+        const midMin = seg.h0 * 60 + seg.f0 + Math.max(1, Math.floor(seg.mins / 2));
+        const midH = Math.floor(midMin / 60);
+        const midQ = Math.floor((midMin % 60) / ccQCnt());
+        const hoverCell = cell(spot.d, midH);
+        hoverCell.dispatchEvent(new MouseEvent('mouseover', {
+          bubbles: true, clientY: gY(spot.d, midH, midQ),
+        }));
+        await wait(60);
+        const overRun = document.querySelector('#ccGrid .cc-run.over');
+        out.push(['悬停在段上：整段被标记为可抓', !!overRun, true]);
+        out.push(['悬停时整段轻微放大', overRun ? getComputedStyle(overRun).transform !== 'none' : false, true]);
+
+        const lenBefore = seg.mins;
+        const segCount = segs.length;
+        const runsBefore = [...document.querySelectorAll('#ccGrid .cc-run')]
+          .filter((r) => +r.dataset.d === spot.d).length;
+        fire('mousedown', cell(spot.d, seg.h0), { clientY: gY(spot.d, seg.h0, 1), clientX: 420 });
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          bubbles: true, clientY: gY(spot.d, Math.min(23, seg.h0 + 2), 1), clientX: 424,
+        }));
+        await wait(160);
+        const carry = document.querySelector('#ccGrid .cc-run.carry');
+        out.push(['抓取中：被搬的那一块半透明', carry ? parseFloat(getComputedStyle(carry).opacity) < 0.9 : false, true]);
+        out.push(['抓取中：原位留了虚线占位', document.querySelectorAll('#ccGrid .cc-slot').length, 1]);
+        const movedH0 = carry ? parseInt(carry.dataset.h0, 10) : -1;
+        out.push(['抓取中：块已经跟着指针移走', movedH0 > seg.h0, true]);
+        out.push(['抓取中：状态条写着"移动"', $('#clockLive').textContent.indexOf('移动'), 0]);
+        out.push(['抓取中：块数不变（不会多出重复的）',
+          [...document.querySelectorAll('#ccGrid .cc-run')].filter((r) => +r.dataset.d === spot.d).length, runsBefore]);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        await wait(340);
+        out.push(['松手后不再有半透明块', document.querySelectorAll('#ccGrid .cc-run.carry').length, 0]);
+        out.push(['松手后占位虚线消失', document.querySelectorAll('#ccGrid .cc-slot').length, 0]);
+        const segs2 = ccSegs(pd()[spot.d]);
+        out.push(['平移不改段数', segs2.length, segCount]);
+        const after = segs2.find((x) => x.h0 >= seg.h0) || segs2[0];
+        out.push(['平移不改长度', after ? after.mins : -1, lenBefore]);
+      }
+    }
+  }
+
+  // ---- 26f-3. 动效规范：统一令牌 / 页面入场 / 弹窗退场 / 低配降级 ----
+  {
+    await Act.nav('overview');
+    await wait(50);
+    const box = document.querySelector('#content');
+    out.push(['换页后有入场类', box.classList.contains('view-in'), true]);
+    out.push(['动效令牌已定义',
+      getComputedStyle(document.documentElement).getPropertyValue('--mo-ease').trim().length > 0, true]);
+    out.push(['动效档位已标记',
+      ['full', 'low'].includes(document.documentElement.dataset.motion), true]);
+    await wait(720);
+    out.push(['入场播完就撤类（不会被 1.5s 刷新重播）', box.classList.contains('view-in'), false]);
+
+    // 低配降级：装饰性动画关掉
+    document.documentElement.dataset.motion = 'low';
+    await Act.nav('clock');
+    await wait(60);
+    const first = document.querySelector('#content > *');
+    out.push(['低配下降级掉装饰动画', first ? getComputedStyle(first).animationName : '(无)', 'none']);
+    document.documentElement.dataset.motion = 'full';
+
+    // 弹窗：先播退场再清空
+    S.view = 'rules';
+    render();
+    await wait(200);
+    const editBtn = document.querySelector('[data-act="edit-rule"]');
+    out.push(['规则条目可以打开编辑器', !!editBtn, true]);
+    if (editBtn) {
+      editBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      await wait(240);
+      const closeX = document.querySelector('#modalRoot .close-x');
+      out.push(['弹窗带入场动画', !!document.querySelector('#modalRoot .modal'), true]);
+      if (closeX) closeX.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      await wait(20);
+      out.push(['关闭时先播退场', !!document.querySelector('#modalRoot .modal.closing'), true]);
+      await wait(220);
+      out.push(['退场后弹窗清空', document.querySelector('#modalRoot').innerHTML.trim(), '']);
+    }
   }
 
   // ---- 26g. 多语言：默认简体中文，可切 English，插件跟随同一个值 ----
