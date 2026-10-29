@@ -1392,6 +1392,11 @@ function ccRenderRuns(root, override, only) {
     return { ...base, on: true, from: ov.f, to: ov.t };
   };
   const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
+  // 真实行高（px）：格子渲染出来了就以它为准，否则退回按粒度估算的常量
+  const hourPx = (() => {
+    const g = ccDayGeom(0);
+    return g && g.hourH > 0 ? g.hourH : ccHourH();
+  })();
 
   // 按列收集选中小时（以 DOM 为准：拖选预览用的是同一套 DOM 状态）
   const cols = new Map();
@@ -1514,7 +1519,9 @@ function ccRenderRuns(root, override, only) {
     // 在 13px 里正好放得下一行。位置跟着首个填色带走，
     // 不然 01:15 开始的块会把字写在上面那截空白里。
     const spanMin = Math.max(0, Math.round(n * 60 - f0 - (60 - t1)));
-    const spanPx = (spanMin / 60) * ccHourH();
+    // 行高必须**量**，不能用常量：完整展示模式下每行是 1fr 算出来的（可能只有 20px），
+    // 用常量 52 会把矮块判断成"够高"，两行字直接溢出块外。
+    const spanPx = (spanMin / 60) * hourPx;
     const labTop = (f0 * unit).toFixed(3);
     const tight = spanPx < 20;
     // 够高的块：时间一行、时长另起一行；矮块挤成一行，时长紧跟在后面。
@@ -1892,10 +1899,18 @@ function sleepCardHtml(rt) {
   </div>`;
 }
 
+/** 「完整展示」是否开着（默认开）。
+ *  纯展示参数：关掉只是回到固定行高 + 滚动条，判定与排班一个字都不变。 */
+function ccFit() {
+  const fc = (S.data && S.data.config && S.data.config.settings && S.data.config.settings.focusClock) || {};
+  return fc.fitAll !== false;
+}
+
 /** 完整页：大日历（可拖选 / 右键）+ 粒度 + 每日明细 */
 function ccDetailHtml(prof, wdNow, hourNow, frozen) {
   const { grid, hourH, step, qn, rows } = ccGridHtml(prof, wdNow, hourNow);
   const view = ccView();
+  const fit = ccFit();
   const totalMins = prof.days.reduce((n, d) => n + ccDayMinutes(d), 0);
   // 显示范围外还有多少段：不提醒一下的话，用户会以为"我排的时段没了"
   const outside = prof.days.reduce((n, day) => n + ccSegs(day).filter((sg) => {
@@ -1939,25 +1954,40 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
         <button class="btn btn-sm" data-act="clock-view-reset" title="恢复成全天（00:00 – 24:00）">全天</button>
         <span class="hint">现在只看 ${ccViewText(view)}：<b>只影响显示</b>，范围外的时段照样生效${
   outside ? `（另有 <b>${outside}</b> 段在范围外）` : ''}。</span>
+        <div class="cc-fit" id="ccFit">
+          <span class="lab">完整展示</span>
+          <span class="seg">
+            <button class="${fit ? 'active' : ''}" data-act="clock-fit" data-v="1">开</button>
+            <button class="${fit ? '' : 'active'}" data-act="clock-fit" data-v="0">关</button>
+          </span>
+          <span class="state ${fit ? 'on' : ''}">${fit ? '一次铺满，不用滚动' : '固定行高，可滚动'}</span>
+        </div>
       </div>
-      <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px;--cc-rows:${rows}">${grid}</div></div>
-      <div class="cc-legend">
-        <span><i class="sw sel"></i>选中 / 拖动中</span>
-        <span><i class="sw"></i>已放置（已保存）</span>
-        <span class="hint">同一个色相，只差 5% 明度：拖的时候亮一点点，松手后轻微加深就是存好了。同一天相邻的时段会连成一整块</span>
-      </div>
-      <div class="cc-days">
-        <div class="cc-days-hd"><span>每日时长</span><span>合计 ${ccMinText(0, totalMins).dur}</span></div>
-        ${dayRows}
-      </div>
-      <div class="tl-legend">
-        <span class="hint">
-          <b>空白处按住拖动</b> = 新建一段（按当前粒度吸附，夹在 0:00–24:00，最少一格）；
-          <b>在已有的条上按住拖动</b> = 整段搬走，长度不变，撞到日界会贴边停下；
-          <b>单击</b> = 只记下选区，<b>不改</b>时段的数量与结构；
-          <b>右键格子</b> = 细调专注 / 休息时长与起止分钟。
-        </span>
-        <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
+      <div class="cc-main${fit ? ' fit' : ''}" id="ccMain">
+        <div class="cc-left">
+          <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px;--cc-rows:${rows}">${grid}</div></div>
+          <div class="cc-legend">
+            <span><i class="sw sel"></i>选中 / 拖动中</span>
+            <span><i class="sw"></i>已放置（已保存）</span>
+            <span class="hint">同一个色相，只差 5% 明度：拖的时候亮一点点，松手后轻微加深就是存好了</span>
+          </div>
+          <div class="tl-legend">
+            <span class="hint">
+              <b>空白处按住拖动</b> = 新建一段（按当前粒度吸附，最少一格）；
+              <b>在已有的条上按住拖动</b> = 整段搬走；
+              <b>按住上下边缘</b> = 拉长 / 缩短；
+              <b>单击</b> = 只记选区，不改结构；
+              <b>右键</b> = 细调时长与起止分钟。
+            </span>
+            <button class="btn btn-sm" data-act="clock-clear" ${frozen ? 'disabled' : ''}>清空全部</button>
+          </div>
+        </div>
+        <aside class="cc-side">
+          <div class="cc-days">
+            <div class="cc-days-hd"><span>每日时长</span><span>合计 ${ccMinText(0, totalMins).dur}</span></div>
+            ${dayRows}
+          </div>
+        </aside>
       </div>
     </div>
   </div>`;
@@ -2828,7 +2858,8 @@ function viewHelp() {
   ${sec('4 · 生效时间段：右键改哪里，就只改哪里', `
      <div>完整图表里有三种右键目标，每张菜单顶部都写着"作用于 …"，三档互不越界。</div>
     <div class="note" style="margin:10px 0 0;line-height:2">
-      <div>右键日期表头（周一 / 周二…）= 整天：只作用于这一天 0:00–24:00，可「选中整天」「清空整天」或只改专注 / 休息。</div>
+      <div>右键日期表头（周一 / 周二…）= 整天：弹出来第一眼就是这一天排了什么（每段的起止、时长、节奏，可逐段取消），下面才是「选中整天」「清空整天」这类整天级操作，只作用于这一天 0:00–24:00。</div>
+    <div>图表右上角的「完整展示」开关：开着时整张表一次铺满、不用滚动；关掉回到固定行高，可以滚着看细节。</div>
       <div>右键某一段 = 时段：只作用于这一段（段首到段尾，跨小时也完整），可改时长、起止分钟，或「取消这一段」（两步确认）。</div>
       <div>右键空白格 = 格子：只作用于这一小时，把它选上并设定起止分钟。</div>
     </div>
@@ -5196,6 +5227,20 @@ const Act = window.Act = {
     render();
   },
 
+  /** 开 / 关「完整展示」：只改行高的算法，切完立刻重绘（图表马上响应） */
+  async clockFit(on) {
+    const fc = clockCfg();
+    const want = !!on;
+    if ((fc.fitAll !== false) === want) return;
+    fc.fitAll = want;
+    const ok = await saveConfig();
+    render();
+    if (!ok) { toast('这个开关没保存成功', 'err'); return; }
+    toast(want
+      ? '已开启完整展示：整张图表一次铺满，不用上下滚动'
+      : '已关闭完整展示：恢复固定行高，可以滚动看细节', 'ok');
+  },
+
   async clockViewReset() {
     const fc = clockCfg();
     fc.viewFrom = 0;
@@ -5913,6 +5958,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-gran') { await Act.clockGran(el.dataset.v); return; }
   // 下拉框在 click 上什么都不做（真正的改动在 change 里，见下面那条监听）
   if (act === 'clock-view') return;
+  if (act === 'clock-fit') { await Act.clockFit(el.dataset.v === '1'); return; }
   if (act === 'sleep-enable') { await Act.sleepEnable(); return; }
   if (act === 'sleep-save') { await Act.sleepSave(); return; }
   if (act === 'sleep-unlock') { await Act.sleepUnlock(); return; }
@@ -6097,7 +6143,13 @@ function ccDayGeom(d) {
   const last = cells[cells.length - 1];
   const r0 = first.getBoundingClientRect();
   const r1 = last.getBoundingClientRect();
-  return { top: r0.top, hourH: r0.height, bottom: r1.bottom };
+  // 行高要用**平均值**（总高 ÷ 行数），不能拿第一格高：完整展示模式下每行是 1fr，
+  // 浏览器会把不足 1px 的余量摊到某些行上（这一格 27px、下一格 28px）。
+  // 拿第一格当行高，误差会随着行号累加——到第 11 小时就偏了 7~8px，
+  // 指针明明在 09:00 却被算成 09:15，拖出来的时段跟着错位。
+  const n = cells.length;
+  const hourH = (r1.bottom - r0.top) / n;
+  return { top: r0.top, hourH, bottom: r1.bottom };
 }
 
 /** clientX → 落在哪一列（哪一天）。返回 null = 指针不在图表的横向范围内。
@@ -6565,17 +6617,27 @@ function ccSegEdgeY(d, seg) {
 
 /** 指针落在这一段的上边还是下边？返回 'top' / 'bottom' / null。
  *
- *  热区宽度 = min(5px, 段高/3)：
- *    · 5px 是"点得准"和"不抢正文"的平衡点。试过 7px：一小时 52px、15 分钟一格
- *      只有 13px，7px 的热区把第一格的中心都吃掉了——想按着搬走却总在改大小；
- *    · 段高/3 保证矮段（10 / 15 分钟 ≈ 9~13px）中间还留着 1/3 可以按着搬走，
- *      否则整段都是热区，用户永远拖不动它、只会改大小。 */
+ *  热区宽度分两种情形，因为"一格"和"一块"的比例完全不同：
+ *
+ *  · **多格块**（≥ 2 小时）取 min(5px, 段高/3, 一格 × 0.45)：
+ *    `一格 × 0.45` 保证"任意一格的中心"都落在可搬区间里——完整展示模式下
+ *    每行被压到 20~28px，10 分钟一格只有 3~5px，用固定 5px 会让首格整块变成
+ *    热区，拖着拖着就变成"怎么按都在改大小"。
+ *
+ *  · **单格块**（15 / 10 分钟，只有一格）取 min(5px, 段高 × 0.32)：
+ *    这种块没有"内部格"可保护，上下各让出约 1/3 做缩放，中间 1/3 仍可搬走。
+ *    按比例算而不是按格算，否则 13px 的块热区只剩 1px，等于没有。
+ */
 const CC_EDGE_PX = 5;
 function ccEdgeZone(d, seg, clientY) {
   if (!seg || typeof clientY !== 'number') return null;
   const y = ccSegEdgeY(d, seg);
   if (!y || y.h <= 0) return null;
-  const z = Math.max(3, Math.min(CC_EDGE_PX, y.h / 3));
+  const n = (seg.h1 - seg.h0) + 1;
+  const grainPx = y.h / (ccQCnt() * n);
+  const z = n === 1
+    ? Math.min(CC_EDGE_PX, y.h * 0.32)
+    : Math.max(1.5, Math.min(CC_EDGE_PX, y.h / 3, grainPx * 0.45));
   if (clientY <= y.top + z) return 'top';
   if (clientY >= y.bottom - z) return 'bottom';
   return null;
@@ -7372,9 +7434,16 @@ function ccOpenCellMenu(d, h) {
   const sub = `作用于 <b id="ccTgt">${esc(ccRectText(d, d, h, h, snap.f, snap.t))}</b>（<b id="ccCnt">1</b> 段）`;
   const body = `
     <div class="note" style="line-height:1.8">
-      这一格是<b>空白的</b>（${WD[d]} ${pad(h)}:00 – ${pad(h + 1)}:00 没选中）。
-      应用会把它选上；只想改别的范围请在图上拖一段，再右键那一段。
+      这一格现在是<b>${p.on ? '选中的' : '空白的'}</b>（${WD[d]} ${pad(h)}:00 – ${pad(h + 1)}:00）。
+      应用会把它选上；想改别的范围请在图上拖一段，再右键那一段。
     </div>
+    <div class="cc-menu-scope" style="margin:10px 0 4px">
+      <button class="chip-btn" data-cell-quick="${ccStep()}" title="只把这一格的最小粒度选上，分钟数不用自己填">
+        只选 ${ccStep()} 分钟
+      </button>
+      <button class="chip-btn" data-cell-quick="60">整小时</button>
+    </div>
+    <div class="cc-menu-hint">单选最小粒度就点上面第一个按钮：一次点击 = 这一格只选 ${ccStep()} 分钟。也可以在图上按住拖动 ${ccStep()} 分钟的范围，效果一样。</div>
     <div class="cc-tl-list" id="ccTlList">
       <div class="cc-tl-hd">
         <span class="cc-tl-c-idx">#</span>
@@ -7432,6 +7501,17 @@ function ccOpenCellMenu(d, h) {
       renderTlRows();
       return;
     }
+    // 快捷：一次点击就把这一格设成"只有一个最小粒度"或"整小时"。
+    // 这是 15 / 10 分钟单选的**直达入口**——不用自己算起止分钟，
+    // 也不用在 20px 高的一格里精确拖动。
+    const quick = e.target.closest('[data-cell-quick]');
+    if (quick) {
+      const { w, b } = ccReadWb();
+      const to = Math.max(1, Math.min(60, +quick.dataset.cellQuick || 60));
+      const ok = await Act.clockSetWB(d, d, h, h, w, b, !!($('#ccDefToo') || {}).checked, 0, to);
+      if (ok !== false) ccCloseMenu();
+      return;
+    }
     if (!e.target.closest('#ccApply')) return;
     const { w, b } = ccReadWb();
     let f2 = Math.round(Number(($('#ccFrom') || {}).value) || 0);
@@ -7454,10 +7534,34 @@ function ccOpenDayMenu(d) {
   const mins = ccDayMinutes(day);
   const w = prof.defWork, b = prof.defBrk;
 
+  // 进来先把"这一天到底排了什么"列清楚——这是用户右键表头最想看到的东西。
+  // 以前只给"选中整天 / 清空整天"，等于让人摸黑操作：不知道自己会覆盖掉什么。
+  const segRows = segs.length
+    ? segs.map((sg, i) => {
+      const a = sg.h0 * 60 + sg.f0;
+      const b = sg.h1 * 60 + (sg.t1 >= 60 ? 60 : sg.t1);
+      const dur = ccDurText(b - a);
+      const wp = prof.days[d][sg.h0];
+      const wk = wp.work || prof.defWork;
+      const bk = wp.brk || 0;
+      return `<div class="dseg">
+        <span class="dseg-idx">${i + 1}</span>
+        <span class="dseg-time">${pad(sg.h0)}:${pad(sg.f0)} – ${(sg.t1 >= 60 ? pad(sg.h1 + 1) : pad(sg.h1))}:${pad(sg.t1 >= 60 ? 0 : sg.t1)}</span>
+        <span class="dseg-dur">${dur}</span>
+        <span class="dseg-rhythm">专注 ${wk} 分${bk ? ` / 休息 ${bk} 分` : '（不休息）'}</span>
+        <button class="btn btn-sm danger-ghost" data-day-del="${i}">取消这段</button>
+      </div>`;
+    }).join('')
+    : '<div class="dseg-empty">这一天还没有任何自律时段。可以点下面的「选中整天」，也可以在图上按住拖动来新建。</div>';
+
   const sub = `作用于 <b id="ccTgt">${WD[d]} 00:00 – 24:00</b>（整天 · ${segs.length} 段 · ${mins ? ccMinText(0, mins).dur : '空'}）`;
   const body = `
-    <div class="note" style="line-height:1.8">
-      这是<b>一整天</b>：${WD[d]} 0:00–24:00。<b>只作用于这一天</b>，其余六天原样不动。
+    <div class="cc-dseg-list" id="ccDaySegs">
+      <div class="cc-dseg-hd"><span>${WD[d]} 已排时段</span><span>${segs.length} 段 · 共 ${mins ? ccMinText(0, mins).dur : '0 分钟'}</span></div>
+      ${segRows}
+    </div>
+    <div class="note" style="line-height:1.8;margin-top:10px">
+      下面是<b>整天</b>级别的操作：只作用于 ${WD[d]} 0:00–24:00，其余六天原样不动。
       想改某一段的起止分钟，请直接在图上右键那一段。
     </div>
     <div class="cc-menu-scope" style="margin-top:10px">
@@ -7477,6 +7581,22 @@ function ccOpenDayMenu(d) {
   $('#ccW') && $('#ccW').focus();
 
   ccBindMenu(async (e) => {
+    // 列表里逐段取消：两步确认，避免手滑把整段删了
+    const del = e.target.closest('[data-day-del]');
+    if (del) {
+      if (del.dataset.armed !== '1') {
+        del.dataset.armed = '1';
+        del.textContent = '再点一次确认';
+        return;
+      }
+      // 属性叫 data-day-del → dataset 里是 dayDel（不是 del！写错会静默取到 NaN）
+      const sg = segs[+del.dataset.dayDel];
+      if (!sg) return;
+      const label = `${pad(sg.h0)}:${pad(sg.f0)} – ${(sg.t1 >= 60 ? pad(sg.h1 + 1) : pad(sg.h1))}:${pad(sg.t1 >= 60 ? 0 : sg.t1)}`;
+      const ok = await Act.clockClearRange(d, sg.h0, sg.h1, `${WD[d]} ${label}`);
+      if (ok !== false) ccCloseMenu();
+      return;
+    }
     const da = e.target.closest('[data-day-act]');
     if (da) {
       if (da.dataset.dayAct === 'select') await Act.clockDaySelect(d);

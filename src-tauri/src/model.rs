@@ -380,6 +380,12 @@ pub struct ClockCfg {
     pub view_from: u32,
     #[serde(default = "default_view_to")]
     pub view_to: u32,
+    /// 「完整展示」：整张图表一次铺满可视区（行高自动压缩），不用上下滚动。
+    ///
+    /// 纯展示参数：关掉只是回到固定行高 + 滚动条，判定和排班一个字都不变。
+    /// 默认开——大部分人不需要"滚着看一天的排班"。
+    #[serde(default = "default_true")]
+    pub fit_all: bool,
 }
 
 /// 图表默认显示到当天最后一分钟（24:00）
@@ -443,6 +449,7 @@ impl Default for ClockCfg {
             def_brk: 0,
             view_from: 0,
             view_to: 1440,
+            fit_all: true,
         }
     }
 }

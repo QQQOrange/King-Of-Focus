@@ -758,8 +758,10 @@
     '4 · 生效时间段：右键改哪里，就只改哪里': '4 · Right-click edits exactly what you clicked',
     '完整图表里有三种右键目标，每张菜单顶部都写着"作用于 …"，三档互不越界。':
       'The full chart has three right-click targets; every menu states "Applies to …" and never crosses levels.',
-    '右键日期表头（周一 / 周二…）= 整天：只作用于这一天 0:00–24:00，可「选中整天」「清空整天」或只改专注 / 休息。':
-      'Right-click a day header: the whole day, 0:00–24:00 only — select all, clear, or change focus / break.',
+    '右键日期表头（周一 / 周二…）= 整天：弹出来第一眼就是这一天排了什么（每段的起止、时长、节奏，可逐段取消），下面才是「选中整天」「清空整天」这类整天级操作，只作用于这一天 0:00–24:00。':
+      'Right-click a day header: the first thing you see is what is already scheduled that day (start/end, length, rhythm, removable one by one), then the whole-day actions — 0:00–24:00 that day only.',
+    '图表右上角的「完整展示」开关：开着时整张表一次铺满、不用滚动；关掉回到固定行高，可以滚着看细节。':
+      'The "Fit all" switch at the top-right of the chart: on = the whole grid fits at once; off = fixed row height with scrolling.',
     '右键某一段 = 时段：只作用于这一段（段首到段尾，跨小时也完整），可改时长、起止分钟，或「取消这一段」（两步确认）。':
       'Right-click a window: that window only (start to end, whole hours included) — change rhythm, start/end minutes, or remove it.',
     '右键空白格 = 格子：只作用于这一小时，把它选上并设定起止分钟。':
@@ -813,7 +815,25 @@
     '图表显示范围；睡眠时段（锁定 + 倒计时关机 + 积分解锁）':
       'Chart display range; sleep hours (lock + countdown shutdown + points unlock)',
     /* —— 语录来源 —— */
-    '右键可换来源': 'Right-click to switch source',
+    '完整展示': 'Fit all',
+    '开': 'On',
+    '关': 'Off',
+    '一次铺满，不用滚动': 'Fits at once, no scrolling',
+    '固定行高，可滚动': 'Fixed rows, scrollable',
+    '每日时长': 'Daily total',
+    '已排时段': 'Scheduled windows',
+    '取消这段': 'Remove this',
+    '再点一次确认': 'Click again to confirm',
+    '整小时': 'Whole hour',
+    '只选': 'Select only',
+    '分钟': 'min',
+    '这一天还没有任何自律时段。可以点下面的「选中整天」，也可以在图上按住拖动来新建。':
+      'No windows on this day yet. Use "Select whole day" below, or drag on the chart to create one.',
+    '从': 'From',
+    '到': 'to',
+    '现在每格': 'Each cell is',
+    '一小时': 'per hour',
+        '右键可换来源': 'Right-click to switch source',
     '换一条': 'Another one',
     '正在获取…': 'Fetching…',
     '我的语录': 'My quotes',

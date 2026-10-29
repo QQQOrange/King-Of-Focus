@@ -959,7 +959,10 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
 
 /* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
 .cc-run-txt {
-  position: absolute; top: 3px; left: 6px; right: 6px;
+  /* z-index 必须显式给：色带 `.f` 为了放手柄加了 `position: relative`，
+   * 它和这个绝对定位的标签同属"定位元素"（z-index: auto），绘制顺序按 DOM ——
+   * 色带在后面，就把标签整块盖住了。给 2 之后文字永远在色带之上。 */
+  position: absolute; z-index: 2; top: 3px; left: 6px; right: 6px;
   font-size: 10.5px; line-height: 1.25; font-weight: 600;
   color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1155,7 +1158,49 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cc-detail-live b { color: var(--text); font-weight: 600; }
-.cc-detail-bd { flex: 1; overflow: auto; padding: 12px 16px 28px; }
+.cc-detail-bd {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  padding: 12px 16px 16px; overflow: hidden;
+}
+/* 两栏：左边图表（吃掉剩余宽度和高度），右边每日时长。
+ * `.cc-main` 必须是 flex 容器 + min-height:0，否则子项的 `flex:1` 撑不住，
+ * 图表又会溢出成滚动条。 */
+.cc-main { flex: 1; min-height: 0; display: flex; gap: 14px; align-items: stretch; }
+.cc-left { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.cc-left .cc-scroll { flex: 1; min-height: 0; max-height: none; }
+.cc-side {
+  flex: 0 0 262px; min-width: 0; display: flex; flex-direction: column;
+  gap: 10px; overflow: auto; scrollbar-width: thin;
+}
+.cc-side .cc-days { margin-top: 0; }
+.cc-side .cc-day { grid-template-columns: 32px minmax(0, 1fr) 56px 34px; gap: 8px; padding: 6px 10px; }
+/* 窄屏：两栏叠回上下（先图表、后每日时长），并且给图表一个最小高度，
+ * 否则压成一条线什么都点不到。 */
+@media (max-width: 900px) {
+  /* 窄屏：叠成上下。整页允许滚，但**图表自己仍然一次画完**——
+   * 给它一个确定高度（300px），"完整展示"模式下 24 行照样压进去。
+   * 这里必须写死 height：只写 min-height 的话，父容器（.cc-left）会被
+   * flex 压成 200 出头，图表溢出去压到下面的每日时长上。 */
+  .cc-detail-bd { overflow: auto; }
+  .cc-main { flex-direction: column; flex: 0 0 auto; }
+  .cc-left { flex: 0 0 auto; }
+  .cc-left .cc-scroll { flex: 0 0 auto; height: 300px; min-height: 0; }
+  .cc-side { flex: 0 0 auto; overflow: visible; }
+}
+/* 极矮的窗口：实在放不下就允许整页滚（总比把图表压成 0 高好） */
+@media (max-height: 560px) {
+  .cc-detail-bd { overflow: auto; }
+  .cc-left .cc-scroll { min-height: 260px; }
+}
+
+/* ── 「完整展示」模式 ──
+ * 开：行高改成 1fr，图表总高 = 容器高，**永远不需要上下滚动**；
+ * 关：回到固定行高（15 分钟 52px / 10 分钟 78px），靠滚动看细节。
+ * 只改行高的算法，列宽、坐标、拖拽换算全都不受影响。 */
+.cc-main.fit .cc-scroll { overflow: hidden; }
+.cc-main.fit .cc { height: 100%; grid-template-rows: auto repeat(var(--cc-rows, 24), minmax(0, 1fr)); }
+/* 压到 26px 以下时小时刻度和块上的字都得让一让，否则互相压 */
+.cc-main.fit .cc-run-txt.tight { line-height: 1; }
 
 /* 每日明细：一行一天，进度条给"相对多少"的直观感 */
 .cc-days {
@@ -2115,3 +2160,44 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
   cursor: pointer;
 }
 .qfeed-form select:focus-visible { border-color: var(--gold); }
+
+/* 「完整展示」开关：一个胶囊里放"开 / 关"两段，和设置页的分段选择同形，
+ * 但更紧；右侧再挂一句状态说明，切换后立刻能看出现在是什么模式。 */
+.cc-fit {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-left: auto; font-size: 12px; color: var(--text-3);
+}
+.cc-fit .lab { color: var(--text-2); }
+.cc-fit .seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: var(--cell-bg); border: 1px solid var(--line); }
+.cc-fit .seg > button {
+  font: inherit; font-size: 11.5px; padding: 3px 11px; border: 0; cursor: pointer;
+  border-radius: 999px; background: transparent; color: var(--text-3);
+}
+.cc-fit .seg > button.active { background: var(--cc-fill); color: #fff; font-weight: 600; }
+.cc-fit .state { min-width: 8.2em; }
+.cc-fit .state.on { color: var(--green, #4ade80); }
+
+/* ── 整天菜单里的"已排时段"列表 ──
+ * 右键日期表头时第一眼要看到的东西：这一天排了什么、多长、什么节奏。
+ * 一行 = 一段，最后给一个"取消这段"（两步确认）。 */
+.cc-dseg-list {
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  overflow: hidden; background: var(--inset-bg);
+}
+.cc-dseg-hd {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 11px; font-size: 11.5px; color: var(--text-3);
+  background: var(--panel-a); border-bottom: 1px solid var(--line);
+}
+.cc-dseg-hd span:first-child { color: var(--text-2); font-weight: 600; }
+.dseg {
+  display: grid; grid-template-columns: 22px 108px 64px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; padding: 7px 11px; font-size: 12px;
+}
+.dseg + .dseg { border-top: 1px solid var(--line); }
+.dseg-idx { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.dseg-time { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.dseg-dur { color: var(--cc-fill); font-weight: 600; }
+.dseg-rhythm { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dseg-empty { padding: 12px; font-size: 12px; color: var(--text-3); line-height: 1.7; }

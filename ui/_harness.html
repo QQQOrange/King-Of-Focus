@@ -71,6 +71,9 @@ const STATE = {
         hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
       focusClock: {
         enabled: true, applyRules: true, active: 'p1',
+        // 夹具默认关掉「完整展示」：这批用例是按固定行高（52 / 78px）写的，
+        // 行高算法换成 1fr 之后像素类断言全都不成立。26i 里单独验开着的样子。
+        fitAll: false,
         profiles: [
           {
             id: 'p1', name: '工作日强化', defWork: 45, defBrk: 15,
@@ -314,7 +317,14 @@ window.__itest = async () => {
   const runs = (d) => [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)];
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   /** 打开"生效时间段"的完整页（大日历只在这一层里，微缩图那层没有格子） */
-  const openFull = async () => { S.view = 'clock'; S.ccFull = true; render(); await wait(200); };
+  // 这些用例是按"固定行高 52 / 78px"写的（行高、可滚动、±1% 落点），
+  // 所以先关掉「完整展示」——那是另一套行高算法，单独在 26i 里验。
+  const openFull = async () => {
+    S.view = 'clock'; S.ccFull = true;
+    S.data.config.settings.focusClock.fitAll = false;
+    STATE.config.settings.focusClock.fitAll = false;   // 交互里会 save/pull，源头也要一致
+    render(); await wait(200);
+  };
   await openFull();
 
   // 0a. 小时标签正序：从上到下 0 → 23；左上角是纵轴单位，不能又是一个 0
@@ -348,11 +358,13 @@ window.__itest = async () => {
       getComputedStyle(document.querySelector('#ccGrid')).gridTemplateRows.split(' ')[1], '52px']);
     const sc = document.querySelector('.cc-scroll');
     {
-      // 高度是分数像素算出来的，四舍五入偶尔差 1px；这里只要求"约等于限高"
-      const h = sc ? Math.round(sc.getBoundingClientRect().height) : -1;
-      out.push(['日历限高可滚动（表头吸顶）',
-        sc ? getComputedStyle(sc).overflowY + '/' + (Math.abs(h - 560) <= 1 ? 560 : h) : '无',
-        'auto/560']);
+      // 新版布局里图表高度由面板算（不再写死 560px 上限），
+      // 要验的是"它有确定高度、放不下时能滚" —— 这才是"表头吸顶 + 内部滚动"的实质。
+      const r = sc ? sc.getBoundingClientRect() : { height: -1 };
+      out.push(['图表高度受面板约束（不是自然撑开）',
+        r.height > 180 && r.height < window.innerHeight, true]);
+      out.push(['图表放不下时可以内部滚动', sc ? getComputedStyle(sc).overflowY : '无', 'auto']);
+      out.push(['固定行高下确实会溢出（所以要能滚）', sc.scrollHeight > sc.clientHeight, true]);
     }
     const anyRun = document.querySelector('.cc-run');
     const txt = anyRun ? anyRun.querySelector('.cc-run-txt') : null;
@@ -2209,6 +2221,189 @@ window.__itest = async () => {
     }
   }
 
+  // ---- 26h2. 完整图表：色块上的起止时间 / 时长，最小粒度单选，整天列表 ----
+  {
+    const colCenter = (d) => {
+      const r = document.querySelector('.cc-cell[data-d="' + d + '"]').getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    // 本块自己的清空函数（26g 里那个是块作用域，这里拿不到）
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      await saveConfig(); await wait(130);
+    };
+    // ① 色块上的字必须压得住色带（v0.1.16 把 .f 改成 position:relative 之后文字被盖住）
+    await openFull();
+    await clearAll();
+    for (const h of [9, 10]) { pd()[2][h].on = true; pd()[2][h].from = 0; pd()[2][h].to = 60; }
+    await saveConfig(); render(); await wait(240);
+    const run = () => document.querySelector('.cc-run[data-d="2"]');
+    const txt = () => run().querySelector('.cc-run-txt');
+    out.push(['块上写着起止时间', txt().querySelector('b').textContent.trim(), '09:00 – 11:00']);
+    out.push(['块上另写着时长', txt().querySelector('em').textContent.trim(), '2 小时']);
+    out.push(['标签的 z-index 在色带之上', getComputedStyle(txt()).zIndex, '2']);
+    out.push(['色带自身不建层级（否则又盖回去）',
+      getComputedStyle(run().querySelector('i.f')).zIndex, 'auto']);
+    {
+      const lr = txt().getBoundingClientRect();
+      const rr = run().getBoundingClientRect();
+      out.push(['标签落在色块范围内', lr.top >= rr.top - 1 && lr.top < rr.bottom, true]);
+      out.push(['标签宽度没被压成 0', Math.round(lr.width) > 40, true]);
+    }
+    // 半小时的块也要有时间和时长
+    await clearAll();
+    pd()[2][9].on = true; pd()[2][9].from = 0; pd()[2][9].to = 30;
+    await saveConfig(); render(); await wait(220);
+    out.push(['半小时块也有时间', txt().querySelector('b').textContent.trim(), '09:00 – 09:30']);
+    out.push(['半小时块也有时长', txt().querySelector('em').textContent.trim(), '30 分钟']);
+
+    // ② 15 分钟"单选"：右键单格 → 一次点击
+    await clearAll();
+    fire('contextmenu', cell(2, 9), { clientX: 420, clientY: 420 });
+    await wait(180);
+    const quick = document.querySelector('[data-cell-quick="15"]');
+    out.push(['单格菜单有「只选 15 分钟」', !!quick, true]);
+    out.push(['按钮文案直接写清分钟数', quick ? quick.textContent.trim() : '-', '只选 15 分钟']);
+    quick.click();
+    await wait(420);
+    out.push(['一次点击就选中 15 分钟',
+      `${pd()[2][9].on}/${pd()[2][9].from}-${pd()[2][9].to}`, 'true/0-15']);
+    out.push(['15 分钟就是一段', ccSegs(pd()[2]).length, 1]);
+    out.push(['当天合计 15 分钟', ccDayMinutes(pd()[2]), 15]);
+    out.push(['块上写着 15 分钟', txt().querySelector('em').textContent.trim(), '15 分钟']);
+    out.push(['15 分钟的块也画出来了', !!run(), true]);
+
+    // ③ 10 分钟粒度下同样能单选
+    await clearAll();
+    await Act.clockGran(10);
+    await wait(260);
+    fire('contextmenu', cell(1, 14), { clientX: 420, clientY: 420 });
+    await wait(180);
+    const quick10 = document.querySelector('[data-cell-quick="10"]');
+    out.push(['10 分钟粒度下按钮跟着变', quick10 ? quick10.textContent.trim() : '-', '只选 10 分钟']);
+    if (quick10) { quick10.click(); await wait(420); }
+    out.push(['10 分钟也能单选',
+      `${pd()[1][14].on}/${pd()[1][14].from}-${pd()[1][14].to}`, 'true/0-10']);
+    out.push(['10 分钟合计', ccDayMinutes(pd()[1]), 10]);
+    await Act.clockGran(15);
+    await wait(200);
+
+    // ④ 按住拖动一格也等于一个最小粒度（不依赖菜单那条路）
+    await clearAll();
+    fire('mousedown', cell(1, 16), { clientY: gY(1, 16, 0), clientX: colCenter(1) });
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true, clientY: gY(1, 16, 0) + 3, clientX: colCenter(1),
+    }));
+    await wait(180);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(400);
+    out.push(['拖动一格 = 15 分钟', `${pd()[1][16].on}/${pd()[1][16].from}-${pd()[1][16].to}`, 'true/0-15']);
+
+    // ⑤ 右键日期表头 → 立刻列出这一天的所有时段
+    await clearAll();
+    await Act.clockCommitRange(3, 9 * 60, 11 * 60, 'add');
+    await Act.clockCommitRange(3, 14 * 60, 15 * 60, 'add');
+    await wait(240);
+    fire('contextmenu', document.querySelectorAll('.cc-dh')[3], { clientX: 460, clientY: 60 });
+    await wait(200);
+    const rows = [...document.querySelectorAll('#ccDaySegs .dseg')];
+    out.push(['表头右键立刻列出当天时段（不用二次操作）', rows.length, 2]);
+    out.push(['第 1 行写清起止与时长',
+      rows[0].querySelector('.dseg-time').textContent + '/' + rows[0].querySelector('.dseg-dur').textContent,
+      '09:00 – 11:00/2 小时']);
+    out.push(['第 2 行也一样',
+      rows[1].querySelector('.dseg-time').textContent + '/' + rows[1].querySelector('.dseg-dur').textContent,
+      '14:00 – 15:00/1 小时']);
+    out.push(['行里带着专注 / 休息节奏', /专注 \d+ 分/.test(rows[0].querySelector('.dseg-rhythm').textContent), true]);
+    out.push(['表头写着段数与总时长',
+      document.querySelector('.cc-dseg-hd').textContent.replace(/\s+/g, ' ').trim(), '周四 已排时段2 段 · 共 3 小时']);
+    // 列表里逐段取消：两步确认
+    const del = rows[1].querySelector('[data-day-del]');
+    del.click();
+    await wait(100);
+    out.push(['取消这段要点两次', del.dataset.armed, '1']);
+    out.push(['第一次点不会删', ccSegs(pd()[3]).length, 2]);
+    // 第二次点才真的删（按钮此时已经变成"再点一次确认"，重新查一次更贴近真实点击）
+    document.querySelector('#ccDaySegs .dseg:nth-child(3) [data-day-del]').click();
+    await wait(420);
+    out.push(['确认后只删这一段', ccSegs(pd()[3]).length, 1]);
+    out.push(['删完菜单关掉', !!document.querySelector('.cc-modal'), false]);
+
+    // ⑥ 空的一天：列表给一句明确的空状态，不是空白
+    fire('contextmenu', document.querySelectorAll('.cc-dh')[6], { clientX: 460, clientY: 60 });
+    await wait(200);
+    out.push(['没有时段时给空状态文案',
+      (document.querySelector('#ccDaySegs .dseg-empty') || {}).textContent ? 'ok' : '-', 'ok']);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await wait(120);
+    await clearAll();
+  }
+
+  // ---- 26h3. 完整图表的布局：每日时长在右、一次铺满、完整展示开关 ----
+  {
+    // 本块自己的清空函数（26g 里那个是块作用域，这里拿不到）
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      await saveConfig(); await wait(130);
+    };
+    await openFull();
+    await clearAll();
+    for (const h of [9, 10, 11]) { pd()[0][h].on = true; pd()[0][h].from = 0; pd()[0][h].to = 60; }
+    await saveConfig(); render(); await wait(260);
+
+    // ① 每日时长搬到图表右侧
+    const side = document.querySelector('.cc-days');
+    const gridBox = document.getElementById('ccGrid').getBoundingClientRect();
+    const sideBox = side.getBoundingClientRect();
+    out.push(['每日时长在图表右侧', sideBox.left > gridBox.right - 1, true]);
+    out.push(['两栏是横向排列', getComputedStyle(document.getElementById('ccMain')).flexDirection, 'row']);
+    out.push(['侧栏宽度固定', Math.round(sideBox.width) > 180, true]);
+    // 窄屏叠回上下：file:// 下拿不到 cssRules（跨源），所以这里只验结构，
+    // "窄屏真的会叠起来"由布局探针按 780px 视口单独验。
+    out.push(['侧栏是独立的一列（可单独折叠）',
+      getComputedStyle(document.querySelector('.cc-side')).flexShrink, '0']);
+
+    // ② 关掉完整展示（夹具默认关）：行高固定、需要滚动
+    out.push(['默认关时不是铺满模式', document.getElementById('ccMain').classList.contains('fit'), false]);
+    const rowH = () => Math.round(document.querySelector('.cc-cell[data-d="0"]').getBoundingClientRect().height);
+    out.push(['关：固定行高 52px', rowH(), 52]);
+    out.push(['关：图表比可视区高（所以要滚）',
+      document.querySelector('.cc-scroll').scrollHeight > document.querySelector('.cc-scroll').clientHeight, true]);
+
+    // ③ 打开开关 → 立即铺满、不用滚
+    await Act.clockFit(true);
+    await wait(320);
+    out.push(['开关写进配置', fc().fitAll, true]);
+    out.push(['开了以后进入铺满模式', document.getElementById('ccMain').classList.contains('fit'), true]);
+    out.push(['开：状态文案明确', document.querySelector('.cc-fit .state').textContent, '一次铺满，不用滚动']);
+    out.push(['开：按钮高亮跟着走',
+      document.querySelector('.cc-fit .seg button.active').textContent, '开']);
+    {
+      const sc = document.querySelector('.cc-scroll');
+      out.push(['开：图表不再需要上下滚动', sc.scrollHeight <= sc.clientHeight + 1, true]);
+      out.push(['开：整张表刚好铺满容器',
+        Math.abs(Math.round(document.getElementById('ccGrid').getBoundingClientRect().height) - Math.round(sc.getBoundingClientRect().height)) <= 1, true]);
+      out.push(['开：行高被压缩（不再固定 52）', rowH() < 52, true]);
+      out.push(['开：24 行全在（没有为省地方删行）',
+        document.querySelectorAll('.cc-hlab').length, 24]);
+    }
+    out.push(['开：每日时长仍在右侧',
+      document.querySelector('.cc-days').getBoundingClientRect().left > document.getElementById('ccGrid').getBoundingClientRect().right - 1, true]);
+
+    // ④ 再关掉 → 回到固定行高 + 可滚，且状态文案跟着变
+    await Act.clockFit(false);
+    await wait(320);
+    out.push(['关：状态文案翻回来', document.querySelector('.cc-fit .state').textContent, '固定行高，可滚动']);
+    out.push(['关：按钮高亮换成「关」',
+      document.querySelector('.cc-fit .seg button.active').textContent, '关']);
+    out.push(['关：行高回到 52', rowH(), 52]);
+    out.push(['关：又能滚了',
+      document.querySelector('.cc-scroll').scrollHeight > document.querySelector('.cc-scroll').clientHeight, true]);
+    await clearAll();
+  }
+
   // ---- 26i. 积分 / 帮助 / 关于：解锁只针对"当前这一段" ----
   {
     const boot = S.data.runtime;
@@ -2333,6 +2528,12 @@ window.__itest = async () => {
     out.push(['改范围后 15 行', hlab().length, 15]);
     out.push(['改范围后每天 15 格', colCells(0).length, 15]);
     out.push(['范围写进配置（分钟）', `${fc().viewFrom}/${fc().viewTo}`, '420/1320']);
+    // 这条断言需要一个 08–12 的块，自己造，别依赖前面用例留下的状态
+    {
+      const p0 = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p0.days[0] = ccDay(8, 12, 50, 10);
+      await saveConfig(); render(); await wait(180);
+    }
     const r0 = runOfDay(0);
     out.push(['08–12 的块对齐到第 3 行', r0 ? r0.style.gridRow : '-', '3 / 7']);
 
