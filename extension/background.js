@@ -174,112 +174,22 @@ function blockUrl(rule, url, extra) {
   return chrome.runtime.getURL('blocked.html?' + q);
 }
 
-async function closeOne(tab, ruleName, solo) {
-  const key = tab.id + '|' + (tab.url || '');
-  if (CLOSING.has(key)) return false;
-  CLOSING.add(key);
-  setTimeout(() => CLOSING.delete(key), 5000);
-
-  // 1) 先让主程序弹通知（它会记一条拦截事件、把主界面拉到前台）
-  await post('/api/report', { url: tab.url || '', rule: ruleName });
-  // 2) 留出通知卡片的出场时间，再动刀
-  await sleep(NOTIFY_LEAD_MS);
-
-  // 3) 关掉：整个浏览器窗口 / 单个标签 / 就地显示拦截页
-  try {
-    if (CLOSE_WINDOW && tab.windowId != null) {
-      await chrome.windows.remove(tab.windowId);
-    } else if (solo) {
-      await chrome.storage.local.set({ lastUrl: tab.url || '' });
-      await chrome.tabs.update(tab.id, { url: blockUrl(ruleName, tab.url) });
-    } else {
-      await chrome.tabs.remove(tab.id);
-    }
-  } catch (e) {
-    return false; // 标签已经没了
-  }
-
-  lastClosedAt = Date.now();
-  const today = new Date();
-  const k = `closed-${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
-  const v = await chrome.storage.local.get(k);
-  await chrome.storage.local.set({ [k]: (v[k] || 0) + 1, lastClosed: lastClosedAt });
-  return true;
-}
-
-/** 扫描全部标签页，关掉命中的；返回关闭数量 */
-async function sweep(reason) {
-  if (!MATCHERS.length) return 0;
-  if (!(await autoCloseOn())) return 0;
-
-  let tabs;
-  try {
-    tabs = await chrome.tabs.query({});
-  } catch (e) {
-    return 0;
-  }
-
-  const perWin = {};
-  for (const t of tabs) perWin[t.windowId] = (perWin[t.windowId] || 0) + 1;
-
-  let n = 0;
-  for (const t of tabs) {
-    if (n >= MAX_CLOSE_PER_PASS) break;
-    const url = t.url || t.pendingUrl || '';
-    if (!/^https?:/i.test(url)) continue;
-    let rule = null;
-    try {
-      rule = self.KOFMatch.match(url, MATCHERS);
-    } catch (e) {
-      continue;
-    }
-    if (!rule) continue;
-    if (await closeOne(t, rule, (perWin[t.windowId] || 1) <= 1)) n++;
-  }
-
-  if (n) {
-    chrome.storage.local.set({ lastReason: reason || '', lastCount: n });
-    if (chrome.action && chrome.action.setBadgeText) {
-      chrome.action.setBadgeBackgroundColor({ color: '#ff4444' }).catch(() => {});
-      chrome.action.setBadgeText({ text: String(n) }).catch(() => {});
-      setTimeout(() => { try { chrome.action.setBadgeText({ text: '' }); } catch (e) {} }, 4000);
-    }
-  }
-  return n;
-}
-
-/* ---------------- 休息结束收尾（网页侧） ---------------- */
-
-/**
- * 按当前模式处理"已经开着"的黑名单标签页。
+/** 执行一批"怎么处理"的决定，返回处理成功的个数。
  *
- * 与 sweep() 的区别：sweep() 是"学到一半也在每 4 秒清一次"（持续执法），
- * 这里是**边界动作**——只在「休息 → 学习」那一刻做一次，
- * 所以它要尊重收尾模式（柔和就不真关，只换成拦截页）。
- *
- * 仍然受「主动清理」开关约束：用户把自动关闭关掉了，就不该趁机关他标签。
- */
-async function webSweep(reason) {
-  if (!MATCHERS.length) return 0;
-  if (!SWEEP_ENABLED) return 0;
-  if (!(await autoCloseOn())) return 0;
-
-  let tabs;
-  try {
-    tabs = await chrome.tabs.query({});
-  } catch (e) {
-    return 0;
-  }
-  const actions = self.KOFSweep.plan(
-    tabs,
-    (u) => self.KOFMatch.match(u, MATCHERS),
-    { mode: SWEEP_MODE, closeWindow: CLOSE_WINDOW, max: MAX_CLOSE_PER_PASS },
-  );
+ *  两种模式在这里分叉（与主程序里那一档开关是同一个东西）：
+ *    · 柔和：标签换成拦截页——标签还在、地址可查，休息回来点「刷新试试」就能继续
+ *    · 强制：关掉标签；窗口只剩它一个、并且允许连窗关时，连窗口一起关
+ *  先给主程序发一条 report，是为了让它弹通知、记日志、把界面拉到前台；
+ *  等 900ms 让通知露个脸再动手，和以前的时序一致。 */
+async function execute(actions, reason) {
   const sum = self.KOFSweep.summarize(actions);
   let n = 0;
-
   for (const a of actions) {
-    // 先让主程序记一笔（通知 + 日志），再动手：和主动清理保持同一时序
+    const key = a.tabId + '|' + (a.url || '');
+    if (CLOSING.has(key)) continue;
+    CLOSING.add(key);
+    setTimeout(() => CLOSING.delete(key), 5000);
+
     await post('/api/report', { url: a.url, rule: a.rule });
     await sleep(NOTIFY_LEAD_MS);
     try {
@@ -300,7 +210,14 @@ async function webSweep(reason) {
 
   if (n) {
     lastClosedAt = Date.now();
-    chrome.storage.local.set({
+    const today = new Date();
+    const k = `closed-${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+    const v = await chrome.storage.local.get(k);
+    await chrome.storage.local.set({
+      [k]: (v[k] || 0) + 1,
+      lastClosed: lastClosedAt,
+      lastReason: reason || '',
+      lastCount: n,
       lastSweepAt: lastClosedAt,
       lastSweepCount: n,
       lastSweepMode: SWEEP_MODE,
@@ -309,12 +226,49 @@ async function webSweep(reason) {
       lastSweepClosed: sum.closed,
     });
     if (chrome.action && chrome.action.setBadgeText) {
-      chrome.action.setBadgeBackgroundColor({ color: '#4d8dff' }).catch(() => {});
+      chrome.action.setBadgeBackgroundColor({
+        color: SWEEP_MODE === 'soft' ? '#4d8dff' : '#ff4444',
+      }).catch(() => {});
       chrome.action.setBadgeText({ text: String(n) }).catch(() => {});
       setTimeout(() => { try { chrome.action.setBadgeText({ text: '' }); } catch (e) {} }, 4000);
     }
   }
   return n;
+}
+
+/** 扫一遍所有标签页，按当前模式处理命中的；返回处理数量。
+ *
+ *  **柔和模式也走这里**：不关标签，只换成拦截页。否则学到一半的 4 秒巡检
+ *  会把刚刚"收起来"的标签照旧关掉，柔和就只在边界那一秒有意义了。 */
+async function sweep(reason) {
+  if (!MATCHERS.length) return 0;
+  if (!(await autoCloseOn())) return 0;
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (e) {
+    return 0;
+  }
+  const actions = self.KOFSweep.plan(
+    tabs,
+    (u) => self.KOFMatch.match(u, MATCHERS),
+    { mode: SWEEP_MODE, closeWindow: CLOSE_WINDOW, max: MAX_CLOSE_PER_PASS },
+  );
+  return execute(actions, reason);
+}
+
+/* ---------------- 休息结束收尾（网页侧） ---------------- */
+
+/**
+ * 边界那一刻的收尾：逻辑与 sweep() 相同，只是"必须真的到了边界"才调用，
+ * 并且多一层开关（收尾总开关）——用户把收尾关掉时，学到一半仍按常规拦，
+ * 但不在边界额外去动他休息里开着的东西。
+ *
+ * 仍然受「主动清理」开关约束：那个关掉了，就完全不自动处理标签。
+ */
+async function webSweep(reason) {
+  if (!SWEEP_ENABLED) return 0;
+  return sweep(reason || 'boundary');
 }
 
 /** 在"下一个状态翻转"那一刻立刻重拉一次，别等 12 秒轮询。
@@ -331,25 +285,32 @@ function scheduleBoundary(nextChange) {
   BOUNDARY_TIMER = setTimeout(() => { refresh({ reason: 'boundary' }); }, wait);
 }
 
-/** 单个标签页变化时立刻处理（比等扫描快，覆盖 DNR 漏掉的场景） */async function checkTab(tabId, url) {
+/** 单个标签页变化时立刻处理（比等扫描快，覆盖 DNR 漏掉的场景） */
+async function checkTab(tabId, url) {
   if (!MATCHERS.length) return;
   if (!/^https?:/i.test(url || '')) return;
   if (!(await autoCloseOn())) return;
-  let rule = null;
-  try {
-    rule = self.KOFMatch.match(url, MATCHERS);
-  } catch (e) {
-    return;
-  }
-  if (!rule) return;
   let tab;
   try {
     tab = await chrome.tabs.get(tabId);
   } catch (e) {
     return;
   }
-  const sameWin = await chrome.tabs.query({ windowId: tab.windowId });
-  await closeOne(tab, rule, sameWin.length <= 1);
+  // 传**整窗**的标签列表，plan 才能判断"这窗口是不是只剩它一个"；
+  // 但只处理当前这一个（其余用 skipIds 排除）。
+  let winTabs;
+  try {
+    winTabs = await chrome.tabs.query({ windowId: tab.windowId });
+  } catch (e) {
+    winTabs = [tab];
+  }
+  const skipIds = winTabs.filter((t) => t.id !== tabId).map((t) => t.id);
+  const actions = self.KOFSweep.plan(
+    winTabs,
+    (u) => self.KOFMatch.match(u, MATCHERS),
+    { mode: SWEEP_MODE, closeWindow: CLOSE_WINDOW, max: 1, skipIds },
+  );
+  if (actions.length) await execute(actions, 'tab');
 }
 
 /* ---------------- 心跳与状态 ---------------- */
