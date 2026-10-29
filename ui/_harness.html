@@ -1138,7 +1138,8 @@ window.__itest = async () => {
     out.push(['微缩图按段列出摘要（最多 6 条）', miniRows.length, Math.min(6, segN)]);
     out.push(['摘要有时段范围', miniRows[0] ? /^\d\d:\d\d–\d\d:\d\d$/.test(miniRows[0].querySelector('.rg').textContent) : '', true]);
     out.push(['摘要写了专注/休息节奏', miniRows[0] ? /专注 \d+ 分/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
-    out.push(['摘要写了番茄轮数', miniRows[0] ? /个番茄/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
+    // 段太短凑不满一轮时写「不足 1 轮」，不能硬凑成 1 个番茄
+  out.push(['摘要写了番茄轮数', miniRows[0] ? /个番茄|不足 1 轮/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
     out.push(['摘要写了这一段的总时长', miniRows[0] ? /小时|分钟/.test(miniRows[0].querySelector('.br').textContent) : '', true]);
     out.push(['微缩图色条是纯色（无渐变）',
       getComputedStyle(document.querySelector('.cc-mini-col i')).backgroundImage, 'none']);
@@ -1204,6 +1205,15 @@ window.__itest = async () => {
     out.push(['点月报 → 选中态跟着走', (document.querySelector('#genPeriod .seg-btn.active') || {}).dataset?.v, 'monthly']);
     out.push(['每条报告都有导出按钮', document.querySelectorAll('.rep-item [data-act="report-export-open"]').length, 1]);
     out.push(['每条报告都有删除按钮', document.querySelectorAll('.rep-item [data-act="report-del-ask"]').length, 1]);
+    // 页头一行同高：分段控件和按钮摆在一起时不能一高一矮
+    {
+      const sh = document.querySelector('#genPeriod').getBoundingClientRect().height;
+      const bh = document.querySelector('[data-act="gen-report"]').getBoundingClientRect().height;
+      out.push(['分段控件与按钮同高', Math.abs(sh - bh) < 1.5, true]);
+    }
+    // 主按钮纯色（渐变按钮在深色底上显塑料，且和页面其它纯色块不是一套语言）
+    out.push(['主按钮没有渐变',
+      getComputedStyle(document.querySelector('[data-act="gen-report"]')).backgroundImage, 'none']);
 
     // 导出面板：三种格式
     document.querySelector('[data-act="report-export-open"]')

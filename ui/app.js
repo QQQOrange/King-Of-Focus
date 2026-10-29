@@ -1329,24 +1329,12 @@ function clockCountOn(fc) {
 
 /** 一天里选中的小时合并成区间文案。
  *  带起止分钟（08:15–11:45）；中间小时的窗口不完整时会把区间断开——
- *  那个洞是真的没选中，文本不能假装连着（与后端 day_ranges 口径一致）。 */
+ *  那个洞是真的没选中，文本不能假装连着（与后端 day_ranges 口径一致）。
+ *
+ *  分段逻辑统一走 `ccSegs`：以前这里和微缩图各写了一份"怎么算连续"，
+ *  改一处忘另一处就会出现"摘要写 2 段、微缩图列 3 段"这种对不上的情况。 */
 function ccDayRanges(day) {
-  const parts = [];
-  let i = 0;
-  while (i < 24) {
-    if (!day[i].on) { i++; continue; }
-    const start = i;
-    let end = i;
-    // 连续性看"有效边界"：上一小时得到整点、下一小时从整点开始，才算连上
-    while (end + 1 < 24 && day[end + 1].on
-      && (day[end].to == null ? 60 : day[end].to) >= 60 && (day[end + 1].from || 0) <= 0) end++;
-    const f = Math.max(0, Math.min(59, day[start].from || 0));
-    const t = Math.max(1, Math.min(60, day[end].to == null ? 60 : day[end].to));
-    const endH = t >= 60 ? end + 1 : end;
-    parts.push(`${pad(start)}:${pad(f)}–${pad(endH)}:${t >= 60 ? '00' : pad(t)}`);
-    i = end + 1;
-  }
-  return parts;
+  return ccSegs(day).map((s) => s.range);
 }
 
 /** 已选摘要：七天一样 → "每天 …"，否则逐天列（与后端 summary 口径一致） */
@@ -1477,10 +1465,11 @@ function ccSegs(day) {
       const b = h === end ? t : 60;
       mins += Math.max(0, b - a);
     }
-    // 节奏取这一段的起点小时（同一段内通常一致）；番茄轮数按时长估算
+    // 节奏取这一段的起点小时（同一段内通常一致）；番茄轮数按时长估算。
+    // 不足一轮就是 0：写"1 个番茄"是骗人的，15 分钟的段撑不起一整轮。
     const work = Math.max(1, Math.min(60, day[start].work || 50));
     const brk = Math.max(0, Math.min(60 - work, day[start].brk || 0));
-    const rounds = Math.max(1, Math.floor(mins / Math.max(1, work + brk)));
+    const rounds = Math.floor(mins / Math.max(1, work + brk));
     const endH = t >= 60 ? end + 1 : end;
     out.push({
       h0: start, h1: end, f0: f, t1: t, mins, work, brk, rounds,
@@ -1494,7 +1483,8 @@ function ccSegs(day) {
 /** 一段的概括性内容：节奏 + 轮数 + 时长，一句话 */
 function ccSegBrief(sg) {
   const rhythm = sg.brk ? `专注 ${sg.work} 分 / 休息 ${sg.brk} 分` : `连续专注 ${sg.work} 分`;
-  return `${rhythm} · ${sg.rounds} 个番茄 · ${ccMinText(0, sg.mins).dur}`;
+  const rounds = sg.rounds > 0 ? `${sg.rounds} 个番茄` : '不足 1 轮';
+  return `${rhythm} · ${rounds} · ${ccMinText(0, sg.mins).dur}`;
 }
 
 /** 微缩周视图：时间轴（形状）+ 时段摘要（内容），都没有坐标 / 刻度 / 交互 */
@@ -2078,9 +2068,9 @@ function viewReports() {
             title="删除这份报告（会先确认）">删除</button>
         </div>
       </div>`).join('')
-    : '<div class="empty">还没有生成过报告。<br>开启下面的自动生成，或者点「立即生成」。</div>';
+    : '<div class="empty"><span class="ico">▤</span>还没有生成过报告。<br>开启下面的自动生成，或者点「立即生成」。</div>';
 
-  const sw = (k, v, t, sub) => `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+  const sw = (k, v, t, sub) => `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">${t}</div><div class="hint" style="margin-top:3px">${sub}</div></div>
       <div class="switch" data-act="stat-toggle" data-k="${k}"><input type="checkbox" ${v ? 'checked' : ''}><i></i></div>
     </div>`;
@@ -2114,7 +2104,8 @@ function viewReports() {
     <div class="rep-hd">
       <div>
         <div class="card-title" style="margin:0">历史报告</div>
-        <div class="hint" style="margin-top:4px">保留在本地，可随时回看、导出或删除</div>
+        <div class="hint" style="margin-top:4px">保留在本地，可随时回看、导出或删除${
+          S.reports.length ? ` · 共 ${S.reports.length} 份` : ''}</div>
       </div>
       <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
         ${seg}
@@ -2282,7 +2273,7 @@ function viewAbout() {
       </div>
       <a href="#" data-act="open-repo" style="color:var(--gold);font-size:12.5px;text-decoration:none">${esc(d.repoUrl)} ↗</a>
     </div>
-    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid #1a202c">
+    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
       <div><div style="font-size:12.5px">配置文件</div><div class="hint" style="margin-top:4px">${esc(d.configPath)}</div></div>
       <button class="btn btn-sm" data-act="open-cfg">打开</button>
     </div>
@@ -2292,7 +2283,7 @@ function viewAbout() {
     <div class="card-title">自动更新</div>
     <div class="card-sub">启动时检查 GitHub Releases，有新版本会弹窗提示；下载完成后自动退出、安装并重新启动。</div>
 
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div>
         <div style="font-size:12.5px">启动时检查更新</div>
         <div class="hint" style="margin-top:3px">最近一次检查：${st.lastCheck ? new Date(st.lastCheck * 1000).toLocaleString() : '还没检查过'}</div>
@@ -2300,7 +2291,7 @@ function viewAbout() {
       <div class="switch" data-act="update-enabled"><input type="checkbox" ${st.enabled ? 'checked' : ''}><i></i></div>
     </div>
 
-    <div style="padding:12px 0;border-bottom:1px solid #1a202c">
+    <div style="padding:12px 0;border-bottom:1px solid var(--line)">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
         <div>
           <div style="font-size:12.5px">GitHub 个人访问令牌</div>
@@ -2358,8 +2349,8 @@ function showUpdateModal(info, manual) {
                 : '<div class="hint">这个版本没有写更新说明。</div>'}
         ${!a.url ? '<div class="note" style="border-left-color:var(--red);margin-top:12px">该版本还没有上传安装包，暂时无法自动更新。</div>' : ''}
         <div id="upProgressWrap" class="hidden" style="margin-top:16px">
-          <div style="height:6px;background:#232a3a;border-radius:4px;overflow:hidden">
-            <div id="upBar" style="height:100%;width:0;background:linear-gradient(90deg,#4d8dff,#2f6df0);transition:width .2s"></div>
+          <div style="height:6px;background:var(--inset-bg);border-radius:4px;overflow:hidden">
+            <div id="upBar" style="height:100%;width:0;background:var(--cc-fill);transition:width .2s"></div>
           </div>
           <div class="hint" id="upText" style="margin-top:8px">准备下载…</div>
         </div>
@@ -2653,7 +2644,7 @@ function viewSettings() {
   };
   const hudCorner = ['tl', 'tr', 'bl', 'br'].includes((st.hud || {}).corner) ? st.hud.corner : 'tr';
   const hudOpacity = Math.max(30, Math.min(100, +((st.hud || {}).opacity) || 92));
-  const sw = (k, v, t, sub) => `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+  const sw = (k, v, t, sub) => `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">${t}</div><div class="hint" style="margin-top:3px">${sub}</div></div>
       <div class="switch" data-act="cfg-switch" data-k="${k}"><input type="checkbox" ${v ? 'checked' : ''}><i></i></div>
     </div>`;
@@ -2700,7 +2691,7 @@ function viewSettings() {
     ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中黑名单网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
     ${sw('guardBrowser', st.guardBrowser, '浏览器守护', '要拦网页时，如果插件失联，直接关掉浏览器（需先装插件）')}
     ${sw('blockTaskmgr', st.blockTaskmgr !== false, '自律期间禁止打开任务管理器', '自律模式生效时（自律时段专注段 / 黑名单生效中），一发现任务管理器就关掉；「固化」锁定期间无论如何都会关')}
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">扫描间隔</div><div class="hint" style="margin-top:3px">越小越灵敏，占用也越高</div></div>
       <div class="row" style="align-items:center;gap:8px">
         <input type="number" id="pollMs" value="${st.pollMs}" min="300" max="5000" step="100" style="width:90px" />
@@ -2738,18 +2729,18 @@ function viewSettings() {
     <div class="card-sub">
       每个「自律周期」和每段「休息」结束前各提醒一次：主界面弹提示，HUD 上对应的倒计时会变金色闪烁。
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">启用提醒</div><div class="hint" style="margin-top:3px">总开关，关掉后两种提醒都不发</div></div>
       <div class="switch"><input type="checkbox" id="ntEnabled" ${(d.config.settings.notify || {}).enabled ? 'checked' : ''}><i></i></div>
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">学习结束前提醒</div><div class="hint" style="margin-top:3px">0 = 不提醒；范围 0~120 分钟</div></div>
       <div class="row" style="align-items:center;gap:8px">
         <input type="number" id="ntWork" min="0" max="120" value="${(d.config.settings.notify || {}).workBefore ?? 5}" style="width:88px" />
         <span class="hint">分钟</span>
       </div>
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">休息结束前提醒</div><div class="hint" style="margin-top:3px">范围 0~120 分钟</div></div>
       <div class="row" style="align-items:center;gap:8px">
         <input type="number" id="ntBreak" min="0" max="120" value="${(d.config.settings.notify || {}).breakBefore ?? 2}" style="width:88px" />
@@ -2839,11 +2830,11 @@ function viewSettings() {
     </div>
     ${sw('alwaysOnTop', st.alwaysOnTop, '主窗口置顶', '开启后主界面始终浮在其它窗口之上，不会被别的窗口盖住；点一下这里就能立刻生效')}
     ${sw('closeToTray', st.closeToTray, '关闭窗口时收进托盘', '拦截引擎在托盘里继续工作')}
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">浏览器插件</div><div class="hint" style="margin-top:3px">在 Chrome / Edge 的扩展页打开"开发者模式"，载入已解压的扩展</div></div>
       <button class="btn btn-sm" data-act="open-ext">打开插件目录</button>
     </div>
-    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid #1a202c">
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div>
         <div style="font-size:12.5px">强制退出</div>
         <div class="hint" style="margin-top:3px">
@@ -2862,7 +2853,7 @@ function viewSettings() {
   <div class="card">
     <div class="card-title">全局保护名单</div>
     <div class="card-sub">强制模式下，这些进程永远不会被拦截。用逗号分隔（进程名，不带 .exe）。</div>
-    <textarea id="protectedList" style="width:100%;height:88px;background:#0e121b;border:1px solid var(--line-2);border-radius:8px;color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
+    <textarea id="protectedList" style="width:100%;height:88px;background:var(--input-bg);border:1px solid var(--line-2);border-radius:8px;color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
     <div style="margin-top:10px"><button class="btn btn-sm" data-act="save-protected">保存名单</button></div>
   </div>`;
 }
@@ -3453,7 +3444,7 @@ const Act = window.Act = {
             </div>
             <div class="exp-fmts">
               <button class="exp-fmt" data-act="report-export-do" data-f="md">
-                <span class="ic">M↓</span>
+                <span class="ic">MD</span>
                 <span class="tx"><b>Markdown</b><i>.md · 标题与列表层级完整，适合笔记软件</i></span>
               </button>
               <button class="exp-fmt" data-act="report-export-do" data-f="txt">
@@ -3461,7 +3452,7 @@ const Act = window.Act = {
                 <span class="tx"><b>纯文本</b><i>.txt · 无格式符号，任何设备都能打开</i></span>
               </button>
               <button class="exp-fmt" data-act="report-export-do" data-f="docx">
-                <span class="ic">W</span>
+                <span class="ic">DOC</span>
                 <span class="tx"><b>Word 文档</b><i>.docx · 带标题样式与两级项目符号，可直接打印</i></span>
               </button>
             </div>

@@ -55,7 +55,7 @@ pub fn b64d(s: &str) -> Result<Vec<u8>, String> {
             .iter()
             .map(|b| if *b == b'=' { 0 } else { map[*b as usize] })
             .collect();
-        if v.iter().any(|x| *x == 255) {
+        if v.contains(&255) {
             return Err("base64 数据损坏".into());
         }
         let n = ((v[0] as u32) << 18) | ((v[1] as u32) << 12)

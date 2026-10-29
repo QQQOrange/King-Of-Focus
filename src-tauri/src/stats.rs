@@ -373,17 +373,41 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     }
 }
 
+/// 取字符串前 n 个**字符**（不是字节）。
+///
+/// 这里以前写的是 `&start[..7]`，只要传进来的日期短于 7 个字节（比如
+/// 经 IPC 传了个 "2026"），就会因为"切在字符边界外"直接 panic，
+/// 把处理命令的那条线程打挂。标题这种纯展示逻辑不该有这种风险。
+fn prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 fn title_for(period: &str, start: &str, end: &str) -> String {
     match period {
         "daily" => format!("{start} 日报"),
         "weekly" => format!("{start} ~ {end} 周报"),
-        "monthly" => format!("{} 月报", &start[..7]),
-        "yearly" => format!("{} 年报", &start[..4]),
+        "monthly" => format!("{} 月报", prefix(start, 7)),
+        "yearly" => format!("{} 年报", prefix(start, 4)),
         _ => format!("{start} ~ {end} 自定义报告"),
     }
 }
 
+/// 校验统计区间：起止都不能为空，也不能倒序。
+/// 抽出来是为了能单测（`generate` 还需要真实配置）。
+fn check_range(start: &str, end: &str) -> Result<(), String> {
+    if start.trim().is_empty() || end.trim().is_empty() {
+        return Err("统计区间不完整，无法生成报告".into());
+    }
+    if start > end {
+        return Err("统计区间的开始日期晚于结束日期".into());
+    }
+    Ok(())
+}
+
 pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result<Report, String> {
+    // 起止日期是拼文件名和标题的一部分，空值/倒序都直接拒绝：
+    // 否则会生成一个 id 里带空串的怪文件，之后列表里看起来像"无名报告"。
+    check_range(start, end)?;
     let agg = aggregate(shared, start, end);
     let on_secs = agg.on.iter().map(|s| s.secs).sum();
     let off_secs = agg.off.iter().map(|s| s.secs).sum();
@@ -441,7 +465,11 @@ pub fn list_reports() -> Vec<serde_json::Value> {
     out
 }
 
-pub fn read_report(id: &str) -> Option<Report> {
+/// 报告 id → 文件路径。
+///
+/// id 来自前端，必须过滤：只允许字母/数字/`-`/`_`，
+/// 否则 `../config` 这种就能穿出 reports 目录（三处调用以前各写一遍，容易漏）。
+fn report_path(id: &str) -> Option<PathBuf> {
     let safe: String = id
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
@@ -449,21 +477,26 @@ pub fn read_report(id: &str) -> Option<Report> {
     if safe.is_empty() {
         return None;
     }
-    let p = stats_dir().join("reports").join(format!("{safe}.json"));
+    Some(stats_dir().join("reports").join(format!("{safe}.json")))
+}
+
+pub fn read_report(id: &str) -> Option<Report> {
+    let p = report_path(id)?;
     let s = std::fs::read_to_string(p).ok()?;
     serde_json::from_str::<Report>(&s).ok()
 }
 
+/// 删除一份报告。
+///
+/// 文件已经不在时返回 Ok：用户点删除的目的一定是"让它消失"，
+/// 目标状态已经达成，再报"删除失败"只会让人以为出了问题。
 pub fn delete_report(id: &str) -> Result<(), String> {
-    let safe: String = id
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if safe.is_empty() {
-        return Err("非法的报告 ID".into());
+    let p = report_path(id).ok_or_else(|| "报告 ID 非法".to_string())?;
+    match std::fs::remove_file(p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("删除失败：{e}")),
     }
-    let p = stats_dir().join("reports").join(format!("{safe}.json"));
-    std::fs::remove_file(p).map_err(|e| e.to_string())
 }
 
 fn sched_path() -> PathBuf {
@@ -608,5 +641,41 @@ fn run_due(shared: &Shared) {
 
     if changed {
         save_sched(&s);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 标题生成不能因为日期字符串短一点就 panic。
+    /// 这是 IPC 边界上的输入，长度不受我们控制。
+    #[test]
+    fn title_handles_short_dates() {
+        assert_eq!(title_for("monthly", "2026", "2026"), "2026 月报");
+        assert_eq!(title_for("yearly", "20", "20"), "20 年报");
+        assert_eq!(title_for("monthly", "", ""), " 月报");
+        // 正常长度仍然是完整前缀
+        assert_eq!(title_for("monthly", "2026-10-01", "2026-10-31"), "2026-10 月报");
+        assert_eq!(title_for("yearly", "2026-01-01", "2026-12-31"), "2026 年报");
+    }
+
+    #[test]
+    fn report_path_rejects_traversal() {
+        assert!(report_path("").is_none());
+        assert!(report_path("../../config").is_some()); // 会被过滤成 "config"
+        let p = report_path("../../config").unwrap();
+        assert!(p.starts_with(stats_dir().join("reports")), "不能穿出 reports 目录");
+        assert!(!p.to_string_lossy().contains(".."));
+    }
+
+    #[test]
+    fn generate_rejects_bad_range() {
+        // 只看参数校验这一层，不碰 aggregate（那需要真实配置与数据目录）
+        assert!(check_range("", "2026-10-27").is_err());
+        assert!(check_range("2026-10-27", "").is_err());
+        assert!(check_range("  ", "2026-10-27").is_err());
+        assert!(check_range("2026-10-28", "2026-10-27").is_err());
+        assert!(check_range("2026-10-27", "2026-10-27").is_ok());
     }
 }

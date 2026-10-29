@@ -347,6 +347,43 @@ unsafe fn process_stem(pid: u32) -> String {
     name.trim_end_matches(".exe").to_lowercase()
 }
 
+/// 进程名缓存：pid → (取到的时刻, 名字)。
+///
+/// 主循环每 50ms 就会问一遍"这个窗口是不是放行程序 / 是不是外壳浮层"，
+/// 而 `process_stem` 每次都要 OpenProcess + QueryFullProcessImageName 两个内核调用。
+/// 一屏几十个窗口 × 每秒 20 拍 = 每秒上千次内核调用，纯属浪费。
+/// 一个进程的映像名在它活着的时候不会变，缓存 1 秒完全够（pid 复用远慢于这个窗口）。
+fn stem_cached(pid: u32) -> String {
+    const TTL_MS: u64 = 1000;
+    const CAP: usize = 256;
+    static CACHE: Mutex<Vec<(u32, String, u64)>> = Mutex::new(Vec::new());
+    if pid == 0 {
+        return String::new();
+    }
+    let now = now_ms();
+    if let Ok(g) = CACHE.lock() {
+        if let Some((_, name, at)) = g.iter().find(|(p, _, _)| *p == pid) {
+            if now.saturating_sub(*at) < TTL_MS {
+                return name.clone();
+            }
+        }
+    }
+    let name = unsafe { process_stem(pid) };
+    if let Ok(mut g) = CACHE.lock() {
+        if let Some(e) = g.iter_mut().find(|(p, _, _)| *p == pid) {
+            e.1 = name.clone();
+            e.2 = now;
+        } else {
+            if g.len() >= CAP {
+                // 满了就整批清掉：条目少、重建便宜，比写 LRU 简单可靠
+                g.clear();
+            }
+            g.push((pid, name.clone(), now));
+        }
+    }
+    name
+}
+
 /// 「外壳浮层」的进程名（小写、不含 .exe）。
 ///
 /// Start 菜单、搜索、任务视图、音量/网络那类飞出面板都在这几个宿主进程里。
@@ -393,7 +430,7 @@ fn shell_flyout_open() -> bool {
     } else {
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(fg, &mut pid) };
-        let stem = unsafe { process_stem(pid) };
+        let stem = stem_cached(pid);
         is_shell_flyout_proc(&stem)
     };
     CACHE.store((now << 1) | v as u64, Ordering::Relaxed);
@@ -409,7 +446,7 @@ pub fn flyout_open_now() -> bool {
 }
 
 fn is_pass_through(pid: u32) -> bool {
-    let stem = unsafe { process_stem(pid) };
+    let stem = stem_cached(pid);
     if stem.is_empty() {
         return false;
     }
@@ -838,7 +875,7 @@ impl Overlay {
     /// 原因见 `shell_flyout_open` 的说明——被挖掉的那条带正好是开始菜单底边与
     /// 任务栏之间的缝，放行程序（lazytyper）的弹窗就藏在那条缝下面，
     /// 区域一挖开它就露出来。盖上以后它整块被遮罩压住，缝隙处什么都不显示。
-    unsafe fn paint_cover(&mut self, alpha: u8) {
+    unsafe fn paint_cover(&mut self, alpha: u8, flyout: bool) {
         if self.w <= 0 || self.h <= 0 {
             return;
         }
@@ -848,7 +885,6 @@ impl Overlay {
         //
         // 但"浮层开关"不能等这 500ms：开始菜单刚弹出来的头几帧如果还在用
         // 旧的挖洞区域，那条缝就在，弹窗就会闪一下。所以状态一变立刻重建一次。
-        let flyout = shell_flyout_open();
         let flip = flyout != self.cover_flyout;
         if flip || self.cover_t.elapsed().as_millis() >= 500 || self.cover_sig == i64::MIN {
             self.cover_t = Instant::now();
@@ -1025,7 +1061,7 @@ unsafe fn ensure_above(h: Hwnd, raised: &mut Vec<Raised>) {
 /// 把不再需要的窗口恢复到调用前的层级。
 unsafe fn release_raised(raised: &mut Vec<Raised>, keep: &[Hwnd]) {
     raised.retain(|r| {
-        if keep.iter().any(|k| *k == r.hwnd) {
+        if keep.contains(&r.hwnd) {
             return true;
         }
         if IsWindow(r.hwnd) != 0 && !r.was_topmost {
@@ -1097,7 +1133,7 @@ unsafe fn collect_covered_pids_with_target(target_pid: u32, exempt: &[Hwnd]) -> 
         if pid == 0 || pid == std::process::id() || pid == ctx.target_pid {
             return 1;
         }
-        if ctx.exempt.iter().any(|x| *x == h) {
+        if ctx.exempt.contains(&h) {
             return 1;
         }
         if !ctx.out.contains(&pid) {
@@ -1511,7 +1547,7 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
             GetWindowThreadProcessId(a, &mut pid_a);
             let is_pass = pid_a != 0 && is_pass_through(pid_a) && !flyout;
             if IsWindowVisible(a) != 0
-                && !except.iter().any(|e| *e == a)
+                && !except.contains(&a)
                 && !is_shell_window(a)
                 && !is_mask_class(a)
                 && !is_pass
@@ -1911,6 +1947,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 continue;
             }
 
+            // 这一拍只查一次"外壳浮层开没开"：它同时决定
+            //   ① 遮罩要不要把任务栏那条带也盖住（paint_cover）
+            //   ② 要不要把放行程序的弹窗顶回遮罩之上
+            // 之前这里散着查了三四次，每次都过一次 GetForegroundWindow + 查进程名。
+            let flyout_now = shell_flyout_open();
+
             // 真正要画的时候才分配位图
             if overlays.len() != mons.len() {
                 for o in overlays.iter_mut() {
@@ -1936,7 +1978,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 // 窗口靠"置顶"浮到遮罩之上，所以遮罩全程不需要跟随、不会滞后。
                 for o in overlays.iter_mut() {
                     o.set_clickthrough(!block_click);
-                    o.paint_cover(alpha);
+                    o.paint_cover(alpha, flyout_now);
                 }
                 // 选中窗口 + 它的弹窗一起浮上来
                 let tgt = if follow {
@@ -1966,7 +2008,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     pass_t = Instant::now();
                     pass_wins = collect_pass_through();
                     // 浮层打开时不顶：顶上去只会露在 Start 与任务栏之间的缝里闪
-                    if !shell_flyout_open() {
+                    if !flyout_now {
                         for h in pass_wins.iter() {
                             ensure_above(*h, &mut raised);
                         }
@@ -2046,7 +2088,6 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             if last_top.elapsed().as_millis() >= 50 {
                 last_top = Instant::now();
                 let anchor = last_tgt as Hwnd;
-                let flyout_now = shell_flyout_open();
                 if flyout_now {
                     // 外壳浮层（Start / 搜索）打开：把遮罩抬到最前面，直接压住
                     // lazytyper 那类"自动置顶"的小弹窗。
@@ -2072,7 +2113,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 // 浮层打开时什么都不做：遮罩已经抬到最前面（见上面的 raise_top），
                 // 弹窗自然被盖住。这里若再去 ensure_above，就成了"遮罩压、主循环顶"
                 // 的对拉，弹窗会在缝里一闪一闪。
-                if !shell_flyout_open() {
+                if !flyout_now {
                     for h in pass_wins.iter() {
                         ensure_above(*h, &mut raised);
                     }

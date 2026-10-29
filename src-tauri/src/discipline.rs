@@ -94,7 +94,7 @@ pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Ru
     cfg.lists
         .iter()
         .filter(|l| l.enabled)
-        .filter(|l| bound.is_empty() || bound.iter().any(|id| *id == l.id))
+        .filter(|l| bound.is_empty() || bound.contains(&l.id))
         .cloned()
         .collect()
 }

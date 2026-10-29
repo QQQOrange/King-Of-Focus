@@ -136,19 +136,32 @@ pub fn blocks(r: &Report) -> Vec<Blk> {
 
 pub fn markdown(bs: &[Blk]) -> String {
     let mut s = String::new();
+    // 标题前必须有空行，否则紧跟在列表后面会变成"列表项 + ## 标题"同一段。
+    // 以前是用 `s.replace("\n## ", ...)` 事后补救——正文里只要恰好出现
+    // "\n## " 就会被误伤，这里改成写出时判断。
+    let blank = |s: &mut String| {
+        if !s.is_empty() && !s.ends_with("\n\n") {
+            s.push('\n');
+        }
+    };
     for b in bs {
         match b {
-            Blk::H1(t) => s.push_str(&format!("# {t}\n\n")),
-            Blk::H2(t) => s.push_str(&format!("## {t}\n\n")),
-            Blk::P(t) => s.push_str(&format!("{t}\n\n")),
-            Blk::Li(d, t) => {
-                s.push_str(&format!("{}- {t}\n", "  ".repeat(*d)));
+            Blk::H1(t) => {
+                blank(&mut s);
+                s.push_str(&format!("# {t}\n\n"));
             }
+            Blk::H2(t) => {
+                blank(&mut s);
+                s.push_str(&format!("## {t}\n\n"));
+            }
+            Blk::P(t) => {
+                blank(&mut s);
+                s.push_str(&format!("{t}\n\n"));
+            }
+            Blk::Li(d, t) => s.push_str(&format!("{}- {t}\n", "  ".repeat(*d))),
         }
     }
-    // 列表后面空一行，避免和下一个标题粘在一起
-    let out = s.replace("\n## ", "\n\n## ");
-    format!("{}\n", out.trim_end())
+    format!("{}\n", s.trim_end())
 }
 
 // ---------------- 纯文本 ----------------

@@ -47,7 +47,6 @@ pub fn place_hud(app: &tauri::AppHandle, cfg: &crate::model::Config) {
     let Ok(Some(mon)) = w.primary_monitor() else {
         return;
     };
-    let msize = mon.size();
     let scale = mon.scale_factor();
     let wsz = w
         .outer_size()
@@ -55,13 +54,21 @@ pub fn place_hud(app: &tauri::AppHandle, cfg: &crate::model::Config) {
     let h = &cfg.settings.hud;
     let ix = (h.offset_x.max(0) as f64 * scale) as i32;
     let iy = (h.offset_y.max(0) as f64 * scale) as i32;
-    let (mw, mh) = (msize.width as i32, msize.height as i32);
+    // 用**工作区**而不是整块屏幕：屏幕尺寸把任务栏也算进去了，
+    // 右下 / 左下两个角会让弹窗压住任务栏（甚至挡住开始按钮）。
+    // 工作区原点也一并带上，主屏不在 (0,0) 时位置才不会整体偏掉。
+    let wa = mon.work_area();
+    let (mx, my) = (wa.position.x, wa.position.y);
+    let (mw, mh) = (wa.size.width as i32, wa.size.height as i32);
     let (ww, wh) = (wsz.width as i32, wsz.height as i32);
+    // 窗口比工作区还高（极小屏 / 放大 200%）时夹住，别跑到屏幕外
+    let x_max = (mx + mw - ww - ix).max(mx);
+    let y_max = (my + mh - wh - iy).max(my);
     let (x, y) = match h.corner_norm() {
-        "tl" => (ix, iy),
-        "br" => (mw - ww - ix, mh - wh - iy),
-        "bl" => (ix, mh - wh - iy),
-        _ => (mw - ww - ix, iy),
+        "tl" => (mx + ix, my + iy),
+        "br" => (x_max, y_max),
+        "bl" => (mx + ix, y_max),
+        _ => (x_max, my + iy),
     };
     let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
 }

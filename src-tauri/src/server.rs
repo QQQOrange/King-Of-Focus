@@ -3,7 +3,6 @@
 use crate::sched;
 use crate::shared::Shared;
 use serde_json::json;
-use std::io::Read;
 use std::sync::Arc;
 use std::thread;
 use tauri::Manager;

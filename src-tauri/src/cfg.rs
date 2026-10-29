@@ -175,11 +175,11 @@ fn sanitize_clock(hc: &mut ClockCfg) {
 fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {
     // id：空的 / 撞车的重新发一个，保证前端能唯一定位
     let mut id = p.id.trim().to_string();
-    if id.is_empty() || seen.iter().any(|s| *s == id) {
+    if id.is_empty() || seen.contains(&id) {
         let mut n = idx + 1;
         loop {
             let cand = format!("p{n}");
-            if !seen.iter().any(|s| *s == cand) {
+            if !seen.contains(&cand) {
                 id = cand;
                 break;
             }
