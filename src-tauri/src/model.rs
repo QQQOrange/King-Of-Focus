@@ -684,6 +684,17 @@ pub struct Settings {
     pub site_close_browser: bool,
     /// 自律模式生效期间是否禁止打开任务管理器（固化锁定时始终禁止，与本开关无关）
     pub block_taskmgr: bool,
+    /// 自律时段内是否允许退出程序。
+    ///
+    /// 开（默认，保持历史行为）：自律时段内仍可按 Ctrl+Alt+F4 / Alt+F4 退出，
+    /// 也会按「关闭窗口」的常规规则处理。
+    /// 关：自律时段内**禁止一切退出方式** —— 热键、Alt+F4、关窗口、设置页的
+    /// 「立即强制退出」全部拒绝，直到这个时段结束。
+    ///
+    /// 语义是"自律时间内能不能下班"，所以默认必须是"能"，否则老配置升级上来
+    /// 会突然变成关不掉，用户只能去结束进程。
+    #[serde(default = "default_true")]
+    pub allow_quit_in_session: bool,
     /// 全局保护进程名（强制模式不拦截）
     pub protected: Vec<String>,
     /// 浏览器自定义安装路径：browserKey → 可执行文件绝对路径。
@@ -727,6 +738,7 @@ impl Default for Settings {
             soft_close: true,
             site_close_browser: true,
             block_taskmgr: true,
+            allow_quit_in_session: true,
             protected: default_protected(),
             browser_exe: std::collections::HashMap::new(),
             theme: "system".into(),

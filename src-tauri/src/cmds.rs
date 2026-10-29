@@ -944,8 +944,14 @@ pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), St
 /// 与 `quit_app` 的区别：**不受自律时段/专注段的退出拦截**，
 /// 也一定走完整的资源清理（守护进程、媒体、遮罩、统计、互斥体）。
 #[tauri::command]
-pub fn force_quit(app: AppHandle, shared: State<'_, Arc<Shared>>) {
-    crate::forcequit::force_quit(&app, &shared);
+pub fn force_quit(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    // 拒绝时把原因带回前端，设置页能直接弹出来，而不是"点了没反应"
+    if crate::forcequit::force_quit(&app, &shared) {
+        Ok(())
+    } else {
+        Err(crate::guard::session_quit_hint(&shared.config())
+            .unwrap_or_else(|| "现在不能退出".to_string()))
+    }
 }
 
 /// 主窗口置顶开关。

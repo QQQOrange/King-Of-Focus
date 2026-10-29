@@ -321,7 +321,9 @@ fn main() {
                         // 反过来，点 X 仍然走原来的规则（收进托盘 / 时段内拦截）。
                         if crate::forcequit::is_alt_f4_close() {
                             api.prevent_close();
-                            crate::forcequit::force_quit(&app_h, &sh);
+                            // 自律时段内关掉了「允许退出」时，这里会被拒，
+                            // 窗口保持原样（上面已经 prevent_close）。
+                            let _ = crate::forcequit::force_quit(&app_h, &sh);
                             return;
                         }
                         if sh.mask.on.load(Ordering::Relaxed) {

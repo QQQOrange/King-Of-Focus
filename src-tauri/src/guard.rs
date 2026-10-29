@@ -172,6 +172,12 @@ pub fn discipline_violation_at(
     if oc.apply_rules && !nc.apply_rules {
         return Some("自律时段生效中，不能关闭「时段内让已启用的黑名单立即生效」".into());
     }
+    // 2.5) 「自律时段内允许退出」是单向的：时段内只能往"更严"改。
+    //      关掉它可以（那是在加强纪律），但时段内不能再打开——
+    //      否则这一整条"退出禁令"就成了摆设：点一下开关就绕过去了。
+    if !old.settings.allow_quit_in_session && new.settings.allow_quit_in_session {
+        return Some("自律时段生效中，不能重新打开「自律时段内允许退出」".into());
+    }
     // 3) 正在生效的那套方案不能被切走 / 删掉
     let old_id = oc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
     let new_id = nc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
@@ -305,7 +311,9 @@ pub fn exit_blocked(cfg: &Config) -> Option<String> {
 
 /// 与 `exit_blocked` 相同，但"现在"可以指定（便于测试）。
 pub fn exit_blocked_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<String> {
-    let info = lock_info(cfg);
+    // 注意用带 `now` 的那个版本：早期这里读的是真实时钟，
+    // 导致"可注入时间"的函数在测试里行为随运行时刻变化。
+    let info = lock_info_at(cfg, now);
     if info.locked {
         return Some(format!(
             "自律固化中（{} 结束），现在不能退出程序",
@@ -313,13 +321,49 @@ pub fn exit_blocked_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<Strin
         ));
     }
     let d = crate::discipline::state(cfg, &now);
-    if d.clock_on {
+    if d.clock_in {
+        // 设置里允许在自律时段内退出 → 不再拦关窗口
+        if cfg.settings.allow_quit_in_session {
+            return None;
+        }
         let mins = (d.clock_left / 60).max(1);
         return Some(format!(
-            "自律时段正在生效（约 {mins} 分钟后结束），现在不能退出程序",
+            "自律时段内已禁止退出（约 {mins} 分钟后结束）",
         ));
     }
     None
+}
+
+/// 自律时段内是否被"禁止退出"锁住。
+///
+/// 条件只有两个：设置里关掉了「自律时段内允许退出」，且现在落在生效时段里。
+///
+/// 判定用 `clock_in`（整个生效时段，含休息段）而不是 `clock_on`（专注段）：
+/// 用户在设置里读到的文案是"自律时间内能不能退出"，休息那几分钟同样属于
+/// 这段时间，不能因为"正好在休息"就允许退出——那等于留了个后门。
+///
+/// 固化（`lock_info`）是另一套机制，不在这里管：固化期间本来就另有守卫，
+/// 而强制退出正是用户从固化里出来的通道，这条通道不能被这个开关一起关掉。
+pub fn session_quit_locked(cfg: &Config) -> bool {
+    if crate::testmode::on() {
+        return false;
+    }
+    if cfg.settings.allow_quit_in_session {
+        return false;
+    }
+    crate::discipline::state(cfg, &crate::sched::now_local()).clock_in
+}
+
+/// 被「禁止退出」挡住时给用户看的说明；没被挡住返回 None
+pub fn session_quit_hint(cfg: &Config) -> Option<String> {
+    if !session_quit_locked(cfg) {
+        return None;
+    }
+    let d = crate::discipline::state(cfg, &crate::sched::now_local());
+    let mins = (d.clock_left / 60).max(1);
+    Some(format!(
+        "自律时段正在生效（约 {mins} 分钟后结束），设置里关掉了「自律时段内允许退出」，现在无法退出"
+    ))
 }
 
 // ---------------- 守护进程 ----------------
@@ -708,18 +752,50 @@ mod tests {
         assert!(discipline_violation_at(&old, &new, now_at(2, 10, 30)).is_none());
     }
 
+    /// 「自律时段内允许退出」是这次新增的开关，默认开（保持历史行为）。
+    /// 判定要跟着开关走：开着不拦、关掉才拦，时段外永远放行。
     #[test]
-    fn exit_blocked_inside_window_outside_window() {
-        let c = cfg_with_clock();
-        assert!(exit_blocked_at(&c, now_at(2, 10, 30)).is_some(), "自律时段内不能退出");
-        assert!(exit_blocked_at(&c, now_at(2, 11, 30)).is_none(), "时段外可以退出");
+    fn exit_blocked_follows_allow_quit_switch() {
+        let mut c = cfg_with_clock();
+        // 关掉固化（hard）再测：固化是另一套更硬的锁，会盖住这个开关的判定
+        c.lists[0].hard = false;
+        assert!(exit_blocked_at(&c, now_at(2, 10, 30)).is_none(), "默认允许退出，时段内也不该拦");
+        c.settings.allow_quit_in_session = false;
+        assert!(exit_blocked_at(&c, now_at(2, 10, 30)).is_some(), "关掉开关后时段内必须退不掉");
+        assert!(exit_blocked_at(&c, now_at(2, 11, 30)).is_none(), "时段外仍然可以退出");
     }
 
+    /// 休息段同样属于"自律时间"：不能因为正好在休息就允许退出，那是个后门。
     #[test]
-    fn exit_allowed_during_break_segment() {
+    fn quit_lock_covers_break_segment() {
         let mut c = cfg_with_clock();
-        c.settings.focus_clock.profiles[0].days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
-        assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_none(), "休息段可以退出");
+        c.lists[0].hard = false;
+        c.settings.allow_quit_in_session = false;
+        c.settings.focus_clock.profiles[0].days[2][10] =
+            HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
+        assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_some(), "休息段也属于自律时段");
+    }
+
+    /// 开关是单向的：时段内可以关掉（更严），不能再打开（那就是绕过退出禁令）。
+    #[test]
+    fn cannot_reopen_quit_switch_inside_window() {
+        let mut old = cfg_with_clock();
+        old.settings.allow_quit_in_session = false;
+        let mut reopened = old.clone();
+        reopened.settings.allow_quit_in_session = true;
+        assert!(
+            discipline_violation_at(&old, &reopened, now_at(2, 10, 30)).is_some(),
+            "时段内不允许把退出权限放回来"
+        );
+
+        let mut old2 = cfg_with_clock();
+        old2.settings.allow_quit_in_session = true;
+        let mut hardened = old2.clone();
+        hardened.settings.allow_quit_in_session = false;
+        assert!(
+            discipline_violation_at(&old2, &hardened, now_at(2, 10, 30)).is_none(),
+            "时段内收紧（关掉允许退出）应该放行"
+        );
     }
 
     /// `config_replace_blocked`（备份恢复 / 云同步下载）复用同一套判定，
@@ -781,11 +857,12 @@ mod tests {
         assert!(!info.locked, "休息段不算自律时间，不该锁：{info:?}");
     }
 
-    /// 退出拦截：自律时间内禁止退出，自律时间外放行
+    /// 退出拦截：关掉「自律时段内允许退出」后，时段内禁止退出、时段外放行
     #[test]
     fn exit_allowed_outside_discipline_time() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = true;
+        c.lists[0].hard = false;
+        c.settings.allow_quit_in_session = false;
         // 自律时间内（周三 10:20）→ 禁退
         assert!(
             exit_blocked_at(&c, now_at(2, 10, 20)).is_some(),

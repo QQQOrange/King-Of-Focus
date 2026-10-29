@@ -330,12 +330,28 @@ window.__itest = async () => {
   }
 
   out.push(['整块高度 = 4 格 + 3 道缝', run0 ? Math.abs(run0.height - (rc11.bottom - rc8.top)) < 1.5 : false, true]);
-  // 周一–周五同一时段合并成一条横跨 5 列的整带（d0→d4，单块）。
-  // 宽度 ≥ 周五右沿-周一左沿（右侧若与相邻日接壤会再补最多 3px 缝，故不取等）
-  out.push(['周一–周五 同一时段合并成一条整带', run0
-    ? (runs(0).length === 1 && runs(0)[0].dataset.d1 === '4'
-      && run0.width - (cell(4, 8).getBoundingClientRect().right - rc8.left) >= -1.5)
-    : false, true]);
+  // 五天同一时段**不再**横跨合并：一天一块，各自圆角，靠 6px 列间距分开
+  {
+    const perDay = [0, 1, 2, 3, 4].map((d) => runs(d).length);
+    out.push(['五天各自一块（不再横跨合并）', perDay.join(','), '1,1,1,1,1']);
+    out.push(['周一那块只占一列', runs(0)[0] ? runs(0)[0].dataset.d1 : '(无)', '0']);
+    const w0 = runs(0)[0] ? runs(0)[0].getBoundingClientRect().width : 0;
+    const cw = cell(0, 8).getBoundingClientRect().width;
+    out.push(['块宽 = 一列宽', Math.abs(w0 - cw) < 1.5, true]);
+    // 相邻两天的块之间必须留缝，不能糊在一起
+    const r0 = runs(0)[0].getBoundingClientRect();
+    const r1 = runs(1)[0].getBoundingClientRect();
+    out.push(['相邻两天的块之间有间隙', Math.round(r1.left - r0.right), 6]);
+    // 每块的上/下两个外沿都必须是圆的（中间段本来就该是方角，那是同一块的内部）
+    out.push(['每天的块上沿是圆角', [0, 1, 2, 3, 4].map((d) => {
+      const f = runs(d)[0].querySelector('.f');
+      return f ? getComputedStyle(f).borderTopLeftRadius : '无';
+    }).join(','), '7px,7px,7px,7px,7px']);
+    out.push(['每天的块下沿是圆角', [0, 1, 2, 3, 4].map((d) => {
+      const all = runs(d)[0].querySelectorAll('.f');
+      return all.length ? getComputedStyle(all[all.length - 1]).borderBottomLeftRadius : '无';
+    }).join(','), '7px,7px,7px,7px,7px']);
+  }
   // 周六只有 9–11 两格，也应是一个块；周日没选 → 一个块都没有
   out.push(['周六 9–11 一个块', runs(5).length, 1]);
   out.push(['周六块覆盖 2 格', runs(5)[0] ? Math.abs(runs(5)[0].getBoundingClientRect().height - (cell(5, 10).getBoundingClientRect().bottom - cell(5, 9).getBoundingClientRect().top)) < 1.5 : false, true]);
@@ -665,6 +681,18 @@ window.__itest = async () => {
   const gaps9 = run9 ? [...run9.querySelectorAll('.cc-gap')].map((g) => g.style.flexBasis) : [];
   out.push(['上下占位带各 25%', gaps9.length === 2 && gaps9[0] === '25%' && gaps9[1] === '25%']);
   out.push(['部分小时也不画描边', run9 ? getComputedStyle(run9).boxShadow : '', 'none']);
+  // 非整点区间（09:15–09:45）也必须四角圆润：形状画在填色带上，不是外层容器
+  out.push(['非整点区间有圆角',
+    run9 ? getComputedStyle(run9.querySelector('.f')).borderRadius : '', '7px']);
+  // 30 分钟块 ≈ 26px，正好放得下一行 10.5px 的字，不该被裁掉
+  {
+    const t9 = run9 ? run9.querySelector('.cc-run-txt') : null;
+    out.push(['矮块还是显示起止时间', !!t9, true]);
+    // 字必须落在填色带里（跟着首个填色带定位，不能贴在最上面的空白里）
+    const fb = run9 ? run9.querySelector('.f').getBoundingClientRect() : null;
+    const tb = t9 ? t9.getBoundingClientRect() : null;
+    out.push(['时间文字在色块内', !!(fb && tb) && tb.top >= fb.top - 1, true]);
+  }
   out.push(['格子标题显示真实窗口', cell(3, 9).title.indexOf('周四 09:15 – 09:45') >= 0]);
   out.push(['摘要带分钟', $('#clockLive').textContent.indexOf('09:15') >= 0]);
 
@@ -677,11 +705,12 @@ window.__itest = async () => {
   const rMon = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '0' && r.dataset.h0 === '8');
   const rTue = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '1' && r.dataset.h0 === '8');
   out.push(['相邻两块各自存在', !!rMon && !!rTue]);
-  // 列间距改成 6px（更接近日历的"每天一栏"），所以补缝值是 -6px
-  out.push(['后块负边距补上网格缝', rTue ? getComputedStyle(rTue).marginLeft : '', '-6px']);
-  out.push(['前块只少右边的圆角', rMon ? getComputedStyle(rMon).borderRadius : '', '7px 0px 0px 7px']);
-  out.push(['后块只少左边的圆角', rTue ? getComputedStyle(rTue).borderRadius : '', '0px 7px 7px 0px']);
-  out.push(['缝合后两块都没有描边', (rMon ? getComputedStyle(rMon).boxShadow : '') + '|' + (rTue ? getComputedStyle(rTue).boxShadow : ''), 'none|none']);
+  // 不再用负边距去补网格缝：两块之间必须真的有空隙
+  out.push(['相邻块不补缝（各自独立）', (rMon ? getComputedStyle(rMon).marginRight : '') + '|' + (rTue ? getComputedStyle(rTue).marginLeft : ''), '0px|0px']);
+  out.push(['两块各自带圆角（上沿）',
+    (rMon ? getComputedStyle(rMon.querySelector('.f')).borderTopLeftRadius : '') + '|' + (rTue ? getComputedStyle(rTue.querySelector('.f')).borderTopLeftRadius : ''),
+    '7px|7px']);
+  out.push(['两块都没有描边', (rMon ? getComputedStyle(rMon).boxShadow : '') + '|' + (rTue ? getComputedStyle(rTue).boxShadow : ''), 'none|none']);
 
   // 9d. 孤立块保持原样：四角圆角 + 一整圈描边
   await Act.clockClear();
@@ -689,7 +718,12 @@ window.__itest = async () => {
   await Act.clockSetWB(3, 3, 8, 10, 50, 10, false, 0, 60);
   await wait(150);
   const rIso = [...document.querySelectorAll('.cc-run')].find((r) => r.dataset.d === '3' && r.dataset.h0 === '8');
-  out.push(['孤立块四角圆角', rIso ? getComputedStyle(rIso).borderRadius : '', '7px']);
+  {
+    const fb = rIso ? rIso.querySelector('.f') : null;
+    const lb = rIso ? [...rIso.querySelectorAll('.f')].pop() : null;
+    out.push(['孤立块上沿圆角', fb ? getComputedStyle(fb).borderTopLeftRadius : '', '7px']);
+    out.push(['孤立块下沿圆角', lb ? getComputedStyle(lb).borderBottomRightRadius : '', '7px']);
+  }
   out.push(['孤立块也没有描边', rIso ? getComputedStyle(rIso).boxShadow : '', 'none']);
   out.push(['孤立块不补缝', rIso ? getComputedStyle(rIso).marginLeft : '', '0px']);
   await Act.clockClear();
@@ -1183,6 +1217,11 @@ window.__itest = async () => {
     const fills = new Set();
     document.querySelectorAll('.cc-run i.f').forEach((el) => fills.add(getComputedStyle(el).backgroundColor));
     out.push(['所有色块的填充色只有一种', [...fills].length, 1]);
+    // 色块专用色比强调色暗一档：日历里十几块同时出现时，高饱和蓝会"发光"
+    const root = getComputedStyle(document.documentElement);
+    const blockC = root.getPropertyValue('--cc-block').trim();
+    const fillC = root.getPropertyValue('--cc-fill').trim();
+    out.push(['色块用的是 --cc-block（不是强调色）', blockC !== '' && blockC !== fillC, true]);
   }
 
   // ---- 26c. 统计报告：类型分段选择 + 每条可导出 / 可删除 ----
@@ -1255,6 +1294,46 @@ window.__itest = async () => {
     await wait(120);
   }
 
+
+  // ---- 26e. 外观选项（分段胶囊）：文字居中 + 选中态与胶囊同形 ----
+  {
+    await Act.nav('settings');
+    await wait(260);
+    const segs = [...document.querySelectorAll('.seg')];
+    const seg = segs.find((x) => /跟随系统/.test(x.textContent || ''));
+    out.push(['外观是分段胶囊', !!seg]);
+    const btn = seg ? seg.querySelector('button.active') : null;
+    const sb = seg.getBoundingClientRect();
+    const bb = btn.getBoundingClientRect();
+    out.push(['胶囊外轮廓是圆角', getComputedStyle(seg).borderRadius, '999px']);
+    out.push(['选中指示与胶囊同半径', getComputedStyle(btn).borderRadius, '999px']);
+    // 外层 padding 3 + 描边 1 → 四边各内缩 4px，指示块才和胶囊同形
+    out.push(['选中指示上下各内缩 4px', Math.round(bb.top - sb.top), 4]);
+    const allBtn = [...seg.querySelectorAll('button')];
+    const first = allBtn[0].getBoundingClientRect();
+    const last = allBtn[allBtn.length - 1].getBoundingClientRect();
+    out.push(['首个选项左侧内缩 4px', Math.round(first.left - sb.left), 4]);
+    out.push(['末个选项右侧内缩 4px', Math.round(sb.right - last.right), 4]);
+    out.push(['选项高度 = 胶囊高 - 8', Math.round(bb.height), Math.round(sb.height) - 8]);
+    out.push(['文字用 flex 垂直居中',
+      getComputedStyle(btn).display + '/' + getComputedStyle(btn).alignItems, 'flex/center']);
+    out.push(['文字水平居中', getComputedStyle(btn).justifyContent, 'center']);
+    // 几何核对：按钮中线与胶囊中线对齐（±1px）
+    out.push(['指示块与胶囊同心',
+      Math.abs((bb.top + bb.height / 2) - (sb.top + sb.height / 2)) < 1, true]);
+    // 三个选项等高
+    const hs = [...seg.querySelectorAll('button')].map((b) => Math.round(b.getBoundingClientRect().height));
+    out.push(['三个选项等高', new Set(hs).size, 1]);
+
+    // 「自律时段内允许退出」：默认开（保持历史行为），关掉才禁退
+    const qs = document.querySelector('.switch[data-k="allowQuitInSession"]');
+    out.push(['设置里有「自律时段内允许退出」开关', !!qs, true]);
+    out.push(['默认是开启的', qs ? qs.querySelector('input').checked : null, true]);
+    out.push(['开关说明写清了"任何方式都退不掉"', (() => {
+      const row = qs ? qs.closest('.row') : null;
+      return row ? /任何方式/.test(row.textContent) : false;
+    })(), true]);
+  }
 
   // ---- 27. 专注计时弹窗（HUD）：四角可选 + 透明度可调 + 落盘 ----
   {

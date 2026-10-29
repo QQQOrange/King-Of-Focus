@@ -1164,40 +1164,53 @@ function ccRenderRuns(root, override) {
     }
   });
 
-  // 2) 相邻日 + 同一小时区间 + 同起止分钟 + 同一配方 → 合并成一条横跨的整带
-  //    （「周一–周五 8–12 点」应该是一条，而不是五块拼在一起）
-  const groups = new Map();
-  for (const s of segs) {
-    const k = `${s.h0}-${s.h1}|${s.f0}-${s.t1}|${s.sig}`;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(s);
-  }
+  // 2) 每个「当天的一段连续小时」就是一块，**不再把相邻日期合并**。
+  //
+  //    以前会把"周一–周五 8–12、起止分钟和配方都一样"的那几天合成一块横跨五列的
+  //    大色块。问题是：一旦和隔壁那天接上，圆角就只剩下最外沿那两个，中间全是
+  //    直角——看起来像两块被硬粘在一起，也分不清哪块是周几。
+  //    现在一天一块、各自四角圆润，日历的列感也回来了。
 
-  const addBlock = (d0, d1, h0, h1, sig, f0, t1) => {
+  const addBlock = (d0, h0, h1, f0, t1) => {
     const t1Min = t1;   // 尾小时的结束分钟，用于色块上的时长文字
     const n = h1 - h0 + 1;
     // 块内统一按「分钟」切片，但**每格只发一条同色带**：
     // 以前把一小时拆成 专注/休息/尾段 三条不同颜色，块里就成了调色盘。
-    // 现在整块只有一种颜色（CSS 里 --cc-fill），起止分钟之外才是透明的"没选满"。
+    // 现在整块只有一种颜色（CSS 里 --cc-block），起止分钟之外才是透明的"没选满"。
     const unit = 100 / (n * 60);
-    let bands = '';
+    const parts = [];   // { gap, pct }
     for (let k = 0; k < n; k++) {
       const f = k === 0 ? f0 : 0;      // 首小时的起始分钟
       const t = k === n - 1 ? t1 : 60; // 尾小时的结束分钟
-      if (f > 0) bands += `<i class="cc-gap" style="flex:0 0 ${(f * unit).toFixed(3)}%"></i>`;
-      if (t > f) bands += `<i class="f" style="flex:0 0 ${((t - f) * unit).toFixed(3)}%"></i>`;
-      if (t < 60) bands += `<i class="cc-gap" style="flex:0 0 ${((60 - t) * unit).toFixed(3)}%"></i>`;
+      if (f > 0) parts.push({ gap: true, pct: f * unit });
+      if (t > f) parts.push({ gap: false, pct: (t - f) * unit });
+      if (t < 60) parts.push({ gap: true, pct: (60 - t) * unit });
     }
+    // 圆角要画在**填色带**上，而不是外层容器上：
+    // 容器是整格高度、透明，01:15–01:45 这种块只占了中间一半，
+    // 容器那四个角根本没有颜色，圆角自然"看不见"——这正是"非整点区间没圆角"的原因。
+    // 于是一条连续块的三段（首/中/尾）分别取：上圆角、不带圆角、下圆角，
+    // 拼起来就是一条上下圆润、中间无缝的色块。
+    const solid = parts.filter((x) => !x.gap);
+    solid.forEach((b, i) => {
+      b.radius = solid.length === 1 ? '7px'
+        : i === 0 ? '7px 7px 0 0'
+          : i === solid.length - 1 ? '0 0 7px 7px'
+            : '0';
+    });
+    const bands = parts.map((b) => (b.gap
+      ? `<i class="cc-gap" style="flex:0 0 ${b.pct.toFixed(3)}%"></i>`
+      : `<i class="f" style="flex:0 0 ${b.pct.toFixed(3)}%;border-radius:${b.radius}"></i>`)).join('');
     const run = document.createElement('div');
     run.className = 'cc-run';
     run.dataset.d = String(d0);
-    run.dataset.d1 = String(d1);
+    run.dataset.d1 = String(d0);
     run.dataset.h0 = String(h0);
     run.dataset.h1 = String(h1);
     run.dataset.f0 = String(f0);
     run.dataset.t1 = String(t1);
     // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始
-    run.style.gridColumn = `${d0 + 2} / ${d1 + 3}`;
+    run.style.gridColumn = `${d0 + 2}`;
     run.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
     // 色块上的时长文字（滴答清单风格）：09:00 – 12:00。
     // 注意结束分钟可能是 60，那是"到下一小时整点"，必须进成 12:00，
@@ -1207,118 +1220,21 @@ function ccRenderRuns(root, override) {
     const labEnd = eMin >= 60
       ? `${pad(Math.min(24, h1 + 1))}:00`
       : `${pad(h1)}:${pad(eMin)}`;
-    run.innerHTML = `<span class="cc-run-txt">${labStart} – ${labEnd}</span>` + bands;
+    // 块太矮（不到一行的 20px）就不写字：字会溢到隔壁格子里，
+    // 这时候把信息留给 title 提示更合适。文字的纵向位置跟着首个填色带，
+    // 不然 01:15 开始的块会把字写在上面那截空白里。
+    const spanPx = ((n * 60 - f0 - (60 - t1)) / 60) * ccHourH();
+    const labTop = (f0 * unit).toFixed(3);
+    const label = spanPx >= 20
+      ? `<span class="cc-run-txt" style="top:calc(${labTop}% + 3px)">${labStart} – ${labEnd}</span>`
+      : '';
+    run.innerHTML = label + bands;
     grid.appendChild(run);
   };
 
-  groups.forEach((arr) => {
-    arr.sort((a, b) => a.d - b.d);
-    let i = 0;
-    while (i < arr.length) {
-      let j = i;
-      while (j + 1 < arr.length && arr[j + 1].d === arr[j].d + 1) j++;
-      addBlock(arr[i].d, arr[j].d, arr[i].h0, arr[i].h1, arr[i].sig, arr[i].f0, arr[i].t1);
-      i = j + 1;
-    }
-  });
+  // 一天一段：直接铺，不做跨天/跨段合并
+  for (const s of segs) addBlock(s.d, s.h0, s.h1, s.f0, s.t1);
 
-  ccStitchRuns(grid);
-  // 同一天有多段时，如果每段都带完整圆角，看起来就是"一段一段的卡片"。
-  // 这里只做一件事：整列最上 / 最下沿保留圆角，中间的边拉平，
-  // 相邻段于是连成一条连续的排班。
-  //
-  // 以前还会在整列后面垫一条极淡的"排班带"（`.cc-lane`）把空档也铺上，
-  // 结果未选中的时间也被微微点亮——现在不铺了：没选中的地方必须是干净的。
-  ccColumnRounds(grid);
-}
-
-/** 缝合相邻的 `.cc-run`：只隔 3px 网格间距的两块，共享边去掉圆角和内描边，
- *  由右侧/下侧的块用负边距把间距补上。连续选中的区域于是连成一整块，
- *  不会再出现"每块自带高光和圆角、块块拼接"的割裂感。
- *
- *  边界用「有效边界」算：尾小时的 `to` 不满 60 时块的实际底边在格子里，
- *  差半分钟都不算相邻——那半小时是真的没选中，不能缝。 */
-function ccStitchRuns(grid) {
-  const runs = [...grid.querySelectorAll('.cc-run')].map((el) => ({
-    el,
-    d0: +el.dataset.d, d1: +el.dataset.d1,
-    h0: +el.dataset.h0, h1: +el.dataset.h1,
-    f0: +el.dataset.f0, t1: +el.dataset.t1,
-    up: false, down: false, left: false, right: false,
-  }));
-  if (runs.length < 2) {
-    for (const r of runs) ccRunEdges(r.el, false, false, false, false);
-    return;
-  }
-  const effTop = (r) => r.h0 + r.f0 / 60;
-  const effBottom = (r) => r.h1 + 1 - (60 - r.t1) / 60;
-  const dayOverlap = (a, b) => a.d0 <= b.d1 && b.d0 <= a.d1;
-  const hourOverlap = (a, b) => effTop(a) < effBottom(b) && effTop(b) < effBottom(a);
-  const EPS = 1e-6;
-  for (const a of runs) {
-    for (const b of runs) {
-      if (a === b) continue;
-      // 左右相邻：a 的右列挨着 b 的左列，且小时范围有重叠
-      if (a.d1 + 1 === b.d0 && hourOverlap(a, b)) { a.right = true; b.left = true; }
-      // 上下相邻：a 的末小时挨着 b 的首小时（有效边界严丝合缝），且日期范围有重叠
-      if (Math.abs(effBottom(a) - effTop(b)) < EPS && dayOverlap(a, b)) { a.down = true; b.up = true; }
-    }
-  }
-  for (const r of runs) {
-    // 后侧（右/下）的块把 3px 网格间距补上；缝合只改位置不影响其它块
-    // 列间距 6px（跨天缝合要把缝补上）；行间距是 0，所以上下不用补
-    const ml = r.left ? '-6px' : '';
-    const mr = r.right ? '-6px' : '';
-    const mt = '';
-    const mb = '';
-    if (ml) r.el.style.marginLeft = ml;
-    if (mr) r.el.style.marginRight = mr;
-    if (mt) r.el.style.marginTop = mt;
-    if (mb) r.el.style.marginBottom = mb;
-    ccRunEdges(r.el, r.up, r.down, r.left, r.right);
-  }
-}
-
-/** 按"哪些边不外露"只画圆角。
- *  首小时从第 from 分钟才开始 / 尾小时到第 to 分钟就结束时，顶/底边落在
- *  没选中的占位带上，那一侧同样不外露——不能把圆角画到空白里去。
- *
- *  这里**不再画内描边**：色块内部/边缘一旦有亮线，多段拼起来就会看到
- *  "分隔色"，而且浅色描边叠在蓝底上会显脏。整块只有填充色一种颜色。 */
-function ccRunEdges(el, up, down, left, right) {
-  const openTop = up || +el.dataset.f0 > 0;
-  const openBottom = down || +el.dataset.t1 < 60;
-  const r = 7;
-  const c = (a, b) => (a || b ? 0 : r);
-  el.style.borderRadius = `${c(openTop, left)}px ${c(openTop, right)}px ${c(openBottom, right)}px ${c(openBottom, left)}px`;
-  el.style.boxShadow = 'none';
-}
-
-/** 一列里只有最上 / 最下那一段保留圆角，中间的上下边拉平 ——
- *  连续看下来就是"一条被切开的排班"，而不是"一堆各自圆润的段落"。 */
-function ccColumnRounds(grid) {
-  const cols = new Map();
-  grid.querySelectorAll('.cc-run').forEach((r) => {
-    const d0 = +r.dataset.d, d1 = +r.dataset.d1;
-    for (let d = d0; d <= d1; d++) {
-      if (!cols.has(d)) cols.set(d, []);
-      cols.get(d).push(r);
-    }
-  });
-  cols.forEach((list) => {
-    list.sort((a, b) => +a.dataset.h0 - +b.dataset.h0);
-    list.forEach((r, i) => {
-      const hasAbove = i > 0;
-      const hasBelow = i < list.length - 1;
-      if (!hasAbove && !hasBelow) return;
-      const cur = r.style.borderRadius || '';
-      if (!cur) return;
-      const v = cur.split(' ').map((x) => parseFloat(x));
-      const [tl, tr, br, bl] = [v[0] || 0, v[1] || 0, v[2] || 0, v[3] || 0];
-      r.style.borderRadius = `${hasAbove ? 0 : tl}px ${hasAbove ? 0 : tr}px `
-        + `${hasBelow ? 0 : br}px ${hasBelow ? 0 : bl}px`;
-    });
-  });
 }
 
 /** 已选时段总数（小时数）——只算当前生效的那套方案 */
@@ -2644,6 +2560,11 @@ function viewSettings() {
   };
   const hudCorner = ['tl', 'tr', 'bl', 'br'].includes((st.hud || {}).corner) ? st.hud.corner : 'tr';
   const hudOpacity = Math.max(30, Math.min(100, +((st.hud || {}).opacity) || 92));
+  // 「自律时段内允许退出」：开关关掉 + 现在正好在生效时段里 = 怎么都退不掉。
+  // 用 runtime.clockInWindow（整个生效时段，含休息段）而不是 clockOn（专注段），
+  // 和后端 guard::session_quit_locked 的判定保持同一口径。
+  const quitAllowed = st.allowQuitInSession !== false;
+  const quitLocked = !quitAllowed && !!((d.runtime || {}).clockInWindow || (d.runtime || {}).clockOn);
   const sw = (k, v, t, sub) => `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">${t}</div><div class="hint" style="margin-top:3px">${sub}</div></div>
       <div class="switch" data-act="cfg-switch" data-k="${k}"><input type="checkbox" ${v ? 'checked' : ''}><i></i></div>
@@ -2836,13 +2757,28 @@ function viewSettings() {
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div>
-        <div style="font-size:12.5px">强制退出</div>
+        <div style="font-size:12.5px">自律时段内允许退出</div>
         <div class="hint" style="margin-top:3px">
-          任何时候按 <b>Ctrl + Alt + F4</b> 即可强制结束本程序（窗口在前台时 <b>Alt + F4</b> 也行）。
-          强制退出会先停掉守护进程、还原被暂停的媒体、销毁遮罩并落盘统计，<b>不会</b>弹确认框。
+          开：自律时间里仍可以用 Ctrl+Alt+F4、Alt+F4 或下面的按钮退出。
+          关：自律时段内<b>任何方式都退不掉</b>——热键、Alt+F4、关闭窗口、下面的按钮全部被拒绝，直到这一段结束。
+          <br>黑名单开了「固化」时更严：固化锁定期间即使这里开着，也退不掉。
+          ${quitLocked ? '<br><b style="color:var(--red)">这一段生效期间不能再打开这个开关。</b>' : ''}
         </div>
       </div>
-      <button class="btn btn-sm btn-danger" data-act="force-quit">立即强制退出</button>
+      <div class="switch${quitLocked ? ' locked' : ''}" data-act="cfg-switch" data-k="allowQuitInSession">
+        <input type="checkbox" ${quitAllowed ? 'checked' : ''}><i></i>
+      </div>
+    </div>
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div style="font-size:12.5px">立即退出程序</div>
+        <div class="hint" style="margin-top:3px">
+          ${quitLocked
+            ? '<b style="color:var(--red)">自律时段生效中，且已关闭「自律时段内允许退出」——现在退不掉。</b>'
+            : `立刻结束本程序：先停守护、还原被暂停的媒体、销毁遮罩并落盘统计，不弹确认框。快捷键 <b>Ctrl + Alt + F4</b>${quitAllowed ? '（窗口在前台时 <b>Alt + F4</b> 也行）' : ''}。`}
+        </div>
+      </div>
+      <button class="btn btn-sm btn-danger" data-act="force-quit" ${quitLocked ? 'disabled' : ''}>立即强制退出</button>
     </div>
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0">
       <div><div style="font-size:12.5px">配置文件</div><div class="hint" style="margin-top:3px">${esc(d.configPath)}</div></div>

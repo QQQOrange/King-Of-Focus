@@ -18,8 +18,11 @@
   --blue: #38bdf8;
   /* 警告色单独留一支琥珀，插件被停用 / 已降级这类"要注意"的徽标仍然醒目 */
   --warn: #f5a524;
-  /* 时段色块的唯一填充色：一块只有这一种颜色，不做渐变 / 描边 / 深浅分层 */
+  /* 强调色（按钮 / 滑块 / 选中态）：需要足够醒目 */
   --cc-fill: #3f7cff;
+  /* 时段色块的填充色：一整块只有这一种颜色，不做渐变 / 描边 / 深浅分层。
+     比 --cc-fill 更暗更灰一档 —— 日历里同时有十几块，饱和度高的蓝会"发光"、看久了刺眼。 */
+  --cc-block: #3d6396;
 
   /* 深色 */
   --bg: #090b10;
@@ -83,6 +86,7 @@
   --blue: #0284c7;
   --warn: #b45309;
   --cc-fill: #2f6df0;
+  --cc-block: #4e7099;
 
   --bg: #f5f6fa;
   --bg-soft: #ffffff;
@@ -803,15 +807,15 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 已选中的格子：**不给底色**。以前这里有一层 10% 的蓝，
  * 和实心块叠在一起就成了"块里另一块颜色"，正是要消掉的杂色。 */
 .cc-q.on { background: transparent; }
-/* 整块：一段连续的小时 = 一个圆角矩形，跨过所有格间距。
- * 圆角由 JS 按"哪些边不外露"逐块设置（相邻块缝合时共享边拉平）。
+/* 整块：一段连续的小时 = 一个圆角矩形。
  *
- * 容器本身透明、无描边：颜色全部来自内部那条唯一的同色带，
- * 所以块里不会出现第二种颜色，也不会因为是半透明而在接缝处深浅不一。 */
+ * 容器本身透明、不裁切、无圆角：形状完全由内部的填色带决定。
+ * 为什么不在容器上做圆角——容器占的是**整格高度**，而 01:15–01:45 这种块
+ * 只填中间一半，圆角画在容器上就落在透明区里，看不见。
+ * 所以圆角写在填色带上（首段上圆角 / 尾段下圆角 / 单段四角），见 app.js 的 addBlock。 */
 .cc-run {
   position: relative; z-index: 2; pointer-events: none;
-  display: flex; flex-direction: column; overflow: hidden;
-  border-radius: 7px;
+  display: flex; flex-direction: column;
   background: transparent;
   box-shadow: none;
 }
@@ -819,7 +823,7 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 起止分钟让出来的占位带：完全透明，就是"这一小时没选满"，不是另一种颜色 */
 .cc-run .cc-gap { background: transparent; }
 /* 整块唯一的填充色。没有渐变、没有浅色尾段、没有休息段改色。 */
-.cc-run .f { background: var(--cc-fill); }
+.cc-run .f { background: var(--cc-block); }
 /* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
 .cc-run-txt {
   position: absolute; top: 3px; left: 6px; right: 6px;
@@ -951,7 +955,7 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 色条：和完整页同一个填充色，纯色、无渐变 —— 微缩图和完整页必须是一个颜色 */
 .cc-mini-col i {
   position: absolute; left: 0; right: 0; border-radius: 2px;
-  background: var(--cc-fill);
+  background: var(--cc-block);
 }
 /* 时段摘要：微缩图的下半部分，逐条写"哪天 / 几点到几点 / 这一段在做什么" */
 .cc-mini-list {
@@ -1044,7 +1048,7 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .cc-legend .sw {
   display: inline-block; width: 10px; height: 10px; border-radius: 2px;
   margin-right: 5px; vertical-align: -1px;
-  background: var(--cc-fill);
+  background: var(--cc-block);
 }
 
 /* 「通用时长」行：之后新框选 / 单击选中的时段都沿用这套专注 / 休息 */
@@ -1205,30 +1209,41 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   font-variant-numeric: tabular-nums; font-weight: 600;
 }
 
-/* ══════════ 统计 / 报告 ══════════ */
+/* ══════════ 分段选择器（胶囊） ══════════
+ *
+ * 全站只有这一套：外层是胶囊，内部每个选项也是同半径的胶囊。
+ * 选中指示与胶囊外轮廓**同心同形**——外层 padding 3px + 描边 1px，
+ * 内部选项高度正好 26px（34 - 3*2 - 1*2），圆角都用 999px，
+ * 所以指示块看起来就是胶囊往里缩了一圈，不会出现"方角块浮在圆角槽里"。
+ *
+ * 文字用 inline-flex 双向居中：以前用 padding + line-height 拼，
+ * 行盒比按钮矮一点就整体偏下，怎么调 padding 都对不齐。
+ */
 .seg {
-  display: inline-flex; padding: 4px; gap: 3px;
-  background: var(--inset-bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  flex-wrap: wrap;
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 3px; border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--cell-bg);
+  height: 34px;
+  flex-wrap: nowrap;
 }
-.seg button {
-  border: 0; background: transparent; color: var(--text-3);
-  padding: 8px 16px; border-radius: var(--r-sm);
-  font-size: 12.5px; cursor: pointer; transition: .15s;
+.seg > button, .seg-btn {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 26px; padding: 0 14px;
+  border-radius: var(--r-pill);
+  font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1;
+  color: var(--text-2); white-space: nowrap;
+  transition: background .14s, color .14s;
 }
-.seg button:hover { color: var(--text); }
-.seg button.active {
-  background: var(--seg-active);
-  color: var(--text);
-  box-shadow: var(--sh-1);
+.seg > button:hover, .seg-btn:hover { color: var(--text); background: var(--btn-bg-hover); }
+.seg > button.active, .seg-btn.active {
+  color: #fff; background: var(--cc-fill);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .22);
 }
-.seg button.active.gold {
-  background: var(--on-bg);
-  color: var(--gold);
-  box-shadow: inset 0 0 0 1px var(--on-line);
-}
+/* 旧代码给主题按钮加过 .gold 变体；统一之后它和 .active 同色，
+   留着这条只会让"外观"那一组的选中色和别处不一样 */
+.seg > button.active.gold { color: #fff; background: var(--cc-fill); }
 
 .range-row { display: flex; align-items: center; gap: 10px; margin: 18px 0; flex-wrap: wrap; }
 .chip-btn {
@@ -1326,24 +1341,7 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .btn.danger-ghost { color: var(--red); border-color: rgba(255, 92, 92, .28); background: transparent; }
 .btn.danger-ghost:hover { background: rgba(255, 92, 92, .1); border-color: rgba(255, 92, 92, .5); }
 
-/* 分段选择器（报告类型）：替掉原生 <select>，配色跟着主题走 */
-.seg {
-  display: inline-flex; align-items: center; gap: 2px;
-  padding: 3px; border-radius: var(--r-pill);
-  background: var(--cell-bg); border: 1px solid var(--line);
-}
-.seg-btn {
-  appearance: none; border: 0; background: transparent; cursor: pointer;
-  font-family: inherit; font-size: 12px; color: var(--text-2);
-  padding: 5px 13px; border-radius: var(--r-pill); line-height: 1.4;
-  transition: background .14s, color .14s;
-}
-.seg-btn:hover { color: var(--text); background: var(--btn-bg-hover); }
-.seg-btn.active {
-  color: #fff; background: var(--cc-fill);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
-}
-[data-theme="light"] .seg-btn.active { color: #fff; }
+/* 报告类型的分段控件复用上面那套 .seg；这里只补一个"和按钮同高"的对齐 */
 
 /* 导出格式选择：三张整行卡片，点哪儿都能选中 */
 .exp-fmts { display: flex; flex-direction: column; gap: 8px; }
@@ -1615,11 +1613,8 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 /* 选中文字的颜色跟着主题走，默认的系统蓝在深色底上非常刺眼 */
 ::selection { background: rgba(77, 141, 255, .32); color: var(--text); }
 
-/* 报告页头一行：分段控件和按钮同高，视觉上是一条基线。
-   30 - 2*2(padding) - 2*1(border) = 24 = 按钮高度，刚好贴合不溢出。 */
-.seg { height: 30px; padding: 2px; }
-.seg-btn { height: 24px; display: inline-flex; align-items: center; padding: 0 13px; }
-.rep-hd .btn-sm { height: 30px; }
+/* 报告页头一行：分段控件和按钮同高，视觉上是一条基线 */
+.rep-hd .btn-sm { height: 34px; }
 
 /* 空状态：给图标留个位置，别只有一行灰字 */
 .empty .ico {

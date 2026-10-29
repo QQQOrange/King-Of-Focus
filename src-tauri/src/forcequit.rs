@@ -334,8 +334,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             DispatchMessageW(&msg);
             if TRIGGERED.swap(false, Ordering::SeqCst) {
                 log("收到强制退出信号（热键 / Alt+F4）");
-                force_quit(&app, &shared);
-                return;
+                // 被自律时段挡住时**不能** return：这条线程就是热键服务本身，
+                // 一返回热键就注销了，等这段结束再按也不会响应。
+                if force_quit(&app, &shared) {
+                    return;
+                }
             }
         }
     });
@@ -384,9 +387,21 @@ pub fn cleanup_steps() -> Vec<QuitStep> {
 }
 
 /// 强制退出：清理 → 退出。全程不弹确认框。
-pub fn force_quit(app: &AppHandle, shared: &Shared) {
+///
+/// 返回 `true` 表示"已经在退出"，`false` 表示**被拒**（自律时段内禁止退出）。
+/// 调用方必须区分这两种：被拒时热键线程不能 `return`，否则热键就永远失效了，
+/// 等这一段结束用户再按也没反应。
+pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
+    // 先过"自律时段内是否允许退出"这道闸：
+    // 开关关掉时，热键 / Alt+F4 / 设置页按钮走的都是这个函数，
+    // 在入口处统一拒绝，保证"任何方式都退不掉"是真的。
+    if let Some(why) = crate::guard::session_quit_hint(&shared.config()) {
+        log(&format!("拒绝退出：{why}"));
+        crate::notify::toast(app, "warn", "自律时段内已禁止退出", &why, "quit-blocked", 6);
+        return false;
+    }
     if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
+        return true;
     }
     log("强制退出开始");
 
@@ -428,6 +443,7 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) {
     });
     log("强制退出已触发");
     app.exit(0);
+    true
 }
 
 /// 仅在 KOF_DEBUG=1 时输出日志
