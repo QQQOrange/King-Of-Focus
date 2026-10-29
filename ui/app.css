@@ -1836,7 +1836,10 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 #content.view-in > *:nth-child(n+5) { animation-delay: 72ms; }
 
 /* ② 完整图表页（整页面板）：淡入 + 极轻微的放大，像"从卡片里展开" */
-.cc-detail { animation: moPopIn var(--mo-fast) var(--mo-ease-out); }
+/* 只在"真的从微缩图展开"的那一帧播入场。
+   页面内的重绘（拖完一段、切粒度、改时长）**不再重播** ——
+   否则每次松手整块面板都会从透明里淡进来，看起来就是"整页闪一下"。 */
+.cc-detail.opening { animation: moPopIn var(--mo-fast) var(--mo-ease-out); }
 
 /* ③ 列表与卡片：入场时轻轻浮起；hover 只改边框与底色，不再位移 */
 .card, .sl-item, .rep-item, .hub-quote {
@@ -1850,7 +1853,11 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .view-in .sl-item:nth-child(n+4), .view-in .rep-item:nth-child(n+4) { animation-delay: 72ms; }
 
 /* ④ 图表数据变化：进度条从 0 长出来，数值变化不再"瞬间跳" */
-.cc-day .bar i { animation: moBarGrow var(--mo-slow) var(--mo-ease-out); transform-origin: left center; }
+/* 进度条从 0 长出：同样只在展开那一帧播，重绘时保持静止（避免每次都"重新长一遍"） */
+.cc-detail.opening .cc-day .bar i {
+  animation: moBarGrow var(--mo-slow) var(--mo-ease-out);
+  transform-origin: left center;
+}
 /* 每日时长的进度条统一用强调色（原来那条渐变和"色块只有一种颜色"的规矩打架） */
 .cc-day .bar i { background: var(--cc-block); }
 
@@ -1904,7 +1911,7 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   }
   .btn:hover:not(:disabled) { transform: none; }
   .cc-mini:hover { transform: none; }
-  .modal, .modal-mask, .cc-detail { animation: none; }
+  .modal, .modal-mask, .cc-detail.opening { animation: none; }
 }
 
 html[data-motion="low"] #content.view-in > *,
@@ -1919,6 +1926,6 @@ html[data-motion="low"] .reveal-in {
 html[data-motion="low"] .btn:hover:not(:disabled),
 html[data-motion="low"] .cc-mini:hover { transform: none; }
 html[data-motion="low"] .is-loading::after { animation-duration: 2s; }
-html[data-motion="low"] .cc-day .bar i { animation: none; }
+html[data-motion="low"] .cc-detail.opening .cc-day .bar i { animation: none; }
 html[data-motion="low"] .cc-run.over { transform: none; }
 html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }

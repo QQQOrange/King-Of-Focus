@@ -934,16 +934,17 @@ impl Overlay {
         }
     }
 
-    /// 把遮罩顶到置顶带的最前面（盖住一切置顶浮窗）。
+    /// 把遮罩提到置顶带的前面（盖住其它自动置顶的小窗）。
     ///
     /// 用在"Start 菜单 / 搜索打开"的时候：那会儿不需要再给选中窗口留亮区
-    /// （它本来就被开始菜单挡住了），但必须压住 lazytyper 那类小弹窗。
+    /// （它本来就被开始菜单挡住了），但要压住其它抢置顶的浮窗。
     ///
-    /// 为什么是"抬自己"而不是"摘对方"：对方是自动置顶的窗口，
-    /// 我们摘一次它立刻加回来，两边 50ms 拉一次锯 —— 那就是用户看到的闪烁。
-    /// 抬自己是一次性动作，对方再调 `SetWindowPos(HWND_TOPMOST)` 对已经置顶的
-    /// 窗口是空操作，抢不回去。
-    unsafe fn raise_top(&mut self) {
+    /// `below`：把遮罩**插到这个窗口的正下方**，而不是抢到最前。
+    /// 这是"lazytyper 弹条永远在遮罩之上"的落地方式 ——
+    /// 以前是"先抬到最前、再把它顶回来"，两次 SetWindowPos 之间有一拍
+    /// 遮罩在上，DWM 合成出去就是缝隙处闪一下。插到它下面只有一次动作，
+    /// 既保证层级，又不会出现中间态。
+    unsafe fn raise_top(&mut self, below: Option<Hwnd>) {
         if self.hwnd.is_null() || IsWindow(self.hwnd) == 0 {
             return;
         }
@@ -959,9 +960,16 @@ impl Overlay {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
             );
         }
+        // 插到指定窗口下面；没有就照旧抢最前
+        let mut after: isize = HWND_TOP;
+        if let Some(h) = below {
+            if !h.is_null() && IsWindow(h) != 0 && IsWindowVisible(h) != 0 {
+                after = h as isize;
+            }
+        }
         SetWindowPos(
             self.hwnd,
-            HWND_TOP,
+            after,
             0,
             0,
             0,
@@ -1530,9 +1538,6 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
     // 遮罩本身是置顶窗口，所以它 z 序**上方**只剩置顶带里的窗口：
     // 选中窗口（except，跳过）和那些抢置顶的浮窗（要摘）。普通窗口都在遮罩下面，
     // 不会出现在这条链里，所以这个扫描范围是精确的、不会误伤普通窗口。
-    // 外壳浮层（Start / 搜索 …）打开时，放行程序的窗口不再享受"永久豁免摘顶"：
-    // 它们这会儿只会从缝里露出来，必须能和普通浮窗一样被摘下去。
-    let flyout = shell_flyout_open();
     if IS_ADMIN.load(Ordering::Relaxed) {
         let mut a = GetWindow(hwnd, GW_HWNDPREV);
         let mut g2 = 0;
@@ -1545,7 +1550,10 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
             // 用 `is_pass_through` 按 pid 判定，不依赖 except 名单的时序。
             let mut pid_a = 0u32;
             GetWindowThreadProcessId(a, &mut pid_a);
-            let is_pass = pid_a != 0 && is_pass_through(pid_a) && !flyout;
+            // 放行窗口**永远**豁免摘顶，浮层打开时也一样。
+            // 以前浮层打开就取消豁免：摘一次它立刻把 TOPMOST 加回来，
+            // 50ms 一次拉锯，缝里那段就一直闪 —— 这正是本轮要根治的那条。
+            let is_pass = pid_a != 0 && is_pass_through(pid_a);
             if IsWindowVisible(a) != 0
                 && !except.contains(&a)
                 && !is_shell_window(a)
@@ -2005,11 +2013,11 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 if pass_t.elapsed().as_millis() >= 500 || scan_now {
                     pass_t = Instant::now();
                     pass_wins = collect_pass_through();
-                    // 浮层打开时不顶：顶上去只会露在 Start 与任务栏之间的缝里闪
-                    if !flyout_now {
-                        for h in pass_wins.iter() {
-                            ensure_above(*h, &mut raised);
-                        }
+                    // 任何情况下都把它顶到遮罩之上（"只显示、不隐藏"）。
+                    // ensure_above 内部会跳过 z 序已经没被遮罩压住的窗口，
+                    // 所以每轮都调一遍也不会产生多余的 SetWindowPos。
+                    for h in pass_wins.iter() {
+                        ensure_above(*h, &mut raised);
                     }
                 }
                 if tgt != 0 {
@@ -2087,9 +2095,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 last_top = Instant::now();
                 let anchor = last_tgt as Hwnd;
                 if flyout_now {
-                    // 外壳浮层（Start / 搜索）打开：遮罩抬到最前面，压住其它自动置顶的小窗。
+                    // 外壳浮层（Start / 搜索）打开：遮罩抬到前面压住其它抢置顶的浮窗，
+                    // 但**插在放行窗口（lazytyper 弹条）下面** —— 弹条任何情况下都在遮罩之上。
+                    // 先抬到最前再把它顶回来会有一拍"遮罩在上"，那就是缝隙里闪的原因。
+                    let below = pass_wins
+                        .iter()
+                        .copied()
+                        .find(|h| !h.is_null() && IsWindowVisible(*h) != 0);
                     for o in overlays.iter_mut() {
-                        o.raise_top();
+                        o.raise_top(below);
                         FLYOUT_COVER.fetch_add(1, Ordering::Relaxed);
                     }
                 } else {

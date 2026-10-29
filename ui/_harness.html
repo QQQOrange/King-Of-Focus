@@ -1699,9 +1699,14 @@ window.__itest = async () => {
         const segCount = segs.length;
         const runsBefore = [...document.querySelectorAll('#ccGrid .cc-run')]
           .filter((r) => +r.dataset.d === spot.d).length;
-        fire('mousedown', cell(spot.d, seg.h0), { clientY: gY(spot.d, seg.h0, 1), clientX: 420 });
+        // 横向落点用"这一列的中心"，保证跨天判定还落在同一天
+        const colX = (d) => {
+          const r = cell(d, 12).getBoundingClientRect();
+          return r.left + r.width / 2;
+        };
+        fire('mousedown', cell(spot.d, seg.h0), { clientY: gY(spot.d, seg.h0, 1), clientX: colX(spot.d) });
         document.dispatchEvent(new MouseEvent('mousemove', {
-          bubbles: true, clientY: gY(spot.d, Math.min(23, seg.h0 + 2), 1), clientX: 424,
+          bubbles: true, clientY: gY(spot.d, Math.min(23, seg.h0 + 2), 1), clientX: colX(spot.d) + 2,
         }));
         await wait(160);
         const carry = document.querySelector('#ccGrid .cc-run.carry');
@@ -1720,6 +1725,114 @@ window.__itest = async () => {
         out.push(['平移不改段数', segs2.length, segCount]);
         const after = segs2.find((x) => x.h0 >= seg.h0) || segs2[0];
         out.push(['平移不改长度', after ? after.mins : -1, lenBefore]);
+      }
+    }
+  }
+
+  // ---- 26f-2b. 跨天拖动：搬到另一天 / 目标已有冲突段 / 周边界 / Esc 取消 ----
+  {
+    await openFull();
+    await wait(260);
+    const colX = (d) => {
+      const r = cell(d, 12).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    const snapDay = (d) => pd()[d].map((p) => (p.on ? `${p.from}-${p.to}` : '')).join(',');
+    /** 找一对"源天和目标天在这两个小时都空着"的位置 */
+    const findPair = () => {
+      for (let h = 0; h < 22; h++) {
+        for (let a = 0; a < 7; a++) {
+          if (pd()[a][h].on || pd()[a][h + 1].on) continue;
+          for (let b = 0; b < 7; b++) {
+            if (b === a) continue;
+            if (pd()[b][h].on || pd()[b][h + 1].on) continue;
+            return { from: a, to: b, h };
+          }
+        }
+      }
+      return null;
+    };
+
+    // ① 基本跨天：把 from 那天 h..h+2 的一段拖到 to 那天同一时刻
+    const pair = findPair();
+    out.push(['还有空位可以造跨天用例', !!pair, true]);
+    if (pair) {
+      const { from, to, h } = pair;
+      await Act.clockCommitRange(from, h * 60, (h + 2) * 60, 'add');
+      await wait(240);
+      out.push(['源天已经有一段', ccDayMinutes(pd()[from]) >= 120, true]);
+
+      const beforeNode = document.querySelector('#ccDetail');
+      fire('mousedown', cell(from, h), { clientY: gY(from, h, 1), clientX: colX(from) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(from, h, 1) + 4, clientX: colX(to),
+      }));
+      await wait(160);
+      const carry = document.querySelector('#ccGrid .cc-run.carry');
+      out.push(['跨天拖动：手上那块已经移到目标天',
+        carry ? +carry.dataset.d : -1, to]);
+      out.push(['跨天拖动：状态条写成"源天 → 目标天"',
+        $('#clockLive').textContent.indexOf('→') > 0, true]);
+      out.push(['跨天拖动：原天留了虚线占位',
+        document.querySelectorAll('#ccGrid .cc-slot').length, 1]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(340);
+
+      out.push(['落到了目标天', pd()[to][h].on && pd()[to][h + 1].on, true]);
+      out.push(['源天已经清空', pd()[from][h].on || pd()[from][h + 1].on, false]);
+      out.push(['时长没有丢', ccDayMinutes(pd()[to]) - 0 >= 120, true]);
+      out.push(['松手后不留半透明块', document.querySelectorAll('#ccGrid .cc-run.carry').length, 0]);
+      out.push(['松手后不留占位虚线', document.querySelectorAll('#ccGrid .cc-slot').length, 0]);
+      // 关键：提交后**不整体重绘**，否则整页会重新淡入 = 闪一下
+      out.push(['落位后没有整体重绘（不闪）',
+        document.querySelector('#ccDetail') === beforeNode, true]);
+
+      // ② 目标天已有冲突段：先把源天占一小时，再把目标天那段搬过去 → 并集合并
+      await Act.clockCommitRange(from, h * 60, (h + 1) * 60, 'add');
+      await wait(220);
+      const beforeMin = ccDayMinutes(pd()[from]);
+      out.push(['冲突用例：源天先有一小时', beforeMin >= 60, true]);
+      fire('mousedown', cell(to, h), { clientY: gY(to, h, 1), clientX: colX(to) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(to, h, 1) + 4, clientX: colX(from),
+      }));
+      await wait(150);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(320);
+      out.push(['搬到有段的那天：并集后不比原来少',
+        ccDayMinutes(pd()[from]) >= beforeMin, true]);
+      out.push(['搬到有段的那天：并集覆盖到两小时',
+        pd()[from][h].on && pd()[from][h + 1].on, true]);
+      out.push(['搬到有段的那天：源天已经空了', pd()[to][h].on, false]);
+
+      // ③ 周边界：从周一往左拖出图表 → 停在周一，不绕回周日
+      const segMon = ccSegs(pd()[to]).find((x) => x.h0 <= h + 1 && x.h1 >= h);
+      if (segMon && to !== 0) {
+        // 先把它搬回周一
+        fire('mousedown', cell(to, segMon.h0), { clientY: gY(to, segMon.h0, 1), clientX: colX(to) });
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          bubbles: true, clientY: gY(to, segMon.h0, 1) + 4, clientX: colX(0),
+        }));
+        await wait(150);
+        document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        await wait(320);
+      }
+      const monSeg = ccSegs(pd()[0])[0];
+      if (monSeg) {
+        fire('mousedown', cell(0, monSeg.h0), { clientY: gY(0, monSeg.h0, 1), clientX: colX(0) });
+        const outside = cell(0, 12).getBoundingClientRect().left - 40;
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          bubbles: true, clientY: gY(0, monSeg.h0, 1) + 4, clientX: outside,
+        }));
+        await wait(150);
+        const edgeTxt = $('#clockLive').textContent;
+        out.push(['拖出周首：提示已到周一', edgeTxt.indexOf('已到周一') > 0, true]);
+        out.push(['拖出周首：没有绕到周日', /→/.test(edgeTxt), false]);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await wait(140);
+        out.push(['Esc 取消后不残留状态', !!S.ccDrag, false]);
+        out.push(['Esc 取消后占位消失', document.querySelectorAll('#ccGrid .cc-slot').length, 0]);
+        out.push(['Esc 取消后周一那段还在', ccSegs(pd()[0])[0] ? ccSegs(pd()[0])[0].mins : -1, monSeg.mins]);
       }
     }
   }

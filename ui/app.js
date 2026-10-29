@@ -1679,7 +1679,7 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
     </div>`;
   }).join('');
   return `
-  <div class="cc-detail" id="ccDetail">
+  <div class="cc-detail${S.ccAnimIn ? ' opening' : ''}" id="ccDetail">
     <div class="cc-detail-hd">
       <button class="btn btn-sm" data-act="cc-close">‹ 返回</button>
       <div class="cc-detail-title">生效时间段 · 完整图表<span class="badge">${esc(prof.name)}</span></div>
@@ -4398,15 +4398,18 @@ const Act = window.Act = {
    *
    *  先清原区间、再写新区间，全程只写一次盘、只重绘一次；
    *  两段重叠也没关系——顺序是"先删后加"，重叠部分最后是被写上的。 */
-  async clockMoveSeg(d, from, to, nFrom, nTo) {
+  /** 把 d0 那天的 [from,to) 搬到 d1 那天的 [nFrom,nTo)。
+   *  跨天时：先在原所在的天里清掉这一段，再在落点那天并上去。
+   *  目标那天已有窗口 → 按"并集"合并（预览里看到的合并结果就是提交结果）。 */
+  async clockMoveSeg(d0, from, to, d1, nFrom, nTo, opts) {
     const prof = clockProfile();
-    if (settingsFrozen()) { guardDiscipline('调整已选中的时段'); render(); return; }
-    const days = prof.days[d];
-    const put = (lo, hi, mode) => {
+    if (settingsFrozen()) { guardDiscipline('调整已选中的时段'); render(); return false; }
+    const put = (day, lo, hi, mode) => {
+      if (!day) return;
       for (let h = 0; h < 24; h++) {
         const hs = h * 60;
         if (hi <= hs || lo >= hs + 60) continue;
-        const p = days[h];
+        const p = day[h];
         const r = ccHourResult(p, h, lo, hi, mode);
         if (!r) {
           if (p.on) { p.on = false; p.from = 0; p.to = 60; }
@@ -4418,12 +4421,26 @@ const Act = window.Act = {
         p.to = r.t;
       }
     };
-    put(from, to, 'sub');
-    put(nFrom, nTo, 'add');
-    await saveConfig();
-    render();
+    put(prof.days[d0], from, to, 'sub');
+    put(prof.days[d1], nFrom, nTo, 'add');
+    const ok = await saveConfig();
+    if (!ok) {
+      // 保存失败：界面上的预览必须作废，回到服务端的真实状态
+      render();
+      toast('时段没有保存成功，已恢复原状', 'err');
+      return false;
+    }
+    // 拖拽提交后不重绘：预览已经是最终结果，重绘会让整页闪一下
+    if (!(opts && opts.noRender)) render();
     const t = ccMinText(nFrom, nTo);
-    toast(`已把 ${WD[d]} 的时段移到 ${t.range}（共 ${t.dur}）`, 'ok');
+    const en = I18N.getLang() === 'en';
+    const where = d0 === d1
+      ? `${I18N.t(WD[d0])} ${t.range}`
+      : `${I18N.t(WD[d0])} → ${I18N.t(WD[d1])} ${t.range}`;
+    toast(en
+      ? `Moved to ${where} (${ccDurText(nTo - nFrom)})`
+      : `已把 ${where} 的时段移过去（共 ${ccDurText(nTo - nFrom)}）`, 'ok');
+    return true;
   },
 
   async clockCommitRange(d, lo, hi, mode) {
@@ -5146,7 +5163,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-prof-del') { await Act.clockProfDel(); return; }
   if (act === 'hud-corner') { await Act.hudCorner(el.dataset.v); return; }
   if (act === 'clock-gran') { await Act.clockGran(el.dataset.v); return; }
-  if (act === 'cc-open') { S.ccFull = true; render(); return; }
+  // S.ccAnimIn 只在这一帧为真：完整图表页的入场动画不能每次重绘都重播，
+  // 否则拖完一段松手（内部会 render 一次）整页就会重新淡入 = 闪一下。
+  if (act === 'cc-open') { S.ccFull = true; S.ccAnimIn = true; render(); S.ccAnimIn = false; return; }
   if (act === 'cc-close') { S.ccFull = false; render(); return; }
   if (act === 'clock-bind') { await Act.clockBind(el.dataset.id || ''); return; }
   if (act === 'cc-name-ok') {
@@ -5318,6 +5337,37 @@ function ccDayGeom(d) {
   return { top: r0.top, hourH: r0.height, bottom: last.getBoundingClientRect().bottom };
 }
 
+/** clientX → 落在哪一列（哪一天）。返回 null = 指针不在图表的横向范围内。
+ *
+ *  为什么返回 null 而不是夹住：跨天拖拽只在"指针真的到了另一列"时才换天。
+ *  指针滑出图表两侧时保持原来那一天（等于在周首 / 周末停住，不绕回另一头），
+ *  既符合"一周就是一周"的直觉，也避免合成事件里 clientX=0 这类脏值把时段甩到周一。
+ */
+function ccDayAtX(clientX) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid || typeof clientX !== 'number' || !isFinite(clientX)) return null;
+  const cols = [];
+  for (let d = 0; d < 7; d++) {
+    const c = grid.querySelector(`.cc-cell[data-d="${d}"][data-h="0"]`);
+    if (c) cols.push({ d, r: c.getBoundingClientRect() });
+  }
+  if (!cols.length) return null;
+  const left = cols[0].r.left;
+  const right = cols[cols.length - 1].r.right;
+  if (clientX < left - 8 || clientX > right + 8) return null;
+  for (const c of cols) {
+    if (clientX >= c.r.left - 3 && clientX <= c.r.right + 3) return c.d;
+  }
+  // 落在列间距里：取最近的一列
+  let best = cols[0].d;
+  let bestDist = Infinity;
+  for (const c of cols) {
+    const dist = clientX < c.r.left ? c.r.left - clientX : clientX - c.r.right;
+    if (dist < bestDist) { bestDist = dist; best = c.d; }
+  }
+  return best;
+}
+
 /** clientY → 当天第几个粒度（越界时夹住，并告诉调用方越到了哪边） */
 function ccGrainAt(d, clientY) {
   const g = ccDayGeom(d);
@@ -5387,20 +5437,29 @@ function ccHourResult(p, h, lo, hi, mode) {
  *   · 松手提交后是同一条代码路径画出来的，不会"跳一下"
  */
 
-/** 预览下这一天 24 小时各自的窗口（null = 这一小时没选中） */
-function ccPreviewWins(dg, lo, hi) {
+/** 预览下**某一天** 24 小时各自的窗口（null = 这一小时没选中）。
+ *
+ *  平移时会被问两天：原所在的那天（要把这一段拿掉）和落点那天（要铺上）。
+ *  同一天时两步都作用在同一份数组上，等价于"先 sub 再 add"，
+ *  与 clockMoveSeg 的写入顺序完全一致，所以松手不会跳变。 */
+function ccWinsForDay(d, dg, lo, hi) {
   const prof = clockProfile();
-  const day = prof.days[dg.d] || [];
-  if (dg.mode === 'move') {
-    // 整段平移：先把当天其它段原样抄过来（它们不能因为这次拖动而消失），
-    // 再把"原段"覆盖到的小时清空，最后按落点铺上（与已有窗口取并集，
-    // 这样预览和 clockMoveSeg 的 sub → add 完全一致）。
-    const wins = day.map((p) => (p && p.on
-      ? { f: p.from || 0, t: p.to == null ? 60 : p.to }
-      : null));
+  const day = prof.days[d] || [];
+  if (dg.mode !== 'move') {
+    // 新建 / 抹除只作用在按下的那一天（横向拖动不改变这一点）
+    return new Array(24).fill(null).map((_, h) => ccHourResult(day[h], h, lo, hi, dg.mode));
+  }
+  const wins = day.map((p) => (p && p.on
+    ? { f: p.from || 0, t: p.to == null ? 60 : p.to }
+    : null));
+  // ① 原段所在的天：把这一段覆盖的小时清空（其它段原样保留）
+  if (d === dg.d) {
     const s0 = Math.floor(dg.segFrom / 60);
     const s1 = Math.floor((dg.segTo - 1) / 60);
     for (let h = s0; h <= s1; h++) wins[h] = null;
+  }
+  // ② 落点那天：把新区间并上去（目标已有窗口就取并集，和 add 一致）
+  if (d === dg.dCur) {
     for (let h = 0; h < 24; h++) {
       const hs = h * 60;
       const a = Math.max(lo, hs), b = Math.min(hi, hs + 60);
@@ -5410,10 +5469,8 @@ function ccPreviewWins(dg, lo, hi) {
         ? { f: Math.min(prev.f, a - hs), t: Math.max(prev.t, b - hs) }
         : { f: a - hs, t: b - hs };
     }
-    return wins;
   }
-  // 新建 / 抹除：逐小时套用同一份判定（本次没碰到的小时原样保留）
-  return new Array(24).fill(null).map((_, h) => ccHourResult(day[h], h, lo, hi, dg.mode));
+  return wins;
 }
 
 /** 虚拟的一天里被选中多少分钟 */
@@ -5426,40 +5483,64 @@ function ccTotalText(m) {
   return I18N.getLang() === 'en' ? `Total ${ccDurText(m)}` : `合计 ${ccMinText(0, m).dur}`;
 }
 
-/** 每日时长 / 合计：跟着预览实时联动（松手后整体重绘会覆盖，不必手动还原） */
-function ccLiveTotals(d, wins) {
+/** 每日时长 / 合计 / 段数：跟着预览实时联动。
+ *  `winsBy` 是 Map<天, 24 小时窗口>；跨天拖动时会同时有两天的数据。
+ *  松手后若整体重绘会覆盖这些值，不重绘时它们就是最终值（预览=结果）。 */
+function ccLiveTotals(winsBy) {
   const prof = clockProfile();
-  const per = prof.days.map((day, i) => (wins && i === d ? ccWinsMinutes(wins) : ccDayMinutes(day)));
+  const per = prof.days.map((day, i) => (winsBy && winsBy.has(i)
+    ? ccWinsMinutes(winsBy.get(i))
+    : ccDayMinutes(day)));
   const total = per.reduce((a, b) => a + b, 0);
   const hd = document.querySelector('.cc-days-hd');
   if (hd && hd.lastElementChild) hd.lastElementChild.textContent = ccTotalText(total);
-  const row = document.querySelectorAll('.cc-days .cc-day')[d];
-  if (!row) return;
-  const bar = row.querySelector('.bar i');
-  if (bar) bar.style.width = `${(per[d] / 1440 * 100).toFixed(1)}%`;
-  const v = row.querySelector('.v');
-  if (v) v.textContent = per[d] ? ccDurText(per[d]) : '—';
+  const rows = document.querySelectorAll('.cc-days .cc-day');
+  per.forEach((m, d) => {
+    const row = rows[d];
+    if (!row) return;
+    const bar = row.querySelector('.bar i');
+    if (bar) bar.style.width = `${(m / 1440 * 100).toFixed(1)}%`;
+    const v = row.querySelector('.v');
+    if (v) v.textContent = m ? ccDurText(m) : '—';
+    // 段数也跟着变：新建时可能把两段并成一段（并集），这里必须如实反映。
+    // 没有预览数据时（撤回 / 提交后）就用配置里的真实值，别留着旧的段数。
+    const segEl = row.querySelector('.s');
+    if (segEl) {
+      const day = winsBy && winsBy.has(d)
+        ? winsBy.get(d).map((w) => (w ? { on: true, from: w.f, to: w.t } : { on: false }))
+        : prof.days[d];
+      const n = ccSegs(day).length;
+      segEl.textContent = n ? `${n} 段` : '';
+    }
+  });
 }
 
-/** 拖拽预览：写 DOM（绝不写配置），并把被搬的那一块标成"抓起来了" */
+/** 拖拽预览：写 DOM（绝不写配置），并把被搬的那一块标成"抓起来了"。
+ *  平移可以跨天：这时会同时画两条列——原列去掉这一段、目标列铺上这一段。 */
 function paintCcDrag() {
   const dg = S.ccDrag;
   if (!dg) return;
   const grid = document.getElementById('ccGrid');
   if (!grid) return;
+  const dCur = dg.mode === 'move' ? (dg.dCur == null ? dg.d : dg.dCur) : dg.d;
   const { lo, hi } = ccDragRange(dg);
-  const wins = ccPreviewWins(dg, lo, hi);
+  const days = dCur === dg.d ? [dg.d] : [dg.d, dCur];
+  const winsBy = new Map();
+  for (const d of days) winsBy.set(d, ccWinsForDay(d, dg, lo, hi));
 
-  // 1) 格子与细分刻度
-  grid.querySelectorAll(`.cc-cell[data-d="${dg.d}"]`).forEach((c) => {
-    const h = +c.dataset.h;
-    ccPaintCell(c, dg.d, h, wins[h]);
-  });
+  // 1) 格子与细分刻度（涉及的那几天一起刷）
+  for (const d of days) {
+    const wins = winsBy.get(d);
+    grid.querySelectorAll(`.cc-cell[data-d="${d}"]`).forEach((c) => {
+      const h = +c.dataset.h;
+      ccPaintCell(c, d, h, wins[h]);
+    });
+  }
   // 2) 整块（块上的起止时间也在这里跟着变）
-  //    这里必须把 wins 传给渲染器：只改单元格的 .on 不够——
+  //    必须把窗口传给渲染器：只改单元格的 .on 不够——
   //    每小时的起止分钟若仍从配置里读，02:15 起的那一块就会被判成
-  //    "上一小时 :15 就结束"，在小时边界断成两块。
-  ccRenderRuns(document, (d, h) => (d === dg.d ? (wins[h] || null) : undefined));
+  //    "上一小时 :15 结束"，在小时边界断成两块。
+  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined));
 
   const h0 = Math.floor(lo / 60);
   const h1 = Math.floor((hi - 1) / 60);
@@ -5469,7 +5550,7 @@ function paintCcDrag() {
   grid.querySelectorAll('.cc-run').forEach((r) => {
     const rFrom = +r.dataset.h0 * 60 + (+r.dataset.f0 || 0);
     const rTo = +r.dataset.h1 * 60 + (+r.dataset.t1 || 60);
-    const hit = +r.dataset.d === dg.d && rFrom <= lo && rTo >= hi;
+    const hit = +r.dataset.d === dCur && rFrom <= lo && rTo >= hi;
     r.classList.toggle('carry', dg.mode === 'move' && hit);
   });
   // 4) 原位留一条虚线占位：告诉用户它原本在哪，松手前不"凭空消失"
@@ -5485,24 +5566,29 @@ function paintCcDrag() {
       + `height:${(((dg.segTo - dg.segFrom) / span) * 100).toFixed(2)}%"></i>`;
     grid.appendChild(slot);
   }
-  // 5) 每日时长 / 合计
-  ccLiveTotals(dg.d, wins);
+  // 5) 每日时长 / 合计 / 段数
+  ccLiveTotals(winsBy);
 
   // 6) 状态条
   const isEn = I18N.getLang() === 'en';
   const verb = dg.mode === 'move' ? (isEn ? 'Move' : '移动')
     : dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
       : (isEn ? 'Select' : '选中');
-  const dayTxt = I18N.t(WD[dg.d]);
+  const dayTxt = dCur === dg.d
+    ? I18N.t(WD[dCur])
+    : `${I18N.t(WD[dg.d])} → ${I18N.t(WD[dCur])}`;
   const durTxt = ccDurText(hi - lo);
   const rg = ccMinText(lo, hi).range;
-  const edge = dg.edge < 0 ? (isEn ? ' · clamped at 0:00' : ' · 已到当日 0:00')
+  const edgeY = dg.edge < 0 ? (isEn ? ' · clamped at 0:00' : ' · 已到当日 0:00')
     : (dg.edge > 0 ? (isEn ? ' · clamped at 24:00' : ' · 已到当日 24:00') : '');
+  // 横向顶到周首 / 周末：说明"不会再往旁边走了"，避免用户以为拖不动
+  const edgeX = dg.edgeX < 0 ? (isEn ? ' · week starts here' : ' · 已到周一')
+    : (dg.edgeX > 0 ? (isEn ? ' · week ends here' : ' · 已到周日') : '');
   const lab = $('#clockLive');
   if (lab) {
     lab.innerHTML = isEn
-      ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edge}`
-      : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edge}`;
+      ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edgeY}${edgeX}`
+      : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edgeY}${edgeX}`;
   }
   // 7) 跟随指针的浮层（同一格内的小位移由 ccFlushDrag 单独更新，不重排）
   ccGhostSet(`${verb} ${dayTxt} ${rg} · ${durTxt}`,
@@ -5518,19 +5604,24 @@ function ccResetLive() {
   I18N.apply(lab);
 }
 
-/** 撤回预览：按**配置里的真实值**把这一天重画（单击不改结构时用） */
-function ccRestorePreview(d) {
+/** 撤回预览：按**配置里的真实值**把涉及的那几天重画（单击 / 取消拖动时用） */
+function ccRestorePreview(days) {
   const grid = document.getElementById('ccGrid');
   if (!grid) return;
   grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
-  const day = clockProfile().days[d] || [];
-  grid.querySelectorAll(`.cc-cell[data-d="${d}"]`).forEach((c) => {
-    const h = +c.dataset.h;
-    const p = day[h];
-    ccPaintCell(c, d, h, p && p.on ? { f: p.from || 0, t: p.to == null ? 60 : p.to } : null);
-  });
+  const list = Array.isArray(days) ? days : [days];
+  const prof = clockProfile();
+  for (const d of list) {
+    const day = prof.days[d] || [];
+    grid.querySelectorAll(`.cc-cell[data-d="${d}"]`).forEach((c) => {
+      const h = +c.dataset.h;
+      const p = day[h];
+      ccPaintCell(c, d, h, p && p.on ? { f: p.from || 0, t: p.to == null ? 60 : p.to } : null);
+    });
+  }
+  grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
   ccRenderRuns(document);
-  ccLiveTotals(d, null);
+  ccLiveTotals(null);
   ccResetLive();
 }
 
@@ -5649,13 +5740,37 @@ function ccFlushDrag() {
   const x = dg.pendingX;
   dg.pendingY = null;
   dg.pendingX = null;
-  const { idx, edge } = ccGrainAt(dg.d, y);
   dg.lastY = y;
   if (typeof x === 'number') dg.lastX = x;
-  const changed = idx !== dg.cur || edge !== dg.edge;
+
+  // 平移可以跨天：横向落点决定"搬到哪一天"。
+  // 指针滑出图表两侧时保持当前天（在周首 / 周末停住），并在状态条说明到头了。
+  let dCur = dg.dCur == null ? dg.d : dg.dCur;
+  let edgeX = 0;
+  if (dg.mode === 'move') {
+    const at = ccDayAtX(x);
+    if (at != null) {
+      dCur = at;
+    } else if (typeof x === 'number') {
+      const grid = document.getElementById('ccGrid');
+      const c0 = grid && grid.querySelector('.cc-cell[data-d="0"][data-h="0"]');
+      const c6 = grid && grid.querySelector('.cc-cell[data-d="6"][data-h="0"]');
+      if (c0 && c6) {
+        const l = c0.getBoundingClientRect().left;
+        const r = c6.getBoundingClientRect().right;
+        if (x < l - 8 && dCur === 0) edgeX = -1;
+        if (x > r + 8 && dCur === 6) edgeX = 1;
+      }
+    }
+  }
+  const { idx, edge } = ccGrainAt(dCur, y);
+  const changed = idx !== dg.cur || edge !== dg.edge
+    || dCur !== dg.dCur || edgeX !== dg.edgeX;
   dg.cur = idx;
   dg.edge = edge;
-  // 落到新的粒度 → 重排；仍在同一格 → 只挪浮层（省掉一次重排）
+  dg.dCur = dCur;
+  dg.edgeX = edgeX;
+  // 落到新的粒度 / 新的一天 → 重排；仍在同一格 → 只挪浮层（省掉一次重排）
   if (changed) paintCcDrag();
   else ccGhostMove();
 }
@@ -5690,15 +5805,15 @@ function ccDragBegin(d, clientY, clientX) {
 
   if (seg) {
     S.ccDrag = {
-      d, anchor: idx, cur: idx, edge, mode: 'move', moved: false,
-      startY: clientY, lastX: clientX, lastY: clientY,
+      d, dCur: d, anchor: idx, cur: idx, edge, edgeX: 0, mode: 'move', moved: false,
+      startY: clientY, startX: clientX, lastX: clientX, lastY: clientY,
       segFrom: seg.h0 * 60 + seg.f0,
       segTo: seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1),
     };
   } else {
     S.ccDrag = {
-      d, anchor: idx, cur: idx, edge, mode: 'add', moved: false,
-      startY: clientY, lastX: clientX, lastY: clientY,
+      d, dCur: d, anchor: idx, cur: idx, edge, edgeX: 0, mode: 'add', moved: false,
+      startY: clientY, startX: clientX, lastX: clientX, lastY: clientY,
     };
   }
   paintCcDrag();
@@ -5710,9 +5825,32 @@ function ccDragMove(clientY, clientX) {
   if (!dg) return;
   dg.pendingY = clientY;
   if (typeof clientX === 'number') dg.pendingX = clientX;
-  // "真的动过"按位移算（3px）：同一格内稍微一拖也算拖动，不必跨过整格
+  // "真的动过"按位移算（3px）：同一格内稍微一拖也算拖动，不必跨过整格；
+  // 横向同样算——跨天搬一段时，指针可能只往右挪了一点点。
   if (!dg.moved && Math.abs(clientY - dg.startY) >= 3) dg.moved = true;
+  if (!dg.moved && typeof clientX === 'number' && typeof dg.startX === 'number'
+    && Math.abs(clientX - dg.startX) >= 3) dg.moved = true;
   ccScheduleDrag();
+}
+
+/** 取消拖动：把预览整个撤回，不写任何数据（Esc / 窗口失焦 / 右键） */
+function ccCancelDrag() {
+  const dg = S.ccDrag;
+  if (!dg) return;
+  S.ccDrag = null;
+  if (ccPaintRaf) { cancelAnimationFrame(ccPaintRaf); ccPaintRaf = 0; }
+  if (ccPaintTimer) { clearTimeout(ccPaintTimer); ccPaintTimer = 0; }
+  document.querySelectorAll('.cc-cell.qshow').forEach((c) => c.classList.remove('qshow'));
+  const grid = document.getElementById('ccGrid');
+  if (grid) {
+    grid.classList.remove('dragging');
+    grid.classList.remove('over-seg');
+    grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
+    grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
+  }
+  document.body.classList.remove('cc-dragging');
+  ccGhostDrop();
+  ccRestorePreview([dg.d, dg.dCur == null ? dg.d : dg.dCur]);
 }
 
 /** 松手：没动过 = 单击（不改结构）；动过 = 提交这段区间 */
@@ -5722,6 +5860,9 @@ async function ccDragEnd() {
   // 先把还没落地的那一帧刷掉：提交的区间必须等于用户最后看到的那一块
   ccFlushDrag();
   S.ccDrag = null;
+
+  // 落点那天（平移可跨天）
+  const dCur = dg.mode === 'move' ? (dg.dCur == null ? dg.d : dg.dCur) : dg.d;
 
   // 记下"手上那一块"的位置，松手后用它做 FLIP 落位
   const carried = dg.mode === 'move' ? document.querySelector('#ccGrid .cc-run.carry') : null;
@@ -5742,9 +5883,9 @@ async function ccDragEnd() {
 
   const { lo, hi } = ccDragRange(dg);
   const h0 = Math.floor(lo / 60), h1 = Math.floor((hi - 1) / 60);
-  // 留给右键菜单的"当前选区""：用粒度坐标表示，和旧版一致
+  // 留给右键菜单的"当前选区"：用粒度坐标表示，和旧版一致
   S.ccRect = {
-    d0: dg.d, d1: dg.d, h0, h1,
+    d0: dCur, d1: dCur, h0, h1,
     qA: Math.floor((lo - h0 * 60) / ccStep()),
     qB: Math.ceil((hi - h1 * 60) / ccStep()) - 1,
   };
@@ -5752,28 +5893,39 @@ async function ccDragEnd() {
   if (!dg.moved) {
     // 单击：**不改任何时段**，只把选区记下来给右键菜单用。
     // （这条是硬规则：点击不得改变时段的数量与结构。）预览也要撤回去。
-    ccRestorePreview(dg.d);
+    ccRestorePreview([dg.d, dCur]);
     if (scroller) scroller.scrollTop = scrollTop;
     return;
   }
 
   if (dg.mode === 'move') {
-    if (lo === dg.segFrom && hi === dg.segTo) {
+    if (dCur === dg.d && lo === dg.segFrom && hi === dg.segTo) {
       // 原地放下：什么都不用提交，只把预览换成真实渲染
-      ccRestorePreview(dg.d);
+      ccRestorePreview([dg.d]);
       render();
       // render 换掉了整个面板，滚动位置要在**换完**之后还原
       const sc0 = document.querySelector('#ccDetail .cc-scroll');
       if (sc0) sc0.scrollTop = scrollTop;
       return;
     }
-    await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, lo, hi);
-  } else {
-    await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
+    // 关键：提交后**不整体重绘**。
+    // 预览本来就是按最终结果画的，再 render 一次等于把 168 个格子重建一遍，
+    // 既会打断落位动画，也会让"整页重新淡入"闪一下。
+    const ok = await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, dCur, lo, hi, { noRender: true });
+    if (ok) {
+      ccResetLive();          // 状态条回到摘要
+      ccLiveTotals(null);     // 行数据已经是最终值，这里只做一次兜底对齐
+    }
+    const sc2 = document.querySelector('#ccDetail .cc-scroll');
+    if (sc2) sc2.scrollTop = scrollTop;
+    if (ok) ccLandRun(fromRect, dCur, h0, h1);
+    return;
   }
+
+  await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
   // 提交后整体重绘会把滚动位置打回顶部，这里还原，免得"一松手视线就跑了"
-  const sc2 = document.querySelector('#ccDetail .cc-scroll');
-  if (sc2) sc2.scrollTop = scrollTop;
+  const sc3 = document.querySelector('#ccDetail .cc-scroll');
+  if (sc3) sc3.scrollTop = scrollTop;
   ccLandRun(fromRect, dg.d, h0, h1);
 }
 
@@ -5795,7 +5947,16 @@ document.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // 指针在窗口外松开时收不到 mouseup：失焦即视为松手，避免"卡在抓取状态"
-window.addEventListener('blur', () => { if (S.ccDrag) ccDragEnd(); });
+// 指针在窗口外松开时收不到 mouseup：失焦即视为**取消**（不是提交），
+// 免得"切个窗口回来发现时段已经被搬走了"。
+window.addEventListener('blur', () => { if (S.ccDrag) ccCancelDrag(); });
+
+// 拖动中按 Esc = 取消（把预览撤回，不写任何数据）
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !S.ccDrag) return;
+  e.preventDefault();
+  ccCancelDrag();
+});
 
 // 设置页的语录输入框：回车等于点「添加」
 document.addEventListener('keydown', (e) => {
@@ -6252,6 +6413,8 @@ function ccOpenMenu(d, h, x, y) {
 document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
 
 document.addEventListener('contextmenu', (e) => {
+  // 拖动中按右键 = 取消这次拖动，且不弹菜单（否则会一边拖一边弹窗）
+  if (S.ccDrag) { e.preventDefault(); ccCancelDrag(); return; }
   const cell = e.target.closest('.cc-cell');
   if (!cell) { ccCloseMenu(); return; }
   e.preventDefault();
