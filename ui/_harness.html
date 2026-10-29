@@ -306,6 +306,8 @@ window.__patch = async (patch) => {
 /* ---- 交互回归：模拟拖选 / 单击 / 右键菜单，把断言结果写进 DOM ---- */
 window.__itest = async () => {
   const out = [];
+  // 调试用：断言边跑边可见。用例卡住时靠它能看出停在哪一条。
+  window.__itestRows = out;
   const cell = (d, h) => document.querySelector(`.cc-cell[data-d="${d}"][data-h="${h}"]`);
   const fire = (type, el, opts = {}) =>
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
@@ -2542,7 +2544,138 @@ window.__itest = async () => {
     await clearAll();
   }
 
-  // ---- 26h6. 进入自律时间自动打开：面板 / 排序 / 窗口形式 / 校验 ----
+  // ---- 26j. 多个时段同时存在时，拖动其中一段不能让别的段"消失" ----
+  //
+  //  这一组盯的是"数据还在、界面少一块"的那类 bug：
+  //  预览是唯一决定落位后长什么样的地方（提交走 noRender，不重绘），
+  //  所以预览里只要少画一个窗口，屏幕上就会永久少一块。
+  {
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => {
+        hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; hh.wins = [];
+      }));
+      await saveConfig(); await wait(140);
+    };
+    const segsOf = (d) => ccSegs(pd()[d]);
+    const runsOf = (d) => [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)];
+    const domOn = (d) => [...document.querySelectorAll(`.cc-cell[data-d="${d}"].on`)]
+      .map((c) => +c.dataset.h);
+    const colCenter = (d) => {
+      const r = document.querySelector(`.cc-cell[data-d="${d}"]`).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    /** 全表不变式：每一天的块数都必须等于配置里的段数（DOM == 数据） */
+    const ghostOrMissing = () => [0, 1, 2, 3, 4, 5, 6].map((d) => {
+      const segs = ccSegs(pd()[d]).length;
+      const blocks = document.querySelectorAll(`.cc-run[data-d="${d}"]`).length;
+      return segs === blocks ? '' : `${d}:段${segs}/块${blocks}`;
+    }).filter(Boolean);
+
+    await openFull();
+    await clearAll();
+
+    // 周三：09:00–09:30 + 09:30–10:00（同一小时两段）+ 14:00–15:00（第三段）
+    await Act.clockCommitRange(2, 9 * 60, 9 * 60 + 30, 'add');
+    await wait(220);
+    await Act.clockCommitRange(2, 9 * 60 + 30, 10 * 60, 'add');
+    await wait(220);
+    await Act.clockCommitRange(2, 14 * 60, 15 * 60, 'add');
+    await wait(260);
+    out.push(['三段时间都在：共三段', segsOf(2).length, 3]);
+    out.push(['三段时间都在：三块都画出来', runsOf(2).length, 3]);
+
+    // ① 拖动第三段（14–15）→ 18–19：**按住不放时**另外两段也必须还在
+    fire('mousedown', cell(2, 14), { clientY: gY(2, 14, 1), clientX: colCenter(2) });
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true, clientY: gY(2, 18, 1), clientX: colCenter(2),
+    }));
+    await wait(240);
+    out.push(['拖动中：三块都还在', runsOf(2).length, 3]);
+    out.push(['拖动中：09 点仍然被选中', cell(2, 9).classList.contains('on'), true]);
+    out.push(['拖动中：09 点的两段各自成块',
+      runsOf(2).filter((r) => +r.dataset.h0 === 9 && +r.dataset.h1 === 9).length, 2]);
+    out.push(['拖动中：18 点已经预览到位', cell(2, 18).classList.contains('on'), true]);
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(460);
+    out.push(['落位后：仍然是三段', segsOf(2).length, 3]);
+    out.push(['落位后：三块都还在（没有一段消失）', runsOf(2).length, 3]);
+    out.push(['落位后：14 点已经空出来', domOn(2).indexOf(14) < 0, true]);
+    out.push(['落位后：18 点被选中', domOn(2).indexOf(18) >= 0, true]);
+    out.push(['落位后：分钟数没丢（30+30+60）', ccDayMinutes(pd()[2]), 120]);
+    out.push(['落位后：09 点还是两段', (pd()[2][9].wins || []).length, 2]);
+
+    // ② 同一天再"新建"一段：拖动过程中旧的三段也不能闪没
+    fire('mousedown', cell(2, 20), { clientY: gY(2, 20, 1), clientX: colCenter(2) });
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true, clientY: gY(2, 21, 2), clientX: colCenter(2),
+    }));
+    await wait(220);
+    out.push(['新建拖选中：旧的三块还在（外加新块）', runsOf(2).length, 4]);
+    out.push(['新建拖选中：09 点没被清空', cell(2, 9).classList.contains('on'), true]);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(460);
+    out.push(['新建一段后是四段', segsOf(2).length, 4]);
+    out.push(['新建一段后四块都在', runsOf(2).length, 4]);
+    out.push(['新建那段是 20:15–21:45', segsOf(2)[3].range, '20:15–21:45']);
+
+    // ③ 跨天搬到"本来就有两段"的那天：两天都不能丢段，且不因相邻而融合
+    await clearAll();
+    await Act.clockCommitRange(1, 9 * 60, 10 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(1, 10 * 60, 11 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(2, 14 * 60, 15 * 60, 'add');
+    await wait(240);
+    out.push(['搬家前：周四两段', segsOf(1).length, 2]);
+
+    fire('mousedown', cell(2, 14), { clientY: gY(2, 14, 1), clientX: colCenter(2) });
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true, clientY: gY(1, 11, 1), clientX: colCenter(1),
+    }));
+    await wait(240);
+    out.push(['跨天拖动中：落点那天是"原有两段 + 新到一段"', runsOf(1).length, 3]);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(460);
+    out.push(['跨天搬家后：周四三段', segsOf(1).length, 3]);
+    out.push(['跨天搬家后：周四三块都在', runsOf(1).length, 3]);
+    out.push(['跨天搬家后：周三清空', segsOf(2).length, 0]);
+    out.push(['跨天搬家后：周四的段范围',
+      segsOf(1).map((x) => x.range).join(' / '), '09:00–10:00 / 10:00–11:00 / 11:00–12:00']);
+    out.push(['跨天搬家后：相邻但不融合（三块 id 互不相同）',
+      new Set([pd()[1][9].seg, pd()[1][10].seg, pd()[1][11].seg]).size, 3]);
+
+    // ④ 全表不变式：任何一天都不许"配置有段、界面没块"
+    out.push(['每一步之后 DOM 都等于数据', ghostOrMissing(), []]);
+
+    // ⑤ 缩放其中一段：另外两段不受影响
+    {
+      const before = ccDayMinutes(pd()[1]);
+      fire('mousedown', cell(1, 10), {
+        clientY: ccSegEdgeY(1, { h0: 10, h1: 10, f0: 0, t1: 60 }).bottom - 2,
+        clientX: colCenter(1),
+      });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 10, 2), clientX: colCenter(1),
+      }));
+      await wait(200);
+      out.push(['缩放中：三块都还在', runsOf(1).length, 3]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(460);
+      out.push(['缩放后：还是三段', segsOf(1).length, 3]);
+      out.push(['缩放后：三块都在', runsOf(1).length, 3]);
+      out.push(['缩放只改了被拖那一段',
+        segsOf(1).map((x) => x.range).join(' / '),
+        '09:00–10:00 / 10:00–10:45 / 11:00–12:00']);
+      out.push(['缩放后分钟数只少了 15 分钟', ccDayMinutes(pd()[1]), before - 15]);
+      out.push(['缩放后 DOM 仍等于数据', ghostOrMissing(), []]);
+    }
+
+    await clearAll();
+  }
+
+
   {
     const r0 = () => S.data.config.rules[0];
     await Act.nav('rules');
@@ -2579,17 +2712,55 @@ window.__itest = async () => {
       const t0 = rows[0].querySelector('[data-lk="target"]');
       t0.value = 'C:\\Apps\\Code.exe';
       rows[0].querySelector('[data-lk="args"]').value = '--new-window';
-      rows[0].querySelector('[data-lk="window"]').value = 'max';
-      // 第二行改成网页
-      const sel = rows[1].querySelector('[data-lk="kind"]');
-      sel.value = 'url';
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      // 打开方式：三段按钮里点「最大化」（原生下拉已经换成自绘分段控件）
+      rows[0].querySelector('[data-act="launch-win"][data-v="max"]').click();
       await wait(120);
+      // 第二行改成网页
+      rows[1].querySelector('[data-act="launch-kind"][data-v="url"]').click();
+      await wait(160);
     }
     {
       const rows = [...document.querySelectorAll('[data-lkrow]')];
       rows[1].querySelector('[data-lk="target"]').value = 'https://example.com/doc';
       rows[1].querySelector('[data-lk="browser"]').value = 'chrome.exe';
+    }
+
+    // ④-2 「打开方式」的可读性：自绘三段按钮，不再是原生下拉
+    {
+      const row = document.querySelector('[data-lkrow]');
+      const wins = [...row.querySelectorAll('[data-act="launch-win"]')];
+      out.push(['打开方式不再是原生下拉', !!row.querySelector('[data-lk="window"], select'), false]);
+      out.push(['打开方式是三个按钮', wins.length, 3]);
+      out.push(['三个选项文案完整',
+        wins.map((b) => b.textContent.trim()).join('/'), '窗口化/最大化/最小化']);
+      out.push(['字号够读（12px）', getComputedStyle(wins[0]).fontSize, '12px']);
+      out.push(['按钮高度够点（24px）', Math.round(wins[0].getBoundingClientRect().height), 24]);
+      out.push(['只有一个处于选中态',
+        wins.filter((b) => b.classList.contains('active')).length, 1]);
+      out.push(['选中的是刚点的「最大化」',
+        (wins.find((b) => b.classList.contains('active')) || {}).textContent.trim(), '最大化']);
+      // 选中态用实心填充 + 白字：和图表粒度、主题切换同一套语言
+      const act = wins.find((b) => b.classList.contains('active'));
+      out.push(['选中态是白字', getComputedStyle(act).color, 'rgb(255, 255, 255)']);
+      out.push(['选中态有实心底色',
+        getComputedStyle(act).backgroundColor !== 'rgba(0, 0, 0, 0)', true]);
+      // 三个按钮互不重叠（以前挤在 82px 里会叠字）
+      const rs = wins.map((b) => b.getBoundingClientRect());
+      out.push(['三个按钮互不重叠',
+        rs[1].left >= rs[0].right - 0.5 && rs[2].left >= rs[1].right - 0.5, true]);
+      out.push(['每个按钮都放得下自己的文字',
+        rs.every((r, i) => r.width >= wins[i].scrollWidth - 1), true]);
+      out.push(['软件/网页也是自绘分段',
+        row.querySelectorAll('[data-act="launch-kind"]').length, 2]);
+      const rows2 = [...document.querySelectorAll('[data-lkrow]')];
+      out.push(['切到网页后「参数」自动禁用',
+        rows2[1].querySelector('[data-lk="args"]').disabled, true]);
+      out.push(['切到网页后「浏览器」自动可用',
+        rows2[1].querySelector('[data-lk="browser"]').disabled, false]);
+      // 换类型不丢别的行已经填好的内容（重绘前会先 sync 回草稿）
+      out.push(['换类型时没丢第一行的路径',
+        S.launchDraft.items[0].target, 'C:\\Apps\\Code.exe']);
+      out.push(['换类型时也没丢参数', S.launchDraft.items[0].args, '--new-window']);
     }
 
     // ⑤ 下移 / 上移：顺序就是排列顺序
@@ -2626,10 +2797,8 @@ window.__itest = async () => {
     {
       const rows = [...document.querySelectorAll('[data-lkrow]')];
       const last = rows[rows.length - 1];
-      const sel = last.querySelector('[data-lk="kind"]');
-      sel.value = 'url';
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      await wait(120);
+      last.querySelector('[data-act="launch-kind"][data-v="url"]').click();
+      await wait(160);
     }
     {
       const rows = [...document.querySelectorAll('[data-lkrow]')];

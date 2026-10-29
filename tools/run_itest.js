@@ -61,20 +61,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await send('Runtime.enable');
 
   const expr = `(async () => {
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 1200; i++) {
       const p = document.getElementById('itest');
       if (p) return p.textContent;
       const e = document.getElementById('itest-err') || document.getElementById('boot-err');
       if (e) return 'ERR:' + e.textContent;
       await new Promise(r => setTimeout(r, 250));
     }
-    return 'TIMEOUT';
+    const rows = window.__itestRows || [];
+    return 'TIMEOUT:' + JSON.stringify({ n: rows.length, last: rows.slice(-3) });
   })()`;
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
   const val = r.result && r.result.result && r.result.result.value;
   ws.close(); proc.kill();
 
-  if (!val || val === 'TIMEOUT') { console.error('没有结果：用例可能卡住了'); process.exit(2); }
+  if (!val || val.startsWith('TIMEOUT')) {
+    console.error('没有结果：用例可能卡住了\n' + String(val || ''));
+    process.exit(2);
+  }
   if (val.startsWith('ERR:')) { console.error('页面内抛异常:\n' + val.slice(4, 2500)); process.exit(2); }
 
   let rows;

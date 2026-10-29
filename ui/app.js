@@ -1385,29 +1385,28 @@ function ccRenderRuns(root, override, only) {
   });
   const fc = clockProfile();
   // `override(d,h)` 让拖拽预览可以临时替换某天的窗口，而不去改配置：
-  //   返回 undefined = 用配置；{f,t} = 用这个窗口；null = 这一小时不选中。
-  // 预览和提交共用同一个 ccHourResult，所以"看到什么"就是"写下什么"。
+  //   返回 undefined = 用配置；`null` / `[]` = 这一小时不选中；
+  //   `{f,t}` 或 `[{f,t}, …]` = 用这些窗口。
+  // **必须支持"一小时多个窗口"**：同一小时可以放两段（09:00–09:30 + 09:30–10:00），
+  // 预览当初只认得一个窗口，于是拖别处的时段时，同一小时里的另一段就被整段丢掉，
+  // 界面上看起来"已有时段凭空消失"（数据其实还在）。
+  const ovList = (d, h) => {
+    if (!override) return undefined;
+    const ov = override(d, h);
+    if (ov === undefined) return undefined;
+    return ccWinList(ov).map((w) => ({ from: w.f, to: w.t, seg: w.seg || '__drag' }));
+  };
   const hourAt = (d, h) => {
     const base = (fc.days[d] && fc.days[d][h]) || { on: false, work: 0, brk: 0, from: 0, to: 60 };
-    if (!override) return base;
-    const ov = override(d, h);
-    if (ov === undefined) return base;
-    if (ov === null) return { ...base, on: false };
-    return { ...base, on: true, from: ov.f, to: ov.t };
-  };
-  // 这一小时属于哪一段。
-  //   · 没有预览 → 配置里的 seg
-  //   · 预览命中（正在拖的那一段）→ 统一标记 `__drag`，
-  //     于是它和旁边没动过的段 id 不同，必然被切成两块——
-  //     "拖一段，旁边那段不许跟着粘上来"就是靠这一条成立的。
-  //   · 预览返回 null（被清空）→ 空 id
-  const segOf = (d, h) => {
-    const base = (fc.days[d] && fc.days[d][h]) || {};
-    if (!override) return base.seg || '';
-    const ov = override(d, h);
-    if (ov === undefined) return base.seg || '';
-    if (ov === null) return '';
-    return '__drag';
+    const list = ovList(d, h);
+    if (list === undefined) return base;
+    if (!list.length) return { ...base, on: false };
+    return {
+      ...base,
+      on: true,
+      from: Math.min(...list.map((w) => w.from)),
+      to: Math.max(...list.map((w) => w.to)),
+    };
   };
   const clampW = (v) => Math.max(0, Math.min(60, Math.round(v || 0)));
   // 真实行高（px）：格子渲染出来了就以它为准，否则退回按粒度估算的常量
@@ -1429,14 +1428,12 @@ function ccRenderRuns(root, override, only) {
   //    分割点看「有效边界」：上一小时没到整点、或这一小时没从整点开始，
   //    中间就有没选中的分钟，必须切开——那个洞渲染时要让出来。
   //    切完的段只有首小时可以 from>0、尾小时可以 to<60，中间都是整小时。
-  // 这一小时里要画的窗口（预览优先）
+  // 这一小时里要画的窗口（预览优先；一小时可能有多个）
   const winsAt = (d, h) => {
     const base = (fc.days[d] && fc.days[d][h]) || {};
-    if (!override) return hourWins(base);
-    const ov = override(d, h);
-    if (ov === undefined) return hourWins(base);
-    if (ov === null) return [];
-    return [{ from: ov.f, to: ov.t, seg: '__drag' }];
+    const list = ovList(d, h);
+    if (list === undefined) return hourWins(base);
+    return list;
   };
 
   const segs = [];
@@ -1590,15 +1587,14 @@ function ccDayRanges(day) {
   return ccSegs(day).map((s) => s.range);
 }
 
-/** 已选摘要：七天一样 → "每天 …"，否则逐天列（与后端 summary 口径一致） */
-/** 一天里选中的总分钟数 */
+/** 一天里选中的总分钟数。
+ *
+ *  按**窗口**累加，不能按 `from`/`to` 相减：那两个字段只是"这一小时的近似总范围"，
+ *  同一小时里放两段且中间有空档时（09:00–09:15 与 09:45–10:00），
+ *  相减会得到整小时 60 分钟，比真实值多一倍。窗口是唯一真相。 */
 function ccDayMinutes(day) {
-  return day.reduce((n, p) => {
-    if (!p.on) return n;
-    const f = Math.max(0, Math.min(59, p.from || 0));
-    const t = Math.max(1, Math.min(60, p.to == null ? 60 : p.to));
-    return n + Math.max(0, t - f);
-  }, 0);
+  return (day || []).reduce((n, p) => n
+    + hourWins(p).reduce((m, w) => m + Math.max(0, w.to - w.from), 0), 0);
 }
 
 /** 一句话概括当前排班。
@@ -2264,7 +2260,10 @@ function openLaunchModal(id) {
   renderLaunchModal();
 }
 
-/** 把面板里每一行的输入同步回草稿（不落盘） */
+/** 把面板里每一行的输入同步回草稿（不落盘）。
+ *
+ *  「软件 / 网页」「窗口化 / 最大化 / 最小化」不再是原生下拉，而是分段按钮，
+ *  所以这里按"哪一个是 active"读取——读的还是 DOM，保证"看到的就是存下的"。 */
 function launchSync() {
   const d = S.launchDraft;
   if (!d) return;
@@ -2273,11 +2272,16 @@ function launchSync() {
     const it = byId.get(row.dataset.lkrow);
     if (!it) return;
     const get = (k) => (row.querySelector('[data-lk="' + k + '"]') || {}).value;
-    const kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+    /** 分段按钮当前选中的那个值 */
+    const pick = (sel) => {
+      const on = row.querySelector(`${sel} .active`);
+      return on ? on.dataset.v : '';
+    };
+    const kind = pick('.lk-kind') === 'url' ? 'url' : 'app';
     it.kind = kind;
     it.target = String(get('target') || '');
     it.args = kind === 'url' ? '' : String(get('args') || '');
-    it.window = get('window') || 'normal';
+    it.window = pick('.lk-win') || 'normal';
     it.browser = kind === 'url' ? String(get('browser') || '') : '';
   });
 }
@@ -2285,38 +2289,60 @@ function launchSync() {
 function renderLaunchModal() {
   const d = S.launchDraft;
   if (!d) return;
-  const WIN = [['normal', '窗口化'], ['max', '最大化'], ['min', '最小化']];
+  // 窗口形式：三个并列的分段按钮，不用原生 <select>。
+  // 为什么换掉：下拉在深色里只有控件本体跟着主题走，弹出来的选项列表是系统默认的
+  // （浅底黑字 / 深底黑字都可能），"窗口化 / 最大化 / 最小化"糊成一片，
+  // 和界面其它分段控件的风格也完全不是一路。分段按钮是自绘的，颜色、字号、圆角
+  // 全在本项目手里，三项一眼可辨、点了就有明确反馈。
+  const WIN = [['normal', '窗口化', '按普通窗口打开'], ['max', '最大化', '铺满屏幕'],
+    ['min', '最小化', '只放进任务栏']];
   const rows = d.items.length
     ? d.items.map((it, i) => {
       const url = it.kind === 'url';
+      const win = it.window || 'normal';
       return `<div class="lk" data-lkrow="${esc(it.id)}">
-        <span class="lk-idx" title="桌面上的排列顺序">${i + 1}</span>
-        <select data-lk="kind" title="软件还是网页">
-          <option value="app"${url ? '' : ' selected'}>软件</option>
-          <option value="url"${url ? ' selected' : ''}>网页</option>
-        </select>
-        <input type="text" data-lk="target" value="${esc(it.target)}"
-          placeholder="${url ? 'https://example.com' : 'C:\\Program Files\\App\\app.exe'}">
-        <input type="text" data-lk="args" value="${esc(it.args || '')}"
-          placeholder="参数" ${url ? 'disabled' : ''}>
-        <select data-lk="window" title="打开后的窗口形式">
-          ${WIN.map(([v, t]) => `<option value="${v}"${it.window === v ? ' selected' : ''}>${t}</option>`).join('')}
-        </select>
-        <input type="text" data-lk="browser" value="${esc(it.browser || '')}"
-          placeholder="浏览器（可空）" ${url ? '' : 'disabled'}>
-        <span class="lk-ops">
-          <button class="btn btn-sm" data-act="launch-up" data-id="${esc(it.id)}" ${i === 0 ? 'disabled' : ''} title="上移">↑</button>
-          <button class="btn btn-sm" data-act="launch-down" data-id="${esc(it.id)}"
-            ${i === d.items.length - 1 ? 'disabled' : ''} title="下移">↓</button>
-          <button class="btn btn-sm danger-ghost" data-act="launch-del" data-id="${esc(it.id)}">删</button>
-        </span>
+        <div class="lk-line lk-main">
+          <span class="lk-idx" title="桌面上的排列顺序">${i + 1}</span>
+          <div class="lk-kind" role="group" aria-label="软件还是网页">
+            <button type="button" data-act="launch-kind" data-id="${esc(it.id)}" data-v="app"
+              class="${url ? '' : 'active'}" title="打开本机软件">软件</button>
+            <button type="button" data-act="launch-kind" data-id="${esc(it.id)}" data-v="url"
+              class="${url ? 'active' : ''}" title="打开一个网址">网页</button>
+          </div>
+          <input type="text" data-lk="target" value="${esc(it.target)}"
+            placeholder="${url ? 'https://example.com' : 'C:\\Program Files\\App\\app.exe'}">
+          <span class="lk-ops">
+            <button class="btn btn-sm" data-act="launch-up" data-id="${esc(it.id)}" ${i === 0 ? 'disabled' : ''} title="上移">↑</button>
+            <button class="btn btn-sm" data-act="launch-down" data-id="${esc(it.id)}"
+              ${i === d.items.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+            <button class="btn btn-sm danger-ghost" data-act="launch-del" data-id="${esc(it.id)}">删</button>
+          </span>
+        </div>
+        <div class="lk-line lk-sub">
+          <span class="lk-lab">打开方式</span>
+          <div class="lk-win" role="group" aria-label="打开后的窗口形式">
+            ${WIN.map(([v, t, tip]) => `<button type="button" data-act="launch-win"
+              data-id="${esc(it.id)}" data-v="${v}" class="${win === v ? 'active' : ''}"
+              title="${tip}">${t}</button>`).join('')}
+          </div>
+          <label class="lk-field">
+            <span class="lk-lab">参数</span>
+            <input type="text" data-lk="args" value="${esc(it.args || '')}"
+              placeholder="启动参数（可空）" ${url ? 'disabled' : ''}>
+          </label>
+          <label class="lk-field">
+            <span class="lk-lab">浏览器</span>
+            <input type="text" data-lk="browser" value="${esc(it.browser || '')}"
+              placeholder="${url ? '默认浏览器' : '—'}" ${url ? '' : 'disabled'}>
+          </label>
+        </div>
       </div>`;
     }).join('')
     : '<div class="lk-empty">还没有目标。点下面的「＋ 添加一项」，可以加软件，也可以加网页。</div>';
 
   $('#modalRoot').innerHTML = `
   <div class="modal-mask" data-act="close-modal-bg">
-    <div class="modal" style="width:760px">
+    <div class="modal" style="width:820px">
       <div class="modal-hd">
         <h3>进入自律时间时自动打开</h3>
         <button class="close-x" data-act="close-modal">×</button>
@@ -2335,7 +2361,7 @@ function renderLaunchModal() {
 
         <div class="row" style="margin-top:10px;align-items:center;flex-wrap:wrap">
           <button class="btn btn-sm" data-act="launch-add">＋ 添加一项</button>
-          <span class="hint">序号就是桌面上的从左到右顺序；窗口形式支持窗口化 / 最大化 / 最小化。</span>
+          <span class="hint">序号就是桌面上的从左到右顺序；「打开方式」决定它启动后是窗口化、最大化还是最小化。</span>
         </div>
         <div class="hint" style="margin-top:8px;line-height:1.8">
           网页的「已打开就切过去」靠窗口标题里的域名判断，属于尽力而为；判不出来会新开一个标签页。
@@ -5912,6 +5938,43 @@ const Act = window.Act = {
     renderLaunchModal();
   },
 
+  /** 切换某一行的「打开方式」（窗口化 / 最大化 / 最小化）。
+   *
+   *  只改这一行的按钮状态，不重绘整个面板：重绘会把正在输入的输入框
+   *  连同光标一起换掉，用户刚敲的半个路径就丢了焦点。
+   *  （草稿值由 launchSync 在下次动作 / 保存时统一从 DOM 读回，不会漏。） */
+  launchSetWin(id, v) {
+    const win = ['normal', 'max', 'min'].indexOf(v) >= 0 ? v : 'normal';
+    const row = document.querySelector(`[data-lkrow="${id}"]`);
+    if (!row) return;
+    row.querySelectorAll('[data-act="launch-win"]').forEach((b) => {
+      const on = b.dataset.v === win;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    const d = S.launchDraft;
+    const it = d && d.items.find((x) => x.id === id);
+    if (it) {
+      launchSync();
+      it.window = win;
+    }
+  },
+
+  /** 切换「软件 / 网页」：两类目标的可填项不一样（参数 ↔ 浏览器、占位符也不同），
+   *  所以这里必须整面板重绘一次，把禁用态和占位文案一起换掉。 */
+  launchSetKind(id, v) {
+    const kind = v === 'url' ? 'url' : 'app';
+    const d = S.launchDraft;
+    if (!d) return;
+    launchSync();
+    const it = d.items.find((x) => x.id === id);
+    if (!it || it.kind === kind) return;
+    it.kind = kind;
+    if (kind === 'url') it.args = '';
+    else it.browser = '';
+    renderLaunchModal();
+  },
+
   /** 保存：校验后写回规则 */
   async launchSave() {
     const d = S.launchDraft;
@@ -6705,6 +6768,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'launch-del') { Act.launchDel(el.dataset.id); return; }
   if (act === 'launch-up') { Act.launchMove(el.dataset.id, -1); return; }
   if (act === 'launch-down') { Act.launchMove(el.dataset.id, 1); return; }
+  if (act === 'launch-win') { Act.launchSetWin(el.dataset.id, el.dataset.v); return; }
+  if (act === 'launch-kind') { Act.launchSetKind(el.dataset.id, el.dataset.v); return; }
   if (act === 'launch-save') { await Act.launchSave(); return; }
   if (act === 'sleep-add-seg') { await Act.sleepAddSeg(); return; }
   if (act === 'sleep-del-seg') { await Act.sleepDelSeg(el.dataset.id); return; }
@@ -6843,12 +6908,32 @@ function ccRectWindows(d0, d1, h0, h1, qA, qB) {
   }
   return out;
 }
-/** 重算某格的 DOM 选中态（.on）与细分刻度高亮（.cc-q.on），不触发整表渲染 */
+/** 把"一个窗口 / 一组窗口 / 空"统一成窗口数组（分 → {f,t,seg}）。
+ *
+ *  为什么需要它：同一小时可以放**两段**（09:00–09:30 + 09:30–10:00），
+ *  任何"一小时只装一个窗口"的中间表示都会在拖动预览里把另一段抹掉。
+ *  对外仍然接受单个 `{f,t}`（老调用点、老测试），内部一律按数组处理。 */
+function ccWinList(x) {
+  if (!x) return [];
+  const arr = Array.isArray(x) ? x : [x];
+  const out = [];
+  for (const w of arr) {
+    if (!w) continue;
+    const f = Math.max(0, Math.min(59, Math.round(+w.f || 0)));
+    const t = Math.max(1, Math.min(60, Math.round(w.t == null ? 60 : +w.t)));
+    if (t > f) out.push({ f, t, seg: w.seg || '' });
+  }
+  return out.sort((a, b) => a.f - b.f);
+}
+
+/** 重算某格的 DOM 选中态（.on）与细分刻度高亮（.cc-q.on），不触发整表渲染。
+ *  `win` 可以是单个窗口、窗口数组，或空——见 ccWinList。 */
 function ccPaintCell(cell, d, h, win) {
-  cell.classList.toggle('on', !!win);
+  const list = ccWinList(win);
+  cell.classList.toggle('on', list.length > 0);
   cell.querySelectorAll('.cc-q').forEach((q) => {
     const a = +q.dataset.a, b = +q.dataset.b;
-    q.classList.toggle('on', !!win && win.f < b && a < win.t);
+    q.classList.toggle('on', list.some((w) => w.f < b && a < w.t));
   });
 }
 /** hover 提示：只在停在细分刻度上时更新（避免 mouseover 抖动刷 tooltip） */
@@ -7041,30 +7126,40 @@ function ccHourResult(p, h, lo, hi, mode) {
  *   · 松手提交后是同一条代码路径画出来的，不会"跳一下"
  */
 
-/** 预览下**某一天** 24 小时各自的窗口（null = 这一小时没选中）。
+/** 预览下**某一天** 24 小时各自的窗口（**数组**，空数组 = 这一小时没选中）。
  *
  *  平移时会被问两天：原所在的那天（要把这一段拿掉）和落点那天（要铺上）。
  *  同一天时两步都作用在同一份数组上，等价于"先 sub 再 add"，
- *  与 clockMoveSeg 的写入顺序完全一致，所以松手不会跳变。 */
+ *  与 clockMoveSeg 的写入顺序完全一致，所以松手不会跳变。
+ *
+ *  ⚠️ 这里以前有两条会"抹掉别的时段"的错：
+ *  1. `out[h] = 与拖拽区间相交的那个窗口，否则 null` —— 只保留被拖的那一段。
+ *     只要这天还有别的时段，拖动其中一段时其余时段全被涂成"未选中"，块一块块消失。
+ *     落位走的又是"不整体重绘"的提交，没人再按配置纠正 DOM，
+ *     那些块就永久留在了"消失"状态——数据还在，界面没了。
+ *  2. 新建拖选（add）时仍然去"减掉 segFrom…segTo"，而这时这两个字段根本不存在，
+ *     减出来的小时列表是空的：拖新段时当天所有旧段一起闪没。
+ *  现在每小时**全量**返回所有窗口，只减真正被搬走 / 被覆盖的那一段。 */
 function ccWinsForDay(d, dg, lo, hi) {
   const prof = clockProfile();
-  const day = prof.days[d];
-  const out = new Array(24).fill(null);
+  const day = prof.days[d] || [];
+  const out = new Array(24).fill(null).map(() => []);
+  const isMove = dg.mode === 'move';
+  const isSrc = isMove && d === dg.d;
+  const isDst = d === (dg.dCur == null ? dg.d : dg.dCur);
+  // 段 id 与真正落盘时用的那一个完全同源：
+  //   · 平移 / 缩放 → 原地那一段的 id（ccSegIdIn 从原位置取）
+  //   · 新建拖选   → 区间内已有段的 id，没有就临时 id（提交时换成真 id）
+  // 这样预览里"贴在一起的两段"与落盘后的结果一模一样，松手不跳变。
+  const seg = isMove
+    ? (ccSegIdIn(prof.days[dg.d] || [], dg.segFrom, dg.segTo) || '__drag')
+    : (ccSegIdIn(day, lo, hi) || '__drag');
   for (let h = 0; h < 24; h++) {
     const p = day[h];
-    const isSrc = d === dg.d;
-    const isDst = d === (dg.dCur == null ? dg.d : dg.dCur);
     let wins = hourWins(p);
     if (isSrc) wins = ccWinsAfter(p, h, dg.segFrom, dg.segTo, 'sub', '');
-    if (isDst) {
-      const seg = isSrc ? ccSegIdIn(day, dg.segFrom, dg.segTo) : '';
-      wins = ccWinsAfterSource(wins, h, lo, hi, seg);
-    }
-    // 预览只关心"被拖的这一段落在这一小时的哪一截"，
-    // 所以取与 [lo,hi) 相交的那个窗口。
-    const hs = h * 60;
-    const hit = wins.find((w) => hs + w.to > lo && hs + w.from < hi);
-    out[h] = hit ? { f: hit.from, t: hit.to } : (wins.length ? null : null);
+    if (isDst) wins = ccWinsAfterSource(wins, h, lo, hi, seg);
+    out[h] = ccWinList(wins.map((w) => ({ f: w.from, t: w.to, seg: w.seg })));
   }
   return out;
 }
@@ -7095,9 +7190,29 @@ function ccWinsAfterSource(wins, h, lo, hi, seg) {
   return out.sort((x, y) => x.from - y.from);
 }
 
-/** 虚拟的一天里被选中多少分钟 */
+/** 虚拟的一天里被选中多少分钟。
+ *  一天 = 24 个小时，每小时可能**有多个窗口**（同一小时两段），
+ *  所以这里既接受 `[{f,t}, …]` 也接受 `[[{f,t}], …]` 两层结构。 */
 function ccWinsMinutes(wins) {
-  return (wins || []).reduce((n, w) => n + (w ? Math.max(0, w.t - w.f) : 0), 0);
+  return (wins || []).reduce((n, w) => n + (Array.isArray(w)
+    ? ccWinsMinutes(w)
+    : (w ? Math.max(0, w.t - w.f) : 0)), 0);
+}
+
+/** 预览的一天（24 小时窗口数组）→ 与配置同形状的一天（`ccSegs` 认的形状）。
+ *  段数 / 摘要 / 微缩图都走 `hourWins`，所以多窗口要原样翻译成 `wins`。 */
+function ccDayOfWins(hours) {
+  return (hours || []).map((list) => {
+    const l = ccWinList(list);
+    if (!l.length) return { on: false };
+    return {
+      on: true,
+      from: l[0].f,
+      to: l[l.length - 1].t,
+      seg: l[0].seg || '',
+      wins: l.map((w) => ({ from: w.f, to: w.t, seg: w.seg || '' })),
+    };
+  });
 }
 
 /** 「合计 x」：拖拽中的实时文案也要跟着语言走 */
@@ -7129,7 +7244,7 @@ function ccLiveTotals(winsBy) {
     const segEl = row.querySelector('.s');
     if (segEl) {
       const day = winsBy && winsBy.has(d)
-        ? winsBy.get(d).map((w) => (w ? { on: true, from: w.f, to: w.t } : { on: false }))
+        ? ccDayOfWins(winsBy.get(d))
         : prof.days[d];
       const n = ccSegs(day).length;
       segEl.textContent = n ? `${n} 段` : '';
@@ -7174,8 +7289,14 @@ function paintCcDrag() {
   //    必须把窗口传给渲染器：只改单元格的 .on 不够——
   //    每小时的起止分钟若仍从配置里读，02:15 起的那一块就会被判成
   //    "上一小时 :15 结束"，在小时边界断成两块。
+  //    传的是**这一小时的全部窗口**（不是与拖拽相交的那一个）：
+  //    只传一个的话，同一天里别的时段就在预览里消失了（见 ccWinsForDay）。
   // 块本身按"已放置"色画；只有**这次真正在动的那一段**单独点亮（见 ccPaintSel）。
-  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined));
+  ccRenderRuns(document, (d, h) => {
+    if (!winsBy.has(d)) return undefined;
+    const list = winsBy.get(d)[h];
+    return list && list.length ? list : null;
+  });
   ccPaintSel(days, lo, hi);
 
   const h0 = Math.floor(lo / 60);
@@ -7255,7 +7376,10 @@ function ccRestoreCells(days) {
     grid.querySelectorAll(`.cc-cell[data-d="${d}"]`).forEach((c) => {
       const h = +c.dataset.h;
       const p = day[h];
-      ccPaintCell(c, d, h, p && p.on ? { f: p.from || 0, t: p.to == null ? 60 : p.to } : null);
+      // 用**全部窗口**还原：同一小时可以有两段，只按 from/to 画会把两段并成整小时
+      ccPaintCell(c, d, h, p && p.on
+        ? hourWins(p).map((w) => ({ f: w.from, t: w.to, seg: w.seg }))
+        : null);
     });
   }
   return list;
@@ -7680,22 +7804,30 @@ async function ccDragEnd() {
     const busy = live ? (live.painted || []) : [];
     // 一路掠过的中间天：既不是起点也不是落点，配置里从来没有它们，
     // 必须按配置清一遍，否则它们会作为"幽灵时段"留在屏幕上（提交不重绘，没人纠正）。
-    const stale = (dg.painted || []).filter((d) => d !== dg.d && d !== dCur
+    const staleDays = (dg.painted || []).filter((d) => d !== dg.d && d !== dCur
       && busy.indexOf(d) < 0);
-    if (ok && stale.length) {
-      // 只重画这几天：落点那一块要留给下面的 FLIP 当目标，不能一起重建
-      ccRestoreCells(stale);
-      ccRenderRuns(document, null, stale);
-    }
     if (!live) {
       if (ok) {
-        ccSettleRuns();         // 琥珀（选中中）→ 蓝（已设置）
+        // 落位后**按配置重建**涉及的这几天（起点 / 落点 / 掠过的中间天）。
+        // 为什么不直接相信预览：预览只是"看起来的样子"，一旦它在某一帧少画了
+        // 一块（丢窗口、被别的段盖住），noRender 提交不会有人来纠正，
+        // 界面就永久少一块而数据还在。这里以数据为准重画一次，DOM 必然等于配置。
+        // FLIP 用的是下面 ccLandRun 里**重建后**的目标块，动画照旧。
+        const touched = [dg.d, dCur].concat(staleDays)
+          .filter((d, i, arr) => arr.indexOf(d) === i);
+        ccRestoreCells(touched);
+        ccRenderRuns(document, null, touched);
+        ccSettleRuns();         // 选中中 → 已设置（只换类，保留落位动画起点）
         ccResetLive();          // 状态条回到摘要
         ccLiveTotals(null);     // 行数据已经是最终值，这里只做一次兜底对齐
       }
       const sc2 = document.querySelector('#ccDetail .cc-scroll');
       if (sc2) sc2.scrollTop = scrollTop;
       if (ok) ccLandRun(fromRect, dCur, h0, h1);
+    } else if (ok && staleDays.length) {
+      // 这一次拖动还没结束：只清掠过的中间天，别动新拖动正在画的那几天
+      ccRestoreCells(staleDays);
+      ccRenderRuns(document, null, staleDays);
     }
     return;
   }
