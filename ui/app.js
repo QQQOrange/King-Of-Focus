@@ -1303,6 +1303,23 @@ function clockCfgSleep() {
   return s.sleep;
 }
 
+/** 休息结束收尾的配置。缺字段按默认补齐，和 Rust 侧 `SweepCfg::default()` 一致：
+ *  开 / 柔和 / 暂停媒体。
+ *
+ *  为什么在前端也要兜一层：老配置（v0.1.22 之前）根本没有 `sweep` 这个键，
+ *  界面要先能画出"默认值"的样子；后端读配置时同样有 serde default，
+ *  两边各自兜住，谁先跑都不会显示错。 */
+function sweepCfg() {
+  const s = S.data && S.data.config && S.data.config.settings;
+  if (!s) return { enabled: true, mode: 'soft', pauseMedia: true };
+  if (!s.sweep || typeof s.sweep !== 'object') s.sweep = {};
+  const sw = s.sweep;
+  if (typeof sw.enabled !== 'boolean') sw.enabled = true;
+  if (sw.mode !== 'hard' && sw.mode !== 'soft') sw.mode = 'soft';
+  if (typeof sw.pauseMedia !== 'boolean') sw.pauseMedia = true;
+  return sw;
+}
+
 function clockCfg() {
   const s = S.data && S.data.config && S.data.config.settings;
   if (!s) return { enabled: false, applyRules: true, active: 'p1', profiles: [] };
@@ -2470,6 +2487,67 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
   </div>`;
 }
 
+/* ── 休息结束时的收尾 ─────────────────────────────────────────
+ *
+ * 只在「休息 → 学习」的那一次边界动手：休息段里黑名单是放行的，用户会把
+ * 抖音 / 游戏开起来；回到学习的那一刻，这些窗口不能就这么留着。
+ *
+ * 两种模式的区别（也写在卡片里，用户改设置时能直接看到）：
+ *   柔和 · 最小化：窗口收进任务栏、程序留着，随时能还原；学习期间它被"停放"
+ *      （不再被反复强杀），一旦还原就立刻按拦截处理。播放中的媒体会先暂停。
+ *   强制 · 关闭：直接关掉（先请程序自己退出，不退出再强制结束）。
+ *
+ * 网页为什么不在这个开关里：外部进程只能看到浏览器窗口，看不到标签页；
+ * 按窗口标题猜会把整个浏览器连坐（用户可能开着十个学习用的标签）。
+ * 网页由浏览器插件按标签页精确拦截，一个标签不会牵连其它标签。
+ */
+function sweepCardHtml(frozen) {
+  const sw = sweepCfg();
+  const soft = sw.mode !== 'hard';
+  const dis = sw.enabled && !frozen ? '' : 'disabled';
+  const off = !sw.enabled;
+  return `
+  <div class="card" id="sweepCard">
+    <div class="card-title">休息结束时的收尾</div>
+    <div class="card-sub">休息段里黑名单是放行的；回到学习的那一刻，把休息里开着的那些收起来。</div>
+
+    <div class="row" style="justify-content:space-between;align-items:center;gap:14px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px">回到学习时自动收尾</div>
+        <div class="hint" style="margin-top:4px">只在「休息 → 学习」的边界执行一次；学习中新打开的应用照常拦截。</div>
+      </div>
+      <div class="switch${frozen ? ' locked' : ''}" data-act="sweep-toggle"
+           title="${frozen ? '自律时段生效中，不能改' : '切换'}"><input type="checkbox" ${sw.enabled ? 'checked' : ''}><i></i></div>
+    </div>
+
+    <div class="cc-gran cc-sweep-mode" style="margin-top:14px">
+      <span class="cc-gran-lab">处理方式</span>
+      <button class="cc-gran-btn${soft ? ' active' : ''}" data-act="sweep-mode" data-v="soft" ${dis}
+        title="收起窗口，程序留着，随时可以还原">柔和 · 最小化</button>
+      <button class="cc-gran-btn${soft ? '' : ' active'}" data-act="sweep-mode" data-v="hard" ${dis}
+        title="直接关闭应用">强制 · 关闭</button>
+      <span class="hint">${off ? '收尾已关闭，这两种方式都不会执行。'
+    : soft ? '窗口收进任务栏，程序留着；学习期间不再强杀它，但点开它就会被按拦截处理。'
+      : '直接关掉：先请程序自己退出，不退出再强制结束。'}</span>
+    </div>
+
+    <div class="row" style="justify-content:space-between;align-items:center;gap:14px;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12.5px">播放中的媒体一并暂停</div>
+        <div class="hint" style="margin-top:4px">只有确实在播放才暂停；已暂停、已停止、状态读不到都不动，也永远不会自动恢复播放。</div>
+      </div>
+      <div class="switch${frozen || off ? ' locked' : ''}" data-act="sweep-media"
+           title="${off ? '先打开上面的收尾' : frozen ? '自律时段生效中，不能改' : '切换'}"><input type="checkbox" ${sw.pauseMedia ? 'checked' : ''} ${off || frozen ? 'disabled' : ''}><i></i></div>
+    </div>
+
+    <div class="note" style="margin-top:12px;line-height:1.95">
+      <div>作用对象：被自律规则判为「不能开」的软件（黑名单命中的，或白名单之外且不是保护进程的），与拦截用的是同一份判定。</div>
+      <div>网页不在这里处理：外部进程看不到标签页，只能看到浏览器窗口；按标题猜会把整个浏览器连坐。网页由浏览器插件按标签页精确拦截。</div>
+      <div>执行时机：只在「休息 → 学习」的那一次边界执行；开机或唤醒时如果已经在上课段，不会补做。</div>
+    </div>
+  </div>`;
+}
+
 function viewClock() {
   const d = S.data;
   if (!d) return '';
@@ -2625,6 +2703,7 @@ function viewClock() {
       </div>
     </div>
   </div>
+  ${sweepCardHtml(frozen)}
   ${S.ccFull ? ccDetailHtml(prof, wdNow, hourNow, frozen) : ''}`;
 }
 
@@ -5408,6 +5487,50 @@ const Act = window.Act = {
     toast(fc.applyRules ? '自律时间内启用自律规则' : '自律时间内不再启用自律规则，只负责进入自律状态', 'ok');
   },
 
+  /** 休息结束收尾：总开关。
+   *
+   *  置灰规则：自律时段生效中不能**关掉**（关掉等于放开纪律），
+   *  但允许打开（加强）；与「自律时间内启用自律规则」同一个口径。 */
+  async sweepToggle() {
+    const sw = sweepCfg();
+    if (sw.enabled && settingsFrozen()) { guardDiscipline('关闭「休息结束时的收尾」'); render(); return; }
+    sw.enabled = !sw.enabled;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(sw.enabled
+      ? (sw.mode === 'hard'
+        ? '休息结束时会关闭休息里打开的黑名单应用'
+        : '休息结束时会最小化休息里打开的黑名单应用')
+      : '休息结束后不再收起应用，休息里开的会一直留着', 'ok');
+  },
+
+  /** 切柔和 / 强制。生效时机是**下一次**「休息 → 学习」的边界，
+   *  不会回头去动已经处理过的窗口。 */
+  async sweepMode(v) {
+    if (settingsFrozen()) { guardDiscipline('调整收尾方式'); render(); return; }
+    const sw = sweepCfg();
+    sw.mode = v === 'hard' ? 'hard' : 'soft';
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(sw.mode === 'hard'
+      ? '已切成强制：休息结束直接关闭'
+      : '已切成柔和：休息结束只最小化，随时能还原', 'ok');
+  },
+
+  /** 柔和模式下的"暂停播放中的媒体"。强制模式关掉应用自然就停了，所以这个开关
+   *  只在柔和模式下有意义（界面里也是这么灰的）。 */
+  async sweepMedia() {
+    if (settingsFrozen()) { guardDiscipline('调整收尾时的媒体处理'); render(); return; }
+    const sw = sweepCfg();
+    sw.pauseMedia = !sw.pauseMedia;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(sw.pauseMedia ? '收尾时会把正在播放的媒体暂停' : '收尾时不动媒体（正在放的继续放）', 'ok');
+  },
+
   async clockClear() {
     const prof = clockProfile();
     if (settingsFrozen()) { guardDiscipline('清空已选时段'); return; }
@@ -6748,6 +6871,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'toggle-mask') { await Act.toggleMask(); return; }
   if (act === 'clock-enable') { await Act.clockEnable(); return; }
   if (act === 'clock-apply-rules') { await Act.clockApplyRules(); return; }
+  if (act === 'sweep-toggle') { await Act.sweepToggle(); return; }
+  if (act === 'sweep-mode') { await Act.sweepMode(el.dataset.v); return; }
+  if (act === 'sweep-media') { await Act.sweepMedia(); return; }
   if (act === 'clock-clear') { await Act.clockClear(); return; }
   if (act === 'clock-def-save') { await Act.clockDefSave(); return; }
   if (act === 'clock-prof') { await Act.clockProfSwitch(el.dataset.id); return; }
@@ -7045,25 +7171,93 @@ function ccGrainAt(d, clientY) {
 }
 
 /** 拖拽区间 [lo,hi)（分钟）：以锚点那一格为基准向两侧伸缩，最少一格 */
+/** 某一天里**除被拖的那一段**之外，已经被占用的分钟区间。
+ *
+ *  这是碰撞限制的唯一输入。为什么不看 DOM：DOM 上是"预览态"，被拖的那一段
+ *  已经在往目标位置跑了；拿它当障碍物会算出一堆假碰撞。
+ *  配置才是"别人的真实位置"，在整个拖动过程中它一个字都不会变。
+ *
+ *  `dg` 传进来时按段身份把自己摘掉：
+ *    · 有 seg id → 比 id（同一天里 id 唯一，跨天也不会误伤）
+ *    · 老配置没有 id → 退回"起止分钟完全相等才算自己"
+ */
+function ccBusyBlocks(d, dg) {
+  const day = (clockProfile().days[d]) || [];
+  const isSrc = !!(dg && d === dg.d);
+  return ccSegs(day)
+    .map((s) => ({
+      lo: s.h0 * 60 + s.f0,
+      hi: s.h1 * 60 + s.t1,
+      seg: s.seg || '',
+    }))
+    .filter((b) => !(isSrc && (
+      (dg.segId && b.seg === dg.segId)
+      || (!dg.segId && b.lo === dg.segFrom && b.hi === dg.segTo))))
+    .sort((x, y) => x.lo - y.lo);
+}
+
+/** 把"想放的起点"夹到一个不压别人的位置：贴着对方边缘停下。
+ *
+ *  规则（对应交互约定）：
+ *    · 能放下就按指针走（`ok(desired)`）；
+ *    · 撞上别人 → 贴到**来的那一侧**的边：
+ *        往下拖 → 停在障碍物上沿（`hit.lo - len`）
+ *        往上拖 → 停在障碍物下沿（`hit.hi`）
+ *      绝不做"截断对方 / 把对方切成两段"这种联动；
+ *    · 那一侧塞不下（< 段长）→ 退回另一侧；两侧都不行 → 原地不动（`prevLo`）。
+ *
+ *  返回 null 只表示"连原位都放不下"（配置本身已被手改坏），调用方保持原值。 */
+function ccFreeStart(desired, len, blocks, view, prevLo, down) {
+  const fits = (lo) => lo >= view.from && lo + len <= view.to
+    && !blocks.some((b) => lo < b.hi && lo + len > b.lo);
+  if (fits(desired)) return desired;
+  const hit = blocks.find((b) => desired < b.hi && desired + len > b.lo);
+  if (!hit) return prevLo == null ? null : prevLo;
+  const above = hit.lo - len;   // 停在障碍物上沿
+  const below = hit.hi;         // 停在障碍物下沿
+  const keep = prevLo == null ? null : prevLo;
+  if (down === true) return fits(above) ? above : (fits(below) ? below : keep);
+  if (down === false) return fits(below) ? below : (fits(above) ? above : keep);
+  // 没有纵向位移（例如只是横向换天）：贴到更近的那一侧，
+  // 这样"同一时刻搬到另一天"不会莫名其妙跳到障碍物的另一头。
+  const near = Math.abs(above - desired) <= Math.abs(below - desired)
+    ? [above, below] : [below, above];
+  for (const c of near) if (fits(c)) return c;
+  return keep;
+}
+
 function ccDragRange(dg) {
   const st = ccStep();
   const n = ccDayGrains();
   const a = Math.max(0, Math.min(n - 1, dg.anchor));
   const c = Math.max(0, Math.min(n - 1, dg.cur));
+  dg.blocked = false;   // 只有真正被相邻时段挡住时才由下面的平移分支置位
 
   // 边缘缩放：一端钉死，另一端跟着指针走。
   //   下边 → 只动 hi；上边 → 只动 lo。
   //   长度夹在 [一个粒度, 显示范围] 之间：最短一格（10 / 15 分钟），最长到视野尽头。
+  //   另外**撞到相邻段就停在它的边缘**：不许把它压短，也不许把它推开。
   if (dg.resize) {
     const view = ccView();
     const minDur = ccStep();
+    const blocks = ccBusyBlocks(dg.d, dg);
     let lo = dg.segFrom;
     let hi = dg.segTo;
     if (dg.resize === 'bottom') {
       // 指针所在那一格的下沿就是新的结束时刻（拖到 10:15 中间 → 结束 10:15）
       hi = Math.min(view.to, Math.max((c + 1) * st, lo + minDur));
+      // 下方最近的一段：它的上沿就是这条边能到的极限。
+      // 用**固定的起点** lo 判断"在下方的"，不能用会移动的 hi——
+      // 否则指针一旦越过那道墙，墙就被算成"不在下方"，边就穿过去了。
+      const next = blocks.filter((b) => b.lo > lo).reduce((m, b) => Math.min(m, b.lo), Infinity);
+      if (isFinite(next)) hi = Math.min(hi, next);
+      hi = Math.max(hi, lo + minDur);
     } else {
       lo = Math.max(view.from, Math.min(c * st, hi - minDur));
+      // 上方最近的一段：它的下沿就是这条边能到的极限（同理用固定的 hi 判断）
+      const prev = blocks.filter((b) => b.hi < hi).reduce((m, b) => Math.max(m, b.hi), -Infinity);
+      if (isFinite(prev)) lo = Math.max(lo, prev);
+      lo = Math.min(lo, hi - minDur);
     }
     return { lo, hi };
   }
@@ -7080,12 +7274,46 @@ function ccDragRange(dg) {
     // 段比显示范围还长（例如只显示 9–10 点，却抓着一段 8–12 点）：
     // 怎么挪都会越界，干脆钉住不动，而不是把它截短
     if (lo + len > view.to) lo = dg.segFrom;
+
+    // 碰撞：这一天里除自己以外的段都是"墙"。碰到就停在墙边，绝不压上去、
+    // 绝不插进它中间、绝不把它挤走——别人的起止/时长/数量在拖动期间完全不变。
+    const dCur = dg.mode === 'move' ? (dg.dCur == null ? dg.d : dg.dCur) : dg.d;
+    if (dg.lockDay !== dCur) {
+      // 换了一天：上一个落点属于原来那天，不能拿来当"上次位置"
+      dg.lockDay = dCur;
+      dg.lockLo = dg.segFrom;
+    }
+    const blocks = ccBusyBlocks(dCur, dg);
+    const prevLo = dg.lockLo == null ? dg.segFrom : dg.lockLo;
+    const want = lo;             // 夹过视野、但还没夹碰撞的"指针想要的落点"
+    // 方向：真的往上/下拖了才按方向贴边；只是横向换天（纵向没动）就让"近的那一侧"说话
+    const moved = Math.abs(want - prevLo) > 0.5;
+    const down = moved ? want > prevLo : null;
+    const fit = ccFreeStart(want, len, blocks, view, prevLo, down);
+    if (fit != null) lo = fit;
+    // 被相邻时段挡住了 → 状态条上说明一句，避免用户以为"拖不动了"
+    dg.blocked = fit != null && Math.abs(fit - want) > 0.5;
+    dg.lockLo = lo;
     return { lo, hi: lo + len };
   }
 
-  const lo = Math.min(a, c);
-  const hi = Math.max(a, c) + 1;
-  return { lo: lo * st, hi: Math.min(1440, hi * st) };
+  // 新建拖选：锚点那一格固定，另一端跟着指针长。
+  // 同样不许画到别人身上（那等于把对方从中间切开），撞到就停在对方边缘。
+  {
+    const blocks = ccBusyBlocks(dg.d, null);
+    if (c >= a) {
+      const lo = a * st;
+      let hi = Math.min(1440, (c + 1) * st);
+      const next = blocks.filter((b) => b.lo >= lo + st).reduce((m, b) => Math.min(m, b.lo), Infinity);
+      if (isFinite(next)) hi = Math.min(hi, next);
+      return { lo, hi: Math.max(hi, lo + st) };
+    }
+    const hi = (a + 1) * st;
+    let lo = c * st;
+    const prev = blocks.filter((b) => b.hi <= hi - st).reduce((m, b) => Math.max(m, b.hi), -Infinity);
+    if (isFinite(prev)) lo = Math.max(lo, prev);
+    return { lo: Math.min(lo, hi - st), hi };
+  }
 }
 
 /** 把区间套到某一小时的已有窗口上 → {f,t}；null 表示这一小时没有选中 */
@@ -7343,11 +7571,15 @@ function paintCcDrag() {
   // 横向顶到周首 / 周末：说明"不会再往旁边走了"，避免用户以为拖不动
   const edgeX = dg.edgeX < 0 ? (isEn ? ' · week starts here' : ' · 已到周一')
     : (dg.edgeX > 0 ? (isEn ? ' · week ends here' : ' · 已到周日') : '');
+  // 被相邻时段挡住了：同上，明确告诉用户"是撞到别人了，不是卡住"。
+  // 顺带说明别人没被改动——这正是这次交互约定的核心。
+  const edgeB = dg.blocked
+    ? (isEn ? ' · next window blocks it (untouched)' : ' · 已贴住相邻时段（没有移动它）') : '';
   const lab = $('#clockLive');
   if (lab) {
     lab.innerHTML = isEn
-      ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edgeY}${edgeX}`
-      : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edgeY}${edgeX}`;
+      ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edgeY}${edgeX}${edgeB}`
+      : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edgeY}${edgeX}${edgeB}`;
   }
   // 7) 跟随指针的浮层（同一格内的小位移由 ccFlushDrag 单独更新，不重排）
   ccGhostSet(`${verb} ${dayTxt} ${rg} · ${durTxt}`,
@@ -7684,6 +7916,11 @@ function ccDragBegin(d, clientY, clientX) {
       painted: [d],
       segFrom: seg.h0 * 60 + seg.f0,
       segTo: seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1),
+      // 段身份 + 最近一次"合法的落点"：碰撞限制用它们把自己从占位表里摘出去，
+      // 并在被人挡住时宁可原地不动（见 ccDragRange）
+      segId: seg.seg || '',
+      lockLo: seg.h0 * 60 + seg.f0,
+      lockDay: d,
     };
   } else {
     S.ccDrag = {

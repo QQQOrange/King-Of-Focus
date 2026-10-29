@@ -26,6 +26,7 @@ mod server;
 mod shared;
 mod sleep;
 mod stats;
+mod sweep;
 mod testmode;
 mod sync;
 mod update;

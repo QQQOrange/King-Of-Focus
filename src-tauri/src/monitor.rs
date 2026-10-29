@@ -83,6 +83,14 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
         let mut notified_phase = false;
         let mut last_break_left: i64 = 0;
         let mut browser_guard = crate::browsers::GuardState::new();
+        // 上一拍是不是"在休息"：休息结束的收尾（最小化 / 关闭）靠它识别边界。
+        // 初值取 None：程序刚启动 / 刚从睡眠里回来时我们并不知道"刚才是不是休息"，
+        // 于是这一拍不做收尾——宁可漏一次，也不要在用户刚开机的第一秒就把
+        // 他昨天开着的东西收走。
+        let mut prev_break: Option<bool> = None;
+        // 柔和模式"停放"的进程：学习期间不再被常规拦截反复强杀。
+        // 只要它还是最小化状态就继续放行；用户一还原窗口，立刻按拦截处理。
+        let mut parked: HashMap<u32, Instant> = HashMap::new();
 
         loop {
             let cfg: Config = shared.config();
@@ -153,6 +161,16 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     .next()
                     .unwrap_or((false, 0))
             };
+
+            // ---- 休息结束的收尾（最小化 / 关闭休息里打开的黑名单应用）----
+            // 只在"上一拍还在休息、这一拍已经回到学习"的那一拍触发。
+            // 判定与拦截同源：现在真的有生效规则（或处在自律时段专注段）才算"回到学习"。
+            let now_study = clock_on || !active.is_empty();
+            let just_back = match prev_break {
+                Some(pb) => crate::sweep::is_break_to_study(pb, break_now, now_study),
+                None => false,
+            };
+            prev_break = Some(break_now);
 
             let mut just_finished = false;
 
@@ -306,6 +324,40 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             if discipline_on {
                 let apps = proc::screen_apps();
 
+                // 0) 休息结束收尾：把休息里打开的黑名单应用收起来。
+                //    放在拦截之前：柔和模式要先暂停媒体、再最小化，并且把被收起来的
+                //    进程"停放"起来——否则下面第 2 步会在同一拍就把它们强杀掉，
+                //    柔和模式就完全失去意义了。
+                if just_back && cfg.settings.sweep.enabled {
+                    let rep = crate::sweep::run(&shared, &cfg, &apps, &active, self_pid);
+                    for pid in rep.parked.iter() {
+                        parked.insert(*pid, Instant::now());
+                    }
+                    // 一次收尾只做一拍：停机 / 睡眠跨过边界时也只会补做一次
+                    if !rep.minimized.is_empty() || !rep.closed.is_empty() {
+                        crate::mask::mlog(&format!(
+                            "休息结束收尾 模式={} 收起={} 关闭={} 暂停媒体={} 跳过={}",
+                            rep.mode.as_str(),
+                            rep.minimized.len(),
+                            rep.closed.len(),
+                            rep.paused.len(),
+                            rep.skipped
+                        ));
+                    }
+                }
+
+                // 0b) 停放的进程还在不在"最小化"状态：
+                //     进程没了 / 用户还原了**任意一个**窗口 / 句柄失效 → 摘掉停放标记，
+                //     下面第 2 步立刻按常规拦截处理（"点开就等于重新打开"）。
+                //     判据是"它所有可见顶层窗口都最小化"，只看主窗会让
+                //     多窗口的程序从第二个窗口继续用下去。
+                if !parked.is_empty() {
+                    let wins = proc::window_minimized_map();
+                    parked.retain(|pid, _| {
+                        wins.get(pid).map(|(total, min)| *total > 0 && min == total).unwrap_or(false)
+                    });
+                }
+
                 // 1) 锁定期间：封杀任务管理器一类的"逃生工具"
                 if lock.locked {
                     for a in apps.iter() {
@@ -366,22 +418,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     if a.pid == self_pid {
                         continue;
                     }
-                    let mut blocked_by: Option<&Rule> = None;
-                    for l in active.iter() {
-                        if l.mode == "whitelist" {
-                            let protected = matcher::is_protected(a, &cfg.settings.protected)
-                                || l.extra_protected
-                                    .iter()
-                                    .any(|p| p.eq_ignore_ascii_case(&a.name));
-                            if !protected && !matcher::rule_allows_app(l, a) {
-                                blocked_by = Some(l);
-                                break;
-                            }
-                        } else if matcher::rule_blocks_app(l, a) {
-                            blocked_by = Some(l);
-                            break;
-                        }
+                    // 柔和模式收起来、且还保持最小化的：学习期间放它一马。
+                    // 这不是"豁免"——用户一旦点开（不再最小化），0b 那一步就把它
+                    // 从 parked 里摘掉，这一拍立刻按拦截关掉。
+                    if parked.contains_key(&a.pid) {
+                        continue;
                     }
+                    let blocked_by = crate::discipline::blocked_rule(&cfg, &active, a);
                     match blocked_by {
                         Some(rule) => {
                             let did = on_block(&app, &shared, &cfg, a, rule, &mut pending, &mut logged);
@@ -426,6 +469,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                         }
                     }
                 }
+            } else if !parked.is_empty() {
+                // 不在自律状态（休息段 / 时段外 / 规则都关了）：停放名单作废。
+                // 休息段里黑名单本来就放行，不需要"停放"这层豁免。
+                parked.clear();
             }
 
             thread::sleep(Duration::from_millis(poll));

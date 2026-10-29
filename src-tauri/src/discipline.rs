@@ -11,7 +11,9 @@
 //! 这里把判定收成一份，monitor 与 server 共用：
 //! 插件拿到的规则 == 引擎此刻真正在执行的规则。
 
+use crate::matcher;
 use crate::model::{Config, Rule};
+use crate::proc::WinApp;
 use chrono::NaiveDateTime;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -58,6 +60,31 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
         clock_hour: clock.map(|c| c.hour).unwrap_or(24),
         clock_left: clock.map(|c| c.left).unwrap_or(0),
     }
+}
+
+/// 这个进程被哪一条规则判为「不能开」——**拦截与休息结束收尾共用的唯一判定**。
+///
+/// 为什么抽出来：收尾（最小化 / 关闭）和拦截（强杀）必须是同一份口径，
+/// 否则会出现"收尾把它收起来了，拦截却认为它不该拦"（或反过来）这种自相矛盾。
+/// 语义与 monitor 里的拦截循环逐字一致：
+///   · blacklist / both：apps 名单命中即拦（both 的名单部分在软件侧只按黑名单算，
+///     白名单部分由插件在网页侧执行——这是历史行为，保持一致才不会出现两套结论）；
+///   · whitelist：名单**外**的才拦，但系统保护进程 / 规则自定义保护进程放行。
+pub fn blocked_rule<'a>(cfg: &Config, rules: &'a [Rule], app: &WinApp) -> Option<&'a Rule> {
+    for l in rules {
+        if l.mode == "whitelist" {
+            let protected = matcher::is_protected(app, &cfg.settings.protected)
+                || l.extra_protected
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(&app.name));
+            if !protected && !matcher::rule_allows_app(l, app) {
+                return Some(l);
+            }
+        } else if matcher::rule_blocks_app(l, app) {
+            return Some(l);
+        }
+    }
+    None
 }
 
 /// 当前生效中的自律规则：引擎拦软件、插件拦网页都用这一份

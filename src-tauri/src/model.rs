@@ -222,6 +222,54 @@ impl LaunchItem {
     }
 }
 
+/// 休息结束时的「收尾」：把休息里打开的黑名单应用按选定方式处理。
+///
+/// 为什么需要它：休息段里自律规则整体放行，用户会顺手把抖音 / 游戏 / B 站
+/// 开起来；休息一结束，这些窗口还在那儿。直接全部强杀太粗暴（可能丢东西），
+/// 但不管又等于休息把自律撕开一个口子。于是给两种收尾方式，让用户自己选。
+///
+/// 作用对象是**进程**（与拦截判定同源：黑名单命中的、白名单外且非保护的）：
+///   · 柔和（soft）：最小化窗口，并把**确实在播放**的媒体暂停；学习期间它被
+///     "停放"着——不再被反复强杀，但用户一旦点开（还原窗口）就立刻按常规拦截。
+///   · 强制（hard）：直接关闭（先 WM_CLOSE，不退出再由常规拦截兜底强杀）。
+///
+/// 网页不在这里处理：外部进程只能看到浏览器窗口，看不到标签页，
+/// 按窗口标题猜会把整个浏览器连坐。网页由浏览器插件按标签页精确处理
+/// （见 `siteCloseBrowser`）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SweepCfg {
+    /// 总开关。关掉 = 休息里开的应用就一直留着，直到用户自己关。
+    pub enabled: bool,
+    /// soft = 最小化（默认，可恢复）| hard = 直接关闭
+    pub mode: String,
+    /// 柔和模式下，是否把"确实在播放"的媒体暂停（强制模式下应用被关掉，无需此项）
+    pub pause_media: bool,
+}
+
+impl Default for SweepCfg {
+    fn default() -> Self {
+        // 默认：开 + 柔和 + 暂停媒体。
+        // 为什么默认柔和而不是强制：这是一个"收尾"动作，最小化是可撤销的；
+        // 想彻底关掉的人只要切一下模式，而默认就把人东西关掉是不可接受的。
+        SweepCfg {
+            enabled: true,
+            mode: "soft".into(),
+            pause_media: true,
+        }
+    }
+}
+
+impl SweepCfg {
+    /// 归一化后的模式（非法值一律按柔和处理，不会意外升级成关闭）
+    pub fn mode_norm(&self) -> &'static str {
+        if self.mode == "hard" {
+            "hard"
+        } else {
+            "soft"
+        }
+    }
+}
 
 impl Default for Rule {
     fn default() -> Self {
@@ -1227,6 +1275,9 @@ pub struct Settings {
     pub mask: MaskCfg,
     /// 自律模式生效时间段（24 段）
     pub focus_clock: ClockCfg,
+    /// 休息结束时的收尾（最小化 / 关闭休息里打开的黑名单应用）
+    #[serde(default)]
+    pub sweep: SweepCfg,
     /// 睡眠管理（睡眠时段内锁定 + 倒计时关机）
     pub sleep: SleepCfg,
     /// 时长统计
@@ -1278,6 +1329,7 @@ impl Default for Settings {
             lang: "zh-CN".into(),
             mask: MaskCfg::default(),
             focus_clock: ClockCfg::default(),
+            sweep: SweepCfg::default(),
             sleep: SleepCfg::default(),
             stats: StatsCfg::default(),
             sync: SyncCfg::default(),

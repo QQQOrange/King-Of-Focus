@@ -2675,7 +2675,201 @@ window.__itest = async () => {
     await clearAll();
   }
 
+  // ---- 26k. 休息结束时的收尾：总开关 / 两种模式 / 媒体开关 / 生效中置灰 ----
+  {
+    S.view = 'clock';
+    render();
+    await wait(240);
 
+    const sw = () => S.data.config.settings.sweep;
+    const card = () => document.getElementById('sweepCard');
+    const modeBtns = () => [...card().querySelectorAll('[data-act="sweep-mode"]')];
+    const mediaIn = () => card().querySelector('[data-act="sweep-media"] input');
+
+    out.push(['自律时段页有「休息结束时的收尾」卡片', !!card(), true]);
+    out.push(['默认是开启的', sw().enabled, true]);
+    out.push(['默认柔和模式（不擅自关人东西）', sw().mode, 'soft']);
+    out.push(['默认会暂停播放中的媒体', sw().pauseMedia, true]);
+    out.push(['只有两种处理方式', modeBtns().length, 2]);
+    out.push(['两种方式的文案', modeBtns().map((b) => b.textContent.trim()).join('/'),
+      '柔和 · 最小化/强制 · 关闭']);
+    out.push(['柔和是选中态', modeBtns()[0].classList.contains('active'), true]);
+
+    // ① 切到强制
+    modeBtns()[1].click();
+    await wait(380);
+    out.push(['切强制写进配置', sw().mode, 'hard']);
+    out.push(['强制按钮变成选中态',
+      card().querySelector('[data-act="sweep-mode"][data-v="hard"]').classList.contains('active'), true]);
+    out.push(['说明文字跟着换（讲清是"直接关掉"）',
+      /直接关掉/.test(card().querySelector('.cc-sweep-mode .hint').textContent), true]);
+
+    // ② 媒体开关
+    card().querySelector('[data-act="sweep-media"]').click();
+    await wait(380);
+    out.push(['媒体开关能关掉', sw().pauseMedia, false]);
+    card().querySelector('[data-act="sweep-media"]').click();
+    await wait(380);
+    out.push(['媒体开关能再打开', sw().pauseMedia, true]);
+
+    // ③ 总开关关掉：模式与媒体一起不可点
+    card().querySelector('[data-act="sweep-toggle"]').click();
+    await wait(380);
+    out.push(['能关掉收尾', sw().enabled, false]);
+    out.push(['关掉后两种方式都不可点', modeBtns().filter((b) => b.disabled).length, 2]);
+    out.push(['关掉后媒体开关不可点', mediaIn().disabled, true]);
+    out.push(['关掉后说明写明"都不会执行"',
+      /都不会执行/.test(card().querySelector('.cc-sweep-mode .hint').textContent), true]);
+
+    card().querySelector('[data-act="sweep-toggle"]').click();
+    await wait(380);
+    out.push(['再打开后方式恢复可点', modeBtns().filter((b) => b.disabled).length, 0]);
+    out.push(['再打开后媒体开关恢复可点', mediaIn().disabled, false]);
+
+    // ④ 生效中（自律时段跑着）不允许关掉：关掉等于放开纪律
+    await window.__patch({ clockOn: true, clockInWindow: true, testMode: false });
+    await wait(260);
+    card().querySelector('[data-act="sweep-toggle"]').click();
+    await wait(320);
+    out.push(['生效中不能关掉收尾', sw().enabled, true]);
+    out.push(['生效中会给出拒绝提示', /改不了/.test(
+      (document.getElementById('toastRoot') || {}).textContent || ''), true]);
+    await window.__patch({ clockOn: false, clockInWindow: false, testMode: false });
+    await wait(220);
+
+    // 收尾：回到默认，别影响后面的用例
+    S.data.config.settings.sweep = { enabled: true, mode: 'soft', pauseMedia: true };
+    await saveConfig();
+    await wait(200);
+  }
+
+  // ---- 26l. 碰撞限制：碰边即停、不许插进别人中间、不许压/推/切别人 ----
+  {
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => {
+        hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; hh.wins = [];
+      }));
+      await saveConfig(); await wait(140);
+    };
+    const segsOf = (d) => ccSegs(pd()[d]);
+    const rangesOf = (d) => segsOf(d).map((s) => s.range);
+    const colCenter = (d) => {
+      const r = document.querySelector(`.cc-cell[data-d="${d}"]`).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    /** 同一天内任意两段都不许在时间上重叠（重叠 = 视觉上叠在一起） */
+    const overlapped = () => [0, 1, 2, 3, 4, 5, 6].filter((d) => {
+      const s = segsOf(d).map((x) => [x.h0 * 60 + x.f0, x.h1 * 60 + (x.t1 >= 60 ? 60 : x.t1)])
+        .sort((a, b) => a[0] - b[0]);
+      for (let i = 1; i < s.length; i++) if (s[i][0] < s[i - 1][1] - 0.5) return true;
+      return false;
+    });
+    /** 块（DOM）的几何：块数 + 每块的起止，用来验证"别人的布局没变" */
+    const domBlocks = (d) => [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)]
+      .map((r) => `${r.dataset.h0}-${r.dataset.h1}:${r.dataset.f0}-${r.dataset.t1}`).sort();
+    const drag = async (d, h, q, td, th, tq) => {
+      fire('mousedown', cell(d, h), { clientY: gY(d, h, q), clientX: colCenter(d) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(td, th, tq), clientX: colCenter(td),
+      }));
+      await wait(200);
+    };
+    const drop = async () => {
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(460);
+    };
+
+    await openFull();
+    await clearAll();
+
+    // ① 整段下移撞到下一段：停在它的上沿，不压缩、不推开
+    await Act.clockCommitRange(2, 9 * 60, 10 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(2, 14 * 60, 15 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(2, 18 * 60, 19 * 60, 'add');
+    await wait(240);
+    const before2 = rangesOf(2);
+    const dom2 = domBlocks(2);
+
+    await drag(2, 9, 1, 2, 14, 2);          // 抓 09:15，指针拖到 14:30（B 的中间）
+    out.push(['拖动中：被拖的段停在 B 的上沿（09:00 → 13:00）',
+      ccMinText(ccDragRange(S.ccDrag).lo, ccDragRange(S.ccDrag).hi).range, '13:00 – 14:00']);
+    out.push(['拖动中：别的段数据一个字节都没变', rangesOf(2).slice(1), before2.slice(1)]);
+    {
+      // 被拖走的那一块当然会换个位置；其余两块的位置必须一模一样
+      const others = dom2.filter((x) => !x.startsWith('9-9:'));
+      out.push(['拖动中：别的块布局也没变',
+        others.every((x) => domBlocks(2).indexOf(x) >= 0) && others.length === 2, true]);
+      out.push(['拖动中：块数没变（被拖的还在，只是换了位置）', domBlocks(2).length, 3]);
+    }
+    out.push(['拖动中：状态条说明"已贴住相邻时段"',
+      /贴住相邻时段/.test(($('#clockLive') || {}).textContent || ''), true]);
+    await drop();
+    out.push(['落位后：A 停在 B 上方，没有压上去',
+      rangesOf(2).join(' / '), '13:00–14:00 / 14:00–15:00 / 18:00–19:00']);
+    out.push(['落位后：仍然是三段（没被切开/合并）', segsOf(2).length, 3]);
+    out.push(['落位后：B 的起止没变', rangesOf(2)[1], before2[1]]);
+    out.push(['落位后：同一天没有任何重叠', overlapped(), []]);
+
+    // ② 往上拖进别人的中间：同样只能贴边，不许把对方切成两段
+    await clearAll();
+    await Act.clockCommitRange(4, 9 * 60, 12 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(4, 14 * 60, 15 * 60, 'add');
+    await wait(240);
+    const bigBefore = rangesOf(4)[0];
+    await drag(4, 14, 1, 4, 10, 1);         // 抓 14:15，指针拖到 10:15（正好在 A 中间）
+    await drop();
+    out.push(['往上拖进别人的中间：被拖段贴到对方下沿',
+      rangesOf(4).join(' / '), '09:00–12:00 / 12:00–13:00']);
+    out.push(['被靠近的那一段没被切成两段', rangesOf(4)[0], bigBefore]);
+    out.push(['段数没变（2 段）', segsOf(4).length, 2]);
+    out.push(['同一天没有重叠', overlapped(), []]);
+
+    // ③ 边缘缩放撞到邻居：只能贴边，不许把邻居压短
+    await clearAll();
+    await Act.clockCommitRange(3, 9 * 60, 10 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(3, 12 * 60, 13 * 60, 'add');
+    await wait(240);
+    {
+      const b3 = rangesOf(3)[1];
+      // 拖 A 的下边缘一路向下（越过 B 的上沿）
+      fire('mousedown', cell(3, 9), {
+        clientY: ccSegEdgeY(3, { h0: 9, h1: 9, f0: 0, t1: 60 }).bottom - 2,
+        clientX: colCenter(3),
+      });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(3, 13, 2), clientX: colCenter(3),
+      }));
+      await wait(200);
+      const r = ccDragRange(S.ccDrag);
+      out.push(['缩放中：只长到邻居上沿', ccMinText(r.lo, r.hi).range, '09:00 – 12:00']);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(460);
+      out.push(['缩放后：A 只到 12:00', rangesOf(3)[0], '09:00–12:00']);
+      out.push(['缩放后：B 完全没被压短', rangesOf(3)[1], b3]);
+      out.push(['缩放后：没有重叠', overlapped(), []]);
+    }
+
+    // ④ 新建拖选划过已有的段：停在它的边缘，不许把对方切开
+    await clearAll();
+    await Act.clockCommitRange(5, 9 * 60, 10 * 60, 'add');
+    await wait(240);
+    await drag(5, 8, 0, 5, 11, 2);          // 08:00 按下，拖到 11:30
+    await drop();
+    out.push(['新建拖选撞到已有的段就停住', rangesOf(5).join(' / '), '08:00–09:00 / 09:00–10:00']);
+    out.push(['新建后段数正确（没切碎原来的）', segsOf(5).length, 2]);
+    out.push(['新建后也没有重叠', overlapped(), []]);
+
+    // ⑤ 收尾：清干净，别影响后面的用例
+    await clearAll();
+    out.push(['所有用例跑完后每天都没有重叠', overlapped(), []]);
+  }
+
+  // ---- 26h6. 进入自律时间自动打开：面板 / 排序 / 窗口形式 / 校验 ----
   {
     const r0 = () => S.data.config.rules[0];
     await Act.nav('rules');

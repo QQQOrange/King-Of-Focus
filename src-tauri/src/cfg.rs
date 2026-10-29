@@ -174,6 +174,8 @@ pub fn sanitize(c: &mut Config) {
     c.settings.hud.opacity = c.settings.hud.opacity_pct();
     c.settings.poll_ms = c.settings.poll_ms.clamp(300, 5000);
     c.settings.grace_secs = c.settings.grace_secs.clamp(20, 600);
+    // 休息结束收尾：模式只认 soft / hard，写错一律按柔和（不会意外变强杀）
+    c.settings.sweep.mode = c.settings.sweep.mode_norm().to_string();
     if c.settings.mask.opacity > 100 {
         c.settings.mask.opacity = 100;
     }

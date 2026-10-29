@@ -36,6 +36,8 @@ extern "system" {
         result: *mut usize,
     ) -> isize;
     fn PostMessageW(h: Hwnd, msg: u32, wp: usize, lp: isize) -> i32;
+    fn ShowWindow(h: Hwnd, cmd: i32) -> i32;
+    fn IsIconic(h: Hwnd) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -217,6 +219,109 @@ pub fn soft_close(hwnd: isize) -> bool {
         }
         PostMessageW(hwnd as Hwnd, WM_CLOSE, 0, 0) != 0
     }
+}
+
+/// SW_MINIMIZE = 6：最小化并**保持进程运行**（不破坏现场，随时可还原）。
+const SW_MINIMIZE: i32 = 6;
+
+/// 最小化窗口。返回是否真的发出了请求。
+///
+/// 为什么用 SW_MINIMIZE 而不是 SW_HIDE：隐藏会让任务栏里也消失，
+/// 用户会觉得"程序没了"；最小化还留着任务栏条目，是"收起来"而不是"关掉"。
+pub fn minimize(hwnd: isize) -> bool {
+    unsafe {
+        if hwnd == 0 || IsWindow(hwnd as Hwnd) == 0 {
+            return false;
+        }
+        ShowWindow(hwnd as Hwnd, SW_MINIMIZE) != 0
+    }
+}
+
+/// 这个窗口现在是不是最小化状态（判断"我们收起来的那一块"有没有被用户点开）。
+///
+/// 句柄失效 / 窗口已销毁 → false：调用方会把它当成"已经不是停放状态"，
+/// 于是按常规拦截处理，不会留一个永久豁免的口子。
+pub fn is_minimized(hwnd: isize) -> bool {
+    unsafe {
+        if hwnd == 0 || IsWindow(hwnd as Hwnd) == 0 {
+            return false;
+        }
+        IsIconic(hwnd as Hwnd) != 0
+    }
+}
+
+unsafe extern "system" fn by_pid_cb(hwnd: Hwnd, lparam: isize) -> i32 {
+    let (pid_target, out) = &mut *(lparam as *mut (u32, Vec<Hwnd>));
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+    let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if ex & WS_EX_TOOLWINDOW != 0 {
+        return 1;
+    }
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == *pid_target {
+        out.push(hwnd);
+    }
+    1
+}
+
+/// 某个进程所有"可见顶层窗口"的句柄。
+///
+/// 为什么要"所有"而不是 `screen_apps` 里那一个：一个程序可能开着好几个窗口
+/// （主窗 + 独立播放器 + 聊天小窗）。只收最小的那个，用户还能从另一个窗口继续用，
+/// "收尾"就形同虚设。
+pub fn windows_of_pid(pid: u32) -> Vec<isize> {
+    let mut ctx: (u32, Vec<Hwnd>) = (pid, Vec::new());
+    unsafe {
+        EnumWindows(Some(by_pid_cb), &mut ctx as *mut (u32, Vec<Hwnd>) as isize);
+    }
+    ctx.1.into_iter().map(|h| h as isize).collect()
+}
+
+/// 最小化某个进程的**所有**可见顶层窗口，返回成功的个数。
+pub fn minimize_all(pid: u32) -> usize {
+    let mut n = 0;
+    for h in windows_of_pid(pid) {
+        if minimize(h) {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 全局扫一遍：pid → (可见顶层窗口数, 其中已最小化的数量)。
+///
+/// monitor 用它判断"停放的进程是不是还乖乖收着"：只要它还有任意一个窗口没最小化
+/// （用户点开了），就不再享受豁免，下一拍按常规拦截处理。
+pub fn window_minimized_map() -> std::collections::HashMap<u32, (usize, usize)> {
+    let mut map: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::new();
+    unsafe extern "system" fn cb(hwnd: Hwnd, lparam: isize) -> i32 {
+        let map = &mut *(lparam as *mut std::collections::HashMap<u32, (usize, usize)>);
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        if ex & WS_EX_TOOLWINDOW != 0 {
+            return 1;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return 1;
+        }
+        let e = map.entry(pid).or_insert((0, 0));
+        e.0 += 1;
+        if IsIconic(hwnd) != 0 {
+            e.1 += 1;
+        }
+        1
+    }
+    unsafe {
+        EnumWindows(Some(cb), &mut map as *mut std::collections::HashMap<u32, (usize, usize)> as isize);
+    }
+    map
 }
 
 pub fn norm_path(p: &str) -> String {

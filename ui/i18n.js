@@ -174,6 +174,35 @@
       'Switching a set switches both its timetable and which rules it governs.',
     '同一天相邻的时段会连成一整块；块里的空白就是没选中的分钟':
       'Adjacent windows on the same day merge into one block; gaps are unselected minutes.',
+    /* —— 休息结束时的收尾 —— */
+    '休息结束时的收尾': 'Break-end cleanup',
+    '休息段里黑名单是放行的；回到学习的那一刻，把休息里开着的那些收起来。':
+      'Blocked apps are allowed during breaks; when study starts, those windows get tucked away.',
+    '回到学习时自动收尾': 'Tidy up when study starts',
+    '只在「休息 → 学习」的边界执行一次；学习中新打开的应用照常拦截。':
+      'Runs once at each break → study boundary; apps opened during study are still blocked as usual.',
+    '处理方式': 'How to handle them',
+    '柔和 · 最小化': 'Gentle · Minimize',
+    '强制 · 关闭': 'Strict · Close',
+    '收尾已关闭，这两种方式都不会执行。':
+      'Cleanup is off, so neither option runs.',
+    '窗口收进任务栏，程序留着；学习期间不再强杀它，但点开它就会被按拦截处理。':
+      'The window goes to the taskbar and the app stays alive; it is not force-closed during study, but reopening it gets it blocked.',
+    '直接关掉：先请程序自己退出，不退出再强制结束。':
+      'Close it right away: ask the app to quit first, force-end it if it refuses.',
+    '播放中的媒体一并暂停': 'Pause media that is playing',
+    '只有确实在播放才暂停；已暂停、已停止、状态读不到都不动，也永远不会自动恢复播放。':
+      'Pauses only when playback is confirmed; paused, stopped or unreadable states are left alone, and playback is never resumed automatically.',
+    '作用对象：被自律规则判为「不能开」的软件（黑名单命中的，或白名单之外且不是保护进程的），与拦截用的是同一份判定。':
+      'Targets: apps the rules block (on the blacklist, or outside the whitelist and not protected) — the very same test used for blocking.',
+    '网页不在这里处理：外部进程看不到标签页，只能看到浏览器窗口；按标题猜会把整个浏览器连坐。网页由浏览器插件按标签页精确拦截。':
+      'Websites are not handled here: outside the browser we can only see windows, not tabs, and guessing by title would punish the whole browser. The extension blocks each tab precisely.',
+    '执行时机：只在「休息 → 学习」的那一次边界执行；开机或唤醒时如果已经在上课段，不会补做。':
+      'Timing: only at the break → study boundary; if you boot or wake up already inside a study window, nothing is done retroactively.',
+    '收起窗口，程序留着，随时可以还原': 'Tuck the window away, keep the app, restore any time',
+    '直接关闭应用': 'Close the app',
+    '先打开上面的收尾': 'Turn on cleanup first',
+    '自律时段生效中，不能改': 'Locked while discipline hours are running',
     /* 完整图表的分步说明：被 <b> 切成多段，逐段翻 */
     '空白处按住拖动': 'Drag on empty space',
     '= 新建一段（按当前粒度吸附，夹在 0:00–24:00，最少一格）；':

@@ -141,6 +141,62 @@ pub fn resume_all() {
     }
 }
 
+/* ───────── 休息结束收尾用：只暂停"确实在播放"的会话 ─────────
+ *
+ * 和上面的 `pause_covered` 有两个关键区别：
+ *   1. **只在状态明确是 Playing 时**才动手。拿不到状态、已暂停、已停止 →
+ *      一律不碰。上面的 pause_covered 走的是"宁可多发一次"的保守策略，
+ *      这里刚好相反：收尾是"顺手把声音停下"，绝不能因为状态读不到就
+ *      去按播放键（那会变成"莫名其妙开始放音乐"）。
+ *   2. 暂停结果**不记进 PAUSED_BY_US**，也就永远不会被自动恢复。
+ *      收尾暂停是单向操作：用户想听，自己点播放。这样不会出现
+ *      "遮罩一关 / 窗口回到前台，刚才被收走的视频自己响起来"。
+ */
+
+/// 会话的播放状态：`Some(true)` = 正在播放，`Some(false)` = 明确没在播，
+/// `None` = 状态读不到（环境不支持 / 播放器没上报）。
+fn playback_state(sess: &Session) -> Option<bool> {
+    match sess.GetPlaybackInfo().and_then(|info| info.PlaybackStatus()) {
+        Ok(st) => Some(
+            st == windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing,
+        ),
+        Err(_) => None,
+    }
+}
+
+/// 暂停「确实在播放」且能归因到 `pids` 的会话，返回被请求暂停的 AUMID。
+///
+/// 调用方（休息结束收尾）拿它写日志；返回空 = 没有任何会话需要暂停。
+/// 不做自动恢复，也不写入 PAUSED_BY_US —— 见上面注释。
+pub fn pause_playing_of(pids: &[u32]) -> Vec<String> {
+    let mut done = Vec::new();
+    if pids.is_empty() {
+        return done;
+    }
+    let Some(mgr) = session_manager() else { return done };
+    let Ok(sessions) = mgr.GetSessions() else { return done };
+    let Ok(size) = sessions.Size() else { return done };
+    for i in 0..size {
+        let Ok(sess) = sessions.GetAt(i) else { continue };
+        let aumid = sess
+            .SourceAppUserModelId()
+            .map(|h: HSTRING| h.to_string())
+            .unwrap_or_default();
+        if aumid.is_empty() || !aumid_covers_pids(&aumid, pids) {
+            continue;
+        }
+        // 关键闸门：只有"确实在播放"才暂停。
+        // None（读不到）/ Some(false)（已暂停 / 已停止 / 已关闭）→ 什么都不做。
+        if playback_state(&sess) != Some(true) {
+            continue;
+        }
+        if sess.TryPauseAsync().is_ok() {
+            done.push(aumid);
+        }
+    }
+    done
+}
+
 /// 会话 AUMID 是否「属于」被盖住的某个进程（宽松匹配：AUMID 含进程名去 .exe）。
 /// 归因不了 → false（不误停）。
 fn aumid_covers_pids(aumid: &str, covered_pids: &[u32]) -> bool {
