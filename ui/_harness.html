@@ -431,6 +431,48 @@ window.__itest = async () => {
   out.push(['当前方案是工作日强化', (document.querySelector('.cc-prof.active .nm') || {}).textContent, '工作日强化']);
   out.push(['方案 chip 显示段数', [...document.querySelectorAll('.cc-prof .n')].map((e) => e.textContent).join('|'), '22 段|4 段']);
 
+  // 0d. 界面细节：焦点环 / 数字框 / 插入符 / 长文本折行（深浅主题都要成立）
+  {
+    // 主色实际算出来的 rgb：不写死色值，换主题也不假红
+    const gold = (() => {
+      const i = document.createElement('i');
+      i.style.color = 'var(--gold)';
+      document.body.appendChild(i);
+      const c = getComputedStyle(i).color;
+      i.remove();
+      return c;
+    })();
+    const defW = document.querySelector('#defW') || document.querySelector('input[type="number"]');
+    out.push(['页面上能找到数字输入框', !!defW, true]);
+    if (defW) {
+      out.push(['数字框没有原生上下箭头', getComputedStyle(defW).appearance, 'textfield']);
+      out.push(['数字框里的数字等宽', getComputedStyle(defW).fontVariantNumeric, 'tabular-nums']);
+      out.push(['插入符跟主色走', getComputedStyle(defW).caretColor, gold]);
+      defW.focus();
+      await wait(80);
+      out.push(['输入框聚焦有可见外环（不是 10% 的淡色）',
+        getComputedStyle(defW).boxShadow.indexOf(gold.replace('rgb', 'rgba').replace(')', ', 0.42)')) >= 0
+        || /0\.3[5-9]|0\.[4-9]/.test(getComputedStyle(defW).boxShadow), true]);
+      defW.blur();
+    }
+    out.push(['原生控件（复选 / 滑块）用主色',
+      getComputedStyle(document.documentElement).accentColor, gold]);
+    // 超长路径 / 网址不能把卡片撑破
+    const probe = document.createElement('div');
+    probe.className = 'hint';
+    probe.style.maxWidth = '180px';
+    probe.textContent = 'C:\\' + 'averylongpathsegment\\'.repeat(24) + 'app.exe';
+    document.querySelector('#content').appendChild(probe);
+    out.push(['超长路径在卡片里折行而不是撑破', probe.scrollWidth <= probe.clientWidth + 1, true]);
+    probe.remove();
+
+    // 悬停在"已选中"的格子上：标题里要能读到整段的起止与总时长
+    const c9 = document.querySelector('.cc-cell[data-d="0"][data-h="9"]');
+    ccHoverTip(c9, 0, 9, 1);   // 第 2 个 15 分钟刻度（09:15–09:30）
+    out.push(['悬停已选格会提示整段范围', /本段 08:00–12:00（共 4 小时）/.test(c9.getAttribute('title') || ''), true]);
+    out.push(['悬停提示里仍保留专注/休息', /专注 50 分 \/ 休息 10 分/.test(c9.getAttribute('title') || ''), true]);
+  }
+
   // 1. 自由拖选：周三 13:00 按下 → 不松手向下滑到 15:45 → 松手提交
   //
   // 新交互的判据不是"矩形"，而是一段**连续区间**：锚点固定在按下的那一格，

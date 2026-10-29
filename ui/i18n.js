@@ -1195,6 +1195,12 @@
     // 时段格子标题（7 天 × 24 小时，最占量的一条）
     [/^周(.) (\d\d:\d\d) – (\d\d:\d\d)（未选中，拖动或右键可设置）$/,
       function (m, p1, p2, p3) { return wd(p1) + ' ' + p2 + ' – ' + p3 + ' (empty; drag or right-click)'; }],
+    // 悬停在已选格子上：比旧版多一句「本段 08:00–12:00（共 4 小时）」
+    [/^周(.) (\d\d:\d\d) – (\d\d:\d\d) · 本段 (\d\d:\d\d)–(\d\d:\d\d)（共 (.+)） · 专注 (\d+) 分 \/ 休息 (\d+) 分，右键可改$/,
+      function (m, p1, p2, p3, s1, s2, dur, p4, p5) {
+        return wd(p1) + ' ' + p2 + ' – ' + p3 + ' · window ' + s1 + '–' + s2 + ' (' + dur
+          + ') · focus ' + p4 + ' / break ' + p5 + ' min, right-click to edit';
+      }],
     [/^周(.) (\d\d:\d\d) – (\d\d:\d\d) · 专注 (\d+) 分 \/ 休息 (\d+) 分，右键可改$/,
       function (m, p1, p2, p3, p4, p5) { return wd(p1) + ' ' + p2 + ' – ' + p3 + ' · focus ' + p4 + ' / break ' + p5 + ' min, right-click to edit'; }],
     [/^周(.) 共 (\d+) 小时（(.+)）$/, function (m, p1, p2, p3) { return wd(p1) + ': ' + p2 + ' h (' + p3 + ')'; }],

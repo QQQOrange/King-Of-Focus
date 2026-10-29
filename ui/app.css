@@ -100,6 +100,8 @@
   --note-line: rgba(77, 141, 255, .13);
   --code-bg: rgba(255, 255, 255, .07);
   --on-bg: rgba(77, 141, 255, .1);
+  /* 输入框聚焦时的外环：以前直接复用 10% 的 on-bg，深色底上几乎看不见 */
+  --ring: rgba(77, 141, 255, .42);
   --on-line: rgba(77, 141, 255, .18);
   --seg-active: rgba(255, 255, 255, .08);
   --toast-bg: #1a202a;
@@ -165,6 +167,7 @@
   --note-line: rgba(47, 109, 240, .22);
   --code-bg: rgba(16, 24, 40, .06);
   --on-bg: rgba(77, 141, 255, .14);
+  --ring: rgba(47, 109, 240, .38);
   --on-line: rgba(47, 109, 240, .26);
   --seg-active: #ffffff;
   --toast-bg: #ffffff;
@@ -201,6 +204,8 @@ a:hover { text-decoration: underline; }
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-track { background: transparent; }
+/* Firefox 的滚动条只能整体给色，顺手对齐一下 */
+html { scrollbar-color: var(--scroll) transparent; }
 
 .app {
   display: grid;
@@ -399,8 +404,25 @@ input[type=text], input[type=password], input[type=number], input[type=date], se
 input::placeholder, textarea::placeholder { color: var(--text-3); opacity: .7; }
 input:focus, select:focus, textarea:focus {
   border-color: var(--gold);
-  box-shadow: 0 0 0 4px var(--on-bg);
+  box-shadow: 0 0 0 3px var(--ring);
 }
+/* ── 输入类控件的细节 ─────────────────────────────────────────
+ * 1) 数字框不要原生上下箭头：深色底上那两个小三角是纯噪点，还会随系统主题
+ *    变成一块浅灰；键盘 ↑↓ 照样能调值，拖选也不受影响。
+ * 2) 插入符跟主色走：默认的白/黑竖线在灰底输入框里显得脏。
+ * 3) 原生控件（复选、滑块、进度）统一用主色，免得出现系统蓝。 */
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  font-variant-numeric: tabular-nums;   /* 上下调值时数字不左右抖 */
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input, textarea { caret-color: var(--gold); }
+:root { accent-color: var(--gold); }
 select {
   appearance: none;
   padding-right: 32px;
@@ -629,6 +651,9 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .add-row { display: flex; gap: 9px; margin-bottom: 14px; flex-wrap: wrap; }
 .add-row input { flex: 1; min-width: 160px; }
 .hint { font-size: 11.5px; color: var(--text-3); line-height: 1.85; }
+/* 路径 / 网址 / 规则名可能很长且没有空格：允许在任意位置断行，
+   否则它会撑破卡片、把右边的说明文字挤出去（Windows 路径尤其常见）。 */
+.hint, .note, .card-sub, .toast, .lk-empty, .cc-def, .cc-bind { overflow-wrap: anywhere; }
 .hint code, .note code, .card-sub code {
   background: var(--code-bg); padding: 1px 6px;
   border-radius: 5px; font-size: 11px; color: var(--gold);

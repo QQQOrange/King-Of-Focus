@@ -7069,8 +7069,14 @@ function ccHoverTip(cell, d, h, q) {
   const w = Math.max(0, Math.min(60, p.work || 0));
   const br = Math.max(0, Math.min(60 - w, p.brk || 0));
   const onQ = p.on && (p.from || 0) < b && a < (p.to == null ? 60 : p.to);
+  // 悬停在**已选中**的格子上时，顺手告诉你"这一整段是多长"：
+  // 色块上的字只有 8~10px，短段还只能显示一行，鼠标停一下就能看全文更实用。
+  const sg = onQ ? ccSegAt(d, h * 60 + a) : null;
+  const segTxt = sg ? `本段 ${sg.range}（共 ${ccDurText(sg.mins)}） · ` : '';
   cell.setAttribute('title', `${WD[d]} ${pad(h)}:${pad(a)} – ${pad(h)}:${pad(b)}`
-    + (onQ ? ` · 专注 ${w} 分 / 休息 ${br} 分，右键可改` : `（未选中，单击 / 拖选这 ${b - a} 分钟）`));
+    + (onQ
+      ? ` · ${segTxt}专注 ${w} 分 / 休息 ${br} 分，右键可改`
+      : `（未选中，单击 / 拖选这 ${b - a} 分钟）`));
 }
 
 /* ───────── 自由拖选：按住就是一段，可随意伸缩 ─────────

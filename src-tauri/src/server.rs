@@ -3,6 +3,7 @@
 use crate::sched;
 use crate::shared::Shared;
 use serde_json::json;
+use std::io::Read;
 use std::sync::Arc;
 use std::thread;
 use tauri::Manager;
@@ -28,6 +29,26 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             thread::spawn(move || handle(&app, &shared, request));
         }
     });
+}
+
+/// 本地接口请求体的上限（字节）。
+///
+/// 这几个接口只收一个小 JSON（心跳 / 上报 / 调试），正常不超过 2 KB。
+/// 以前是 `read_to_string` 直接读到底：本机任意进程往 127.0.0.1:端口 灌一个
+/// 几百 MB 的 body，主程序就会跟着吃满内存（是"能被打挂"的程度，不只是慢）。
+/// 这里统一截断到 64 KB——超过的部分对业务毫无意义，直接丢掉。
+const MAX_BODY: u64 = 64 * 1024;
+
+fn read_capped<R: std::io::Read>(r: R) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    let _ = r.take(MAX_BODY).read_to_end(&mut buf);
+    // 用 lossy：截断点可能正好落在多字节字符中间，
+    // read_to_string 会整段报错、等于把这条请求丢了；替换成 U+FFFD 更合适。
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn read_body(req: &mut Request) -> String {
+    read_capped(req.as_reader())
 }
 
 fn cors<W: std::io::Write + std::io::Read>(resp: &mut Response<W>) {
@@ -332,8 +353,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
         }
         "/api/state" => reply(req, 200, state_json(shared)),
         "/api/heartbeat" => {
-            let mut body = String::new();
-            let _ = req.as_reader().read_to_string(&mut body);
+            let body = read_body(&mut req);
             let v = serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::Null);
             let browser = v
                 .get("browser")
@@ -356,8 +376,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
             reply(req, 200, json!({"ok": true}).to_string())
         }
         "/api/report" => {
-            let mut body = String::new();
-            let _ = req.as_reader().read_to_string(&mut body);
+            let body = read_body(&mut req);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("?").to_string();
                 let rule = v.get("rule").and_then(|x| x.as_str()).unwrap_or("网站自律规则").to_string();
@@ -483,6 +502,23 @@ mod tests {
         shared.mask.on.store(true, std::sync::atomic::Ordering::Relaxed);
         let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
         assert_eq!(v["maskOn"], serde_json::json!(true));
+    }
+
+    /// 本地接口的请求体必须**有上限**：以前直接 read_to_string，
+    /// 本机任意进程灌一个几百 MB 的 body 就能把主程序吃满内存。
+    #[test]
+    fn body_is_capped_and_never_panics_on_cut_utf8() {
+        let big = vec![b'a'; 200 * 1024];
+        assert_eq!(read_capped(&big[..]).len(), MAX_BODY as usize, "超出部分要截掉");
+
+        // 多字节字符被截断在中间：不能整个丢包，也不能 panic
+        let mut s = String::new();
+        for _ in 0..(MAX_BODY as usize / 3) {
+            s.push('王');   // 3 字节一个
+        }
+        let got = read_capped(s.as_bytes());
+        assert!(got.len() >= MAX_BODY as usize - 3, "截断后仍要保留绝大部分内容");
+        assert!(got.contains('王'), "内容不应被整段丢弃");
     }
 
     /// 网页收尾的契约：插件靠这四个字段决定"现在是不是边界、该用哪种方式"。

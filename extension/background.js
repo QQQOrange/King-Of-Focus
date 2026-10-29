@@ -36,6 +36,13 @@ let SWEEP_MODE = 'soft';
 let SWEEP_ENABLED = true;
 let SWEEP_SEQ = null;      // null = 还没对齐过
 let BOUNDARY_TIMER = null;
+/* 串行化：refresh 与 sweep 都可能被多处同时触发
+ *   refresh ← 12s 轮询 / 边界定时器 / 弹窗按钮 / SW 唤醒
+ *   sweep   ← 4s 扫描 / 30s 闹钟 / 边界
+ * 并发跑会互相踩：FINGERPRINT 先置位 → 后一个跳过下发，DNR 可能停在上一个的旧规则；
+ * sweep 并发则会对同一批标签重复上报、重复关。用一个 promise 链 + 布尔量兜住。 */
+let REFRESHING = null;   // Promise：上一条 refresh 还没跑完
+let SWEEPING = false;    // 正在扫标签
 
 const BROWSER = (() => {
   const ua = navigator.userAgent;
@@ -241,20 +248,28 @@ async function execute(actions, reason) {
  *  **柔和模式也走这里**：不关标签，只换成拦截页。否则学到一半的 4 秒巡检
  *  会把刚刚"收起来"的标签照旧关掉，柔和就只在边界那一秒有意义了。 */
 async function sweep(reason) {
-  if (!MATCHERS.length) return 0;
-  if (!(await autoCloseOn())) return 0;
-  let tabs;
+  // 上一轮还没处理完就别开第二轮：一次 30 个标签要 900ms × N，
+  // 4 秒扫描和 30 秒闹钟很容易叠上来，叠上来就会重复上报、重复动手。
+  if (SWEEPING) return 0;
+  SWEEPING = true;
   try {
-    tabs = await chrome.tabs.query({});
-  } catch (e) {
-    return 0;
+    if (!MATCHERS.length) return 0;
+    if (!(await autoCloseOn())) return 0;
+    let tabs;
+    try {
+      tabs = await chrome.tabs.query({});
+    } catch (e) {
+      return 0;
+    }
+    const actions = self.KOFSweep.plan(
+      tabs,
+      (u) => self.KOFMatch.match(u, MATCHERS),
+      { mode: SWEEP_MODE, closeWindow: CLOSE_WINDOW, max: MAX_CLOSE_PER_PASS },
+    );
+    return await execute(actions, reason);
+  } finally {
+    SWEEPING = false;
   }
-  const actions = self.KOFSweep.plan(
-    tabs,
-    (u) => self.KOFMatch.match(u, MATCHERS),
-    { mode: SWEEP_MODE, closeWindow: CLOSE_WINDOW, max: MAX_CLOSE_PER_PASS },
-  );
-  return execute(actions, reason);
 }
 
 /* ---------------- 休息结束收尾（网页侧） ---------------- */
@@ -287,6 +302,7 @@ function scheduleBoundary(nextChange) {
 
 /** 单个标签页变化时立刻处理（比等扫描快，覆盖 DNR 漏掉的场景） */
 async function checkTab(tabId, url) {
+  if (SWEEPING) return;          // 正在整表扫描，它会把这一页也带上
   if (!MATCHERS.length) return;
   if (!/^https?:/i.test(url || '')) return;
   if (!(await autoCloseOn())) return;
@@ -351,7 +367,19 @@ async function beat() {
 }
 
 /** 拉规则 → 更新 DNR → 立刻扫一遍已打开的标签页 */
-async function refresh(opts) {
+/** 串行化的入口：多次 refresh 排队执行，不会互相踩状态。 */
+function refresh(opts) {
+  const run = (REFRESHING || Promise.resolve())
+    .then(() => doRefresh(opts))
+    .catch((e) => {
+      console.error('[kof] refresh 失败', e);
+      return { closed: 0, swept: 0 };
+    });
+  REFRESHING = run.then(() => {}, () => {});
+  return run;
+}
+
+async function doRefresh(opts) {
   lastPull = Date.now();
   const p = await findPort();
   if (!p) {
