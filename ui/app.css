@@ -888,7 +888,7 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 }
 .cc-prof-ops .hint { margin-left: 2px; }
 
-/* 「这套时段生效的黑名单」—— 每套方案各自挑分组 */
+/* 「这套时段生效的自律规则」—— 每套方案各自挑分组 */
 .cc-bind {
   margin-top: 10px; padding: 10px 12px;
   border: 1px solid var(--line); border-radius: var(--r-md);
