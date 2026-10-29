@@ -421,6 +421,20 @@ fn state_json(shared: &Shared) -> String {
             })
         })
         .collect();
+    // 下一个"状态翻转"还有多少秒：插件据此在边界那一刻立刻重拉一次，
+    // 而不是傻等自己的 12 秒轮询（休息结束后的那几秒最容易"还在放行"）。
+    let next_change = cfg
+        .rules
+        .iter()
+        .filter(|l| l.enabled)
+        .filter_map(|l| sched::seconds_until_change(&l.schedule, &now))
+        .chain(crate::clock::seconds_until_change(&cfg))
+        .min()
+        .unwrap_or(0);
+    let (sweep_seq, clock_left) = match shared.rt.lock() {
+        Ok(rt) => (rt.sweep_seq, rt.clock_left),
+        Err(_) => (0, 0),
+    };
     json!({
         "active": !rules.is_empty(),
         // 遮罩是否真的开着：以前这里写死 false，插件/脚本读到的永远是"没开"
@@ -429,6 +443,17 @@ fn state_json(shared: &Shared) -> String {
         // 自律时段接管中：插件据此知道"现在不是按规则自己的时间表在拦"
         "clockOn": dstate.clock_on,
         "clockBreak": dstate.clock_break,
+        // 本阶段（专注/休息）还剩多少秒：拦截页拿它做倒计时
+        "clockLeft": clock_left,
+        // 休息结束收尾：网页侧由插件按标签页执行（应用侧在 monitor 里做）
+        "sweep": {
+            "enabled": cfg.settings.sweep.enabled,
+            "mode": cfg.settings.sweep.mode_norm(),
+        },
+        // 每发生一次「休息 → 学习」就 +1；插件比对它才知道边界发生了
+        "sweepSeq": sweep_seq,
+        // 距下一次状态翻转的秒数（0 = 没有计划）
+        "nextChange": next_change,
         // 插件据此决定：只关标签页，还是连整个浏览器窗口一起关
         "siteCloseBrowser": cfg.settings.site_close_browser,
         // 插件按这个值切中英文（跟随软件设置页里的选择）
@@ -460,10 +485,29 @@ mod tests {
         assert_eq!(v["maskOn"], serde_json::json!(true));
     }
 
+    /// 网页收尾的契约：插件靠这四个字段决定"现在是不是边界、该用哪种方式"。
+    /// 少一个就会退回"最多慢 12 秒"甚至完全不收尾。
+    #[test]
+    fn state_exposes_sweep_contract() {
+        let mut c = Config::default();
+        c.settings.sweep.enabled = true;
+        c.settings.sweep.mode = "hard".into();
+        let shared = Shared::new(c);
+        if let Ok(mut rt) = shared.rt.lock() {
+            rt.sweep_seq = 7;
+            rt.clock_left = 123;
+        }
+        let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
+        assert_eq!(v["sweep"]["enabled"], serde_json::json!(true));
+        assert_eq!(v["sweep"]["mode"], serde_json::json!("hard"));
+        assert_eq!(v["sweepSeq"], serde_json::json!(7));
+        assert_eq!(v["clockLeft"], serde_json::json!(123));
+        assert!(v.get("nextChange").is_some(), "nextChange 必须存在（插件要按它定时）");
+    }
+
     /// 没配任何规则时段时，插件应该收到 active=false（否则会误拦全站）
     #[test]
-    fn state_inactive_without_rules() {
-        let shared = Shared::new(Config::default());
+    fn state_inactive_without_rules() {        let shared = Shared::new(Config::default());
         let v: serde_json::Value = serde_json::from_str(&state_json(&shared)).unwrap();
         assert_eq!(v["active"], serde_json::json!(false));
         assert_eq!(v["rules"].as_array().map(|a| a.len()), Some(0));

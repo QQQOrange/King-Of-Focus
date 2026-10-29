@@ -22,20 +22,18 @@ ASSET = 'King.Of.Focus-%s.exe' % VER
 
 # 这一版的发布说明（一行一条，拼起来就是 release body）
 NOTES = [
-    '**休息结束时的收尾**（自律时段页新卡片）',
-    '- 只在「休息 → 学习」的边界执行一次：休息里打开的黑名单软件按选定方式处理。',
-    '- 柔和（默认）：最小化窗口，学习期间不再反复强杀；点开它才按常规拦截关掉。',
-    '- 强制：直接关闭（先请程序自己退出，不退出再强制结束）。',
-    '- 媒体：先读系统媒体会话状态，只有确实在播放才暂停；已暂停 / 已停止 / 读不到状态一律不动，'
-    '也永远不会自动恢复播放。',
-    '- 作用对象与拦截同源（黑名单命中，或白名单外且非保护进程）；网页不在此处理——'
-    '外部进程看不到标签页，由浏览器插件按标签页精确拦截。',
+    '**浏览器插件 1.1.0（需要重新加载一次）**',
+    '- 休息结束的收尾现在也覆盖网页：柔和 = 把标签换成拦截页（标签保留、地址可查，休息回来点「刷新试试」即可），'
+    '强制 = 直接关掉标签页；不会因为一个标签连坐整个浏览器。',
+    '- 边界精确到点：主程序每次「休息 → 学习」把 sweepSeq +1，插件在下一刻主动重拉状态并执行收尾，'
+    '不再等最多 12 秒的轮询（这段时间以前还会漏拦）。',
+    '- 拦截页新增「本段还剩 mm:ss」、命中规则、原地址，到点提示可以刷新。',
+    '- 插件弹窗新增：专注/休息、本段剩余、收尾方式、上次收尾数量，以及「现在收尾」按钮。',
+    '- 插件会记住当前地址，拦截页因此能显示真正的目标网址（以前常常是"—"）。',
     '',
-    '**时段拖拽的碰撞限制**',
-    '- 拖动撞到相邻时段就停在它的边缘：不压缩、不缩短、不推移对方。',
-    '- 不能把一个时段塞进另一个的中间（不会把对方切成两段）。',
-    '- 同一天内任何时段都不会重叠 / 覆盖；拖动过程中其它时段的数据与布局完全不变。',
-    '- 边缘缩放同样受约束：只长到邻居边上，邻居一个字都不改。',
+    '**装完这一版怎么更新插件**',
+    '- 打开 edge://extensions（或 chrome://extensions）→ 开发者模式 → 在 King of Focus 那张卡上点「重新加载」。',
+    '- 插件目录已经在软件目录里（extension/），重新加载就是新版本。',
 ]
 
 cfg = json.load(io.open(CFG, encoding='utf-8'))
@@ -81,16 +79,32 @@ else:
     })
     print('新建 Release id=%s' % rel['id'])
 
-size = os.path.getsize(EXE)
-upload = ('https://uploads.github.com/repos/%s/releases/%d/assets?name=%s'
-          % (REPO, rel['id'], urllib.parse.quote(ASSET)))
-req = urllib.request.Request(upload, data=open(EXE, 'rb'), method='POST')
-req.add_header('Authorization', 'token ' + TOKEN)
-req.add_header('Accept', 'application/vnd.github+json')
-req.add_header('User-Agent', 'kof-release')
-req.add_header('Content-Type', 'application/octet-stream')
-req.add_header('Content-Length', str(size))
-with opener.open(req, timeout=600) as r:
-    out = json.loads(r.read())
-print('上传完成 %s（%d 字节）state=%s' % (ASSET, size, out.get('state')))
-print('下载地址 ' + out.get('browser_download_url', ''))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+ASSETS = [(EXE, ASSET)]
+EXT_ZIP = os.path.join(ROOT, 'King.Of.Focus-Extension-1.1.0.zip')
+if os.path.exists(EXT_ZIP):
+    ASSETS.append((EXT_ZIP, os.path.basename(EXT_ZIP)))
+
+# 重跑发布：先把同名旧资产删掉，否则 GitHub 会存成 "name-1.zip" 这种副本
+try:
+    cur = call('GET', '/repos/%s/releases/%d' % (REPO, rel['id']))
+    for a in cur.get('assets', []):
+        if any(a.get('name') == n for _, n in ASSETS):
+            call('DELETE', '/repos/%s/releases/assets/%d' % (REPO, a['id']))
+except Exception as e:
+    print('清理旧资产跳过：', e)
+
+for path, name in ASSETS:
+    size = os.path.getsize(path)
+    upload = ('https://uploads.github.com/repos/%s/releases/%d/assets?name=%s'
+              % (REPO, rel['id'], urllib.parse.quote(name)))
+    req = urllib.request.Request(upload, data=open(path, 'rb'), method='POST')
+    req.add_header('Authorization', 'token ' + TOKEN)
+    req.add_header('Accept', 'application/vnd.github+json')
+    req.add_header('User-Agent', 'kof-release')
+    req.add_header('Content-Type', 'application/octet-stream')
+    req.add_header('Content-Length', str(size))
+    with opener.open(req, timeout=600) as r:
+        out = json.loads(r.read())
+    print('上传完成 %s（%d 字节）state=%s' % (name, size, out.get('state')))
+    print('下载地址 ' + out.get('browser_download_url', ''))

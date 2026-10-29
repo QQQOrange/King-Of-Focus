@@ -2527,8 +2527,8 @@ function sweepCardHtml(frozen) {
       <button class="cc-gran-btn${soft ? '' : ' active'}" data-act="sweep-mode" data-v="hard" ${dis}
         title="直接关闭应用">强制 · 关闭</button>
       <span class="hint">${off ? '收尾已关闭，这两种方式都不会执行。'
-    : soft ? '窗口收进任务栏，程序留着；学习期间不再强杀它，但点开它就会被按拦截处理。'
-      : '直接关掉：先请程序自己退出，不退出再强制结束。'}</span>
+    : soft ? '窗口收进任务栏、程序留着；网页换成拦截页（标签还在）。学习期间不再强杀，但点开就按拦截处理。'
+      : '直接关掉：先请程序自己退出，不退出再强制结束；网页直接关掉标签页。'}</span>
     </div>
 
     <div class="row" style="justify-content:space-between;align-items:center;gap:14px;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
@@ -2542,7 +2542,7 @@ function sweepCardHtml(frozen) {
 
     <div class="note" style="margin-top:12px;line-height:1.95">
       <div>作用对象：被自律规则判为「不能开」的软件（黑名单命中的，或白名单之外且不是保护进程的），与拦截用的是同一份判定。</div>
-      <div>网页不在这里处理：外部进程看不到标签页，只能看到浏览器窗口；按标题猜会把整个浏览器连坐。网页由浏览器插件按标签页精确拦截。</div>
+      <div>网页由浏览器插件按标签页执行同一种收尾：柔和 = 换成拦截页（标签保留，休息回来点刷新即可），强制 = 直接关掉标签页；不会因为一个标签连坐整个浏览器。</div>
       <div>执行时机：只在「休息 → 学习」的那一次边界执行；开机或唤醒时如果已经在上课段，不会补做。</div>
     </div>
   </div>`;

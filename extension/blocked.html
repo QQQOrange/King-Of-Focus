@@ -13,12 +13,15 @@
   <div class="box">
     <div class="row"><span data-i18n="blocked.rule">命中规则</span><b id="ruleName">—</b></div>
     <div class="row"><span data-i18n="blocked.url">目标地址</span><b id="url" class="url">—</b></div>
+    <div class="row" id="leftRow" hidden><span data-i18n="blocked.left">本段还剩</span><b id="left">—</b></div>
     <div class="row" id="whiteRow" hidden><span data-i18n="blocked.mode">当前模式</span><b data-i18n="blocked.mode.white">白名单 · 只允许名单里的网站</b></div>
   </div>
   <div class="tip">
     <span data-i18n="blocked.tip1">想改名单？在主程序里打开「规则 → 网站」。</span><br />
     <span data-i18n="blocked.tip2">如果这不是你想要的，说明时间表需要调整。</span>
+    <div id="sweepTip" hidden></div>
   </div>
+  <button id="reload" class="reload" data-i18n="blocked.reload">刷新试试</button>
   <div class="foot" data-i18n="blocked.foot">King Of Focus · 专注由你掌控</div>
 </div>
 <script src="i18n.js"></script>

@@ -62,6 +62,13 @@ pub struct Runtime {
     pub clock_left: i64,
     /// 自律模式是否由"生效时间段"接管中（休息段为 false）
     pub clock_on: bool,
+    /// 「休息结束收尾」的代次：每发生一次「休息 → 学习」就 +1。
+    ///
+    /// 插件靠它识别"边界刚好发生了"：它每 12 秒拉一次 /api/state，
+    /// 单看 clockOn/clockBreak 会漏掉"已经回到学习"这一瞬（也可能在别的时间
+    /// 反复变化）；比对这个自增号才知道"这次真的是休息结束"，
+    /// 于是网页侧的收尾能精确执行一次，而不是每轮都动手。
+    pub sweep_seq: u64,
 }
 
 impl Default for Runtime {
@@ -102,6 +109,7 @@ impl Default for Runtime {
             clock_break: false,
             clock_left: 0,
             clock_on: false,
+            sweep_seq: 0,
         }
     }
 }

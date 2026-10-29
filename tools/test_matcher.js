@@ -59,5 +59,47 @@ eq(M.makeMatcher('   '), null, '空白规则编译为 null');
 eq(M.hostOf('https://WWW.Example.COM:8443/a'), 'example.com', 'hostOf 去 www / 端口 / 小写');
 eq(M.hostOf('not a url'), '', 'hostOf 垃圾输入');
 
+/* ---------- 网页收尾（sweep.js）：决定每个标签页怎么处理 ---------- */
+require('../extension/sweep.js');
+const S = self.KOFSweep;
+const match = (u) => M.match(u, bl);
+
+const tabs = [
+  { id: 1, windowId: 10, url: 'https://www.youtube.com/watch?v=1' },  // 命中
+  { id: 2, windowId: 10, url: 'https://docs.rs/serde' },               // 不命中
+  { id: 3, windowId: 11, url: 'https://space.bilibili.com/1' },        // 命中（独立窗口）
+  { id: 4, windowId: 13, url: 'chrome://settings' },                   // 非 http(s)，独占一个窗口
+  { id: 5, windowId: 12, url: 'https://music.youtube.com/watch?v=1' }, // 例外 → 不命中
+];
+const planSoft = S.plan(tabs, match, { mode: 'soft' });
+eq(planSoft.map((a) => a.tabId), [1, 3], '柔和：只挑命中规则的标签');
+eq(planSoft.every((a) => a.action === 'blockpage'), true, '柔和：一律换成拦截页，不关标签');
+eq(planSoft[0].rule, '学习时间', '柔和：带上命中的规则名');
+
+const planHard = S.plan(tabs, match, { mode: 'hard', closeWindow: true });
+eq(planHard.map((a) => `${a.tabId}:${a.action}`), ['1:close', '3:closeWindow'],
+  '强制：单标签窗口连窗口关，多标签窗口只关标签');
+eq(S.plan(tabs, match, { mode: 'hard', closeWindow: false }).map((a) => a.action),
+  ['close', 'close'], '强制：允许连窗关时关闭（closeWindow=false 只关标签）');
+
+eq(S.plan(tabs, match, { mode: 'soft', max: 1 }).length, 1, '每次最多处理 max 个');
+eq(S.plan(tabs, match, { mode: 'soft', skipIds: [1] }).map((a) => a.tabId), [3],
+  'skipIds 里的标签不动');
+
+const sum = S.summarize(planHard);
+eq([sum.blocked, sum.closed, sum.total], [0, 2, 2], '摘要：关标签 + 关窗口都算"关闭"');
+eq(S.summarize(planSoft).blocked, 2, '摘要：柔和都算"拦截页"');
+
+// 边界判定：只认"变大"；重启清零/首次连上都不算边界
+eq(S.boundary(null, 3), false, '首次连上不触发收尾');
+eq(S.boundary(3, 4), true, 'seq 变大 = 发生了一次边界');
+eq(S.boundary(4, 4), false, 'seq 没变不触发');
+eq(S.boundary(9, 0), false, '主程序重启把计数清零，不当作边界');
+eq(S.boundary(undefined, 1), false, '没有基准时不触发');
+
+// 非 http(s) 一律不碰
+eq(S.isSystemPage('chrome-extension://abc/blocked.html'), true, '拦截页自身不处理');
+eq(S.isSystemPage('https://a.com'), false, '普通网页要处理');
+
 console.log(`\n${fail === 0 ? '✅' : '❌'} 通过 ${pass} / ${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -193,6 +193,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     rt.clock_in_window = clock_in;
                     rt.clock_break = clock_break;
                     rt.clock_on = clock_on;
+                    // 「休息 → 学习」的代次：浏览器插件靠它认出这次边界，
+                    // 好在网页侧也做一次收尾（标签页它自己才够得着）。
+                    if just_back {
+                        rt.sweep_seq = rt.sweep_seq.wrapping_add(1);
+                    }
                     rt.clock_weekday = dstate.clock_weekday;
                     rt.clock_hour = dstate.clock_hour;
                     rt.clock_left = dstate.clock_left;
