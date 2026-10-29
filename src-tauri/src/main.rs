@@ -144,14 +144,25 @@ fn main() {
         }
     }
 
+    // 配置要先读：单实例冲突时得知道"用户要求管理员吗"才能决定下一步。
+    let config = cfg::load();
+
     // 先抢单实例锁：已经有实例在跑就安静退出。
     // 顺序很重要 —— 必须先确认"没有别的实例"，再决定要不要弹 UAC，
     // 否则用户重复双击 exe 时会莫名弹一次 UAC。
     if !acquire_instance(elevated) {
+        // 例外：设置要求管理员、而我（以及正在跑的那个）都不是管理员时，
+        // 请正在运行的那个实例自己提权重启。
+        // 不这么做的话，托盘里那个开机以普通权限起来的实例会一直占着锁，
+        // 用户每次双击都只是"重复启动被忽略"，永远拿不到管理员。
+        if !elevated && config.settings.run_as_admin && !cmds::is_admin() {
+            match cmds::ask_peer_to_elevate(&config) {
+                Ok(msg) => println!("[King Of Focus] {msg}"),
+                Err(e) => eprintln!("[King Of Focus] 提权请求失败：{e}"),
+            }
+        }
         return;
     }
-
-    let config = cfg::load();
 
     // 清理早期版本的提权标记（.elevate_try）。
     // 旧版在"准备提权"时就写标记，提权成功后也不删 —— 结果 120 秒内的
@@ -181,6 +192,12 @@ fn main() {
                 }
             }
         }
+    }
+
+    // 自启项自愈：升级换过可执行文件名、或刚打开了"以管理员启动"之后，
+    // 注册表里那条可能还指着旧路径/旧模式。这里按当前状态重写一次（幂等）。
+    if config.settings.autostart {
+        cmds::apply_autostart(true, config.settings.run_as_admin);
     }
 
     let shared = Arc::new(shared::Shared::new(config.clone()));

@@ -456,6 +456,14 @@
     '检查更新': 'Check for updates',
     '更新检测': 'Updates',
 
+    /* —— 拖拽与语录设置 —— */
+    '移动': 'Move',
+    '选中': 'Select',
+    '这些句子会和联网取到的「一言」一起在 Hub 顶部轮换，每条都会标明来源。 最多 60 条、每条 120 字；这里改完立刻生效，不用打开 Hub。':
+      'These rotate at the top of the Hub together with online quotes, each labelled with its source. Up to 60 lines of 120 characters; changes apply immediately.',
+    '还没有自己写的语录。': 'No custom quotes yet.',
+    '删除': 'Delete',
+
     /* —— 自定义浏览器 —— */
     '＋ 添加': '+ Add',
     '直接写一句新的': 'Write a new one',

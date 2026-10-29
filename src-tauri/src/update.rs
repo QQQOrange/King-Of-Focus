@@ -381,6 +381,9 @@ pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
     script.push_str("@echo off\r\n");
     script.push_str("chcp 65001 >nul\r\n");
     script.push_str("timeout /t 3 /nobreak >nul\r\n");
+    // 0.1.10 起可执行文件叫 "King Of Focus.exe"；老版本是 king-of-focus.exe。
+    // 两个都杀，避免升级时旧进程还活着、新文件被占用。
+    script.push_str("taskkill /f /im \"King Of Focus.exe\" >nul 2>&1\r\n");
     script.push_str("taskkill /f /im \"king-of-focus.exe\" >nul 2>&1\r\n");
     for o in &olds {
         script.push_str(&format!("del /f /q \"{o}\" >nul 2>&1\r\n"));

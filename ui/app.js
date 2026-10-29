@@ -2827,6 +2827,27 @@ function viewSettings() {
   </div>
 
   <div class="card">
+    <div class="card-title">激励语录</div>
+    <div class="card-sub">
+      这些句子会和联网取到的「一言」一起在 Hub 顶部轮换，每条都会标明来源。
+      最多 60 条、每条 120 字；这里改完立刻生效，不用打开 Hub。
+    </div>
+    ${(st.customQuotes || []).length
+      ? `<div class="qlist" style="margin-top:10px">${(st.customQuotes || []).map((t, i) => `
+          <div class="qrow">
+            <span class="n">${i + 1}</span>
+            <span class="t">${esc(t)}</span>
+            <button class="btn btn-sm danger-ghost" data-act="set-quote-del" data-i="${i}">删除</button>
+          </div>`).join('')}</div>`
+      : '<div class="hint" style="margin-top:10px">还没有自己写的语录。</div>'}
+    <div class="row" style="gap:8px;margin-top:12px">
+      <input type="text" id="setQuoteNew" maxlength="120" style="flex:1"
+        placeholder="写一句给自己的话（最多 120 字），回车即可添加" />
+      <button class="btn btn-sm btn-primary" data-act="set-quote-add">添加</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">拦截行为</div>
     <div class="card-sub">这些设置对所有自律规则生效。</div>
     ${sw('dryRun', st.dryRun, '演练模式', '只记录不真的关闭，用来先验证名单是否写对了')}
@@ -3592,6 +3613,34 @@ const Act = window.Act = {
     const i = pool.findIndex((x) => x.key === S.quoteAt);
     S.quoteAt = pool[(i + 1) % pool.length].key;
     render();
+  },
+
+  /** 设置页里直接维护语录：加一条 / 删一条都立即写盘并重绘 */
+  async setQuoteAdd() {
+    const inp = $('#setQuoteNew');
+    const v = ((inp && inp.value) || '').trim();
+    if (!v) { if (inp) inp.focus(); return; }
+    if (v.length > 120) { toast('一句话最多 120 字', 'err'); return; }
+    const list = (S.data.config.settings.customQuotes || []).slice();
+    if (list.includes(v)) { toast('这句已经加过了', ''); return; }
+    if (list.length >= 60) { toast('最多 60 条，先删掉几条吧', 'err'); return; }
+    list.push(v);
+    await Act.setQuotes(list);
+  },
+
+  async setQuoteDel(i) {
+    const list = (S.data.config.settings.customQuotes || []).slice();
+    if (i < 0 || i >= list.length) return;
+    list.splice(i, 1);
+    await Act.setQuotes(list);
+  },
+
+  async setQuotes(list) {
+    S.data.config.settings.customQuotes = list.slice(0, 60);
+    const ok = await saveConfig();
+    S.quoteAt = '';
+    render();
+    toast(ok ? '语录已保存' : '保存失败', ok ? 'ok' : 'err');
   },
 
   /** 直接从 Hub 写一句新的：打开面板并把光标放进输入框 */
@@ -5066,6 +5115,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'quote-next') { Act.quoteNext(); return; }
   if (act === 'quote-manage') { Act.quoteManage(); return; }
   if (act === 'quote-add-new') { Act.quoteAddNew(); return; }
+  if (act === 'set-quote-add') { await Act.setQuoteAdd(); return; }
+  if (act === 'set-quote-del') { await Act.setQuoteDel(+el.dataset.i); return; }
   if (act === 'quote-add') { Act.quoteAdd(); return; }
   if (act === 'quote-del') { Act.quoteDel(+el.dataset.i); return; }
   if (act === 'quote-save') { await Act.quoteSave(); return; }
@@ -5309,13 +5360,41 @@ function paintCcDrag() {
     : undefined));
 
   const lab = $('#clockLive');
+  const isEn = I18N.getLang() === 'en';
+  const verb = dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
+    : dg.mode === 'move' ? (isEn ? 'Move' : '移动')
+      : (isEn ? 'Select' : '选中');
+  const dayTxt = I18N.t(WD[dg.d]);
+  const durTxt = ccDurText(hi - lo);
+
   if (lab) {
-    const t = ccMinText(lo, hi);
-    const edge = dg.edge < 0 ? ' · 已到当日 0:00' : (dg.edge > 0 ? ' · 已到当日 24:00' : '');
-    const verb = dg.mode === 'sub' ? '取消' : '选中';
-    lab.innerHTML = `${verb} <b>${WD[dg.d]} ${t.range}</b> · 共 ${t.dur}${edge}`;
+    const edge = dg.edge < 0 ? (isEn ? ' · clamped at 0:00' : ' · 已到当日 0:00')
+      : (dg.edge > 0 ? (isEn ? ' · clamped at 24:00' : ' · 已到当日 24:00') : '');
+    const rg = ccMinText(lo, hi).range;
+    lab.innerHTML = isEn
+      ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edge}`
+      : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edge}`;
+  }
+
+  // 浮层跟着指针走（位置变化由 CSS transform 过渡负责平滑）
+  if (typeof dg.lastY === 'number') {
+    ccGhostSet(`${verb} ${dayTxt} ${ccMinText(lo, hi).range} · ${durTxt}`,
+      dg.lastX != null ? dg.lastX + 16 : 240, dg.lastY - 14);
   }
   grid.classList.add('dragging');
+}
+
+/** 时长文案（语言感知）：中文 "1 小时 45 分"，英文 "1 h 45 min" */
+function ccDurText(mins) {
+  const m = Math.max(0, Math.round(mins || 0));
+  if (I18N.getLang() === 'en') {
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    if (h && mm) return `${h} h ${mm} min`;
+    if (h) return `${h} h`;
+    return `${mm} min`;
+  }
+  return ccMinText(0, m).dur;
 }
 
 /** 分钟区间 → { range: "09:15 – 11:00", dur: "1 小时 45 分" } */
@@ -5328,22 +5407,66 @@ function ccMinText(lo, hi) {
 }
 
 /** 按下：锚定一个粒度，并据此决定是"加选"还是"抹掉" */
+/** 当天包含 atMin（绝对分钟）的那一段；没有就返回 null */
+function ccSegAt(d, atMin) {
+  const day = clockProfile().days[d];
+  if (!day) return null;
+  const segs = ccSegs(day);
+  for (let i = 0; i < segs.length; i++) {
+    const sg = segs[i];
+    const from = sg.h0 * 60 + sg.f0;
+    const to = sg.h1 * 60 + (sg.t1 >= 60 ? 60 : sg.t1);
+    if (atMin >= from && atMin < to) return sg;
+  }
+  return null;
+}
+
+/* ── 跟随指针的浮动提示 ──
+ * 真实高亮必须"即时"（拖到哪就亮到哪），但那一刻的跳变会让手感发硬。
+ * 所以另起一个只改 transform 的小卡片跟着指针走（CSS 过渡负责平滑），
+ * 两者的分工：高亮=结果，ghost=手感。 */
+function ccGhostSet(text, x, y) {
+  let el = document.getElementById('ccGhost');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ccGhost';
+    el.className = 'cc-ghost';
+    document.body.appendChild(el);
+    el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    void el.offsetWidth;   // 先落一个初始位置，后续才有"从这滑到那"的过渡
+  }
+  el.textContent = text;
+  el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+}
+
+function ccGhostDrop() {
+  const el = document.getElementById('ccGhost');
+  if (!el) return;
+  el.classList.add('out');
+  setTimeout(() => el.remove(), 160);
+}
+
 function ccDragBegin(d, clientY) {
   const { idx, edge } = ccGrainAt(d, clientY);
   const st = ccStep();
   const atMin = idx * st;
   const day = clockProfile().days[d];
 
+  // 拖动期间：整页进入"抓取"状态，并清掉原生 tooltip（否则悬停提示会跳出来挡路）
+  document.body.classList.add('cc-dragging');
+  document.querySelectorAll('#ccGrid .cc-cell[title]').forEach((c) => c.removeAttribute('title'));
+
   // 按下的位置落在某一段里 → 拖动 = **整段平移**（段的长度不变，只换位置）；
   // 落在空白 → 拖动 = 新建一段。
   //
   // 以前"落在已选中的格子上"是 sub（抹掉），再加一句"没拖动就算单击 → 取消这一格"，
   // 结果在段中间点一下就把一整段从中间劈开、点中的那块消失。现在点击什么都不改。
-  const seg = ccSegs(day).find((sg) => {
-    const from = sg.h0 * 60 + sg.f0;
-    const to = sg.h1 * 60 + (sg.t1 >= 60 ? 60 : sg.t1);
-    return atMin >= from && atMin < to;
-  });
+  const seg = ccSegAt(d, atMin);
+  if (day && !seg) {
+    // 空白处按下 = 新建；把上次残留的 hover 状态收掉
+    const gr = document.getElementById('ccGrid');
+    if (gr) gr.classList.remove('over-seg');
+  }
 
   if (seg) {
     S.ccDrag = {
@@ -5358,9 +5481,11 @@ function ccDragBegin(d, clientY) {
 }
 
 /** 移动：粒度变了才重画（刻度不变就什么都没变，天然去抖） */
-function ccDragMove(clientY) {
+function ccDragMove(clientY, clientX) {
   const dg = S.ccDrag;
   if (!dg) return;
+  if (typeof clientX === 'number') dg.lastX = clientX;
+  dg.lastY = clientY;
   const { idx, edge } = ccGrainAt(dg.d, clientY);
   // 拖动判据是"指针真的动过"（3px），不是"格子变了"：
   // 否则想选这一格（15 分钟）就只能靠单击，而单击现在是不允许改结构的。
@@ -5381,7 +5506,12 @@ async function ccDragEnd() {
   S.ccDrag = null;
   document.querySelectorAll('.cc-cell.qshow').forEach((c) => c.classList.remove('qshow'));
   const grid = document.getElementById('ccGrid');
-  if (grid) grid.classList.remove('dragging');
+  if (grid) {
+    grid.classList.remove('dragging');
+    grid.classList.remove('over-seg');
+  }
+  document.body.classList.remove('cc-dragging');
+  ccGhostDrop();
 
   const per = ccQCnt();
   const { lo, hi } = ccDragRange(dg);
@@ -5399,12 +5529,28 @@ async function ccDragEnd() {
     return;
   }
 
+  const land = () => {
+    // 松手后给刚生成的那一块一点"落位"反馈（只动涉及的小时，别让整张表一起跳）
+    setTimeout(() => {
+      document.querySelectorAll('#ccGrid .cc-run').forEach((r) => {
+        if (+r.dataset.d === dg.d && +r.dataset.h1 >= h0 && +r.dataset.h0 <= h1) {
+          r.classList.add('land');
+        }
+      });
+      setTimeout(() => {
+        document.querySelectorAll('#ccGrid .cc-run.land').forEach((r) => r.classList.remove('land'));
+      }, 280);
+    }, 24);
+  };
+
   if (dg.mode === 'move') {
     if (lo === dg.segFrom && hi === dg.segTo) { render(); return; }
     await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, lo, hi);
+    land();
     return;
   }
   await Act.clockCommitRange(dg.d, lo, hi, dg.mode);
+  land();
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -5416,15 +5562,27 @@ document.addEventListener('mousedown', (e) => {
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (S.ccDrag) { e.preventDefault(); ccDragMove(e.clientY); }
+  if (S.ccDrag) { e.preventDefault(); ccDragMove(e.clientY, e.clientX); }
+});
+
+// 设置页的语录输入框：回车等于点「添加」
+document.addEventListener('keydown', (e) => {
+  if (!e.target || e.target.id !== 'setQuoteNew') return;
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  Act.setQuoteAdd();
 });
 
 document.addEventListener('mouseover', (e) => {
-  if (S.ccDrag) return;
+  const gr = document.getElementById('ccGrid');
+  if (S.ccDrag) { if (gr) gr.classList.remove('over-seg'); return; }
   const cell = e.target.closest('.cc-cell');
-  if (!cell) return;
-  const g = ccGrainAt(+cell.dataset.d, e.clientY);
-  ccHoverTip(cell, +cell.dataset.d, +cell.dataset.h, g.idx % ccQCnt());
+  if (!cell) { if (gr) gr.classList.remove('over-seg'); return; }
+  const d = +cell.dataset.d;
+  const g = ccGrainAt(d, e.clientY);
+  // 悬停在某一段上 → 光标变"可抓"，预告"按住能整段搬走"
+  if (gr) gr.classList.toggle('over-seg', !!ccSegAt(d, g.idx * ccStep()));
+  ccHoverTip(cell, d, +cell.dataset.h, g.idx % ccQCnt());
 });
 
 document.addEventListener('mouseup', async () => { await ccDragEnd(); });
@@ -5443,7 +5601,9 @@ document.addEventListener('touchstart', (e) => {
 document.addEventListener('touchmove', (e) => {
   if (!S.ccDrag) return;
   e.preventDefault();
-  ccDragMove(e.touches[0].clientY);
+  // 多指（捏合缩放）不参与拖选，避免和图表缩放手势打架
+  if (e.touches.length !== 1) return;
+  ccDragMove(e.touches[0].clientY, e.touches[0].clientX);
 }, { passive: false });
 
 document.addEventListener('touchend', async (e) => {

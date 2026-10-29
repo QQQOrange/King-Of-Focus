@@ -122,6 +122,18 @@ pub fn put_text(url: &str, auth: Option<&str>, body: &str) -> Result<(), String>
     }
 }
 
+/// 只发给本机 127.0.0.1 的 POST（不重试、短超时）。
+/// 新实例用它请已经运行的那个实例"提权重启"。
+pub fn post_local(url: &str, body: &str, timeout: std::time::Duration) -> Result<String, String> {
+    let a = ureq::AgentBuilder::new().timeout(timeout).build();
+    let r = a
+        .post(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+        .map_err(|e| describe(e))?;
+    r.into_string().map_err(|e| e.to_string())
+}
+
 pub fn delete(url: &str, auth: Option<&str>) -> Result<(), String> {
     let mut req = agent().delete(url).set("User-Agent", UA);
     if let Some(a) = auth {

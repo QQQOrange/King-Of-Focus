@@ -437,6 +437,46 @@ window.__itest = async () => {
     out.push(['平移后确实挪了位置', after ? (after.h0 * 60 + after.f0) !== start0 : false, true]);
   }
 
+  // 1-1c. 拖拽手感：悬停抓取光标 → 拖动浮层跟随 → 松手收尾
+  {
+    const grid = document.querySelector('#ccGrid');
+
+    // 悬停在已有段上：光标应变成"可抓"，预告按住能整段搬走
+    const segs = ccSegs(pd()[2]);
+    out.push(['周三还有段可以抓', segs.length >= 1, true]);
+    const inSeg = cell(2, segs[0].h0);
+    inSeg.dispatchEvent(new MouseEvent('mouseover', {
+      bubbles: true, clientY: inSeg.getBoundingClientRect().top + 4,
+    }));
+    await wait(80);
+    out.push(['悬停在段上：整张表进入可抓状态', grid.classList.contains('over-seg'), true]);
+    out.push(['可抓时格子光标是 grab', getComputedStyle(inSeg).cursor, 'grab']);
+
+    // 按下并在空白处拖：浮层出现、光标 grabbing、页面进入拖动态
+    fire('mousedown', cell(6, 6), { clientY: gY(6, 6, 0) });
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(6, 8, 2), clientX: 520 }));
+    await wait(120);
+    const ghost = document.querySelector('.cc-ghost');
+    out.push(['拖动中出现了跟随浮层', !!ghost, true]);
+    out.push(['浮层写着起止与时长', ghost ? /06:00|08:45/.test(ghost.textContent) : false, true]);
+    out.push(['拖动中整页标记了拖动态', document.body.classList.contains('cc-dragging'), true]);
+    out.push(['拖动中光标是 grabbing', getComputedStyle(cell(6, 6)).cursor, 'grabbing']);
+    out.push(['图表进入 dragging 状态', grid.classList.contains('dragging'), true]);
+    // 浮层用 transform + 过渡：位置变化不是硬跳
+    out.push(['浮层靠 transform 定位（可过渡）',
+      !!ghost && /translate3d/.test(ghost.style.transform || ''), true]);
+    out.push(['浮层有过渡时长',
+      ghost ? parseFloat(getComputedStyle(ghost).transitionDuration) > 0 : false, true]);
+
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(260);
+    out.push(['松手后浮层消失', document.querySelector('.cc-ghost'), null]);
+    out.push(['松手后拖动态撤销', document.body.classList.contains('cc-dragging'), false]);
+    out.push(['松手后光标恢复', getComputedStyle(cell(6, 6)).cursor === 'grabbing', false]);
+    out.push(['这次拖动真的选中了 06:00–08:45',
+      `${pd()[6][6].on && pd()[6][6].from}-${pd()[6][8].to}`, '0-45']);
+  }
+
   // 1-2. 反向伸缩：从 20:30 按住往上拖到 19:15（周日，原本全空）
   fire('mousedown', cell(6, 20), { clientY: gY(6, 20, 2) });
   document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(6, 19, 1) }));
@@ -1630,6 +1670,8 @@ window.__itest = async () => {
           const pe = n.parentElement;
           if (!pe || pe.tagName === 'SCRIPT' || pe.tagName === 'STYLE') continue;
           if (pe.closest('#toastRoot')) continue;   // 瞬时提示不算界面文案
+          // 用户自己写的内容（语录正文、条目名）本来就不该翻译
+          if (pe.closest('.qrow') || pe.closest('.qtext')) continue;
           const tx = (n.nodeValue || '').trim();
           if (tx && /[\u4e00-\u9fa5]/.test(tx)) {
             left.push(v + ':' + tx.slice(0, 22));
@@ -1652,6 +1694,32 @@ window.__itest = async () => {
 
     await Act.nav('settings');
     await wait(250);
+  }
+
+  // ---- 26i. 设置页里直接维护激励语录（不必打开 Hub）----
+  {
+    await Act.nav('settings');
+    await wait(280);
+    const titles = [...document.querySelectorAll('.card-title')].map((e) => e.textContent.trim());
+    out.push(['设置页有「激励语录」卡', titles.includes('激励语录'), true]);
+    out.push(['卡里有输入框与添加按钮',
+      !!document.querySelector('#setQuoteNew') && !!document.querySelector('[data-act="set-quote-add"]'), true]);
+    out.push(['卡里列出了已有语录', document.querySelectorAll('#content .qrow').length >= 1, true]);
+
+    const before = (STATE.config.settings.customQuotes || []).length;
+    document.querySelector('#setQuoteNew').value = '设置页里也能加一条。';
+    document.querySelector('[data-act="set-quote-add"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(340);
+    out.push(['添加后立即写进配置', (STATE.config.settings.customQuotes || []).length, before + 1]);
+    out.push(['列表里能看到新的一条',
+      document.querySelector('#content').textContent.indexOf('设置页里也能加一条。') >= 0, true]);
+
+    // 删掉它，恢复原状
+    document.querySelector('[data-act="set-quote-del"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(340);
+    out.push(['删除后条数回到原值', (STATE.config.settings.customQuotes || []).length, before]);
   }
 
   // ---- 26h. 品牌名：严格写作 King Of Focus ----

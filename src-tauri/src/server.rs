@@ -62,6 +62,37 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
 
     match path.as_str() {
         "/api/ping" => reply(req, 200, json!({"ok": true, "app": "King Of Focus", "v": 1}).to_string()),
+        // 第二个实例发现"已经有一个普通权限的我在跑、而设置要求管理员"时调这里。
+        // 由**正在跑的那个**去提权重启，避免出现"新实例抢不到锁就静默退出、
+        // 用户以为开了管理员却永远是普通权限"的死角。
+        "/api/elevate" => {
+            let cfg = shared.config();
+            if crate::cmds::is_admin() {
+                reply(req, 200, json!({"ok": true, "already": true}).to_string());
+            } else if let Some(why) = crate::guard::exit_blocked(&cfg) {
+                reply(req, 200, json!({"ok": false, "why": why}).to_string());
+            } else {
+                let mut c = cfg.clone();
+                c.settings.run_as_admin = true;
+                let saved = crate::cfg::save(&c);
+                if let Ok(mut w) = shared.cfg.write() {
+                    *w = c;
+                }
+                match saved.and_then(|_| crate::cmds::spawn_elevated_self()) {
+                    Ok(()) => {
+                        reply(req, 200, json!({"ok": true, "restarting": true}).to_string());
+                        // 让响应先发出去，再把当前实例关掉，把锁让给提权副本
+                        let app2 = app.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(350));
+                            crate::guard::stop_guard();
+                            app2.exit(0);
+                        });
+                    }
+                    Err(e) => reply(req, 200, json!({"ok": false, "why": e}).to_string()),
+                }
+            }
+        }
         // 仅 KOF_DEBUG=1 时开放，供自动化验收脚本驱动遮罩（与 UI 走同一函数）
         "/api/debug/mask" => {
             if std::env::var("KOF_DEBUG").as_deref() != Ok("1") {
@@ -402,6 +433,8 @@ fn state_json(shared: &Shared) -> String {
         "siteCloseBrowser": cfg.settings.site_close_browser,
         // 插件按这个值切中英文（跟随软件设置页里的选择）
         "lang": cfg.settings.lang,
+        // 正在运行的这个实例是不是管理员（新实例据此决定要不要请它提权）
+        "admin": crate::cmds::is_admin(),
         "serverTime": chrono::Local::now().timestamp(),
     })
     .to_string()

@@ -783,6 +783,32 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 悬停**不给任何底色**：未选中的时间不能因为鼠标划过就微微亮起来，
  * 否则一眼看过去分不清"哪些真的选了"。光标已经足够提示"这里可以拖"。 */
 .cc-cell:hover { background: transparent; }
+
+/* ── 拖拽手感 ───────────────────────────────────────────────
+ * 光标要能"预告"这一下会发生什么：
+ *   在空白 → 十字/默认（画一格）
+ *   在某一段上 → grab（按住可以整段搬走）
+ *   拖动中 → grabbing（正在搬）
+ */
+.cc.over-seg .cc-cell { cursor: grab; }
+.cc.dragging, .cc.dragging .cc-cell { cursor: grabbing !important; }
+/* 拖动期间别让浏览器顺手选中文字 / 拖出图片 */
+body.cc-dragging { user-select: none; -webkit-user-select: none; }
+
+/* 跟随指针的浮动提示：只改 transform，所以过渡是真的平滑 */
+.cc-ghost {
+  position: fixed; left: 0; top: 0; z-index: 90;
+  pointer-events: none;
+  padding: 5px 10px; border-radius: 8px;
+  font-size: 11.5px; font-weight: 600; line-height: 1.3;
+  color: #fff; white-space: nowrap;
+  background: rgba(20, 26, 38, .92);
+  border: 1px solid rgba(125, 176, 255, .45);
+  box-shadow: 0 8px 22px -10px rgba(0, 0, 0, .7);
+  transition: transform .09s cubic-bezier(.22, .61, .36, 1), opacity .12s linear;
+  will-change: transform;
+}
+.cc-ghost.out { opacity: 0; }
 /* 选中态不画在格子上：格子之间 6px 间距，半透明底叠两次会留下一条亮缝，
  * 连续几小时看着就像几块独立的小方块。底色统一由 .cc-run 跨行整块绘制。 */
 .cc-cell.on { background: transparent; border-top-color: transparent; z-index: 3; }
@@ -1729,3 +1755,10 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 
 /* 语录出处的小字提示：比出处更淡一档，只用来交代"这条是从哪取的" */
 .hub-quote .qhint { color: var(--text-3); opacity: .75; font-size: 10.5px; }
+
+/* 松手后选区落到最终位置：一点点缩放 + 淡入，让"结束"有反馈 */
+@keyframes ccLand {
+  from { opacity: .5; transform: scaleY(.9); }
+  to { opacity: 1; transform: none; }
+}
+.cc-run.land { animation: ccLand .22s cubic-bezier(.22, .61, .36, 1); transform-origin: center; }

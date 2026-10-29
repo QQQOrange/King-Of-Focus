@@ -991,34 +991,123 @@ pub fn set_run_as_admin(
     Ok(())
 }
 
-#[tauri::command]
-pub fn set_autostart(enabled: bool) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    if enabled {
-        Command::new("reg")
-            .args([
-                "add",
-                key,
-                "/v",
-                "KingOfFocus",
-                "/t",
-                "REG_SZ",
-                "/d",
-                &format!("\"{}\"", exe.to_string_lossy()),
-                "/f",
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map_err(|e| e.to_string())?;
-    } else {
-        Command::new("reg")
-            .args(["delete", key, "/v", "KingOfFocus", "/f"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map_err(|e| e.to_string())?;
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VAL: &str = "KingOfFocus";
+const TASK_NAME: &str = "King Of Focus";
+
+fn add_run_entry(exe: &str) {
+    let _ = Command::new("reg")
+        .args([
+            "add",
+            RUN_KEY,
+            "/v",
+            RUN_VAL,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &format!("\"{exe}\""),
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+fn remove_run_entry() {
+    let _ = Command::new("reg")
+        .args(["delete", RUN_KEY, "/v", RUN_VAL, "/f"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+/// 计划任务：登录时以**最高权限**启动，开机不弹 UAC。
+///
+/// 为什么需要它：HKCU 的 Run 项只能以当前用户权限启动，开机后跑的是一个
+/// 普通权限实例；配置里就算写了"以管理员启动"，也只能在程序**起来之后**
+/// 再弹 UAC 提权（用户还得点一次确认，托盘常驻时甚至根本走不到）。
+/// 用 ONLOGON + `/RL HIGHEST` 的任务，开机就是管理员，一步到位。
+fn add_scheduled_task(exe: &str) -> bool {
+    Command::new("schtasks")
+        .args([
+            "/Create",
+            "/TN",
+            TASK_NAME,
+            "/TR",
+            &format!("\"{exe}\""),
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "HIGHEST",
+            "/F",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false)
+}
+
+fn remove_scheduled_task() {
+    let _ = Command::new("schtasks")
+        .args(["/Delete", "/TN", TASK_NAME, "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+/// 统一的自启落地：Run 项 / 计划任务二选一，不会同时存在两条。
+///
+/// `want_admin` 为真且当前**确实是管理员**时才建计划任务 ——
+/// 普通权限下 schtasks 会被拒绝，硬建只会每次启动都多一次失败调用。
+pub fn apply_autostart(on: bool, want_admin: bool) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return,
+    };
+    if !on {
+        remove_run_entry();
+        if is_admin() {
+            remove_scheduled_task();
+        }
+        return;
     }
+    if want_admin && is_admin() && add_scheduled_task(&exe) {
+        // 任务版就位后清掉 Run 项，避免同一台机器启动两次
+        remove_run_entry();
+        return;
+    }
+    if want_admin {
+        // 没权限建任务：至少把旧的普通权限任务清掉，免得残留一条低权限自启
+        remove_scheduled_task();
+    }
+    add_run_entry(&exe);
+}
+
+#[tauri::command]
+pub fn set_autostart(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    let c = shared.config();
+    apply_autostart(enabled, c.settings.run_as_admin);
     Ok(())
+}
+
+/// 请**已经运行的那个实例**提权重启（由它自己写配置 + 弹 UAC）。
+///
+/// 第二个实例拿不到单实例锁时会走到这里：否则用户"开了管理员启动"、
+/// 双击 exe，却因为托盘里那个普通权限实例还活着而永远拿不到管理员。
+pub fn ask_peer_to_elevate(cfg: &Config) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}/api/elevate", cfg.settings.port);
+    let body = crate::net::post_local(&url, "{}", std::time::Duration::from_millis(2500))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    match v.get("ok").and_then(|x| x.as_bool()) {
+        Some(true) => Ok(if v.get("already").and_then(|x| x.as_bool()) == Some(true) {
+            "已在以管理员身份运行".into()
+        } else {
+            "已请正在运行的实例提权重启".into()
+        }),
+        _ => Err(v
+            .get("why")
+            .and_then(|x| x.as_str())
+            .unwrap_or("正在运行的实例没有响应")
+            .to_string()),
+    }
 }
 
 #[tauri::command]
