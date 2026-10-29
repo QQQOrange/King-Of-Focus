@@ -292,11 +292,11 @@ fn apply(shared: &Shared, envelope: &str) -> Result<String, String> {
         return Err(why);
     }
     crate::cfg::save(&remote)?;
-    let n = remote.lists.len();
+    let n = remote.rules.len();
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;
     }
-    Ok(format!("已恢复 {n} 条黑名单（含设置）"))
+    Ok(format!("已恢复 {n} 条自律规则（含设置）"))
 }
 
 // ---------------- 云端备份（WebDAV） ----------------
@@ -430,7 +430,7 @@ mod tests {
 
     #[test]
     fn password_envelope_roundtrip() {
-        let plain = r#"{"lists":[{"name":"自律时间"}]}"#;
+        let plain = r#"{"rules":[{"name":"自律时间"}]}"#;
         let env = encrypt(plain, "pw123456").unwrap();
         assert!(!env.contains("自律时间"), "明文泄漏");
         assert_eq!(decrypt(&env, "pw123456").unwrap(), plain);

@@ -21,8 +21,9 @@
   /* 强调色（按钮 / 滑块 / 选中态）：需要足够醒目 */
   --cc-fill: #3f7cff;
   /* 时段色块的填充色：一整块只有这一种颜色，不做渐变 / 描边 / 深浅分层。
-     比 --cc-fill 更暗更灰一档 —— 日历里同时有十几块，饱和度高的蓝会"发光"、看久了刺眼。 */
-  --cc-block: #3d6396;
+     数值和 --cc-fill 一致（用户确认要回到原来的亮蓝）；单独留一个变量，
+     以后要调色只改这一处，不用满地找。 */
+  --cc-block: #3f7cff;
 
   /* 深色 */
   --bg: #090b10;
@@ -86,7 +87,7 @@
   --blue: #0284c7;
   --warn: #b45309;
   --cc-fill: #2f6df0;
-  --cc-block: #4e7099;
+  --cc-block: #2f6df0;
 
   --bg: #f5f6fa;
   --bg-soft: #ffffff;
@@ -831,6 +832,13 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
+}
+/* 短块（10 / 15 分钟 ≈ 13px 高）：缩到 8.5px 才塞得下一行，
+   不加省略号——起止时间被截一半反而看不懂 */
+.cc-run-txt.tight {
+  font-size: 8.5px; line-height: 1.1; font-weight: 700;
+  letter-spacing: -.15px; left: 4px; right: 4px;
+  text-overflow: clip;
 }
 /* 当前小时：只给**未选中**的格子描一圈细框。
  * 选中的格子上不画——那会在色块里多出第二种颜色（金框），
@@ -1641,3 +1649,80 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
   .modal { animation: none; }
   .modal-mask { animation: none; }
 }
+
+/* ══════════ Hub 顶部：激励语录 ══════════
+ * 一块安静的长条，不抢 hero 的注意力：引号做水印，正文 14px，
+ * 下面一行只放"这条是哪来的"，右侧两个小按钮。
+ */
+.hub-quote {
+  display: flex; align-items: flex-start; gap: 14px;
+  padding: 15px 18px 14px; margin-bottom: 16px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: linear-gradient(180deg, var(--panel-a) 0%, var(--panel-b) 100%);
+  box-shadow: var(--sh-1), var(--inset-hl);
+}
+.hub-quote .qmark {
+  flex: 0 0 auto; margin-top: -4px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 36px; line-height: 1; color: var(--cc-fill); opacity: .3;
+}
+.hub-quote .qbody { flex: 1; min-width: 0; }
+.hub-quote .qtext {
+  font-size: 14px; line-height: 1.72; color: var(--text); letter-spacing: .2px;
+  /* 最多两行，剩下的省略——语录区不该把页面顶下去 */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hub-quote .qmeta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 11px; color: var(--text-3);
+}
+.hub-quote .qsrc {
+  padding: 2px 9px; border-radius: var(--r-pill);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .2px;
+  background: var(--cell-bg); color: var(--text-3);
+}
+/* 来源色只用一种含义：蓝=自己写的，青=联网，灰=内置/空 */
+.hub-quote .qsrc.custom { background: rgba(77, 141, 255, .14); color: var(--cc-fill); }
+.hub-quote .qsrc.net { background: rgba(56, 189, 248, .14); color: var(--blue); }
+.hub-quote .qfrom { color: var(--text-3); }
+.hub-quote .qops { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; }
+@media (max-width: 820px) {
+  .hub-quote { flex-wrap: wrap; }
+  .hub-quote .qops { width: 100%; justify-content: flex-end; }
+}
+
+/* 语录管理面板 */
+.qlist {
+  max-height: 300px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--inset-bg);
+}
+.qrow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; font-size: 12.5px; color: var(--text-2);
+  border-bottom: 1px solid var(--row-line);
+}
+.qrow:last-child { border-bottom: 0; }
+.qrow .n { flex: 0 0 18px; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.qrow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+
+/* 自律规则的类型徽标：一个小圆点 + 类型名，一眼分清这条规则是黑、白还是两者 */
+.badge.kind { gap: 6px; padding-left: 8px; }
+.badge.kind .kd {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  display: inline-block;
+}
+.badge.kind .kd.gold { background: var(--warn); }
+.badge.kind .kd.red { background: var(--red); }
+.badge.kind .kd.blue { background: var(--blue); }
+
+/* 规则编辑器里的「生效类型」一行：左侧标签 + 中间分段选择 + 右侧一句话解释 */
+.rule-kind-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px; padding: 9px 12px;
+  background: var(--inset-bg);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.rule-kind-row .rk-lab { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.rule-kind-row .rk-note { font-size: 11px; color: var(--text-3); }

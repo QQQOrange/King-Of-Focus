@@ -123,14 +123,21 @@ impl Default for Points {
     }
 }
 
-/// 一条规则（一个黑名单 / 白名单组）
+/// 一条自律规则。
+///
+/// `mode` 决定这条规则怎么生效：
+///   · `blacklist`（自律规则）：名单里的软件 / 网站被拦下，其余放行
+///   · `whitelist`（白名单）：只有名单里的能用，其余全拦
+///   · `both`（自律规则与白名单同时生效）：名单里的照样拦，同时「例外」作为白名单放行
+///     —— 拦截判定与 blacklist 一致，区别在于它显式声明了"这条规则同时挂了白名单"
+///       （也就是必须有例外条目才有意义），列表里会用不同的徽标标出来。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
-pub struct RuleList {
+pub struct Rule {
     pub id: String,
     pub name: String,
     pub enabled: bool,
-    /// blacklist（这些不能开） | whitelist（只能开这些，即强制模式）
+    /// blacklist（这些不能开） | whitelist（只能开这些） | both（两者同时生效）
     pub mode: String,
     pub apps: Vec<AppEntry>,
     pub sites: Vec<SiteEntry>,
@@ -148,11 +155,11 @@ pub struct RuleList {
     pub hard: bool,
 }
 
-impl Default for RuleList {
+impl Default for Rule {
     fn default() -> Self {
-        RuleList {
+        Rule {
             id: String::new(),
-            name: "新黑名单".into(),
+            name: "新自律规则".into(),
             enabled: false,
             mode: "blacklist".into(),
             apps: vec![],
@@ -290,12 +297,12 @@ pub struct ClockProfile {
     /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
     pub def_work: u32,
     pub def_brk: u32,
-    /// 这套时段生效时，启用**哪些**黑名单（`RuleList::id` 列表）。
+    /// 这套时段生效时，启用**哪些**自律规则（`Rule::id` 列表）。
     ///
-    /// 空 = 全部（老配置没有这个字段，语义必须保持原样：所有已启用黑名单都生效）。
+    /// 空 = 全部（老配置没有这个字段，语义必须保持原样：所有已启用自律规则都生效）。
     /// 非空 = 只启用列出的那几条，其余条目即使开着也不参与拦截。
     ///
-    /// 为什么要这个：黑名单可以有"工作 / 娱乐 / 深夜"好几组，
+    /// 为什么要这个：自律规则可以有"工作 / 娱乐 / 深夜"好几组，
     /// 而「自律时段」又能存好几套（工作日 / 周末 / 假期）。
     /// 「周末那套只该管娱乐，不该管工作软件」这种要求，
     /// 靠一个全局开关是表达不出来的，必须让每套时段各自挑分组。
@@ -680,7 +687,7 @@ pub struct Settings {
     pub always_on_top: bool,
     /// 关闭前先尝试温和关闭
     pub soft_close: bool,
-    /// 网页命中黑名单时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
+    /// 网页命中自律规则时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
     pub site_close_browser: bool,
     /// 自律模式生效期间是否禁止打开任务管理器（固化锁定时始终禁止，与本开关无关）
     pub block_taskmgr: bool,
@@ -720,6 +727,12 @@ pub struct Settings {
     pub notify: NotifyCfg,
     /// 备份
     pub backup: BackupCfg,
+    /// 用户自己写的激励语录（Hub 顶部轮换显示）。
+    ///
+    /// 空数组 = 只用联网取到的那条（一言）+ 本地兜底；
+    /// 非空 = 自己写的这些和联网的那条一起参与轮换，界面上标明来源。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_quotes: Vec<String>,
 }
 
 impl Default for Settings {
@@ -750,6 +763,7 @@ impl Default for Settings {
             hud: HudCfg::default(),
             notify: NotifyCfg::default(),
             backup: BackupCfg::default(),
+            custom_quotes: Vec::new(),
         }
     }
 }
@@ -773,7 +787,13 @@ pub fn default_protected() -> Vec<String> {
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub version: u32,
-    pub lists: Vec<RuleList>,
+    /// 自律规则列表。
+    ///
+    /// 这个字段以前叫 `lists`（v0.1.7 之前），JSON 键是 `lists`。
+    /// 改名后必须继续读得懂老配置，否则升级一次用户的自律规则就全丢了，
+    /// 所以这里留了 `alias`：反序列化接受 `lists`，序列化只写 `rules`。
+    #[serde(alias = "lists")]
+    pub rules: Vec<Rule>,
     pub settings: Settings,
     /// 最后修改时间（云同步冲突判定用）
     pub updated_at: i64,
@@ -784,7 +804,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let weekdays_19 = |start: u32, end: u32| vec![Slot { start, end }];
-        let mut l = RuleList {
+        let mut l = Rule {
             id: "seed-study".into(),
             name: "自律时间".into(),
             enabled: false,
@@ -814,7 +834,7 @@ impl Default for Config {
         l.id = "seed-study".into();
         Config {
             version: 2,
-            lists: vec![l],
+            rules: vec![l],
             settings: Settings::default(),
             updated_at: chrono::Local::now().timestamp(),
             points: Points::default(),
@@ -832,4 +852,37 @@ pub struct Event {
     pub target: String,
     pub rule: String,
     pub detail: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 改名兼容：老配置里这个数组叫 `lists`，升级后必须照样读得出来，
+    /// 否则用户升级一次就把自己所有规则丢了。
+    #[test]
+    fn old_lists_key_still_parses() {
+        let old = r#"{"version":1,"lists":[{"id":"a","name":"旧规则","mode":"blacklist"},
+            {"id":"b","name":"白名单组","mode":"whitelist"}]}"#;
+        let c: Config = serde_json::from_str(old).expect("老配置必须能解析");
+        assert_eq!(c.rules.len(), 2);
+        assert_eq!(c.rules[0].name, "旧规则");
+        assert_eq!(c.rules[1].mode, "whitelist");
+
+        // 写回去只用新名字
+        let out = serde_json::to_string(&c).unwrap();
+        assert!(out.contains("\"rules\""), "{out}");
+        assert!(!out.contains("\"lists\""), "{out}");
+    }
+
+    /// mode 三值：写错的一律回落 blacklist（最保守）
+    #[test]
+    fn mode_has_three_values() {
+        let mut c = Config::default();
+        let mut mk = |m: &str| Rule { mode: m.into(), ..Rule::default() };
+        c.rules = vec![mk("blacklist"), mk("whitelist"), mk("both"), mk("whatever")];
+        crate::cfg::sanitize(&mut c);
+        let modes: Vec<&str> = c.rules.iter().map(|r| r.mode.as_str()).collect();
+        assert_eq!(modes, vec!["blacklist", "whitelist", "both", "blacklist"]);
+    }
 }

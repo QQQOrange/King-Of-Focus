@@ -86,7 +86,7 @@ pub fn save(cfg: &Config) -> Result<(), String> {
 
 /// 兜底修正，避免前端传上来畸形数据把引擎搞坏
 pub fn sanitize(c: &mut Config) {
-    for l in c.lists.iter_mut() {
+    for l in c.rules.iter_mut() {
         if l.schedule.len() != 7 {
             l.schedule.resize(7, vec![]);
         }
@@ -97,19 +97,20 @@ pub fn sanitize(c: &mut Config) {
             }
             day.sort_by_key(|s| s.start);
         }
-        if l.mode != "whitelist" {
+        // 只认这三个值；写错了按黑名单处理（最保守，不会意外放行任何东西）
+        if !matches!(l.mode.as_str(), "blacklist" | "whitelist" | "both") {
             l.mode = "blacklist".into();
         }
         if l.color.is_empty() {
             l.color = "#ff9f43".into();
         }
     }
-    // 黑名单分组绑定：只保留真实存在的条目。
-    // 删掉某条黑名单后，绑定里会留下一个死 id；如果不管，勾选界面会显示一个
+    // 自律规则分组绑定：只保留真实存在的条目。
+    // 删掉某条自律规则后，绑定里会留下一个死 id；如果不管，勾选界面会显示一个
     // 不存在的分组，判定也会因为"绑定了但找不到"而变成什么都不生效。
     // 全都被删光时清空绑定（= 恢复"全部生效"），比静默失效更符合直觉。
     {
-        let alive: Vec<String> = c.lists.iter().map(|l| l.id.clone()).collect();
+        let alive: Vec<String> = c.rules.iter().map(|l| l.id.clone()).collect();
         for prof in c.settings.focus_clock.profiles.iter_mut() {
             prof.bound.retain(|id| alive.iter().any(|a| a == id));
         }
@@ -125,6 +126,29 @@ pub fn sanitize(c: &mut Config) {
     // 自律时段：多套「星期时段」方案，每套都是 7 天 × 24 段，
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
+    sanitize_quotes(&mut c.settings.custom_quotes);
+}
+
+/// 自定义语录归一化：去空白、去空行、去重、限长限量。
+///
+/// 这里是唯一入口（保存、云同步下载、备份恢复都会走到），
+/// 不在这里收口的话，一段粘贴进来的长文能把 Hub 那块撑爆。
+fn sanitize_quotes(list: &mut Vec<String>) {
+    const MAX_ITEMS: usize = 60;
+    const MAX_CHARS: usize = 120;
+    let mut out: Vec<String> = Vec::new();
+    for q in list.iter() {
+        let t: String = q.trim().chars().take(MAX_CHARS).collect();
+        let t = t.trim().to_string();
+        if t.is_empty() || out.iter().any(|x| x == &t) {
+            continue;
+        }
+        out.push(t);
+        if out.len() >= MAX_ITEMS {
+            break;
+        }
+    }
+    *list = out;
 }
 
 /// 自律时段配置归一化：
@@ -393,5 +417,27 @@ mod tests {
         let p: HourPlan = serde_json::from_str(json).unwrap();
         assert_eq!((p.from, p.to), (0, 60));
         assert_eq!(HourPlan::default().to, 60);
+    }
+
+    /// 自定义语录：去空白、去重、限长、限量。
+    /// 这几个是 IPC 直接写进来的内容，不在这里收口就会把 Hub 撑爆。
+    #[test]
+    fn custom_quotes_are_sanitized() {
+        let mut v = vec![
+            "  先做完这一件  ".into(),
+            "".into(),
+            "   ".into(),
+            "先做完这一件".into(),          // 去空白后与第一条重复
+            "a".repeat(200),                // 超长
+        ];
+        sanitize_quotes(&mut v);
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert_eq!(v[0], "先做完这一件");
+        assert_eq!(v[1].chars().count(), 120, "超长的那条要被截到 120 字");
+
+        // 上限 60 条
+        let mut many: Vec<String> = (0..80).map(|i| format!("q{i}")).collect();
+        sanitize_quotes(&mut many);
+        assert_eq!(many.len(), 60);
     }
 }

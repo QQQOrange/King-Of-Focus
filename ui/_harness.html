@@ -18,8 +18,8 @@
     <nav class="nav" id="nav">
       <button class="nav-item" data-view="overview"><span class="ico">◎</span>总览</button>
       <button class="nav-item" data-view="clock"><span class="ico">◷</span>自律时段</button>
+      <button class="nav-item" data-view="rules"><span class="ico">☰</span>自律规则</button>
       <button class="nav-item" data-view="mask"><span class="ico">▣</span>专注遮罩</button>
-      <button class="nav-item" data-view="rules"><span class="ico">☰</span>黑名单</button>
       <button class="nav-item" data-view="browsers"><span class="ico">▤</span>浏览器插件</button>
       <button class="nav-item" data-view="settings"><span class="ico">⚙</span>设置</button>
     </nav>
@@ -53,7 +53,7 @@ const ccDay = (from, to, work, brk) => Array.from({ length: 24 }, (_, h) => ({
 const STATE = {
   config: {
     version: 2,
-    lists: [{
+    rules: [{
       id: 'seed-study', name: '自律时间', enabled: true, mode: 'blacklist',
       apps: [], sites: [{ id: 's1', pattern: 'www.douyin.com', label: 'www.douyin.com' }],
       exceptions: [], schedule: [[], [], [], [], [], [], []],
@@ -90,6 +90,7 @@ const STATE = {
         remoteFile: 'kof.json', device: 'PC', lastSync: 0, lastError: '', lastResult: '' },
       update: { enabled: true, repo: 'x/y', token: '', skippedVersion: '', lastCheck: 0 },
       hud: { enabled: true, quoteMinutes: 60, offsetX: 20, offsetY: 20 },
+      customQuotes: ['先把手上的这一段做完。', '慢一点没关系，方向对就行。'],
       notify: { enabled: true, workBefore: 5, breakBefore: 2, breakNotify: true, focusWindow: false },
       backup: { password: '', autoOnStart: false },
     },
@@ -100,7 +101,8 @@ const STATE = {
     events: [], hb: 0, hbBrowser: '', locked: false, lockUntil: 0, lockUntilText: '', lockNames: [],
     breakOn: false, breakAny: false, breakLeft: 2280, notice: null, celebrate: null,
     clockInWindow: false, clockWeekday: 2, clockBreak: false, clockOn: false, clockHour: 9, clockLeft: 2280,
-    clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00' },
+    clockSummary: '周一 – 周五 08:00–12:00；周六 09:00–11:00',
+    quote: '你今天做的事，是你明天想成为的人。', quoteFrom: '关于自律' },
   mask: { on: true, userOn: false, autoOn: true, scheduleOn: true, painted: true, targetPid: 1, opacity: 88, duration: 420, blockClick: true,
     follow: true, hotkey: 'Ctrl+Alt+K', hotkeyOk: true,
     followSchedule: true, previewLeft: 0, notice: null, mediaPause: false },
@@ -346,11 +348,11 @@ window.__itest = async () => {
     out.push(['每天的块上沿是圆角', [0, 1, 2, 3, 4].map((d) => {
       const f = runs(d)[0].querySelector('.f');
       return f ? getComputedStyle(f).borderTopLeftRadius : '无';
-    }).join(','), '7px,7px,7px,7px,7px']);
+    }).join(','), '4px,4px,4px,4px,4px']);
     out.push(['每天的块下沿是圆角', [0, 1, 2, 3, 4].map((d) => {
       const all = runs(d)[0].querySelectorAll('.f');
       return all.length ? getComputedStyle(all[all.length - 1]).borderBottomLeftRadius : '无';
-    }).join(','), '7px,7px,7px,7px,7px']);
+    }).join(','), '4px,4px,4px,4px,4px']);
   }
   // 周六只有 9–11 两格，也应是一个块；周日没选 → 一个块都没有
   out.push(['周六 9–11 一个块', runs(5).length, 1]);
@@ -683,7 +685,7 @@ window.__itest = async () => {
   out.push(['部分小时也不画描边', run9 ? getComputedStyle(run9).boxShadow : '', 'none']);
   // 非整点区间（09:15–09:45）也必须四角圆润：形状画在填色带上，不是外层容器
   out.push(['非整点区间有圆角',
-    run9 ? getComputedStyle(run9.querySelector('.f')).borderRadius : '', '7px']);
+    run9 ? getComputedStyle(run9.querySelector('.f')).borderRadius : '', '4px']);
   // 30 分钟块 ≈ 26px，正好放得下一行 10.5px 的字，不该被裁掉
   {
     const t9 = run9 ? run9.querySelector('.cc-run-txt') : null;
@@ -693,6 +695,26 @@ window.__itest = async () => {
     const tb = t9 ? t9.getBoundingClientRect() : null;
     out.push(['时间文字在色块内', !!(fb && tb) && tb.top >= fb.top - 1, true]);
   }
+  // 10 / 15 分钟这种短块（≈13px 高）也必须显示起止时间
+  await Act.clockClear();
+  await wait(120);
+  await Act.clockSetWB(3, 3, 9, 9, 50, 10, false, 15, 30);
+  await wait(150);
+  {
+    const r = [...document.querySelectorAll('.cc-run')].find((x) => x.dataset.d === '3' && x.dataset.h0 === '9');
+    const t = r ? r.querySelector('.cc-run-txt') : null;
+    out.push(['15 分钟块也显示时间', t ? t.textContent.trim() : '(无)', '09:15 – 09:30']);
+    out.push(['短块用紧凑字号', t ? t.classList.contains('tight') : false, true]);
+    out.push(['短块字号小于常规', t ? parseFloat(getComputedStyle(t).fontSize) < 10 : 99, true]);
+    // 文字不能顶出块外（块高 ≈ 13px，行高 1.1 × 8.5 ≈ 9.4px）
+    const rb = r ? r.getBoundingClientRect() : null;
+    const tb = t ? t.getBoundingClientRect() : null;
+    out.push(['短块文字不溢出', !!(rb && tb) && tb.bottom <= rb.bottom + 1, true]);
+  }
+  await Act.clockClear();
+  await wait(120);
+  await Act.clockSetWB(3, 3, 9, 9, 50, 10, false, 15, 45);
+  await wait(150);
   out.push(['格子标题显示真实窗口', cell(3, 9).title.indexOf('周四 09:15 – 09:45') >= 0]);
   out.push(['摘要带分钟', $('#clockLive').textContent.indexOf('09:15') >= 0]);
 
@@ -709,7 +731,7 @@ window.__itest = async () => {
   out.push(['相邻块不补缝（各自独立）', (rMon ? getComputedStyle(rMon).marginRight : '') + '|' + (rTue ? getComputedStyle(rTue).marginLeft : ''), '0px|0px']);
   out.push(['两块各自带圆角（上沿）',
     (rMon ? getComputedStyle(rMon.querySelector('.f')).borderTopLeftRadius : '') + '|' + (rTue ? getComputedStyle(rTue.querySelector('.f')).borderTopLeftRadius : ''),
-    '7px|7px']);
+    '4px|4px']);
   out.push(['两块都没有描边', (rMon ? getComputedStyle(rMon).boxShadow : '') + '|' + (rTue ? getComputedStyle(rTue).boxShadow : ''), 'none|none']);
 
   // 9d. 孤立块保持原样：四角圆角 + 一整圈描边
@@ -721,8 +743,8 @@ window.__itest = async () => {
   {
     const fb = rIso ? rIso.querySelector('.f') : null;
     const lb = rIso ? [...rIso.querySelectorAll('.f')].pop() : null;
-    out.push(['孤立块上沿圆角', fb ? getComputedStyle(fb).borderTopLeftRadius : '', '7px']);
-    out.push(['孤立块下沿圆角', lb ? getComputedStyle(lb).borderBottomRightRadius : '', '7px']);
+    out.push(['孤立块上沿圆角', fb ? getComputedStyle(fb).borderTopLeftRadius : '', '4px']);
+    out.push(['孤立块下沿圆角', lb ? getComputedStyle(lb).borderBottomRightRadius : '', '4px']);
   }
   out.push(['孤立块也没有描边', rIso ? getComputedStyle(rIso).boxShadow : '', 'none']);
   out.push(['孤立块不补缝', rIso ? getComputedStyle(rIso).marginLeft : '', '0px']);
@@ -750,10 +772,10 @@ window.__itest = async () => {
   out.push(['自律时段生效中：不能取消已选时段', pd().reduce((n, d) => n + d.filter((p) => p.on).length, 0) === onCount]);
   await Act.nav('rules');
   await wait(200);
-  out.push(['自律时段生效中：黑名单开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  out.push(['自律时段生效中：自律规则开关置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
   await Act.toggleRule('seed-study');
   await wait(200);
-  out.push(['自律时段生效中：黑名单关不掉', S.data.config.lists[0].enabled === true]);
+  out.push(['自律时段生效中：自律规则关不掉', S.data.config.rules[0].enabled === true]);
 
   // 10b. 休息段（clockInWindow=true、clockOn=false）：同样锁死，不能"趁休息改"
   await window.__patch({ clockOn: false, clockInWindow: true, clockBreak: true });
@@ -765,10 +787,10 @@ window.__itest = async () => {
   out.push(['休息段：总开关也关不掉', fc().enabled === true]);
   await Act.nav('rules');
   await wait(200);
-  out.push(['休息段：黑名单开关同样置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
+  out.push(['休息段：自律规则开关同样置灰', document.querySelector('[data-act="toggle-rule"]').classList.contains('locked')]);
   await Act.toggleRule('seed-study');
   await wait(200);
-  out.push(['休息段：黑名单开关也动不了', S.data.config.lists[0].enabled === true]);
+  out.push(['休息段：自律规则开关也动不了', S.data.config.rules[0].enabled === true]);
   // 时段外才恢复可点
   await window.__patch({ clockOn: false, clockInWindow: false, clockBreak: false });
   await openFull();
@@ -955,17 +977,17 @@ window.__itest = async () => {
     out.push(['快捷键输入框保留', !!hkCard.querySelector('#hkInput')]);
   }
 
-  // 20. 黑名单页：多列条目 + 弹窗里**只有名单、没有时间表**
+  // 20. 自律规则页：多列条目 + 弹窗里**只有名单、没有时间表**
   //
-  // 语义变更（本轮）：黑名单 = "自律时间里不能打开的软件/网站"，
-  // 时间只由「自律时段」那一页统一决定，黑名单条目不再有自己的周时间表。
+  // 语义变更（本轮）：自律规则 = "自律时间里不能打开的软件/网站"，
+  // 时间只由「自律时段」那一页统一决定，自律规则条目不再有自己的周时间表。
   await Act.nav('rules');
   await wait(300);
-  out.push(['黑名单页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
+  out.push(['自律规则页有分组容器', document.querySelectorAll('.sl-group').length >= 1]);
   out.push(['条目用的是多列网格 .sl-grid', document.querySelectorAll('.sl-grid').length >= 1]);
   out.push(['不再用旧的整块 .rule-card', document.querySelectorAll('.rule-card').length, 0]);
   const item = document.querySelector('.sl-item');
-  out.push(['存在黑名单条目', !!item]);
+  out.push(['存在自律规则条目', !!item]);
   if (item) {
     out.push(['条目含名称', !!(item.querySelector('.sl-item-name') || {}).textContent]);
     out.push(['条目列出软件/网站/例外数量', /个软件/.test((item.querySelector('.sl-item-meta') || {}).textContent || '')]);
@@ -1021,30 +1043,76 @@ window.__itest = async () => {
   out.push(['Alt+F4 触发后端 force_quit', window.__forceQuit, 1]);
   out.push(['Alt+F4 被 preventDefault（不让 WebView 重复处理）', ev.defaultPrevented, true]);
 
-  // 23. 改名「规则」→「黑名单」+ 导航位置（自守时段 → 专注遮罩 → 黑名单 → 浏览器插件）
+  // 23. 导航位置：自律时段 → 自律规则 → 专注遮罩 → 浏览器插件
   const navOrder = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.dataset.view);
   out.push(['导航里没有「规则」项', navOrder.includes('rules') && !navOrder.includes('rule'), true]);
   const navTxt = [...document.querySelectorAll('#nav .nav-item')].map((b) => b.textContent.trim().replace(/^[^\u4e00-\u9fa5]+/, ''));
-  out.push(['导航文案含「黑名单」', navTxt.includes('黑名单'), true]);
+  out.push(['导航文案含「自律规则」', navTxt.includes('自律规则'), true]);
   out.push(['导航已无「规则」文案', navTxt.includes('规则'), false]);
-  out.push(['黑名单在专注遮罩之后', navOrder.indexOf('rules') > navOrder.indexOf('mask'), true]);
-  out.push(['黑名单在浏览器插件之前', navOrder.indexOf('rules') < navOrder.indexOf('browsers'), true]);
-  out.push(['导航顺序：自律时段→专注遮罩→黑名单→浏览器插件',
+  out.push(['自律规则在自律时段之后', navOrder.indexOf('rules') > navOrder.indexOf('clock'), true]);
+  out.push(['自律规则在专注遮罩之前', navOrder.indexOf('rules') < navOrder.indexOf('mask'), true]);
+  out.push(['自律规则在浏览器插件之前', navOrder.indexOf('rules') < navOrder.indexOf('browsers'), true]);
+  out.push(['导航顺序：自律时段→自律规则→专注遮罩→浏览器插件',
     navOrder.slice(navOrder.indexOf('clock'), navOrder.indexOf('browsers') + 1).join('>'),
-    'clock>mask>rules>browsers']);
+    'clock>rules>mask>browsers']);
   // 页面标题
-  out.push(['黑名单页标题是「黑名单」', VIEW_TITLES.rules, '黑名单']);
+  out.push(['自律规则页标题是「自律规则」', VIEW_TITLES.rules, '自律规则']);
+
+  // 23b. 每条自律规则都必须带「生效类型」徽标（黑 / 白 / 两者）
+  {
+    closeModal();
+    await wait(80);
+    const backup = JSON.parse(JSON.stringify(S.data.config.rules));
+    S.data.config.rules = [
+      { ...backup[0], id: 'k1', name: '只看这几个', mode: 'blacklist' },
+      { ...backup[0], id: 'k2', name: '只允许这几个', mode: 'whitelist' },
+      { ...backup[0], id: 'k3', name: '黑白同时', mode: 'both' },
+    ];
+    S.view = 'rules';
+    render();
+    await wait(200);
+    const badges = [...document.querySelectorAll('.sl-item .badge.kind')];
+    out.push(['每条规则都有类型徽标', badges.length, 3]);
+    out.push(['类型徽标依次为 黑/白/两者',
+      badges.map((b) => b.textContent.trim()).join('|'),
+      '黑名单|白名单|黑名单 + 白名单']);
+    out.push(['徽标带颜色圆点', document.querySelectorAll('.sl-item .badge.kind .kd').length, 3]);
+    // 三档各成一组
+    const gTitles = [...document.querySelectorAll('.sl-group-title')].map((e) => e.textContent.trim());
+    out.push(['按类型分成三组', gTitles.join('|'), '黑名单|白名单|黑名单 + 白名单同时生效']);
+
+    // 编辑器里能切到「两者同时」，徽标跟着变
+    document.querySelector('[data-act="edit-rule"][data-id="k3"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(260);
+    out.push(['点条目打开了规则编辑器', !!document.querySelector('#ruleName'), true]);
+    out.push(['编辑器有类型徽标', !!document.querySelector('.modal-hd .badge.kind'), true]);
+    out.push(['编辑器三个模式选项', document.querySelectorAll('.modal [data-act="mode"]').length, 3]);
+    const bothBtn = document.querySelector('[data-act="mode"][data-mode="both"]');
+    out.push(['「两者同时」处于选中态', bothBtn ? bothBtn.className.includes('active') : '(没有这个按钮)', true]);
+    document.querySelector('[data-act="mode"][data-mode="whitelist"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(220);
+    out.push(['切到白名单后徽标跟着变',
+      (document.querySelector('.modal-hd .badge.kind') || {}).textContent.trim(), '白名单']);
+    closeModal();
+    await wait(120);
+
+    S.data.config.rules = backup;
+    render();
+    await wait(150);
+  }
 
   // 24. 仅自律时间生效：页面文案必须讲清楚，不能再说"按自己的时段生效"
   S.view = 'rules'; render();
   await wait(150);
   const rulesTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
-  out.push(['黑名单页说明了「只在自律时间生效」', /只(在|会).*自律时间|自律时间内/.test(rulesTxt), true]);
+  out.push(['自律规则页说明了「只在自律时间生效」', /只(在|会).*自律时间|自律时间内/.test(rulesTxt), true]);
   // 自律时段页的关系说明也必须改成包含关系（不是并列）
   await openFull();
   await wait(250);
   const clockTxt = document.querySelector('#content').textContent.replace(/\s+/g, '');
-  out.push(['自律时段页说明与黑名单是包含关系', clockTxt.includes('只在自律时间'), true]);
+  out.push(['自律时段页说明与自律规则是包含关系', clockTxt.includes('只在自律时间'), true]);
   out.push(['自律时段页不再声称「规则按自己时段走」', clockTxt.includes('按它自己的时段走'), false]);
 
   /** 在格子的 frac 位置按下再松开（frac 0..1 = 整格高度的位置） */
@@ -1108,12 +1176,12 @@ window.__itest = async () => {
     out.push(['切回 15 分钟 → 每小时 4 格', cell(2, 9).querySelectorAll('.cc-q').length, 4]);
   }
 
-  // ---- 24. 每套时段绑定黑名单分组 ----
+  // ---- 24. 每套时段绑定自律规则分组 ----
   {
     await openFull();
     await wait(220);
     const chips = [...document.querySelectorAll('.cc-bind-chip')];
-    out.push(['自律时段页有「绑定黑名单」区', !!document.querySelector('.cc-bind')]);
+    out.push(['自律时段页有「绑定自律规则」区', !!document.querySelector('.cc-bind')]);
     out.push(['绑定列表里有「全部」+ 每个分组', chips.length >= 2]);
     out.push(['默认「全部」为选中态（空绑定 = 全部生效）',
       (chips[0] || {}).className.includes('active'), true]);
@@ -1217,11 +1285,10 @@ window.__itest = async () => {
     const fills = new Set();
     document.querySelectorAll('.cc-run i.f').forEach((el) => fills.add(getComputedStyle(el).backgroundColor));
     out.push(['所有色块的填充色只有一种', [...fills].length, 1]);
-    // 色块专用色比强调色暗一档：日历里十几块同时出现时，高饱和蓝会"发光"
+    // 色块颜色回到原来的亮蓝（用户要求），单独留变量只是为了以后好调
     const root = getComputedStyle(document.documentElement);
     const blockC = root.getPropertyValue('--cc-block').trim();
-    const fillC = root.getPropertyValue('--cc-fill').trim();
-    out.push(['色块用的是 --cc-block（不是强调色）', blockC !== '' && blockC !== fillC, true]);
+    out.push(['色块色是原来的亮蓝', blockC.toUpperCase(), '#3F7CFF']);
   }
 
   // ---- 26c. 统计报告：类型分段选择 + 每条可导出 / 可删除 ----
@@ -1294,6 +1361,64 @@ window.__itest = async () => {
     await wait(120);
   }
 
+
+  // ---- 26f. Hub 顶部：激励语录（自定义 + 联网，来源要标明）----
+  {
+    S.quoteAt = '';
+    await Act.nav('overview');
+    await wait(280);
+    const qc = document.querySelector('.hub-quote');
+    const hero = document.querySelector('.hero');
+    out.push(['Hub 顶部有语录区', !!qc]);
+    out.push(['语录区在 hero 之前', !!(qc && hero)
+      && (qc.compareDocumentPosition(hero) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0, true]);
+    out.push(['默认显示自己写的第一条',
+      qc.querySelector('.qtext').textContent, '先把手上的这一段做完。']);
+    out.push(['来源标为「我写的」', qc.querySelector('.qsrc').textContent, '我写的']);
+    out.push(['有「换一条」按钮', !!qc.querySelector('[data-act="quote-next"]'), true]);
+    out.push(['有「我的语录」入口', /我的语录/.test(qc.querySelector('[data-act="quote-manage"]').textContent), true]);
+    out.push(['入口上显示条数', /· 2/.test(qc.querySelector('[data-act="quote-manage"]').textContent), true]);
+
+    // 换一条 → 第二条自定义
+    qc.querySelector('[data-act="quote-next"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(200);
+    out.push(['换一条走到下一条自定义',
+      document.querySelector('.hub-quote .qtext').textContent, '慢一点没关系，方向对就行。']);
+    // 再换 → 联网那条，来源要变成「网络 · 一言」并带出处
+    document.querySelector('[data-act="quote-next"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(200);
+    out.push(['再换一条轮到联网语录',
+      document.querySelector('.hub-quote .qtext').textContent, '你今天做的事，是你明天想成为的人。']);
+    out.push(['联网语录标明来源', document.querySelector('.hub-quote .qsrc').textContent, '网络 · 一言']);
+    out.push(['联网语录带出处',
+      (document.querySelector('.hub-quote .qfrom') || {}).textContent, '—— 关于自律']);
+
+    // 管理面板：添加一句 → 保存 → 回到 Hub 能看到
+    document.querySelector('[data-act="quote-manage"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(200);
+    out.push(['管理面板列出已有语录', document.querySelectorAll('.qrow').length, 2]);
+    const inp = document.querySelector('#quoteNew');
+    inp.value = '今天先赢一小局。';
+    document.querySelector('[data-act="quote-add"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(150);
+    out.push(['添加后列表变 3 条', document.querySelectorAll('.qrow').length, 3]);
+    document.querySelector('[data-act="quote-save"]')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    await wait(400);
+    out.push(['保存到配置', (STATE.config.settings.customQuotes || []).length, 3]);
+    out.push(['保存后回到 Hub 且仍是语录',
+      !!document.querySelector('.hub-quote'), true]);
+    out.push(['入口条数跟着更新',
+      /· 3/.test(document.querySelector('[data-act="quote-manage"]').textContent), true]);
+
+    // 复位，别影响后面的用例
+    STATE.config.settings.customQuotes = STATE.config.settings.customQuotes.slice(0, 2);
+    S.quoteAt = '';
+    render();
+    await wait(150);
+  }
 
   // ---- 26e. 外观选项（分段胶囊）：文字居中 + 选中态与胶囊同形 ----
   {

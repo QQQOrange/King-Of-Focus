@@ -76,14 +76,14 @@ pub fn lock_info_at(cfg: &Config, nd: chrono::NaiveDateTime) -> LockInfo {
 
     let mut names = Vec::new();
     let mut until = 0i64;
-    // 固化（硬锁）是黑名单条目的属性，因此同样**只在自律时间生效**：
+    // 固化（硬锁）是自律规则条目的属性，因此同样**只在自律时间生效**：
     // 自律时段之外用户是自由的，这时候还锁着退出/设置，只会让人觉得
     // 软件在乱管闲事。门槛用 clock_on（专注段），休息段不锁。
     let d = crate::discipline::state(cfg, &nd);
     if !d.clock_on {
         return LockInfo::default();
     }
-    for l in cfg.lists.iter() {
+    for l in cfg.rules.iter() {
         if !l.enabled || !l.hard {
             continue;
         }
@@ -170,7 +170,7 @@ pub fn discipline_violation_at(
     }
     // 2) "时段内让规则立即生效"不能关
     if oc.apply_rules && !nc.apply_rules {
-        return Some("自律时段生效中，不能关闭「时段内让已启用的黑名单立即生效」".into());
+        return Some("自律时段生效中，不能关闭「时段内让已启用的自律规则立即生效」".into());
     }
     // 2.5) 「自律时段内允许退出」是单向的：时段内只能往"更严"改。
     //      关掉它可以（那是在加强纪律），但时段内不能再打开——
@@ -222,37 +222,37 @@ pub fn discipline_violation_at(
         }
     }
     // 6) 规则的启用开关：时段内一律锁死（开、关都不行）
-    for l in &old.lists {
-        match new.lists.iter().find(|x| x.id == l.id) {
+    for l in &old.rules {
+        match new.rules.iter().find(|x| x.id == l.id) {
             None => {
                 if l.enabled {
-                    return Some(format!("自律时段生效中，不能删除黑名单「{}」", l.name));
+                    return Some(format!("自律时段生效中，不能删除自律规则「{}」", l.name));
                 }
             }
             Some(nl) if nl.enabled != l.enabled => {
                 return Some(if l.enabled {
-                    format!("自律时段生效中，不能关闭黑名单「{}」", l.name)
+                    format!("自律时段生效中，不能关闭自律规则「{}」", l.name)
                 } else {
-                    format!("自律时段生效中，黑名单开关已锁定，不能开启黑名单「{}」", l.name)
+                    format!("自律时段生效中，自律规则开关已锁定，不能开启自律规则「{}」", l.name)
                 });
             }
             _ => {}
         }
     }
-    // 6) 名单内容也不能偷偷删：删掉一条黑名单 = 放行一个软件 / 一个网站，
+    // 6) 名单内容也不能偷偷删：删掉一条自律规则 = 放行一个软件 / 一个网站，
     //    再加一条"网站例外" = 同样放行。只挡删，不挡加（加条目是加强纪律）。
-    for l in &old.lists {
+    for l in &old.rules {
         if !l.enabled {
             continue;
         }
-        let Some(nl) = new.lists.iter().find(|x| x.id == l.id) else {
+        let Some(nl) = new.rules.iter().find(|x| x.id == l.id) else {
             continue; // 整条规则被删，上面第 5 条已经拦过
         };
         for a in &l.apps {
             if !nl.apps.iter().any(|x| x.id == a.id) {
                 let name = if a.label.is_empty() { &a.value } else { &a.label };
                 return Some(format!(
-                    "自律时段生效中，不能从黑名单「{}」里删掉软件「{}」",
+                    "自律时段生效中，不能从自律规则「{}」里删掉软件「{}」",
                     l.name, name
                 ));
             }
@@ -261,7 +261,7 @@ pub fn discipline_violation_at(
             if !nl.sites.iter().any(|x| x.id == s.id) {
                 let name = if s.label.is_empty() { &s.pattern } else { &s.label };
                 return Some(format!(
-                    "自律时段生效中，不能从黑名单「{}」里删掉网站「{}」",
+                    "自律时段生效中，不能从自律规则「{}」里删掉网站「{}」",
                     l.name, name
                 ));
             }
@@ -269,7 +269,7 @@ pub fn discipline_violation_at(
         for e in &nl.exceptions {
             if !l.exceptions.iter().any(|x| x.eq_ignore_ascii_case(e)) {
                 return Some(format!(
-                    "自律时段生效中，不能给黑名单「{}」新增网站例外「{}」",
+                    "自律时段生效中，不能给自律规则「{}」新增网站例外「{}」",
                     l.name, e
                 ));
             }
@@ -522,7 +522,7 @@ pub fn quitting() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClockCfg, Config, HourPlan, RuleList};
+    use crate::model::{ClockCfg, Config, HourPlan, Rule};
 
     fn now_at(weekday: u32, hour: u32, minute: u32) -> chrono::NaiveDateTime {
         // 2026-10-26 是周一（weekday=0）
@@ -536,11 +536,11 @@ mod tests {
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
-        c.lists = vec![RuleList {
+        c.rules = vec![Rule {
             id: "r1".into(),
             name: "测试规则".into(),
             enabled: true,
-            ..RuleList::default()
+            ..Rule::default()
         }];
         c
     }
@@ -582,11 +582,11 @@ mod tests {
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
-        c.lists = vec![RuleList {
+        c.rules = vec![Rule {
             id: "r1".into(),
             name: "测试规则".into(),
             enabled: true,
-            ..RuleList::default()
+            ..Rule::default()
         }];
         let now = now_at(2, 10, 45); // 40 分专注已过 → 休息段
         assert!(!crate::discipline::state(&c, &now).clock_on, "确实是休息段");
@@ -597,7 +597,7 @@ mod tests {
             "休息段内也不能关总开关"
         );
         let mut rule_off = c.clone();
-        rule_off.lists[0].enabled = false;
+        rule_off.rules[0].enabled = false;
         assert!(
             discipline_violation_at(&c, &rule_off, now).is_some(),
             "休息段内也不能关规则"
@@ -644,13 +644,13 @@ mod tests {
         let old = cfg_with_clock();
         let now = now_at(2, 10, 30);
         let mut off = old.clone();
-        off.lists[0].enabled = false;
+        off.rules[0].enabled = false;
         assert!(discipline_violation_at(&old, &off, now).is_some(), "不能关");
 
         let mut off_old = old.clone();
-        off_old.lists[0].enabled = false;
+        off_old.rules[0].enabled = false;
         let mut on_new = off_old.clone();
-        on_new.lists[0].enabled = true;
+        on_new.rules[0].enabled = true;
         let v = discipline_violation_at(&off_old, &on_new, now);
         assert!(v.is_some(), "时段内连「打开规则」也锁死（开关整体不可动）");
         assert!(v.unwrap().contains("锁定"));
@@ -684,10 +684,10 @@ mod tests {
     fn in_window_cannot_disable_or_delete_enabled_rule() {
         let old = cfg_with_clock();
         let mut new = old.clone();
-        new.lists[0].enabled = false;
+        new.rules[0].enabled = false;
         assert!(discipline_violation_at(&old, &new, now_at(2, 10, 30)).is_some());
         let mut new2 = old.clone();
-        new2.lists.clear();
+        new2.rules.clear();
         assert!(discipline_violation_at(&old, &new2, now_at(2, 10, 30)).is_some());
     }
 
@@ -695,13 +695,13 @@ mod tests {
     fn in_window_cannot_remove_entries_from_active_rule() {
         use crate::model::{AppEntry, SiteEntry};
         let mut old = cfg_with_clock();
-        old.lists[0].apps = vec![AppEntry {
+        old.rules[0].apps = vec![AppEntry {
             id: "a1".into(),
             kind: "name".into(),
             value: "douyin".into(),
             label: "抖音".into(),
         }];
-        old.lists[0].sites = vec![SiteEntry {
+        old.rules[0].sites = vec![SiteEntry {
             id: "s1".into(),
             pattern: "douyin.com".into(),
             label: "抖音".into(),
@@ -710,23 +710,23 @@ mod tests {
 
         // 删软件
         let mut n1 = old.clone();
-        n1.lists[0].apps.clear();
+        n1.rules[0].apps.clear();
         let v = discipline_violation_at(&old, &n1, now).expect("删软件应被拒绝");
         assert!(v.contains("抖音"), "{v}");
 
         // 删网站
         let mut n2 = old.clone();
-        n2.lists[0].sites.clear();
+        n2.rules[0].sites.clear();
         assert!(discipline_violation_at(&old, &n2, now).is_some(), "删网站应被拒绝");
 
         // 加网站例外
         let mut n3 = old.clone();
-        n3.lists[0].exceptions.push("douyin.com".into());
+        n3.rules[0].exceptions.push("douyin.com".into());
         assert!(discipline_violation_at(&old, &n3, now).is_some(), "新增例外应被拒绝");
 
         // 只加不减 → 放行（加条目是加强纪律）
         let mut n4 = old.clone();
-        n4.lists[0].sites.push(SiteEntry {
+        n4.rules[0].sites.push(SiteEntry {
             id: "s2".into(),
             pattern: "bilibili.com".into(),
             label: "B站".into(),
@@ -739,7 +739,7 @@ mod tests {
         let old = cfg_with_clock();
         let mut new = old.clone();
         new.settings.focus_clock.enabled = false;
-        new.lists.clear();
+        new.rules.clear();
         assert!(discipline_violation_at(&old, &new, now_at(2, 11, 30)).is_none());
     }
 
@@ -758,7 +758,7 @@ mod tests {
     fn exit_blocked_follows_allow_quit_switch() {
         let mut c = cfg_with_clock();
         // 关掉固化（hard）再测：固化是另一套更硬的锁，会盖住这个开关的判定
-        c.lists[0].hard = false;
+        c.rules[0].hard = false;
         assert!(exit_blocked_at(&c, now_at(2, 10, 30)).is_none(), "默认允许退出，时段内也不该拦");
         c.settings.allow_quit_in_session = false;
         assert!(exit_blocked_at(&c, now_at(2, 10, 30)).is_some(), "关掉开关后时段内必须退不掉");
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn quit_lock_covers_break_segment() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = false;
+        c.rules[0].hard = false;
         c.settings.allow_quit_in_session = false;
         c.settings.focus_clock.profiles[0].days[2][10] =
             HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
@@ -804,7 +804,7 @@ mod tests {
     fn weakening_config_rejected_inside_window() {
         let old = cfg_with_clock();
         let mut weakened = old.clone();
-        weakened.lists[0].enabled = false;
+        weakened.rules[0].enabled = false;
         let now = now_at(2, 10, 30); // 周三 10:30，自律时段内
         assert!(
             discipline_violation_at(&old, &weakened, now).is_some(),
@@ -828,17 +828,17 @@ mod tests {
     #[test]
     fn hard_lock_active_inside_discipline_time() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = true;
+        c.rules[0].hard = true;
         let info = lock_info_at(&c, now_at(2, 10, 30));
         assert!(info.locked, "自律时间内固化应生效：{info:?}");
         assert_eq!(info.names.len(), 1);
     }
 
-    /// 自律时间外 + 固化条目 → **不锁**（黑名单只在自律时间生效）
+    /// 自律时间外 + 固化条目 → **不锁**（自律规则只在自律时间生效）
     #[test]
     fn hard_lock_silent_outside_discipline_time() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = true;
+        c.rules[0].hard = true;
         // 周三 15 点：时钟只选了 10 点那段 → 不在自律时间
         let info = lock_info_at(&c, now_at(2, 15, 0));
         assert!(!info.locked, "自律时间外固化必须不生效：{info:?}");
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn hard_lock_silent_during_break() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = true;
+        c.rules[0].hard = true;
         // 把 10 点那段改成 40 专注 / 20 休息，10:45 落在休息段
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
         days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60 };
@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn exit_allowed_outside_discipline_time() {
         let mut c = cfg_with_clock();
-        c.lists[0].hard = false;
+        c.rules[0].hard = false;
         c.settings.allow_quit_in_session = false;
         // 自律时间内（周三 10:20）→ 禁退
         assert!(

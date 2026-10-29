@@ -106,11 +106,11 @@ pub fn download(shared: &Shared) -> Result<String, String> {
         return Err(why);
     }
     let _ = cfg::save(&remote);
-    let n = remote.lists.len();
+    let n = remote.rules.len();
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;
     }
-    Ok(format!("已从云端恢复 {n} 条黑名单"))
+    Ok(format!("已从云端恢复 {n} 条自律规则"))
 }
 
 /// 智能同步：谁新用谁

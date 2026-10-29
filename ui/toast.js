@@ -17,7 +17,7 @@
     $('ico').textContent = kind === 'site' ? '网' : '王';
     $('title').textContent = p.title || '已被拦截';
     $('sub').innerHTML = p.body || '';
-    $('tag').textContent = p.tag || (kind === 'site' ? '网页黑名单' : '应用黑名单');
+    $('tag').textContent = p.tag || (kind === 'site' ? '网页自律规则' : '应用自律规则');
   }
 
   function play(secs) {

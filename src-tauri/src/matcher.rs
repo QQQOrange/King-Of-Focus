@@ -1,4 +1,4 @@
-use crate::model::{AppEntry, RuleList};
+use crate::model::{AppEntry, Rule};
 use crate::proc::{norm_path, stem, WinApp};
 
 /// 大小写不敏感的通配符匹配，支持 * 和 ?
@@ -72,12 +72,12 @@ pub fn app_matches(entry: &AppEntry, app: &WinApp) -> bool {
     }
 }
 
-pub fn rule_blocks_app(rule: &RuleList, app: &WinApp) -> bool {
+pub fn rule_blocks_app(rule: &Rule, app: &WinApp) -> bool {
     rule.apps.iter().any(|e| app_matches(e, app))
 }
 
 /// 强制模式下，这个进程是否"该被放行"
-pub fn rule_allows_app(rule: &RuleList, app: &WinApp) -> bool {
+pub fn rule_allows_app(rule: &Rule, app: &WinApp) -> bool {
     rule.apps.iter().any(|e| app_matches(e, app))
 }
 

@@ -183,6 +183,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "clockHour": rt.clock_hour,
                 "clockLeft": rt.clock_left,
                 "clockSummary": crate::clock::summary(&config),
+                // Hub 顶部那块激励语录要显示"这条是哪来的"，所以连同出处一起给
+                "quote": rt.quote.clone(),
+                "quoteFrom": rt.quote_from.clone(),
                 "notice": app_notice,
                 "celebrate": celebrate,
             }),

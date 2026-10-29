@@ -126,7 +126,7 @@ pub fn blocks(r: &Report) -> Vec<Blk> {
             .into(),
     ));
     v.push(Blk::P(
-        "「已开启」指自律模式生效（黑名单命中 / 自律时段专注中 / 固化锁定，三者任一成立）。".into(),
+        "「已开启」指自律模式生效（自律规则命中 / 自律时段专注中 / 固化锁定，三者任一成立）。".into(),
     ));
     v.push(Blk::P(format!("导出时间：{}", ts_text(chrono::Local::now().timestamp()))));
     v

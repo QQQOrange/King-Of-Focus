@@ -6,12 +6,12 @@
 //! 于是出现一个要命的错位：
 //!
 //!   「自律时段开启 + 规则开启」时，主程序在拦软件，插件却一条规则都收不到，
-//!   网站黑名单形同虚设（抖音照常能看）。
+//!   网站自律规则形同虚设（抖音照常能看）。
 //!
 //! 这里把判定收成一份，monitor 与 server 共用：
 //! 插件拿到的规则 == 引擎此刻真正在执行的规则。
 
-use crate::model::{Config, RuleList};
+use crate::model::{Config, Rule};
 use chrono::NaiveDateTime;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,9 +20,9 @@ pub struct Discipline {
     pub clock_in: bool,
     /// 是否处于该小时的休息段
     pub clock_break: bool,
-    /// 是否处于专注段（真正在自律）—— **黑名单唯一的生效前提**
+    /// 是否处于专注段（真正在自律）—— **自律规则唯一的生效前提**
     pub clock_on: bool,
-    /// 是否允许在自律时间内启用黑名单（设置里的总开关）
+    /// 是否允许在自律时间内启用自律规则（设置里的总开关）
     pub apply_rules: bool,
     /// 休息段：整体暂停拦截
     pub hard_pause: bool,
@@ -49,7 +49,7 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
         apply_rules: apply,
         hard_pause: clock_break && apply,
         on_break: clock_break
-            || cfg.lists.iter().any(|l| {
+            || cfg.rules.iter().any(|l| {
                 l.enabled
                     && crate::sched::is_active(&l.schedule, now)
                     && crate::sched::is_break_now(&l.schedule, &l.brk, now)
@@ -60,38 +60,38 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
     }
 }
 
-/// 当前生效中的黑名单：引擎拦软件、插件拦网页都用这一份
+/// 当前生效中的自律规则：引擎拦软件、插件拦网页都用这一份
 ///
-/// **黑名单没有自己的时间表。** 它的语义就一句话：
+/// **自律规则没有自己的时间表。** 它的语义就一句话：
 /// 「自律时间里不能打开的软件 / 网站」。
 /// 什么时候算自律时间，完全由「自律时段」那一页决定；
-/// 黑名单只管名单本身，不参与任何时间判定。
+/// 自律规则只管名单本身，不参与任何时间判定。
 ///
 /// 所以这里只有三个条件：
 ///   1. 处于自律时间（`clock_on`，即自律时段的专注段）
-///   2. 这条黑名单被启用
+///   2. 这条自律规则被启用
 ///   3. 它被**当前这套**自律时段绑定（没绑任何一条 = 全部生效）
 ///
-/// 之前黑名单条目还带一张周时间表，那是把两件事混在了一起：
+/// 之前自律规则条目还带一张周时间表，那是把两件事混在了一起：
 /// 用户想"9 点开始自律"，结果要去两个页面各排一次时间，很容易对不上。
-/// 现在时间只在「自律时段」排一次，黑名单纯名单。
-pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<RuleList> {
-    let _ = now; // 黑名单不再依赖具体时刻，保留参数是为了不破坏调用方签名
-    // 自律时间之外（含休息段、没选中的小时）→ 黑名单整体静默
+/// 现在时间只在「自律时段」排一次，自律规则纯名单。
+pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Rule> {
+    let _ = now; // 自律规则不再依赖具体时刻，保留参数是为了不破坏调用方签名
+    // 自律时间之外（含休息段、没选中的小时）→ 自律规则整体静默
     if !d.clock_on {
         return Vec::new();
     }
-    // 总开关关掉 → 黑名单不随自律时间启用
+    // 总开关关掉 → 自律规则不随自律时间启用
     if !d.apply_rules {
         return Vec::new();
     }
-    // 这套时段绑定的黑名单分组；空 = 不限制（老配置与默认行为）
+    // 这套时段绑定的自律规则分组；空 = 不限制（老配置与默认行为）
     let fc = &cfg.settings.focus_clock;
     let bound: &[String] = fc
         .active_profile()
         .map(|p| p.bound.as_slice())
         .unwrap_or(&[]);
-    cfg.lists
+    cfg.rules
         .iter()
         .filter(|l| l.enabled)
         .filter(|l| bound.is_empty() || bound.contains(&l.id))
@@ -102,16 +102,16 @@ pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Ru
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ClockCfg, HourPlan, RuleList, Slot};
+    use crate::model::{ClockCfg, HourPlan, Rule, Slot};
 
     fn base() -> Config {
         let mut c = Config::default();
-        c.lists = vec![RuleList {
+        c.rules = vec![Rule {
             id: "r1".into(),
             name: "测试规则".into(),
             enabled: true,
             schedule: vec![vec![Slot { start: 0, end: 0 }]; 7], // 全天生效
-            ..RuleList::default()
+            ..Rule::default()
         }];
         c
     }
@@ -131,11 +131,11 @@ mod tests {
 
     #[test]
     fn entry_schedule_is_ignored_now() {
-        // 黑名单不再有自己的时间表：条目上的 schedule 写什么都不影响生效与否。
+        // 自律规则不再有自己的时间表：条目上的 schedule 写什么都不影响生效与否。
         // 时间只由「自律时段」决定 —— 这是本轮的核心语义变更。
         let mut c = base();
         // 故意写一个"现在肯定不在"的时间表（周一 3:00–4:00，现在是周三 10:30）
-        c.lists[0].schedule = vec![vec![Slot { start: 180, end: 240 }]; 7];
+        c.rules[0].schedule = vec![vec![Slot { start: 180, end: 240 }]; 7];
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
@@ -177,31 +177,31 @@ mod tests {
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(d.clock_on, "时钟本身仍在专注段");
-        assert!(active_rules(&c, &now, &d).is_empty(), "总开关关掉后黑名单不启用");
+        assert!(active_rules(&c, &now, &d).is_empty(), "总开关关掉后自律规则不启用");
     }
 
     #[test]
     fn disabled_entry_never_active() {
         let mut c = base();
-        c.lists[0].enabled = false;
+        c.rules[0].enabled = false;
         clock_on(&mut c, 2, 10, 60, 0);
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(active_rules(&c, &now, &d).is_empty());
     }
 
-    /// 两套方案绑定不同的黑名单分组：同一时刻按"当前那套"的绑定判定。
+    /// 两套方案绑定不同的自律规则分组：同一时刻按"当前那套"的绑定判定。
     ///
-    /// 这是"每套自律时段可自定义绑定某一套黑名单中的分组"的核心验收：
+    /// 这是"每套自律时段可自定义绑定某一套自律规则中的分组"的核心验收：
     /// 切方案不只是换时间表，还要换"这段时间管哪些名单"。
     #[test]
     fn profile_binding_selects_which_lists_apply() {
         let mut c = base();
-        c.lists.push(RuleList {
+        c.rules.push(Rule {
             id: "r2".into(),
             name: "娱乐".into(),
             enabled: true,
-            ..RuleList::default()
+            ..Rule::default()
         });
         clock_on(&mut c, 2, 10, 60, 0);
         // 第二套方案（同一天同一小时），只绑 "r2"
@@ -226,13 +226,13 @@ mod tests {
         assert_eq!(ids, vec!["r2".to_string()], "绑定后只应生效被绑的那条：{ids:?}");
     }
 
-    /// 绑定到一条"没启用"的黑名单 → 不生效（enabled 仍然是硬门槛）
+    /// 绑定到一条"没启用"的自律规则 → 不生效（enabled 仍然是硬门槛）
     #[test]
     fn binding_cannot_force_disabled_list() {
         let mut c = base();
         clock_on(&mut c, 2, 10, 60, 0);
         c.settings.focus_clock.profiles[0].bound = vec!["r1".into()];
-        c.lists[0].enabled = false;
+        c.rules[0].enabled = false;
         let now = now_at(2, 10, 30);
         let d = state(&c, &now);
         assert!(active_rules(&c, &now, &d).is_empty(), "绑定不能绕过 enabled 开关");

@@ -92,6 +92,8 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         "flyoutHits": crate::mask::FLYOUT_HITS.load(std::sync::atomic::Ordering::Relaxed),
                         "flyoutCover": crate::mask::FLYOUT_COVER.load(std::sync::atomic::Ordering::Relaxed),
                         "passWins": crate::mask::PASS_WINS.load(std::sync::atomic::Ordering::Relaxed),
+                        // 浮层打开期间"隐身"的放行窗口数量（>0 说明横条已不参与合成）
+                        "muted": crate::mask::muted_count(),
                         "drop": crate::mask::RAISE_DROP.load(std::sync::atomic::Ordering::Relaxed),
                     })
                     .to_string(),
@@ -329,7 +331,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
             let _ = req.as_reader().read_to_string(&mut body);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("?").to_string();
-                let rule = v.get("rule").and_then(|x| x.as_str()).unwrap_or("网站黑名单").to_string();
+                let rule = v.get("rule").and_then(|x| x.as_str()).unwrap_or("网站自律规则").to_string();
                 shared.log("site", url.clone(), rule.clone(), "浏览器插件拦截".into());
                 // 先弹通知，插件端会在收到响应后延迟几百毫秒再关页面
                 crate::notify::blocked_site(app, &url, &rule);
@@ -376,7 +378,7 @@ fn state_json(shared: &Shared) -> String {
     // 关键：判定口径必须和 monitor.rs（真正在拦软件的那份）完全一致。
     // 以前这里只看"规则自己的时间表"，把「自律时段接管」和「休息段整体暂停」漏掉了，
     // 结果就是：自律时段里主程序在拦软件，插件却一条规则都收不到，
-    // 网站黑名单（抖音等）照常能看。
+    // 网站自律规则（抖音等）照常能看。
     let dstate = crate::discipline::state(&cfg, &now);
     let active = crate::discipline::active_rules(&cfg, &now, &dstate);
     let rules: Vec<serde_json::Value> = active

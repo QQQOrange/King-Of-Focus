@@ -1,6 +1,6 @@
 use crate::guard;
 use crate::matcher;
-use crate::model::{Config, RuleList};
+use crate::model::{Config, Rule};
 use crate::proc::{self, WinApp};
 use crate::sched;
 use crate::shared::Shared;
@@ -113,20 +113,20 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             // 它和规则时段不是二选一：时钟选中且 applyRules 打开时，规则直接生效
             // （忽略规则自己的时段），时钟的休息段则把拦截整体暂停。
             // 判定统一放在 discipline 模块，插件服务端（server.rs）用的是同一份，
-            // 否则会出现"主程序在拦软件、插件却收不到规则"的黑名单失效。
+            // 否则会出现"主程序在拦软件、插件却收不到规则"的自律规则失效。
             let dstate = crate::discipline::state(&cfg, &now);
             let clock_in = dstate.clock_in;
             let clock_break = dstate.clock_break;
             let clock_on = dstate.clock_on;
 
             // ---- 生效中的规则（休息段内的规则暂时放行）----
-            let active: Vec<RuleList> = crate::discipline::active_rules(&cfg, &now, &dstate);
+            let active: Vec<Rule> = crate::discipline::active_rules(&cfg, &now, &dstate);
 
             // 当前是否有规则处于「休息」
             let on_break = dstate.on_break;
 
             let next_change = cfg
-                .lists
+                .rules
                 .iter()
                 .filter(|l| l.enabled)
                 .filter_map(|l| sched::seconds_until_change(&l.schedule, &now))
@@ -139,7 +139,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 (dstate.clock_break, dstate.clock_left)
             } else {
                 cfg
-                    .lists
+                    .rules
                     .iter()
                     .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
                     .map(|l| sched::pomodoro_state(&l.schedule, &l.brk, &now))
@@ -354,12 +354,12 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     }
                 }
 
-                // 2) 黑名单 / 强制模式
+                // 2) 自律规则 / 强制模式
                 for a in apps.iter() {
                     if a.pid == self_pid {
                         continue;
                     }
-                    let mut blocked_by: Option<&RuleList> = None;
+                    let mut blocked_by: Option<&Rule> = None;
                     for l in active.iter() {
                         if l.mode == "whitelist" {
                             let protected = matcher::is_protected(a, &cfg.settings.protected)
@@ -432,7 +432,7 @@ fn on_block(
     shared: &Shared,
     cfg: &Config,
     app: &WinApp,
-    rule: &RuleList,
+    rule: &Rule,
     pending: &mut HashMap<u32, Instant>,
     logged: &mut HashMap<u32, Instant>,
 ) -> bool {

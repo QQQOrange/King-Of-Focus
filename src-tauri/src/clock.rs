@@ -71,7 +71,7 @@ pub fn state(cfg: &Config) -> Option<ClockState> {
 /// 与 `state` 一样，但可以指定"现在"。
 ///
 /// 引擎（monitor）与插件服务端（server）必须用同一个"现在"来算自律状态，
-/// 否则两边会得出不同结论（插件收不到规则、黑名单形同虚设）。
+/// 否则两边会得出不同结论（插件收不到规则、自律规则形同虚设）。
 pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> {
     let weekday = now.weekday().num_days_from_monday();
     let hour = now.hour();
@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(fc.step(), 15);
         assert!(
             fc.active_profile().map(|p| p.bound.is_empty()).unwrap_or(false),
-            "没有 bound 时空绑定（= 全部黑名单生效，保持旧行为）"
+            "没有 bound 时空绑定（= 全部自律规则生效，保持旧行为）"
         );
     }
 

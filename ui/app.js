@@ -36,7 +36,7 @@ const PALETTE = ['#ffb020', '#ff7a45', '#f759ab', '#b37feb', '#5b8cff', '#36cfc9
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const VIEW_TITLES = {
-  overview: '总览', rules: '黑名单', clock: '自律时段', mask: '专注遮罩', browsers: '浏览器插件',
+  overview: '总览', rules: '自律规则', clock: '自律时段', mask: '专注遮罩', browsers: '浏览器插件',
   stats: '时长统计', reports: '统计报告', sync: '云同步',
   settings: '设置', about: '关于', help: '帮助',
 };
@@ -91,7 +91,7 @@ function toast(msg, kind) {
 /* ---------------- 自律权限 ----------------
  *
  * 非测试模式下，只要处在自律时段里（含休息段），就不许动纪律相关的开关：
- * 不能关黑名单、不能切换黑名单开关、不能关「自律时段」总开关、不能切/删方案、
+ * 不能关自律规则、不能切换自律规则开关、不能关「自律时段」总开关、不能切/删方案、
  * 不能取消已选时段。界面先置灰一道，后端 save_config 再拦一道——直接调命令也绕不过去。
  *
  * 门槛用 clockInWindow 而不是 clockOn：50/10 的小时段里，
@@ -207,9 +207,9 @@ function renderChrome() {
     parts.push(`生效时段：<b>第 ${d.runtime.clockHour} 段休息中</b>`);
   }
   if (d.runtime.active.length) {
-    parts.push(`生效黑名单：<b>${d.runtime.active.map((a) => esc(a.name)).join('、')}</b>`);
+    parts.push(`生效中的自律规则：<b>${d.runtime.active.map((a) => esc(a.name)).join('、')}</b>`);
   } else if (!d.runtime.clockOn && !d.runtime.clockBreak) {
-    parts.push('当前没有生效的黑名单');
+    parts.push('当前没有生效的自律规则');
   }
   parts.push(ext ? '浏览器插件：已连接' : '<span class="warn">浏览器插件：未连接</span>');
   if (!d.admin) parts.push('<span class="warn">未以管理员身份运行</span>');
@@ -222,6 +222,47 @@ function renderChrome() {
     const label = pref === 'system' ? `◐ 跟随系统（${cur === 'light' ? '浅' : '深'}）` : cur === 'light' ? '☀ 浅色' : '☾ 深色';
     tb.textContent = label;
   }
+}
+
+/* ---------------- 激励语录（Hub 顶部） ----------------
+ *
+ * 语录有两个来源，界面上必须能一眼分清：
+ *   · 自己写的（设置里存的那几条，滚动轮换）
+ *   · 联网取到的（一言 hitokoto，后台按「语录刷新间隔」更新）
+ * 自己写的优先排在前面——用户写的话本来就该先看到自己那句。
+ */
+const QUOTE_SRC = {
+  custom: '我写的',
+  net: '网络 · 一言',
+  local: '内置',
+  empty: '还没有语录',
+};
+
+function quotePool() {
+  const st = (S.data && S.data.config && S.data.config.settings) || {};
+  const rt = (S.data && S.data.runtime) || {};
+  const pool = (st.customQuotes || []).filter(Boolean).map((t, i) => ({
+    key: 'c' + i, text: t, from: '', src: 'custom',
+  }));
+  if (rt.quote) {
+    // 有 from 才说明这条是联网取回来的；没有 from 的是本地兜底句
+    pool.push({ key: 'net', text: rt.quote, from: rt.quoteFrom || '', src: rt.quoteFrom ? 'net' : 'local' });
+  }
+  return pool;
+}
+
+/** 当前要显示的那一条。选了哪条记在 S.quoteAt，刷新页面/切页回来不会跳。 */
+function quoteView() {
+  const pool = quotePool();
+  if (!pool.length) {
+    return { key: '', text: '把想对自己说的话写下来，每次打开 Hub 都能看到。', from: '', src: 'empty' };
+  }
+  let it = pool.find((x) => x.key === S.quoteAt);
+  if (!it) {
+    it = pool[0];
+    S.quoteAt = it.key;
+  }
+  return it;
 }
 
 /* ---------------- 视图：总览 ---------------- */
@@ -253,8 +294,8 @@ function viewOverview() {
 
   const chips = rt.active.length
     ? rt.active.map((a) => `<span class="rule-chip"><span class="dot"></span>${esc(a.name)}
-        <span class="badge ${a.mode === 'whitelist' ? 'red' : 'gold'}">${a.mode === 'whitelist' ? '强制模式' : '黑名单'}</span></span>`).join('')
-    : '<span class="muted">暂无生效黑名单。到「黑名单」里新建一条——它只会在自律时间内生效。</span>';
+        ${ruleBadge(a)}</span>`).join('')
+    : '<span class="muted">暂无生效自律规则。到「自律规则」里新建一条——它只会在自律时间内生效。</span>';
 
   const evs = (rt.events || []).slice(0, 7);
   const evHtml = evs.length
@@ -268,17 +309,34 @@ function viewOverview() {
 
   const maskOn = d.mask.on;
 
+  const q = quoteView();
+  const qN = ((d.config.settings || {}).customQuotes || []).length;
   return `
   ${lockBanner}${unlockBanner}
+  <section class="hub-quote" aria-label="激励语录">
+    <div class="qmark">“</div>
+    <div class="qbody">
+      <div class="qtext">${esc(q.text)}</div>
+      <div class="qmeta">
+        <span class="qsrc ${q.src}">${QUOTE_SRC[q.src] || q.src}</span>
+        ${q.from ? `<span class="qfrom">—— ${esc(q.from)}</span>` : ''}
+      </div>
+    </div>
+    <div class="qops">
+      <button class="btn btn-sm" data-act="quote-next" title="换一条（自己写的和联网的都会轮换）">换一条</button>
+      <button class="btn btn-sm" data-act="quote-manage">我的语录${qN ? ` · ${qN}` : ''}</button>
+    </div>
+  </section>
+
   <div class="hero">
     <div class="hero-main">
       <div class="hero-label">当前状态</div>
       <div class="hero-state ${on || rt.breakOn ? 'on' : ''}">${phase}</div>
       <div class="hero-desc">${rt.breakOn
-        ? `休息 ${mmss(phaseLeft)}，这段时间黑名单是放开的，时间到自动锁回去。`
+        ? `休息 ${mmss(phaseLeft)}，这段时间自律规则是放开的，时间到自动锁回去。`
         : on
-          ? `黑名单里的软件与网页已被拦住：${esc(rt.active.map((a) => a.name).join('、'))}`
-          : '现在不在自律时间，黑名单静默中。'}</div>
+          ? `自律规则里的软件与网页已被拦住：${esc(rt.active.map((a) => a.name).join('、'))}`
+          : '现在不在自律时间，自律规则静默中。'}</div>
       <div class="hero-count">
         <div><div class="n">${rt.blockedApps}</div><div class="l">今日拦截软件</div></div>
         <div><div class="n">${rt.blockedSites}</div><div class="l">今日拦截网页</div></div>
@@ -307,20 +365,20 @@ function viewOverview() {
     </div>
     <div class="row" style="align-items:center">
       <button class="btn btn-primary" data-act="open-unlock">用积分解锁</button>
-      <span class="hint">${on || rt.breakOn ? '解锁期间所有拦截暂停，倒计时结束自动恢复' : '现在没有生效的黑名单，暂时不需要解锁'}</span>
+      <span class="hint">${on || rt.breakOn ? '解锁期间所有拦截暂停，倒计时结束自动恢复' : '现在没有生效的自律规则，暂时不需要解锁'}</span>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">生效中的黑名单</div>
-    <div class="card-sub">黑名单只在<b>自律时间</b>（自律时段的专注段）内生效，其余时间一律静默。</div>
+    <div class="card-title">生效中的自律规则</div>
+    <div class="card-sub">自律规则只在<b>自律时间</b>（自律时段的专注段）内生效，其余时间一律静默。</div>
     <div>${chips}</div>
   </div>
 
   <div class="grid-2" style="margin-top:16px;align-items:start">
     <div class="card">
       <div class="card-title">最近拦截</div>
-      <div class="card-sub">只记录最近 240 条，含时间、类型、对象与命中黑名单。</div>
+      <div class="card-sub">只记录最近 240 条，含时间、类型、对象与命中自律规则。</div>
       <div class="evlist">${evHtml}</div>
     </div>
     <div class="card">
@@ -336,7 +394,42 @@ function viewOverview() {
   </div>`;
 }
 
-/* ---------------- 视图：黑名单 ---------------- */
+/** 一条自律规则的「生效类型」。
+ *
+ * 三档，列表、卡片、编辑器标题都用这一份，避免三处各写一套 if：
+ *   blacklist 自律规则       —— 名单里的软件 / 网站被拦下，其余放行
+ *   whitelist 白名单       —— 只有名单里的能用，其余全拦
+ *   both      两者同时生效 —— 名单里照样拦，同时「例外」作为白名单放行
+ */
+const RULE_KINDS = {
+  blacklist: {
+    label: '黑名单',
+    short: '黑名单',
+    cls: 'gold',
+    note: '名单里的软件 / 网站会被拦下，其余放行',
+  },
+  whitelist: {
+    label: '白名单',
+    short: '白名单',
+    cls: 'red',
+    note: '只有名单里的能用，其余一律拦掉',
+  },
+  both: {
+    label: '黑名单 + 白名单',
+    short: '黑+白',
+    cls: 'blue',
+    note: '名单里的照样拦，「例外」里的放行',
+  },
+};
+const ruleKind = (r) => RULE_KINDS[(r && r.mode) || 'blacklist'] || RULE_KINDS.blacklist;
+/** 列表里那个一眼能认出来的类型标记 */
+function ruleBadge(r) {
+  const k = ruleKind(r);
+  return `<span class="badge kind" title="${esc(k.label)}：${esc(k.note)}">`
+    + `<i class="kd ${k.cls}"></i>${k.label}</span>`;
+}
+
+/* ---------------- 视图：自律规则 ---------------- */
 /** 把一段 [a,b) 按番茄配置切成「专注 / 休息」交替的连续小段。
  *  口径与后端 sched::pomodoro_state 一致：周期从时段起点开始算。 */
 function slSplit(r, a, b) {
@@ -409,20 +502,20 @@ function slMini(r) {
 function viewRules() {
   const d = S.data;
   if (!d) return '';
-  const lists = d.config.lists;
+  const rules = d.config.rules;
   const activeNames = new Set((d.runtime.active || []).map((a) => a.name));
   const hardLocked = !!d.runtime.locked;
   const locked = settingsFrozen();      // 固化中 或 自律时段生效中
 
-  // 黑名单条目 = 纯名单：名称 + 软件 / 网站 / 例外 + 开关。
+  // 自律规则条目 = 纯名单：名称 + 软件 / 网站 / 例外 + 开关。
   // **不显示任何"时间范围"** —— 什么时候生效由「自律时段」统一决定，
-  // 黑名单只管"自律时间里不能开什么"，两件事不混在一起。
+  // 自律规则只管"自律时间里不能开什么"，两件事不混在一起。
   const item = (l) => `
     <div class="sl-item ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
       <div class="sl-item-bar" style="background:${esc(l.color || '#4d8dff')}"></div>
       <div class="sl-item-main">
         <div class="sl-item-name">${esc(l.name)}
-          ${l.mode === 'whitelist' ? '<span class="badge red">强制</span>' : ''}
+          ${ruleBadge(l)}
           ${l.hard ? '<span class="badge red">固化</span>' : ''}
           ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
           ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
@@ -449,12 +542,17 @@ function viewRules() {
       <div class="sl-grid">${arr.map(item).join('')}</div>
     </div>`);
   };
-  push('黑名单', '自律时间里，这些软件和网站会被拦下', lists.filter((l) => l.mode !== 'whitelist'));
-  push('强制模式', '自律时间里，只有名单内的软件能打开', lists.filter((l) => l.mode === 'whitelist'));
+  // 按"生效类型"分组：三档各一组，顺序固定（黑 → 白 → 两者）
+  push('黑名单', '自律时间里，名单里的软件 / 网站会被拦下，其余放行',
+    rules.filter((l) => (l.mode || 'blacklist') === 'blacklist'));
+  push('白名单', '自律时间里，只有名单里的能用，其余一律拦掉',
+    rules.filter((l) => l.mode === 'whitelist'));
+  push('黑名单 + 白名单同时生效', '名单里的照样拦，同时「例外」作为白名单放行',
+    rules.filter((l) => l.mode === 'both'));
 
-  const body = lists.length
+  const body = rules.length
     ? groups.join('')
-    : '<div class="empty">还没有黑名单。点右上角「新建黑名单」开始。</div>';
+    : '<div class="empty">还没有自律规则。点右上角「新建自律规则」开始。</div>';
 
   const banner = hardLocked
     ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
@@ -462,7 +560,7 @@ function viewRules() {
     <b>${esc(d.runtime.lockUntilText || '时段结束')}</b> 之前所有开关都已置灰，改不了也关不掉。
   </div>`
     : (clockRunning() ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
-    <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间黑名单开关整体锁定（开、关都不行），也不能删除条目、
+    <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间自律规则开关整体锁定（开、关都不行），也不能删除条目、
     不能关掉「自律时段」本身——等这一段结束（或用积分解锁）之后才能改。
   </div>` : '');
 
@@ -470,15 +568,15 @@ function viewRules() {
   const fc = d.config.settings.focusClock || {};
   const statusBar = !fc.enabled
     ? `<div class="note" style="border-left:3px solid var(--gold);margin-bottom:14px">
-        <b>自律时段没启用</b>：黑名单<b>只在自律时间内生效</b>，现在这个功能是整体静默的。
+        <b>自律时段没启用</b>：自律规则<b>只在自律时间内生效</b>，现在这个功能是整体静默的。
         先去「自律时段」把要自律的时段画出来，这里才会开始拦。
       </div>`
     : (d.runtime.clockOn
       ? `<div class="note" style="border-left:3px solid var(--green);margin-bottom:14px">
-          <b style="color:var(--green)">● 自律时间进行中</b>：第 ${d.runtime.clockHour} 段专注中，下面的黑名单正在生效。
+          <b style="color:var(--green)">● 自律时间进行中</b>：第 ${d.runtime.clockHour} 段专注中，下面的自律规则正在生效。
         </div>`
       : `<div class="note" style="border-left:3px solid var(--line);margin-bottom:14px">
-          <b>当前不在自律时间</b>：黑名单只在「自律时段」的专注段内生效，
+          <b>当前不在自律时间</b>：自律规则只在「自律时段」的专注段内生效，
           其余时间（含番茄休息段）一律不拦。下面的开关可以先配好，到点自动生效。
         </div>`);
 
@@ -487,22 +585,22 @@ function viewRules() {
   ${statusBar}
   <div class="row" style="justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px">
     <div class="hint" style="max-width:660px">
-      一条<b>黑名单</b> = 一份软件 / 网站名单 + 一张周时间表。<br>
+      一条<b>自律规则</b> = 一份软件 / 网站名单 + 一张周时间表。<br>
       <b>生效前提是自律时间</b>：只有「自律时段」正在专注时才可能拦人；<br>
       时间表是在这之上再收窄——全空 = 自律时间内全程生效，画了格子就只在格子里生效。<br>
       点任意一条会打开独立弹窗，用图表方式查看和调整时间分布。
     </div>
-    <button class="btn btn-primary" data-act="new-rule" ${hardLocked ? 'disabled' : ''}>+ 新建黑名单</button>
+    <button class="btn btn-primary" data-act="new-rule" ${hardLocked ? 'disabled' : ''}>+ 新建自律规则</button>
   </div>
   ${body}`;
 }
 
-/* ---------------- 黑名单条目编辑器 ---------------- */
+/* ---------------- 自律规则条目编辑器 ---------------- */
 /** 打开某条自律时段的独立弹窗（滴答清单图表式） */
 function openSlotModal(id) {
   const d = S.data;
   if (!d) return;
-  const src = d.config.lists.find((x) => x.id === id);
+  const src = d.config.rules.find((x) => x.id === id);
   if (!src) return;
   S.editing = JSON.parse(JSON.stringify(src));
   S.editingNew = false;
@@ -514,14 +612,14 @@ function openSlotModal(id) {
 function renderSlotModal() {
   const r = S.editing;
   if (!r) return;
-  // 黑名单弹窗 = **纯名单编辑**，不再有周时间表。
+  // 自律规则弹窗 = **纯名单编辑**，不再有周时间表。
   // 时间只在「自律时段」排一次；这里只管"自律时间里不能开什么"。
   const html = `
   <div class="modal-mask" data-act="close-modal-bg">
     <div class="modal wide tk-modal">
       <div class="modal-hd">
-        <h3>${esc(r.name || '黑名单')}
-          <span class="badge ${r.mode === 'whitelist' ? 'red' : 'gold'}">${r.mode === 'whitelist' ? '强制模式' : '黑名单'}</span>
+        <h3>${esc(r.name || '自律规则')}
+          ${ruleBadge(r)}
           ${r.hard ? '<span class="badge red">固化</span>' : ''}
           ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
           ${r.enabled ? '<span class="badge green">已启用</span>' : '<span class="badge">未启用</span>'}
@@ -529,11 +627,20 @@ function renderSlotModal() {
         <button class="close-x" data-act="close-editor">×</button>
       </div>
       <div class="modal-bd">
-        <div class="row" style="gap:10px;margin-bottom:14px;align-items:center">
+        <div class="row" style="gap:10px;margin-bottom:12px;align-items:center">
           <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14.5px;font-weight:650" placeholder="名字，例如：短视频与游戏" />
         </div>
+        <div class="rule-kind-row">
+          <span class="rk-lab">生效类型</span>
+          <div class="seg">
+            ${[['blacklist', '黑名单'], ['whitelist', '白名单'], ['both', '两者同时']].map(([v, t]) =>
+              `<button class="${(r.mode || 'blacklist') === v ? 'active' : ''}" data-act="mode" data-mode="${v}"
+                 title="${esc(RULE_KINDS[v].note)}">${t}</button>`).join('')}
+          </div>
+          <span class="rk-note">${esc(ruleKind(r).note)}</span>
+        </div>
         <div class="note" style="margin-bottom:14px">
-          生效时间由「<b>自律时段</b>」统一决定：<b>自律时间里，这里的软件和网站会被拦下</b>；
+          生效时间由「<b>自律时段</b>」统一决定：<b>自律时间里，按上面的类型生效</b>；
           自律时间之外一律不拦。所以这里不需要、也不提供时间设置。
         </div>
         <div class="tk-info">
@@ -560,7 +667,7 @@ function openEditor(id, isNew) {
   if (isNew) {
     rule = {
       id: 'r' + Date.now().toString(36),
-      name: '新黑名单',
+      name: '新自律规则',
       enabled: false,
       mode: 'blacklist',
       apps: [],
@@ -574,7 +681,7 @@ function openEditor(id, isNew) {
       hard: true,
     };
   } else {
-    rule = JSON.parse(JSON.stringify(d.config.lists.find((x) => x.id === id)));
+    rule = JSON.parse(JSON.stringify(d.config.rules.find((x) => x.id === id)));
   }
   S.editing = rule;
   S.editingNew = !!isNew;
@@ -611,7 +718,7 @@ function renderFullEditor() {
     <div class="modal wide tk-modal">
       <div class="modal-hd">
         <h3>${S.editingNew ? '新建自律时段' : esc(r.name)}
-          <span class="badge ${r.mode === 'whitelist' ? 'red' : 'gold'}">${r.mode === 'whitelist' ? '强制模式' : '黑名单'}</span>
+          ${ruleBadge(r)}
           ${r.hard ? '<span class="badge red">固化</span>' : ''}
           ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
         </h3>
@@ -621,12 +728,17 @@ function renderFullEditor() {
         <div class="row" style="gap:10px;margin-bottom:14px;align-items:center">
           <input type="text" id="ruleName" value="${esc(r.name)}" style="flex:1;font-size:14px;font-weight:600" placeholder="时段名称，例如：晚自习" />
           <div class="seg">
-            <button class="${r.mode === 'blacklist' ? 'active gold' : ''}" data-act="mode" data-mode="blacklist">黑名单</button>
-            <button class="${r.mode === 'whitelist' ? 'active' : ''}" data-act="mode" data-mode="whitelist">强制模式（白名单）</button>
+            ${[['blacklist', '黑名单'], ['whitelist', '白名单'], ['both', '两者同时']].map(([v, t]) =>
+              `<button class="${(r.mode || 'blacklist') === v ? 'active' : ''}" data-act="mode" data-mode="${v}"
+                 title="${esc(RULE_KINDS[v].note)}">${t}</button>`).join('')}
           </div>
         </div>
+        ${r.mode === 'both' ? `<div class="note" style="margin-bottom:14px">
+          <b>黑名单 + 白名单同时生效</b>：名单里的软件 / 网站照样被拦下；
+          同时「例外」当作白名单用 —— 例外里的条目永远不会被这条规则拦。
+        </div>` : ''}
         ${r.mode === 'whitelist' ? `<div class="note" style="margin-bottom:14px">
-          <b>强制模式</b>：生效时段内，只有下面名单里的软件可以打开，其他所有前台窗口都会被关掉。
+          <b>白名单</b>：生效时段内，只有下面名单里的软件可以打开，其他所有前台窗口都会被关掉。
           系统进程、资源管理器、本程序自身以及「设置 → 全局保护」里的进程不会被拦截。
         </div>` : ''}
         <div class="note" style="margin-bottom:14px">
@@ -815,7 +927,7 @@ function tabExceptions(r) {
         <span class="grow">${esc(v)}</span>
         <button class="x" data-act="del-exc" data-i="${i}">×</button>
       </div>`).join('')
-    : '<div class="empty">没有例外。例外只在当前这条黑名单内生效。</div>';
+    : '<div class="empty">没有例外。例外只在当前这条自律规则内生效。</div>';
   return `
     <div class="add-row">
       <input type="text" id="excInput" placeholder="要放行的网站，例如 mail.google.com" />
@@ -823,7 +935,7 @@ function tabExceptions(r) {
     </div>
     <div class="list-box">${rows}</div>
     <div class="hint" style="margin-top:12px">
-      例外的优先级高于网站黑名单。想把「整个互联网」都拦掉、只放几个站点，
+      例外的优先级高于网站自律规则。想把「整个互联网」都拦掉、只放几个站点，
       就在网站页添加 <code>*.*</code>，再在这里把要放行的站点加进来。
     </div>`;
 }
@@ -834,7 +946,7 @@ function tabBreak(r) {
   return `
     <div class="hint" style="margin-bottom:14px">
       开启番茄后，生效时段会被切成「专注 → 休息 → 专注 …」的循环。
-      <b>休息期间这条黑名单不拦截</b>（黑名单里的软件和网页都能用），时间一到自动锁回去。
+      <b>休息期间这条自律规则不拦截</b>（自律规则里的软件和网页都能用），时间一到自动锁回去。
       循环从时段的起点开始算。
     </div>
     <div class="seg" style="margin-bottom:18px">
@@ -1193,9 +1305,11 @@ function ccRenderRuns(root, override) {
     // 拼起来就是一条上下圆润、中间无缝的色块。
     const solid = parts.filter((x) => !x.gap);
     solid.forEach((b, i) => {
-      b.radius = solid.length === 1 ? '7px'
-        : i === 0 ? '7px 7px 0 0'
-          : i === solid.length - 1 ? '0 0 7px 7px'
+      // 4px：格子本身只有 52px 高、一列不到 100px 宽，7px 显得太"胖"，
+      // 4px 更贴合日历这种密集网格的精致感。
+      b.radius = solid.length === 1 ? '4px'
+        : i === 0 ? '4px 4px 0 0'
+          : i === solid.length - 1 ? '0 0 4px 4px'
             : '0';
     });
     const bands = parts.map((b) => (b.gap
@@ -1220,14 +1334,16 @@ function ccRenderRuns(root, override) {
     const labEnd = eMin >= 60
       ? `${pad(Math.min(24, h1 + 1))}:00`
       : `${pad(h1)}:${pad(eMin)}`;
-    // 块太矮（不到一行的 20px）就不写字：字会溢到隔壁格子里，
-    // 这时候把信息留给 title 提示更合适。文字的纵向位置跟着首个填色带，
+    // 时间文字：**任何长度都要显示**。
+    // 10 / 15 分钟这种短块只有 13px 高，用常规字号会顶出去，
+    // 于是分两档：足够高用常规字号；不够高换成 .tight（8.5px、行高 1.1），
+    // 在 13px 里正好放得下一行。位置跟着首个填色带走，
     // 不然 01:15 开始的块会把字写在上面那截空白里。
     const spanPx = ((n * 60 - f0 - (60 - t1)) / 60) * ccHourH();
     const labTop = (f0 * unit).toFixed(3);
-    const label = spanPx >= 20
-      ? `<span class="cc-run-txt" style="top:calc(${labTop}% + 3px)">${labStart} – ${labEnd}</span>`
-      : '';
+    const tight = spanPx < 20;
+    const label = `<span class="cc-run-txt${tight ? ' tight' : ''}"`
+      + ` style="top:calc(${labTop}% + ${tight ? 2 : 3}px)">${labStart} – ${labEnd}</span>`;
     run.innerHTML = label + bands;
     grid.appendChild(run);
   };
@@ -1542,13 +1658,13 @@ function viewClock() {
   const hourNow = new Date().getHours();
   const n = clockCountOn(fc);
   const multi = fc.profiles.length > 1;
-  // 这套时段绑定哪些黑名单（空 = 全部）
-  const allLists = (S.data.config.lists || []);
+  // 这套时段绑定哪些自律规则（空 = 全部）
+  const allRules = (S.data.config.rules || []);
   const bound = Array.isArray(prof.bound) ? prof.bound : [];
 
   // 自律时段生效中（且非测试模式）：与纪律相关的控件置灰
   const frozen = settingsFrozen();
-  // 「自律时间内启用黑名单」只有"关掉"是削弱纪律，"打开"是加强 → 只在已打开时置灰
+  // 「自律时间内启用自律规则」只有"关掉"是削弱纪律，"打开"是加强 → 只在已打开时置灰
   const applyFrozen = frozen && fc.applyRules;
 
   // 当前状态一句话
@@ -1561,7 +1677,7 @@ function viewClock() {
       stateTxt = `休息中 · 还剩 ${mm} 分 ${pad(ss)} 秒（这段时间不拦截、不遮罩）`;
       stateCls = 'gold';
     } else {
-      stateTxt = `专注中 · 还剩 ${mm} 分 ${pad(ss)} 秒（黑名单正在生效，应用 / 网页会被关闭）`;
+      stateTxt = `专注中 · 还剩 ${mm} 分 ${pad(ss)} 秒（自律规则正在生效，应用 / 网页会被关闭）`;
       stateCls = 'green';
     }
   } else if (!fc.enabled) {
@@ -1571,7 +1687,7 @@ function viewClock() {
   } else if (rt.clockInWindow === undefined || rt.clockInWindow === null) {
     stateTxt = '正在读取时钟状态…';
   } else {
-    stateTxt = `当前不在自律时间：黑名单不拦截${ccNextSlotText(fc, wdNow, hourNow)}`;
+    stateTxt = `当前不在自律时间：自律规则不拦截${ccNextSlotText(fc, wdNow, hourNow)}`;
   }
 
   // 方案切换条：同一时刻只有一套在生效，切过去立刻按新方案判定
@@ -1599,8 +1715,8 @@ function viewClock() {
         <div class="card-sub">
           横轴一周七天，纵轴 0–24 点，一小时再竖着分成若干格。
           哪几天、哪几段要自律，直接在格子上拖出来——选中的部分就是一条从上到下的横条，条子的长度就是时长。
-          到点自动进入自律模式，到点自动退出；黑名单、浏览器巡检、专注遮罩都会跟着这段状态走。
-          需要多套排班时，做成几套「星期时段」方案，每套还能各自绑定不同的黑名单分组。
+          到点自动进入自律模式，到点自动退出；自律规则、浏览器巡检、专注遮罩都会跟着这段状态走。
+          需要多套排班时，做成几套「星期时段」方案，每套还能各自绑定不同的自律规则分组。
         </div>
       </div>
       <div class="switch${frozen ? ' locked' : ''}" data-act="clock-enable"
@@ -1608,7 +1724,7 @@ function viewClock() {
     </div>
 
     ${frozen ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin:14px 0 0">
-      <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间「自律时段」开关和「黑名单」开关都点不动，
+      <b style="color:var(--red)">🔒 自律时段生效中</b>：这段时间「自律时段」开关和「自律规则」开关都点不动，
       不能切换 / 删除方案，也不能取消已选中的时段或改这一小时的专注 / 休息时长；
       其它时段照常可以安排。等这一段结束（或用积分解锁）之后再改。
     </div>` : ''}
@@ -1629,16 +1745,16 @@ function viewClock() {
 
     <div class="cc-bind">
       <div class="cc-bind-hd">
-        <span class="cc-bind-title">这套时段生效的黑名单</span>
+        <span class="cc-bind-title">这套时段生效的自律规则</span>
         <span class="hint">${bound.length ? `已绑 ${bound.length} 组，其余分组这套时段不管` : '没绑任何分组 = 全部生效（默认）'}</span>
       </div>
       <div class="cc-bind-list">
         <button class="cc-bind-chip${bound.length ? '' : ' active'}" data-act="clock-bind" data-id=""
-          title="这套时段用上全部已启用的黑名单">全部</button>
-        ${allLists.map((l) => `<button class="cc-bind-chip${bound.includes(l.id) ? ' active' : ''}"
+          title="这套时段用上全部已启用的自律规则">全部</button>
+        ${allRules.map((l) => `<button class="cc-bind-chip${bound.includes(l.id) ? ' active' : ''}"
           data-act="clock-bind" data-id="${esc(l.id)}"
           title="${esc(l.name)}：${l.apps.length} 个软件 · ${l.sites.length} 个网站${l.enabled ? '' : '（这条没启用，绑了也不会拦）'}">
-          ${esc(l.name)}</button>`).join('') || '<span class="hint">还没有黑名单分组，先去「黑名单」建一组</span>'}
+          ${esc(l.name)}</button>`).join('') || '<span class="hint">还没有自律规则分组，先去「自律规则」建一组</span>'}
       </div>
       <div class="hint" style="margin-top:6px">
         换方案 = 换时间表 + 换管哪些分组。比如「工作日」那套只绑工作类，
@@ -1664,23 +1780,23 @@ function viewClock() {
   </div>
 
   <div class="card">
-    <div class="card-title">它和「黑名单」的关系</div>
-    <div class="card-sub">自律时段是总开关，黑名单是执法工具。</div>
+    <div class="card-title">它和「自律规则」的关系</div>
+    <div class="card-sub">自律时段是总开关，自律规则是执法工具。</div>
     <div class="note" style="line-height:1.95">
       <b>这里（自律时段）</b>：决定"什么时候进入自律时间"。按周排、每周重复，每格 ${ccStep()} 分钟。<br>
-      <b>黑名单</b>：只有名单，没有自己的时间表。它<b>只在自律时间（专注段）内生效</b>，其余时间一律静默。<br>
-      <b>两者是包含关系</b>：自律时间之外的时段、以及番茄休息段，黑名单都不拦。<br>
-      <b>每套时段还能各自绑定分组</b>：上面「这套时段生效的黑名单」勾了哪几组，这套时段就只管那几组。
+      <b>自律规则</b>：只有名单，没有自己的时间表。它<b>只在自律时间（专注段）内生效</b>，其余时间一律静默。<br>
+      <b>两者是包含关系</b>：自律时间之外的时段、以及番茄休息段，自律规则都不拦。<br>
+      <b>每套时段还能各自绑定分组</b>：上面「这套时段生效的自律规则」勾了哪几组，这套时段就只管那几组。
       <div class="row" style="justify-content:space-between;align-items:center;margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
         <div>
-          <div style="font-size:12.5px">自律时间内启用黑名单</div>
-          <div class="hint" style="margin-top:4px">关掉后，自律时段只负责"进入自律状态"（遮罩 / HUD / 积分 / 成绩），黑名单完全不拦。</div>
+          <div style="font-size:12.5px">自律时间内启用自律规则</div>
+          <div class="hint" style="margin-top:4px">关掉后，自律时段只负责"进入自律状态"（遮罩 / HUD / 积分 / 成绩），自律规则完全不拦。</div>
         </div>
         <div class="switch${applyFrozen ? ' locked' : ''}" data-act="clock-apply-rules"
              title="${applyFrozen ? '自律时段生效中，不能关掉' : '切换'}"><input type="checkbox" ${fc.applyRules ? 'checked' : ''}><i></i></div>
       </div>
       <div style="margin-top:12px" class="hint">
-        优先级（从高到低）：<b>不在自律时间</b>（一律不拦） &gt; <b>休息段</b>（一律放行） &gt; 黑名单时间范围 &gt; 手动开关。<br>
+        优先级（从高到低）：<b>不在自律时间</b>（一律不拦） &gt; <b>休息段</b>（一律放行） &gt; 自律规则时间范围 &gt; 手动开关。<br>
         自律时段生效期间，专注遮罩如果开了「跟随自律模式」就会跟着自动打开，此时主开关显示为接管、不能手动切。
       </div>
     </div>
@@ -2055,7 +2171,7 @@ function viewSync() {
   <div class="card">
     <div class="card-title">WebDAV 云同步</div>
     <div class="card-sub">
-      把<b>黑名单与设置</b>同步到你自己的网盘（坚果云 / Nextcloud / 群晖 / 阿里云盘 WebDAV 等）。
+      把<b>自律规则与设置</b>同步到你自己的网盘（坚果云 / Nextcloud / 群晖 / 阿里云盘 WebDAV 等）。
       统计原始数据<b>不会</b>上传，避免动辄几十 MB 的日文件把网盘撑爆。
     </div>
 
@@ -2141,7 +2257,7 @@ function viewSync() {
   </div>
 
   <div class="card">
-    <div class="card-title">同步黑名单</div>
+    <div class="card-title">同步自律规则</div>
     <div class="card-sub">冲突时不会静默丢掉任何一边。</div>
     <div class="hint" style="line-height:2">
       · 每份配置都带 <code>updatedAt</code> 时间戳，同步时<b>新的覆盖旧的</b>（last-write-wins）。<br>
@@ -2327,7 +2443,7 @@ function showCelebrate(c) {
           ${dur}
         </div>
         <div style="font-size:12.5px;color:var(--text-2);margin-bottom:22px">
-          ${esc(c.rules || '自律黑名单')} · 全程没有破功
+          ${esc(c.rules || '自律自律规则')} · 全程没有破功
         </div>
         <div class="note" style="text-align:left;font-size:13px;line-height:1.9">
           ${esc(praise)}
@@ -2359,19 +2475,21 @@ function viewHelp() {
   </div>
 
   ${sec('1 · 三步开始', `
-    ① 到「黑名单」新建一条 → ② 加软件 / 加网站 → ③ 拖出它在自律时间内的生效范围。
+    ① 到「自律规则」新建一条 → ② 加软件 / 加网站 → ③ 拖出它在自律时间内的生效范围。
     打开开关后，<b>只有自律时间内</b>它才会拦；自律时间之外完全静默。
   `)}
 
-  ${sec('2 · 黑名单与生效', `
-    一条黑名单 = 一份名单 + 一张周时间表。<b>时间表全空 = 自律时间内全程生效</b>；否则只在画出来的格子里生效。
+  ${sec('2 · 自律规则与生效', `
+    一条自律规则 = 一份名单 + 一张周时间表。<b>时间表全空 = 自律时间内全程生效</b>；否则只在画出来的格子里生效。
     时间表按周循环，下周自动重复；要让每天一样，就在「时间表」里点「周一 → 全部」。
-    黑名单 = 名单里的不许开；强制模式 = 只有名单里的能开，其他前台窗口都会被关。
+    每条自律规则都有明确的<b>生效类型</b>：<b>黑名单</b>（名单里的不许开）、
+    <b>白名单</b>（只有名单里的能开，其他前台窗口都会被关）、
+    <b>两者同时</b>（名单里的照样拦，例外里的放行）。
   `)}
 
   ${sec('3 · 番茄与提醒', `
-    黑名单里可以设「专注 N 分钟 / 休息 M 分钟」，循环锚点是从该时段的起点开始算。
-    休息期间这条黑名单不拦截，时间到自动锁回。<br>
+    自律规则里可以设「专注 N 分钟 / 休息 M 分钟」，循环锚点是从该时段的起点开始算。
+    休息期间这条自律规则不拦截，时间到自动锁回。<br>
     提醒在「设置 → 提醒」：学习结束前 X 分钟、休息结束前 Y 分钟各响一次（0~120 分钟，0 = 不发），
     休息提醒可以单独关。触发时主界面弹提示、HUD 上的倒计时变金色闪烁。
   `)}
@@ -2402,13 +2520,13 @@ function viewHelp() {
     本地备份在软件目录下的 <code>king of focus back</code>，写盘前加密（设了密码用 AES-256-GCM，
     没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。<br>
     云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。
-    「立即同步」只同步黑名单和设置，不做版本归档。
+    「立即同步」只同步自律规则和设置，不做版本归档。
   `)}
 
   ${sec('8 · 常见问题', `
     <b>拦截没反应？</b> 目标程序是管理员权限，就右键以管理员身份运行本程序。<br>
     <b>网页没拦住？</b> 插件没装或没连上，看侧边栏「浏览器插件」状态。<br>
-    <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁，或者把黑名单开关关掉（固化了就关不掉）。<br>
+    <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁，或者把自律规则开关关掉（固化了就关不掉）。<br>
     <b>数据在哪？</b> 全在软件目录的 <code>king of focus data</code>，整个文件夹拷走就能迁移。
   `)}
 
@@ -2512,7 +2630,7 @@ function viewBrowsers() {
   <div class="card">
     <div class="card-title">自律时段守护</div>
     <div class="card-sub">
-      自律时间（黑名单正在生效）里，只要你打开浏览器而插件没装或被停用，会在
+      自律时间（自律规则正在生效）里，只要你打开浏览器而插件没装或被停用，会在
       <b>5 秒内</b>自动关闭它，并记一条拦截记录。装了插件且已启用则完全不受影响。
     </div>
     ${cfgSwitchRow('browserGuard.enabled', g.enabled, '启用浏览器巡检', '关闭后，自律时段里不会因为插件状态而关浏览器')}
@@ -2606,12 +2724,12 @@ function viewSettings() {
 
   <div class="card">
     <div class="card-title">拦截行为</div>
-    <div class="card-sub">这些设置对所有黑名单生效。</div>
+    <div class="card-sub">这些设置对所有自律规则生效。</div>
     ${sw('dryRun', st.dryRun, '演练模式', '只记录不真的关闭，用来先验证名单是否写对了')}
     ${sw('softClose', st.softClose, '先温和关闭', '先给程序发关闭信号，0.7 秒不退再强制结束，能保住一部分现场')}
-    ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中黑名单网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
+    ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中自律规则网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
     ${sw('guardBrowser', st.guardBrowser, '浏览器守护', '要拦网页时，如果插件失联，直接关掉浏览器（需先装插件）')}
-    ${sw('blockTaskmgr', st.blockTaskmgr !== false, '自律期间禁止打开任务管理器', '自律模式生效时（自律时段专注段 / 黑名单生效中），一发现任务管理器就关掉；「固化」锁定期间无论如何都会关')}
+    ${sw('blockTaskmgr', st.blockTaskmgr !== false, '自律期间禁止打开任务管理器', '自律模式生效时（自律时段专注段 / 自律规则生效中），一发现任务管理器就关掉；「固化」锁定期间无论如何都会关')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">扫描间隔</div><div class="hint" style="margin-top:3px">越小越灵敏，占用也越高</div></div>
       <div class="row" style="align-items:center;gap:8px">
@@ -2761,7 +2879,7 @@ function viewSettings() {
         <div class="hint" style="margin-top:3px">
           开：自律时间里仍可以用 Ctrl+Alt+F4、Alt+F4 或下面的按钮退出。
           关：自律时段内<b>任何方式都退不掉</b>——热键、Alt+F4、关闭窗口、下面的按钮全部被拒绝，直到这一段结束。
-          <br>黑名单开了「固化」时更严：固化锁定期间即使这里开着，也退不掉。
+          <br>自律规则开了「固化」时更严：固化锁定期间即使这里开着，也退不掉。
           ${quitLocked ? '<br><b style="color:var(--red)">这一段生效期间不能再打开这个开关。</b>' : ''}
         </div>
       </div>
@@ -2788,7 +2906,7 @@ function viewSettings() {
 
   <div class="card">
     <div class="card-title">全局保护名单</div>
-    <div class="card-sub">强制模式下，这些进程永远不会被拦截。用逗号分隔（进程名，不带 .exe）。</div>
+    <div class="card-sub">白名单下，这些进程永远不会被拦截。用逗号分隔（进程名，不带 .exe）。</div>
     <textarea id="protectedList" style="width:100%;height:88px;background:var(--input-bg);border:1px solid var(--line-2);border-radius:8px;color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
     <div style="margin-top:10px"><button class="btn btn-sm" data-act="save-protected">保存名单</button></div>
   </div>`;
@@ -2978,7 +3096,7 @@ async function promptBrowserSetup() {
         <div class="note" style="margin-bottom:12px">
           检测到 <b>${broken.length}</b> 个浏览器装了但插件没启用。缺少这个插件会有两个后果：
           <div style="margin-top:8px;line-height:1.9">
-            ① 网页黑名单拦不住（插件负责在请求层拦截，并在自律时段扫掉已打开的标签页）<br>
+            ① 网页自律规则拦不住（插件负责在请求层拦截，并在自律时段扫掉已打开的标签页）<br>
             ② 自律时段里打开这些浏览器会被<b>自动关闭</b>（因为无法确认网页是否违规）
           </div>
         </div>
@@ -3012,23 +3130,23 @@ const Act = window.Act = {
   async loadQuota() { await loadQuota(); render(); },
 
   async toggleRule(id) {
-    const l = S.data.config.lists.find((x) => x.id === id);
+    const l = S.data.config.rules.find((x) => x.id === id);
     if (!l) return;
-    if (l.lock && l.lock.kind !== 'none' && l.enabled) { toast('这条黑名单已锁定，不能直接关闭', 'err'); render(); return; }
-    // 时段进行中（含休息段）：黑名单开关整体锁死，开、关都不许动
-    if (settingsFrozen()) { guardDiscipline('切换黑名单开关'); render(); return; }
+    if (l.lock && l.lock.kind !== 'none' && l.enabled) { toast('这条自律规则已锁定，不能直接关闭', 'err'); render(); return; }
+    // 时段进行中（含休息段）：自律规则开关整体锁死，开、关都不许动
+    if (settingsFrozen()) { guardDiscipline('切换自律规则开关'); render(); return; }
     l.enabled = !l.enabled;
     await saveConfig();
     render();
   },
 
   async delRule(id) {
-    const l = S.data.config.lists.find((x) => x.id === id);
+    const l = S.data.config.rules.find((x) => x.id === id);
     if (!l) return;
-    if (l.lock && l.lock.kind !== 'none') { toast('已锁定的黑名单不能删除', 'err'); return; }
-    if (settingsFrozen()) { guardDiscipline('删除黑名单'); return; }
-    if (!confirm(`确定删除黑名单「${l.name}」？`)) return;
-    S.data.config.lists = S.data.config.lists.filter((x) => x.id !== id);
+    if (l.lock && l.lock.kind !== 'none') { toast('已锁定的自律规则不能删除', 'err'); return; }
+    if (settingsFrozen()) { guardDiscipline('删除自律规则'); return; }
+    if (!confirm(`确定删除自律规则「${l.name}」？`)) return;
+    S.data.config.rules = S.data.config.rules.filter((x) => x.id !== id);
     await saveConfig();
     render();
   },
@@ -3037,7 +3155,7 @@ const Act = window.Act = {
     const r = S.editing;
     syncEditorInputs();
     const nameEl = $('#ruleName');
-    if (nameEl) r.name = nameEl.value.trim() || '未命名黑名单';
+    if (nameEl) r.name = nameEl.value.trim() || '未命名自律规则';
     if (S.editorTab === 'lock') {
       if (r.lock.kind === 'timer') {
         const m = +(($('#lockMins') || {}).value || 60);
@@ -3046,9 +3164,9 @@ const Act = window.Act = {
       if (r.lock.kind === 'password') r.lock.password = ($('#lockPwd') || {}).value || '';
       if (r.lock.kind === 'text') r.lock.chars = +(($('#lockChars') || {}).value || 20);
     }
-    const lists = S.data.config.lists;
-    const i = lists.findIndex((x) => x.id === r.id);
-    if (i >= 0) lists[i] = r; else lists.push(r);
+    const rules = S.data.config.rules;
+    const i = rules.findIndex((x) => x.id === r.id);
+    if (i >= 0) rules[i] = r; else rules.push(r);
     const ok = await saveConfig();
     if (!ok) {
       // 后端拒绝了（多为自律时段里删了已生效的条目）。
@@ -3059,7 +3177,7 @@ const Act = window.Act = {
     S.editing = null;
     closeModal();
     render();
-    toast('黑名单已保存', 'ok');
+    toast('自律规则已保存', 'ok');
   },
 
   async pickRunningApp() {
@@ -3269,7 +3387,7 @@ const Act = window.Act = {
           <button class="close-x" data-act="close-modal">×</button></div>
         <div class="modal-bd">
           <div class="note">${keep
-            ? '测试期间的黑名单、设置、统计会<b>合并进正式环境</b>，回到正式模式后可以看到。正式环境原有的其它数据不会被删除。'
+            ? '测试期间的自律规则、设置、统计会<b>合并进正式环境</b>，回到正式模式后可以看到。正式环境原有的其它数据不会被删除。'
             : '测试期间产生的配置与统计会<b>全部删除</b>，正式环境保持进入测试模式前的样子。'}</div>
         </div>
         <div class="modal-ft">
@@ -3353,6 +3471,50 @@ const Act = window.Act = {
     if (!r) { toast('报告读取失败', 'err'); return; }
     S.reportView = r;
     renderReportModal();
+  },
+
+  /* ---- Hub：激励语录 ---- */
+
+  /** 换一条：在自己写的和联网的那条之间轮换 */
+  quoteNext() {
+    const pool = quotePool();
+    if (pool.length <= 1) {
+      toast('现在只有这一条，可以在「我的语录」里多写几句', '');
+      return;
+    }
+    const i = pool.findIndex((x) => x.key === S.quoteAt);
+    S.quoteAt = pool[(i + 1) % pool.length].key;
+    render();
+  },
+
+  quoteManage() {
+    S.quoteEdit = ((S.data.config.settings || {}).customQuotes || []).slice();
+    renderQuoteModal();
+  },
+
+  quoteAdd() {
+    const inp = $('#quoteNew');
+    const v = ((inp && inp.value) || '').trim();
+    if (!v) { if (inp) inp.focus(); return; }
+    if (v.length > 120) { toast('一句话最多 120 字', 'err'); return; }
+    if ((S.quoteEdit || []).includes(v)) { toast('这句已经加过了', ''); return; }
+    if ((S.quoteEdit || []).length >= 60) { toast('最多 60 条，先删掉几条吧', 'err'); return; }
+    S.quoteEdit = [...(S.quoteEdit || []), v];
+    renderQuoteModal();
+  },
+
+  quoteDel(i) {
+    S.quoteEdit = (S.quoteEdit || []).filter((_, k) => k !== i);
+    renderQuoteModal();
+  },
+
+  async quoteSave() {
+    S.data.config.settings.customQuotes = (S.quoteEdit || []).slice();
+    const ok = await saveConfig();      // 内部会 pull + 用后端真实状态回填
+    closeModal();
+    S.quoteAt = '';
+    render();
+    toast(ok ? '语录已保存' : '保存失败', ok ? 'ok' : 'err');
   },
 
   /* ---- 历史报告：类型选择 / 导出 / 删除 ---- */
@@ -3738,7 +3900,7 @@ const Act = window.Act = {
   },
 
   /** 手动指定浏览器主程序路径。
-   *  主通道走后端 `pick_path`（tauri_plugin_dialog 原生文件选择框，与黑名单页"选择 exe"同一条已验证链路）。
+   *  主通道走后端 `pick_path`（tauri_plugin_dialog 原生文件选择框，与自律规则页"选择 exe"同一条已验证链路）。
    *  后端对话框不可用时退回输入框，保证任何情况下都能设/清除，不被一个对话框堵死。 */
   async browserSetPath(key) {
     let picked = null;
@@ -3946,12 +4108,12 @@ const Act = window.Act = {
 
   async clockApplyRules() {
     const fc = clockCfg();
-    // 生效中不能关掉"自律时间内启用黑名单"（打开是加强，不拦）
-    if (fc.applyRules && settingsFrozen()) { guardDiscipline('关闭「自律时间内启用黑名单」'); render(); return; }
+    // 生效中不能关掉"自律时间内启用自律规则"（打开是加强，不拦）
+    if (fc.applyRules && settingsFrozen()) { guardDiscipline('关闭「自律时间内启用自律规则」'); render(); return; }
     fc.applyRules = !fc.applyRules;
     await saveConfig();
     render();
-    toast(fc.applyRules ? '自律时间内启用黑名单' : '自律时间内不再启用黑名单，只负责进入自律状态', 'ok');
+    toast(fc.applyRules ? '自律时间内启用自律规则' : '自律时间内不再启用自律规则，只负责进入自律状态', 'ok');
   },
 
   async clockClear() {
@@ -4113,7 +4275,7 @@ const Act = window.Act = {
     toast(`已改为每格 ${g} 分钟：一小时 ${60 / g} 格，已排好的时段不受影响`, 'ok');
   },
 
-  /** 勾选 / 取消"这套时段管哪些黑名单分组"。
+  /** 勾选 / 取消"这套时段管哪些自律规则分组"。
    *
    * 空列表 = 全部（默认，也是老配置的语义）。
    * 取消某组 = 这套时段不再管它 → 属于"放松纪律"，生效期间要拦。 */
@@ -4121,14 +4283,14 @@ const Act = window.Act = {
     const p = clockProfile();
     if (!Array.isArray(p.bound)) p.bound = [];
     const removing = !id || p.bound.includes(id);
-    if (removing && settingsFrozen()) { guardDiscipline('改绑黑名单分组'); render(); return; }
+    if (removing && settingsFrozen()) { guardDiscipline('改绑自律规则分组'); render(); return; }
     if (!id) p.bound = [];
     else if (p.bound.includes(id)) p.bound = p.bound.filter((x) => x !== id);
     else p.bound = [...p.bound, id];
     await saveConfig();
     render();
-    const names = (S.data.config.lists || []);
-    if (!p.bound.length) { toast('这套时段恢复为「全部黑名单生效」', 'ok'); return; }
+    const names = (S.data.config.rules || []);
+    if (!p.bound.length) { toast('这套时段恢复为「全部自律规则生效」', 'ok'); return; }
     const label = p.bound.map((x) => (names.find((l) => l.id === x) || {}).name || x).join('、');
     toast(`「${p.name}」现在只管：${label}`, 'ok');
   },
@@ -4417,6 +4579,52 @@ function renderPicker() {
   });
 }
 
+/** 「我的语录」管理面板：列出、删除、添加，保存前都只改本地副本 */
+function renderQuoteModal() {
+  const list = S.quoteEdit || [];
+  const rows = list.length
+    ? list.map((t, i) => `<div class="qrow">
+        <span class="n">${i + 1}</span>
+        <span class="t">${esc(t)}</span>
+        <button class="btn btn-sm danger-ghost" data-act="quote-del" data-i="${i}">删除</button>
+      </div>`).join('')
+    : '<div class="empty" style="padding:20px"><span class="ico">”</span>还没有自己写的语录，在下面输入一句吧。</div>';
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:600px">
+      <div class="modal-hd">
+        <h3>我的激励语录 <span class="badge">${list.length} 条</span></h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="hint" style="margin-bottom:12px">
+          这里的句子会和联网取到的「一言」一起在 Hub 顶部轮换，每条下面都会标明来源。
+        </div>
+        <div class="qlist">${rows}</div>
+        <div class="row" style="gap:8px;margin-top:14px">
+          <input type="text" id="quoteNew" style="flex:1" maxlength="120"
+            placeholder="写一句给自己的话（最多 120 字），回车即可添加" />
+          <button class="btn btn-sm" data-act="quote-add">添加</button>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button class="btn" data-act="close-modal">取消</button>
+        <button class="btn btn-primary" data-act="quote-save">保存</button>
+      </div>
+    </div>
+  </div>`;
+  const inp = $('#quoteNew');
+  if (inp) {
+    inp.focus();
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        Act.quoteAdd();
+      }
+    });
+  }
+}
+
 function renderReportModal() {
   const r = S.reportView;
   if (!r) return;
@@ -4644,6 +4852,11 @@ document.addEventListener('click', async (e) => {
   if (act === 'range') { await Act.setRange(el.dataset.r); return; }
   if (act === 'range-apply') { await Act.applyRange(); return; }
   if (act === 'stats-refresh') { await Act.refreshStats(); return; }
+  if (act === 'quote-next') { Act.quoteNext(); return; }
+  if (act === 'quote-manage') { Act.quoteManage(); return; }
+  if (act === 'quote-add') { Act.quoteAdd(); return; }
+  if (act === 'quote-del') { Act.quoteDel(+el.dataset.i); return; }
+  if (act === 'quote-save') { await Act.quoteSave(); return; }
   if (act === 'gen-report') { await Act.genReport(); return; }
   if (act === 'gen-period') { await Act.genPeriodSet(el.dataset.v); return; }
   if (act === 'open-report') { await Act.openReport(el.dataset.id); return; }
