@@ -4,6 +4,48 @@
 const T = window.__TAURI__;
 const invoke = T && T.core ? T.core.invoke : async () => { throw new Error('需要在 King of Focus 中运行'); };
 
+/* 多语言：I.t 查词典，I.apply 在每次渲染后翻译 DOM。
+ * 用 I 而不是 T，因为 T 已经被 Tauri 的全局对象占了。 */
+const I = window.I18N || {
+  getLang: () => 'zh-CN',
+  setLang: () => {},
+  apply: () => {},
+  restore: () => {},
+  t: (s) => s,
+  has: () => false,
+};
+/** 单句翻译（toast、动态文案用；DOM 里的由 I.apply 统一处理） */
+const L = (s) => I.t(s);
+
+/** 当前语言偏好：只有 zh-CN / en 两种，默认简体中文 */
+function langPref() {
+  const v = (S.data && S.data.config && S.data.config.settings && S.data.config.settings.lang) || 'zh-CN';
+  return v === 'en' ? 'en' : 'zh-CN';
+}
+
+/** 全量应用语言：启动与切换语言时调用（zh 时相当于还原） */
+function applyLang() {
+  const l = langPref();
+  I.setLang(l);
+  document.documentElement.lang = l === 'en' ? 'en' : 'zh-CN';
+  I.apply(document.body);
+}
+
+/** 渲染后只处理内容区：骨架的翻译是持久的，重绘的只有 #content。
+ *  这样每 1.5 秒的轮询重绘不会把整棵树再遍历一遍。 */
+function applyLangView() {
+  const l = langPref();
+  I.setLang(l);
+  if (l === 'en') {
+    // render 会同时改写这几个区域，它们都不在 #content 里：
+    //   页面标题、侧栏状态、顶部状态胶囊、主题按钮
+    ['#content', '#pageTitle', '#sideStatus', '#statePill', '#themeBtn'].forEach((sel) => {
+      const el = $(sel);
+      if (el) I.apply(el);
+    });
+  }
+}
+
 const S = {
   view: 'overview',
   data: null,
@@ -83,7 +125,7 @@ function sliceTotal(arr) { return (arr || []).reduce((a, b) => a + (b.secs || 0)
 function toast(msg, kind) {
   const el = document.createElement('div');
   el.className = 'toast ' + (kind || '');
-  el.textContent = msg;
+  el.textContent = L(msg);
   $('#toastRoot').appendChild(el);
   setTimeout(() => el.remove(), 3200);
 }
@@ -222,6 +264,9 @@ function renderChrome() {
     const label = pref === 'system' ? `◐ 跟随系统（${cur === 'light' ? '浅' : '深'}）` : cur === 'light' ? '☀ 浅色' : '☾ 深色';
     tb.textContent = label;
   }
+
+  // 侧栏与状态胶囊刚被重写成中文（每秒都会走一遍），英文界面下要立刻翻回来
+  applyLangView();
 }
 
 /* ---------------- 激励语录（Hub 顶部） ----------------
@@ -2720,6 +2765,12 @@ function viewSettings() {
       <button class="${st.theme === 'light' ? 'active gold' : ''}" data-act="theme" data-v="light">浅色</button>
       <button class="${st.theme === 'dark' ? 'active gold' : ''}" data-act="theme" data-v="dark">深色</button>
     </div>
+    <div class="hint" style="margin:14px 0 8px">语言 · Language</div>
+    <div class="seg">
+      <button class="${langPref() === 'zh-CN' ? 'active gold' : ''}" data-act="lang" data-v="zh-CN">简体中文</button>
+      <button class="${langPref() === 'en' ? 'active gold' : ''}" data-act="lang" data-v="en">English</button>
+    </div>
+    <div class="hint" style="margin-top:8px">浏览器插件会跟随这里的语言；默认简体中文。</div>
   </div>
 
   <div class="card">
@@ -3006,6 +3057,9 @@ function render() {
     const cur = currentSlices();
     drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
   }
+
+  // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
+  applyLangView();
 }
 
 /* ---------------- 复制与扩展目录面板 ---------------- */
@@ -3834,6 +3888,19 @@ const Act = window.Act = {
     applyTheme();
     render();
     toast(v === 'system' ? '已跟随系统外观' : v === 'light' ? '已切换到浅色' : '已切换到深色', 'ok');
+  },
+  /** 切换界面语言：写配置 → 重绘内容 → 全量应用。
+   *  先 render 再 applyLang：重绘出来的节点是中文原文，切换/还原都走同一条路。 */
+  async setLang(v) {
+    const want = v === 'en' ? 'en' : 'zh-CN';
+    if (langPref() === want) return;
+    S.data.config.settings.lang = want;
+    const ok = await saveConfig();
+    render();
+    applyLang();
+    toast(ok
+      ? (want === 'en' ? '已切换到 English' : '已切换回简体中文')
+      : '语言保存失败', ok ? 'ok' : 'err');
   },
   async cycleTheme() {
     const cur = S.data.config.settings.theme || 'system';
@@ -4884,6 +4951,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'backup-dir') { await invoke('backup_open_dir'); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
   if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
+  if (act === 'lang') { await Act.setLang(el.dataset.v); return; }
   if (act === 'cycle-theme') { await Act.cycleTheme(); return; }
   if (act === 'restart-admin') { await Act.restartAdmin(); return; }
   if (act === 'open-ext') { await Act.openExt(); return; }
@@ -5623,7 +5691,9 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   if (!S.data) { $('#content').innerHTML = '<div class="empty">无法连接后台服务</div>'; return; }
   S.customStart = todayStr();
   S.customEnd = todayStr();
+  I.setLang(langPref());
   render();
+  applyLang();
   setInterval(pull, 1500);
   // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导
   promptBrowserSetup();

@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "King of Focus 网页拦截",
+  "name": "__MSG_extName__",
+  "default_locale": "zh_CN",
   "version": "1.0.0",
-  "description": "配合 King of Focus 主程序：自律模式生效时段内拦截黑名单网站，并把当前浏览的域名上报用于时长统计。",
+  "description": "__MSG_extDesc__",
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",

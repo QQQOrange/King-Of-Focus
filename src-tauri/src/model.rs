@@ -711,6 +711,9 @@ pub struct Settings {
     pub browser_exe: std::collections::HashMap<String, String>,
     /// 外观：system | dark | light
     pub theme: String,
+    /// 界面语言：zh-CN（默认）| en。
+    /// 浏览器插件通过 /api/state 读这个值，跟着软件走同一套语言。
+    pub lang: String,
     /// 专注遮罩
     pub mask: MaskCfg,
     /// 自律模式生效时间段（24 段）
@@ -755,6 +758,7 @@ impl Default for Settings {
             protected: default_protected(),
             browser_exe: std::collections::HashMap::new(),
             theme: "system".into(),
+            lang: "zh-CN".into(),
             mask: MaskCfg::default(),
             focus_clock: ClockCfg::default(),
             stats: StatsCfg::default(),
@@ -873,6 +877,19 @@ mod tests {
         let out = serde_json::to_string(&c).unwrap();
         assert!(out.contains("\"rules\""), "{out}");
         assert!(!out.contains("\"lists\""), "{out}");
+    }
+
+    /// 界面语言只有两档：异常值（含老配置没有这个键）一律回落简体中文。
+    #[test]
+    fn lang_falls_back_to_zh() {
+        let mut c = Config::default();
+        assert_eq!(c.settings.lang, "zh-CN", "默认必须是简体中文");
+        c.settings.lang = "fr".into();
+        crate::cfg::sanitize(&mut c);
+        assert_eq!(c.settings.lang, "zh-CN");
+        c.settings.lang = "en".into();
+        crate::cfg::sanitize(&mut c);
+        assert_eq!(c.settings.lang, "en", "en 要保留");
     }
 
     /// mode 三值：写错的一律回落 blacklist（最保守）

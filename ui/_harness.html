@@ -65,7 +65,7 @@ const STATE = {
       pollMs: 1000, dryRun: false, guardBrowser: true, graceSecs: 90,
       browserGuard: { enabled: true, notify: true, graceMs: 1200, detectOnStart: true },
       port: 27315, autostart: false, runAsAdmin: false, closeToTray: true, alwaysOnTop: false, softClose: true,
-      siteCloseBrowser: true, blockTaskmgr: true, protected: [], theme: 'dark',
+      siteCloseBrowser: true, blockTaskmgr: true, protected: [], theme: 'dark', lang: 'zh-CN',
       mask: { opacity: 88, durationMs: 420, follow: true,
         blockClick: true, targetPid: 0, targetTitle: '', hotkey: 'Ctrl+Alt+K',
         hotkeyLabel: '', followSchedule: true, auto: false, autoApps: [] },
@@ -1460,6 +1460,88 @@ window.__itest = async () => {
     })(), true]);
   }
 
+  // ---- 26g. 多语言：默认简体中文，可切 English，插件跟随同一个值 ----
+  {
+    await Act.nav('settings');
+    await wait(300);
+
+    const langBtns = [...document.querySelectorAll('[data-act="lang"]')];
+    out.push(['设置里有语言选择', langBtns.length, 2]);
+    out.push(['两个选项是简体中文 / English',
+      langBtns.map((b) => b.textContent.trim()).join('|'), '简体中文|English']);
+    out.push(['默认选中简体中文',
+      (langBtns.find((b) => b.classList.contains('active')) || {}).textContent.trim(), '简体中文']);
+    out.push(['默认语言是 zh-CN', langPref(), 'zh-CN']);
+    out.push(['html lang 是 zh-CN', document.documentElement.lang, 'zh-CN']);
+
+    // 词典本身兜得住界面上的主要文案
+    out.push(['词典收录了导航文案',
+      ['总览', '自律时段', '自律规则', '专注遮罩', '设置'].every((k) => I18N.has(k)), true]);
+    out.push(['词典覆盖动态时间标题（带数字）',
+      I18N.has('周一 09:00 – 10:00 · 专注 50 分 / 休息 10 分，右键可改'), true]);
+
+    // 切到 English
+    await Act.setLang('en');
+    await wait(320);
+    out.push(['切到英文后配置里是 en', STATE.config.settings.lang, 'en']);
+    out.push(['nav 变成英文',
+      document.querySelector('.nav-item[data-view="overview"]').textContent.includes('Overview'), true]);
+    out.push(['页面标题变成英文', document.querySelector('#pageTitle').textContent.trim(), 'Settings']);
+    out.push(['设置页出现英文卡片标题',
+      [...document.querySelectorAll('.card-title')].some((e) => e.textContent.trim() === 'Appearance'), true]);
+    out.push(['English 处于选中态',
+      ([...document.querySelectorAll('[data-act="lang"]')].find((b) => b.classList.contains('active')) || {}).textContent.trim(),
+      'English']);
+    out.push(['html lang 跟着变', document.documentElement.lang, 'en']);
+    // 内容区不能残留中文标题（抽查几处最显眼的）
+    const zhLeft = [...document.querySelectorAll('#content .card-title, #content .card-sub')]
+      .map((e) => e.textContent)
+      .filter((t) => /[\u4e00-\u9fa5]/.test(t));
+    out.push(['设置页卡片标题/说明没有残留中文', zhLeft.length, 0]);
+
+    // 换到别的页面看是否也生效（渲染后 applyLangView 负责）
+    await Act.nav('rules');
+    await wait(300);
+    out.push(['规则页标题也翻了', document.querySelector('#pageTitle').textContent.trim(), 'Rules']);
+
+    // 全站扫一遍：英文界面下不该有残留中文（这是最硬的回归判据）
+    {
+      const views = ['overview', 'clock', 'rules', 'mask', 'browsers',
+        'stats', 'reports', 'sync', 'settings', 'help', 'about'];
+      const left = [];
+      for (const v of views) {
+        await Act.nav(v);
+        await wait(260);
+        const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = tw.nextNode())) {
+          const pe = n.parentElement;
+          if (!pe || pe.tagName === 'SCRIPT' || pe.tagName === 'STYLE') continue;
+          if (pe.closest('#toastRoot')) continue;   // 瞬时提示不算界面文案
+          const tx = (n.nodeValue || '').trim();
+          if (tx && /[\u4e00-\u9fa5]/.test(tx)) {
+            left.push(v + ':' + tx.slice(0, 22));
+          }
+        }
+      }
+      out.push(['英文界面没有残留中文', left.slice(0, 8).join(' | '), '']);
+    }
+
+    // 切回中文
+    await Act.setLang('zh-CN');
+    await wait(320);
+    out.push(['切回中文后配置是 zh-CN', STATE.config.settings.lang, 'zh-CN']);
+    out.push(['nav 恢复中文',
+      document.querySelector('.nav-item[data-view="overview"]').textContent.includes('总览'), true]);
+    await Act.nav('rules');
+    await wait(200);
+    out.push(['页面标题恢复中文', document.querySelector('#pageTitle').textContent.trim(), '自律规则']);
+    out.push(['html lang 恢复', document.documentElement.lang, 'zh-CN']);
+
+    await Act.nav('settings');
+    await wait(250);
+  }
+
   // ---- 27. 专注计时弹窗（HUD）：四角可选 + 透明度可调 + 落盘 ----
   {
     STATE.config.settings.hud = STATE.config.settings.hud || {};
@@ -1500,6 +1582,7 @@ window.__itest = async () => {
   return out;
 };
 </script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 <script>
 (async () => {

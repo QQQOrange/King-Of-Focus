@@ -316,11 +316,14 @@ async function refresh(opts) {
   }
 
   RAW_RULES = (state && state.rules) || [];
+  // 语言跟着主程序走：弹窗与拦截页打开时读这个值
+  const LANG = (state && state.lang) === 'en' ? 'en' : 'zh-CN';
   MATCHERS = self.KOFMatch.compile(RAW_RULES);
   CLOSE_WINDOW = state.siteCloseBrowser !== false;
   await syncDnr(RAW_RULES);
   chrome.storage.local.set({
     connected: true,
+    lang: LANG,
     active: !!state.active,
     ruleCount: RAW_RULES.length,
     activeRules: RAW_RULES.map((r) => ({

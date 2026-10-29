@@ -402,6 +402,8 @@ fn state_json(shared: &Shared) -> String {
         "clockBreak": dstate.clock_break,
         // 插件据此决定：只关标签页，还是连整个浏览器窗口一起关
         "siteCloseBrowser": cfg.settings.site_close_browser,
+        // 插件按这个值切中英文（跟随软件设置页里的选择）
+        "lang": cfg.settings.lang,
         "serverTime": chrono::Local::now().timestamp(),
     })
     .to_string()

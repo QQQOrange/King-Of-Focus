@@ -127,6 +127,11 @@ pub fn sanitize(c: &mut Config) {
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
     sanitize_quotes(&mut c.settings.custom_quotes);
+
+    // 语言只有两档；写错（或老配置没有这个键）一律回落简体中文
+    if !matches!(c.settings.lang.as_str(), "zh-CN" | "en") {
+        c.settings.lang = "zh-CN".into();
+    }
 }
 
 /// 自定义语录归一化：去空白、去空行、去重、限长限量。

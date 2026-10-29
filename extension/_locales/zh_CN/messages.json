@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "King of Focus 网页拦截"
+  },
+  "extDesc": {
+    "message": "配合 King of Focus 主程序：自律时段内拦截名单里的网站，并把当前浏览的域名上报用于时长统计。"
+  }
+}

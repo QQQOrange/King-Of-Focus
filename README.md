@@ -212,6 +212,18 @@
 
 ---
 
+### 界面语言
+
+默认简体中文。`设置 → 外观 → Language` 可切到 English，立即生效并写入配置。
+
+- **术语对照**：自律时段 Hours · 自律规则 Rules · 专注遮罩 Focus mask · 黑名单 Blocklist · 白名单 Allowlist · 固化 Hard lock · 番茄 Pomodoro
+- **覆盖面**：主界面全部文案（含侧栏状态、页标题、弹窗、toast）、桌面 HUD、拦截通知、浏览器插件的弹窗与拦截页
+- **插件跟随**：插件每次轮询 `/api/state` 读 `lang` 并写进 `chrome.storage.local`，弹窗/拦截页打开时据此选语言 —— 软件里切了语言，插件页面立刻跟着变，不需要重装
+- **实现**：`ui/i18n.js` 用**中文原文当 key**（精确词典 + 正则规则处理带数字/时间的句子）。`render()` 落地后遍历 DOM 替换文本节点与 `title/placeholder`，切回中文时用备份还原，不重绘也不闪。漏翻译会干净回落中文，不会出现 `settings.xxx` 这种 key
+- **回归判据**：UI 自测里有一条「英文界面没有残留中文」，逐页扫描整棵树，残留数必须为 0
+
+---
+
 ## 三、技术方案
 
 ### 为什么是 Tauri 2 + Rust 原生 Win32
@@ -398,6 +410,7 @@ king-of-focus/
 │       └── cmds.rs                 # 全部 #[tauri::command]
 ├── ui/                             # 前端（原生 HTML/CSS/JS，无构建步骤）
 │   ├── index.html
+│   ├── i18n.js                     # 多语言词典（中文原文作 key）+ DOM 翻译引擎
 │   ├── app.css                     # 深/浅双主题令牌，大圆角视觉
 │   ├── app.js                      # 八个视图 + 规则编辑器 + 饼图
 │   ├── hud.html / hud.css / hud.js # 桌面悬浮 HUD（独立窗口）

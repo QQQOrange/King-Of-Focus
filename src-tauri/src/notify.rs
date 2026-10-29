@@ -90,16 +90,33 @@ pub fn toast(app: &AppHandle, kind: &str, title: &str, body: &str, tag: &str, se
     });
 }
 
+/// 当前是不是英文界面。通知也属于界面的一部分，跟着设置页的选择走。
+fn lang_en(app: &AppHandle) -> bool {
+    app.state::<std::sync::Arc<crate::shared::Shared>>()
+        .config()
+        .settings
+        .lang
+        == "en"
+}
+
 /// 应用被拦截时的通知（带去重）
 pub fn blocked_app(app: &AppHandle, label: &str, rule: &str) {
     if !allow(&format!("app:{label}"), Duration::from_millis(1500)) {
         return;
     }
-    let body = format!(
-        "<b>{}</b><br>自律模式生效中，这个程序马上会被关闭。",
-        html(label)
-    );
-    toast(app, "app", "已拦截这个应用", &body, rule, 4);
+    let en = lang_en(app);
+    let body = if en {
+        format!(
+            "<b>{}</b><br>Discipline is active — this app is about to be closed.",
+            html(label)
+        )
+    } else {
+        format!(
+            "<b>{}</b><br>自律模式生效中，这个程序马上会被关闭。",
+            html(label)
+        )
+    };
+    toast(app, "app", if en { "Blocked this app" } else { "已拦截这个应用" }, &body, rule, 4);
 }
 
 /// 网页被拦截时的通知（带去重）
@@ -113,11 +130,19 @@ pub fn blocked_site(app: &AppHandle, url: &str, rule: &str) {
         .chars()
         .take(56)
         .collect::<String>();
-    let body = format!(
-        "<b>{}</b><br>自律模式生效中，这个网页马上会被关闭。",
-        html(&short)
-    );
-    toast(app, "site", "已拦截这个网页", &body, rule, 4);
+    let en = lang_en(app);
+    let body = if en {
+        format!(
+            "<b>{}</b><br>Discipline is active — this site is about to be closed.",
+            html(&short)
+        )
+    } else {
+        format!(
+            "<b>{}</b><br>自律模式生效中，这个网页马上会被关闭。",
+            html(&short)
+        )
+    };
+    toast(app, "site", if en { "Blocked this site" } else { "已拦截这个网页" }, &body, rule, 4);
 }
 
 fn html(s: &str) -> String {

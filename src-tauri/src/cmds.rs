@@ -1111,6 +1111,8 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "quote": quote,
         "quoteFrom": quote_from,
         "theme": cfg.settings.theme,
+        // HUD 的语言跟着主界面走（它是个独立窗口，只能自己读）
+        "lang": cfg.settings.lang,
         "hudEnabled": cfg.settings.hud.enabled,
         // HUD 自己的外观：页面按这个透明度自己调，改完立刻能看到
         "opacity": cfg.settings.hud.opacity_pct(),
