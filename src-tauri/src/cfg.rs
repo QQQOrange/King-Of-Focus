@@ -424,11 +424,18 @@ fn sanitize_sleep_windows(s: &mut SleepCfg) {
         while out.iter().any(|x| x.id == id) {
             id.push('_');
         }
+        // 模式收敛到三个合法值；空（老数据）留空，交给 cycle_mode 投影
+        let mode = match w.mode.as_str() {
+            "everyday" | "workdays" | "custom" => w.mode.as_str(),
+            _ => "",
+        };
+        let mode = mode.to_string();
         out.push(crate::model::SleepWindow {
             id,
             from,
             to,
             days,
+            mode,
             enabled: w.enabled,
             lock_screen: w.lock_screen,
             shutdown: w.shutdown,
@@ -517,7 +524,7 @@ mod tests {
     fn clock_migrates_legacy_hours_to_seven_days() {
         let mut c = Config::default();
         let mut hours = vec![HourPlan::default(); 24];
-        hours[9] = HourPlan { on: true, work: 45, brk: 15, from: 0, to: 60, seg: String::new() };
+        hours[9] = HourPlan { on: true, work: 45, brk: 15, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             hours,
@@ -542,7 +549,7 @@ mod tests {
         // 上一版把单套方案直接摊在 ClockCfg.days 上
         let mut c = Config::default();
         let mut day = vec![HourPlan::default(); 24];
-        day[9] = HourPlan { on: true, work: 50, brk: 30, from: 0, to: 60, seg: String::new() }; // work+brk > 60
+        day[9] = HourPlan { on: true, work: 50, brk: 30, from: 0, to: 60, seg: String::new(), wins: Vec::new() }; // work+brk > 60
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             days: vec![day],
@@ -574,11 +581,11 @@ mod tests {
         let mut a = ClockProfile::default();
         a.id = "work".into();
         a.name = "工作日强化".into();
-        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60, seg: String::new() };
+        a.days[0][9] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         let mut b = ClockProfile::default();
         b.id = "weekend".into();
         b.name = "周末轻松".into();
-        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60, seg: String::new() };
+        b.days[5][10] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         c.settings.focus_clock = ClockCfg {
             enabled: true,
             profiles: vec![a, b],
@@ -649,10 +656,10 @@ mod tests {
     fn clock_clamps_minute_window() {
         let mut c = Config::default();
         let day = &mut c.settings.focus_clock.profiles[0].days[0];
-        day[8] = HourPlan { on: true, work: 50, brk: 10, from: 90, to: 45, seg: String::new() }; // from 越界且起>=止
-        day[9] = HourPlan { on: true, work: 50, brk: 10, from: 30, to: 20, seg: String::new() }; // 起晚于止
-        day[10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 0, seg: String::new() }; // to 越界
-        day[11] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 30, seg: String::new() }; // 合法窗口
+        day[8] = HourPlan { on: true, work: 50, brk: 10, from: 90, to: 45, seg: String::new(), wins: Vec::new() }; // from 越界且起>=止
+        day[9] = HourPlan { on: true, work: 50, brk: 10, from: 30, to: 20, seg: String::new(), wins: Vec::new() }; // 起晚于止
+        day[10] = HourPlan { on: true, work: 50, brk: 10, from: 0, to: 0, seg: String::new(), wins: Vec::new() }; // to 越界
+        day[11] = HourPlan { on: true, work: 50, brk: 10, from: 15, to: 30, seg: String::new(), wins: Vec::new() }; // 合法窗口
         sanitize(&mut c);
         let day = &c.settings.focus_clock.profiles[0].days[0];
         assert_eq!((day[8].from, day[8].to), (0, 60), "from 夹到 59 后仍起>=止，按整小时算");

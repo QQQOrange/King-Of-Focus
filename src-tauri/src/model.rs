@@ -337,6 +337,52 @@ pub struct HourPlan {
     /// 有 id 之后，"相邻"不再等于"同一段"；空 id 是老配置，退回旧的连续合并。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub seg: String,
+    /// 这一小时里的**多个**窗口。
+    ///
+    /// 上面那组 `on/from/to/seg` 只能表达"一小时一个窗口"，
+    /// 于是 09:00–09:30 和 09:30–10:00 这种**同一小时里的两段**无解：
+    /// 第二段会把第一段撑成整小时，两段并成一段（用户报的 bug）。
+    ///
+    /// 非空时**以这里为准**；为空时退回上面那组单窗口字段（老配置 / 单段）。
+    /// 这样"一小时两段"只是多开一个数组元素，不需要再动判定与渲染的根结构。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wins: Vec<HourWin>,
+}
+
+/// 一小时里的一个窗口（分钟，左闭右开；`to = 60` 表示到整点）
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HourWin {
+    pub from: u32,
+    pub to: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub seg: String,
+}
+
+impl HourPlan {
+    /// 这一小时里所有生效的窗口（统一出口：`wins` 优先，否则旧单窗口）
+    pub fn windows(&self) -> Vec<HourWin> {
+        if !self.on {
+            return Vec::new();
+        }
+        if !self.wins.is_empty() {
+            return self
+                .wins
+                .iter()
+                .filter(|w| w.to > w.from)
+                .cloned()
+                .collect();
+        }
+        let to = if self.to == 0 { 60 } else { self.to };
+        if to <= self.from {
+            return Vec::new();
+        }
+        vec![HourWin {
+            from: self.from,
+            to,
+            seg: self.seg.clone(),
+        }]
+    }
 }
 
 /// `to` 的 serde 默认值：整点结束（旧配置没有这个字段时不能变成 0，
@@ -347,7 +393,7 @@ fn hour_end() -> u32 {
 
 impl Default for HourPlan {
     fn default() -> Self {
-        HourPlan { on: false, work: 50, brk: 10, from: 0, to: 60, seg: String::new() }
+        HourPlan { on: false, work: 50, brk: 10, from: 0, to: 60, seg: String::new(), wins: Vec::new() }
     }
 }
 
@@ -810,6 +856,13 @@ pub struct SleepWindow {
     /// 只在哪几天生效：0=周一 … 6=周日。**空 = 每天**
     #[serde(default)]
     pub days: Vec<u8>,
+    /// 显式的周期模式：`everyday` / `workdays` / `custom`，空 = 老数据（按 days 投影）。
+    ///
+    /// 为什么必须显式存：只要靠 days 投影，用户在「指定」里勾了周一到周五，
+    /// 集合恰好等于工作日，界面就会跳成「仅工作日」，再点「指定」又立刻弹回去，
+    /// 看起来像"点不动"。模式和集合是两件事，得分开存。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mode: String,
     pub enabled: bool,
     /// 这一段内是否全屏锁定
     pub lock_screen: bool,
@@ -826,6 +879,7 @@ impl Default for SleepWindow {
             from: 23 * 60,
             to: 7 * 60,
             days: Vec::new(),
+            mode: "everyday".into(),
             enabled: true,
             lock_screen: true,
             shutdown: true,
@@ -878,6 +932,15 @@ impl SleepWindow {
      *   custom    → 其它任意子集
      */
     pub fn cycle_mode(&self) -> &'static str {
+        // 显式模式优先。用户在「指定」里勾出周一到周五，它就是「指定」——
+        // 不能因为集合恰好等于工作日就自动跳成「仅工作日」（用户报过这个 bug）。
+        match self.mode.as_str() {
+            "everyday" => return "everyday",
+            "workdays" => return "workdays",
+            "custom" => return "custom",
+            _ => {}
+        }
+        // 老数据没有 mode：按 days 投影，行为与升级前完全一致
         if self.days.is_empty() {
             "everyday"
         } else if self.days.len() == 5 && self.days.iter().all(|d| *d < 5) {
@@ -892,6 +955,12 @@ impl SleepWindow {
     /// `keep` 是"上一次的自定义集合"：从 everyday 切到 custom 时，
     /// 原样恢复它比给一个空集合好——用户往往只是临时切走看一眼再切回来。
     pub fn set_cycle_mode(&mut self, mode: &str, keep: Option<&[u8]>) {
+        // 显式记下模式：之后就不再看 days 猜了
+        self.mode = match mode {
+            "workdays" => "workdays".into(),
+            "custom" => "custom".into(),
+            _ => "everyday".into(),
+        };
         match mode {
             "everyday" => self.days.clear(),
             "workdays" => self.days = vec![0, 1, 2, 3, 4],
@@ -973,6 +1042,7 @@ impl SleepCfg {
             from: self.from,
             to: self.to,
             days: Vec::new(),
+            mode: "everyday".into(),
             enabled: true,
             lock_screen: self.lock_screen,
             shutdown: self.shutdown,

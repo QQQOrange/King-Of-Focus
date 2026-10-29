@@ -546,7 +546,7 @@ mod tests {
     fn cfg_with_clock() -> Config {
         let mut c = Config::default();
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: String::new() };
+        days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         c.rules = vec![Rule {
             id: "r1".into(),
@@ -592,7 +592,7 @@ mod tests {
         // 否则"每小时有 10 分钟可以随便改"等于没锁
         let mut c = Config::default();
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new() };
+        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         c.rules = vec![Rule {
             id: "r1".into(),
@@ -623,7 +623,7 @@ mod tests {
         let mut other = crate::model::ClockProfile::default();
         other.id = "p2".into();
         other.name = "另一套".into();
-        other.days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: String::new() };
+        other.days[2][10] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         old.settings.focus_clock.profiles.push(other);
 
         let now = now_at(2, 10, 30);
@@ -784,7 +784,7 @@ mod tests {
         c.rules[0].hard = false;
         c.settings.allow_quit_in_session = false;
         c.settings.focus_clock.profiles[0].days[2][10] =
-            HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new() };
+            HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         assert!(exit_blocked_at(&c, now_at(2, 10, 45)).is_some(), "休息段也属于自律时段");
     }
 
@@ -863,7 +863,7 @@ mod tests {
         c.rules[0].hard = true;
         // 把 10 点那段改成 40 专注 / 20 休息，10:45 落在休息段
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new() };
+        days[2][10] = HourPlan { on: true, work: 40, brk: 20, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         c.settings.focus_clock = ClockCfg::with_days(true, days);
         let info = lock_info_at(&c, now_at(2, 10, 45));
         assert!(!info.locked, "休息段不算自律时间，不该锁：{info:?}");

@@ -618,13 +618,37 @@ mod tests {
         assert_eq!(w.cycle_mode(), "custom");
     }
 
-    /// 反过来：用户在 custom 里手动勾成工作日全集时，投影就是 workdays。
-    /// 这是**有意**的等价——同一个集合不该有两种说法。
+    /// 用户在「指定」里勾成周一到周五，**仍然要保持「指定」**。
+    ///
+    /// 这是用户报过的 bug：以前靠 days 投影，集合恰好等于工作日就跳成
+    /// 「仅工作日」，再点「指定」又立刻弹回去，看着像点不动。
+    /// 现在模式是显式存储的，集合和模式互不影响。
     #[test]
-    fn custom_matching_workdays_projects_to_workdays() {
+    fn custom_stays_custom_even_when_it_looks_like_workdays() {
         let mut w = SleepWindow::default();
         w.set_cycle_mode("custom", Some(&[0, 1, 2, 3, 4]));
+        assert_eq!(w.days, vec![0, 1, 2, 3, 4]);
+        assert_eq!(w.cycle_mode(), "custom", "勾成工作日也不能跳成仅工作日");
+        // 再点一次「指定」也还是「指定」（幂等，不会来回跳）
+        w.set_cycle_mode("custom", Some(&[0, 1, 2, 3, 4]));
+        assert_eq!(w.cycle_mode(), "custom");
+    }
+
+    /// 老数据没有 mode 字段：仍按 days 投影，升级后行为不变
+    #[test]
+    fn legacy_without_mode_still_projects() {
+        let w = SleepWindow {
+            days: vec![0, 1, 2, 3, 4],
+            mode: String::new(),
+            ..Default::default()
+        };
         assert_eq!(w.cycle_mode(), "workdays");
+        let w2 = SleepWindow {
+            days: vec![0, 2],
+            mode: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(w2.cycle_mode(), "custom");
     }
 
     /// 切模式**只动 days**，不许把时间/开关改掉（这是最容易写错的地方）

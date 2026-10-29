@@ -125,7 +125,7 @@ mod tests {
 
     fn clock_on(cfg: &mut Config, weekday: u32, hour: u32, work: u32, brk: u32) {
         let mut days = vec![vec![HourPlan::default(); 24]; 7];
-        days[weekday as usize][hour as usize] = HourPlan { on: true, work, brk, from: 0, to: 60, seg: String::new() };
+        days[weekday as usize][hour as usize] = HourPlan { on: true, work, brk, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
         cfg.settings.focus_clock = ClockCfg::with_days(true, days);
     }
 

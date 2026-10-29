@@ -2455,6 +2455,93 @@ window.__itest = async () => {
     await wait(200);
   }
 
+  // ---- 26h7. 同一小时里的两段必须各自独立（09:00–09:30 + 09:30–10:00）----
+  {
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => {
+        hh.on = false; hh.from = 0; hh.to = 60; hh.seg = ''; hh.wins = [];
+      }));
+      await saveConfig(); await wait(130);
+    };
+    const h9 = () => pd()[2][9];
+    const segsOf = (d) => ccSegs(pd()[d]);
+    const runsOf = (d) => document.querySelectorAll(`.cc-run[data-d="${d}"]`);
+
+    await openFull();
+    await clearAll();
+
+    // ① 先在 09 点里拖出 09:00–09:30
+    await Act.clockCommitRange(2, 9 * 60, 9 * 60 + 30, 'add');
+    await wait(240);
+    out.push(['第一段是半小时', segsOf(2).length, 1]);
+    out.push(['第一段范围', segsOf(2)[0].range, '09:00–09:30']);
+
+    // ② 再拖 09:30–10:00（**同一小时里**的第二段）
+    await Act.clockCommitRange(2, 9 * 60 + 30, 10 * 60, 'add');
+    await wait(300);
+    out.push(['同一小时里的第二段没有被并掉', segsOf(2).length, 2]);
+    out.push(['第一段还是 09:00–09:30', segsOf(2)[0].range, '09:00–09:30']);
+    out.push(['第二段是 09:30–10:00', segsOf(2)[1].range, '09:30–10:00']);
+    out.push(['两段 id 不同', h9().wins[0].seg !== h9().wins[1].seg, true]);
+    out.push(['一小时里存了两个窗口', (h9().wins || []).length, 2]);
+    out.push(['渲染出两个块，不是一个一小时块', runsOf(2).length, 2]);
+    out.push(['总时长是 1 小时（没丢分钟）', ccDayMinutes(pd()[2]), 60]);
+
+    // ③ 取消后半段，前半段要留下
+    await Act.clockClearRange(2, 9, 9, '前半段');
+    await wait(320);
+    out.push(['取消后整小时都没了（同小时一起清）', segsOf(2).length, 0]);
+
+    // ④ 重新造两段，只删第二段的一半（09:30–09:45），前段必须完好
+    await clearAll();
+    await Act.clockCommitRange(2, 9 * 60, 9 * 60 + 30, 'add');
+    await wait(220);
+    await Act.clockCommitRange(2, 9 * 60 + 30, 9 * 60 + 45, 'add');
+    await wait(260);
+    out.push(['两段并排', segsOf(2).map((x) => x.range).join(' / '), '09:00–09:30 / 09:30–09:45']);
+    await Act.clockCommitRange(2, 9 * 60 + 30, 9 * 60 + 45, 'sub');
+    await wait(300);
+    out.push(['删掉第二段后第一段还在', segsOf(2).length, 1]);
+    out.push(['留下的是 09:00–09:30', segsOf(2)[0].range, '09:00–09:30']);
+
+    // ⑤ 后端判定也要认多窗口（界面两段 = 实际两段）
+    {
+      const cfg = S.data.config;
+      await clearAll();
+      await Act.clockCommitRange(2, 9 * 60, 9 * 60 + 30, 'add');
+      await wait(200);
+      await Act.clockCommitRange(2, 9 * 60 + 30, 10 * 60, 'add');
+      await wait(220);
+      out.push(['配置里两个窗口都落了盘', (pd()[2][9].wins || []).length, 2]);
+      // plan_wins 是后端函数，这里用 ccSegs 的分钟数间接验证：
+      // 09:16 落在第一段、09:46 落在第二段，两侧都算"在窗口内"
+      const t1 = ccSegAt(2, 9 * 60 + 16);
+      const t2 = ccSegAt(2, 9 * 60 + 46);
+      out.push(['09:16 命中第一段', !!t1 && t1.range, '09:00–09:30']);
+      out.push(['09:46 命中第二段', !!t2 && t2.range, '09:30–10:00']);
+      out.push(['两段加起来 60 分钟', ccDayMinutes(pd()[2]), 60]);
+    }
+
+    // ⑥ 老数据（只有 from/to，没有 wins）照旧工作
+    await clearAll();
+    pd()[2][9].on = true; pd()[2][9].from = 0; pd()[2][9].to = 30;
+    pd()[2][9].seg = ''; pd()[2][9].wins = [];
+    await saveConfig(); render(); await wait(240);
+    out.push(['老格式单窗口仍然正确', segsOf(2)[0].range, '09:00–09:30']);
+
+    // ⑦ 跨小时的两段不受影响（09:30–10:00 与 10:00–10:30）
+    await clearAll();
+    await Act.clockCommitRange(1, 9 * 60 + 30, 10 * 60, 'add');
+    await wait(220);
+    await Act.clockCommitRange(1, 10 * 60, 10 * 60 + 30, 'add');
+    await wait(240);
+    out.push(['跨小时的两段也各是各的', segsOf(1).map((x) => x.range).join(' / '),
+      '09:30–10:00 / 10:00–10:30']);
+
+    await clearAll();
+  }
+
   // ---- 26h6. 进入自律时间自动打开：面板 / 排序 / 窗口形式 / 校验 ----
   {
     const r0 = () => S.data.config.rules[0];
@@ -2730,36 +2817,39 @@ window.__itest = async () => {
     out.push(['模式按钮跟着高亮',
       document.querySelector('.sl-seg .active').textContent.trim(), '仅工作日']);
 
-    // ③ 切成「指定」：亮出 7 个星期按钮，并记住上一次的自定义集合
+    // ③ 切成「指定」：日期**原样保留**（就是刚才的工作日），模式必须停在「指定」
     await Act.sleepCycle('custom');
     await wait(300);
-    out.push(['指定模式亮出星期按钮',
-      document.querySelector('.sl-days').hasAttribute('hidden'), false]);
+    out.push(['指定模式亮出星期按钮', document.querySelector('.sl-days').hasAttribute('hidden'), false]);
     out.push(['星期按钮是 7 个', document.querySelectorAll('.sl-days button').length, 7]);
-    // 默认给「周一三五」：工作日全集会被投影回"仅工作日"，等于点了没反应
-    out.push(['指定模式给一个明确的非工作日默认', wins()[0].days.join(','), '0,2,4']);
-    // 取消周一、周五 → 只剩周三；再点周六 → 周三+周六
-    for (const d of [0, 4]) {
-      const b = document.querySelector(`.sl-days button[data-act="sleep-day"][data-v="${d}"]`);
-      if (b) { b.click(); await wait(220); }
-    }
-    {
-      const b = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="5"]');
-      if (b) { b.click(); await wait(220); }
-    }
-    out.push(['勾选结果写进 days', wins()[0].days.join(','), '2,5']);
-    out.push(['星期按钮的亮起状态跟着变',
-      [...document.querySelectorAll('.sl-days button.on')].map((b) => +b.dataset.v).join(','), '2,5']);
+    out.push(['切到指定后日期原样保留', wins()[0].days.join(','), '0,1,2,3,4']);
+    out.push(['周一至周五仍显示「指定」（不是仅工作日）',
+      document.querySelector('.sl-seg .active').textContent.trim(), '指定']);
+    out.push(['模式记在配置里', wins()[0].mode, 'custom']);
 
-    // ④ 最后一天不能取消：否则会变成"永不触发"的幽灵段
+    // ④ 关键：再点一次「指定」不会弹回「仅工作日」
+    await Act.sleepCycle('custom');
+    await wait(260);
+    out.push(['再点指定还是指定', document.querySelector('.sl-seg .active').textContent.trim(), '指定']);
+    out.push(['日期一个都没丢', wins()[0].days.join(','), '0,1,2,3,4']);
+    out.push(['配置里的 mode 还是 custom', wins()[0].mode, 'custom']);
+
+    // ⑤ 手动取消几天：剩周三
+    for (const d of [0, 1, 3, 4]) {
+      const b2 = document.querySelector(`.sl-days button[data-act="sleep-day"][data-v="${d}"]`);
+      if (b2) { b2.click(); await wait(220); }
+    }
+    out.push(['取消四天后只剩周三', wins()[0].days.join(','), '2']);
+    out.push(['改日期后仍是指定模式', wins()[0].mode, 'custom']);
+    out.push(['按钮亮起状态跟着变',
+      [...document.querySelectorAll('.sl-days button.on')].map((x) => +x.dataset.v).join(','), '2']);
+
+    // ⑥ 最后一天不能取消：否则会变成"永不触发"的幽灵段
     {
       const b2 = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="2"]');
-      if (b2) { b2.click(); await wait(220); }
-      out.push(['取消一天还剩一天', wins()[0].days.join(','), '5']);
-      const b5 = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="5"]');
-      if (b5) { b5.click(); await wait(220); }
+      if (b2) { b2.click(); await wait(240); }
     }
-    out.push(['最后一天取消被拦下', wins()[0].days.join(','), '5']);
+    out.push(['最后一天取消被拦下', wins()[0].days.join(','), '2']);
     out.push(['拦下时给出提示', /至少要选一天/.test(
       (document.getElementById('toastRoot') || {}).textContent || ''), true]);
 

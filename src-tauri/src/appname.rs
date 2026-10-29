@@ -4,12 +4,18 @@
 //! 真正对人有意义的是 Windows 版本信息里的 `FileDescription`（"Google Chrome"、
 //! "Visual Studio Code"），资源管理器里显示的也是它。
 //!
-//! 三条兜底，按顺序：
-//!   1. `FileDescription`（绝大多数正规软件都有）
-//!   2. 常见软件的内置对照表（版本信息缺失 / 只是"Microsoft® Windows® Operating System" 时）
-//!   3. 文件名本身
+//! 名字必须**优先取系统里已有的那个**，而不是自己维护一张映射表：
+//!
+//!   1. **开始菜单 / 任务栏里快捷方式的显示名** —— 这就是用户在系统里看到的名字。
+//!      中文 Windows 上装微信，开始菜单里就是「微信.lnk」，目标指向 `Weixin.exe`；
+//!      千问是「千问.lnk」→ `qianwen.exe`。这两个 exe 的版本信息里只有英文
+//!      （`Weixin` / `Qianwen`），早先照抄就成了大写英文。
+//!   2. exe 版本信息的 `FileDescription`（正规软件一般都有，且是本地化过的）
+//!   3. 常见软件的内置对照表 —— **只作兜底**：系统里压根没有快捷方式时才用得上
+//!   4. 文件名本身
 //!
 //! 结果按路径缓存：一秒一次采样、同一进程反复查版本信息没必要。
+//! 快捷方式表只扫一次（懒加载），之后按 exe 文件名查。
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -34,6 +40,171 @@ extern "system" {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// 系统里的快捷方式：exe 文件名（小写）→ 显示名。
+///
+/// 扫三个地方，覆盖"用户看见的名字"的全部来源：
+///   · 用户开始菜单   %APPDATA%\Microsoft\Windows\Start Menu\Programs
+///   · 公共开始菜单   %ProgramData%\Microsoft\Windows\Start Menu\Programs
+///   · 任务栏固定区   %APPDATA%\...\Quick Launch\User Pinned\TaskBar
+///
+/// 为什么能拿到目标 exe：`.lnk` 里存了目标路径的字符串（UTF-16 或 ANSI），
+/// 直接扫字节就能取到 `...\Weixin.exe`，不需要 COM。
+/// 用 COM（IShellLink）当然更"正规"，但那要手写 vtable，几百行只为读一个名字，
+/// 而这里的用法只是"按 exe 反查显示名"，扫字符串足够了——
+/// 取不到就往下走版本信息，不会更糟。
+fn shortcuts() -> &'static Mutex<HashMap<String, String>> {
+    static S: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    S.get_or_init(|| {
+        let mut m: HashMap<String, String> = HashMap::new();
+        for dir in shortcut_dirs() {
+            scan_lnks(&dir, &mut m, 0);
+        }
+        Mutex::new(m)
+    })
+}
+
+fn shortcut_dirs() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<std::path::PathBuf>, p: String| {
+        let pb = std::path::PathBuf::from(p);
+        if pb.is_dir() {
+            out.push(pb);
+        }
+    };
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        push(&mut out, format!(r"{appdata}\Microsoft\Windows\Start Menu\Programs"));
+        push(
+            &mut out,
+            format!(r"{appdata}\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"),
+        );
+    }
+    if let Ok(pd) = std::env::var("PROGRAMDATA") {
+        push(&mut out, format!(r"{pd}\Microsoft\Windows\Start Menu\Programs"));
+    }
+    out
+}
+
+/// 递归扫 .lnk（限深 4 层：开始菜单不会有更深的业务目录）
+fn scan_lnks(dir: &std::path::Path, out: &mut HashMap<String, String>, depth: u8) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            scan_lnks(&path, out, depth + 1);
+            continue;
+        }
+        let is_lnk = path
+            .extension()
+            .map(|x| x.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false);
+        if !is_lnk {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|x| x.to_str()) else { continue };
+        let name = stem.trim();
+        if name.is_empty() {
+            continue;
+        }
+        // 卸载 / 帮助 / 官网 这类快捷方式不是"应用名"，混进来会把
+        // 微信显示成"卸载微信"。
+        let low = name.to_lowercase();
+        if low.contains("卸载")
+            || low.contains("uninstall")
+            || low.contains("帮助")
+            || low.contains("help")
+            || low.contains("readme")
+            || low.contains("官网")
+            || low.contains("website")
+        {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(&path) else { continue };
+        for target in lnk_targets(&raw) {
+            let base = base_of(&target).to_lowercase();
+            if base.is_empty() {
+                continue;
+            }
+            // 同一个 exe 可能有多个快捷方式（桌面版 / 快捷方式 / 任务栏）。
+            // 优先留**含中文**的那个：这就是"尽量以中文名显示"的落点。
+            match out.get(&base) {
+                Some(old) if !has_cjk(old) && has_cjk(name) => {
+                    out.insert(base, name.to_string());
+                }
+                Some(_) => {}
+                None => {
+                    out.insert(base, name.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+}
+
+fn base_of(p: &str) -> &str {
+    p.rsplit(['\\', '/']).next().unwrap_or(p)
+}
+
+/// 从 .lnk 的字节里抠出目标 exe 路径。
+///
+/// 两种编码都扫：UTF-16LE（`W\0e\0i\0x\0i\0n\0.\0e\0x\0e\0`）和 ANSI。
+/// 只看以 `.exe` 结尾、并且带目录分隔符的片段——
+/// 短片段（`qianwen.exe`）是同一路径的尾巴，留着也没用。
+fn lnk_targets(raw: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // UTF-16LE：每个 ASCII 字符后面跟一个 0
+    let mut i = 0usize;
+    while i + 1 < raw.len() {
+        if raw[i + 1] != 0 || !(0x20..0x7f).contains(&raw[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut j = i;
+        while j + 1 < raw.len() && raw[j + 1] == 0 && (0x20..0x7f).contains(&raw[j]) {
+            j += 2;
+        }
+        if j - start >= 10 {
+            let mut s = String::new();
+            let mut k = start;
+            while k < j {
+                s.push(raw[k] as char);
+                k += 2;
+            }
+            if s.to_lowercase().ends_with(".exe") && (s.contains('\\') || s.contains('/')) {
+                out.push(s);
+            }
+        }
+        i = j.max(i + 1);
+    }
+
+    // ANSI
+    let mut i = 0usize;
+    while i < raw.len() {
+        if !(0x20..0x7f).contains(&raw[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < raw.len() && (0x20..0x7f).contains(&raw[i]) {
+            i += 1;
+        }
+        if i - start >= 10 {
+            let s = String::from_utf8_lossy(&raw[start..i]).to_string();
+            if s.to_lowercase().ends_with(".exe") && (s.contains('\\') || s.contains('/')) {
+                out.push(s);
+            }
+        }
+    }
+    out
 }
 
 /// 读 exe 版本信息里的 FileDescription。拿不到就 None（不抛错）。
@@ -256,27 +427,49 @@ fn is_generic(desc: &str) -> bool {
         || d == "windows host process"
 }
 
+/// 按 exe 文件名查系统快捷方式里的显示名
+fn shortcut_name(stem: &str) -> Option<String> {
+    let key = format!("{}.exe", stem.to_lowercase());
+    let key2 = stem.to_lowercase();
+    let m = shortcuts().lock().ok()?;
+    m.get(&key)
+        .or_else(|| m.get(&key2))
+        .filter(|v| !v.trim().is_empty())
+        .cloned()
+}
+
 /// 对外的入口：`path` 是 exe 全路径，`stem` 是文件名（不含扩展名）
 pub fn display(path: &str, stem: &str) -> String {
     // 空路径不能进缓存：否则第一次拿到的结果会被后面所有"没路径"的进程共用
     if path.is_empty() {
-        return known(stem).map(|s| s.to_string()).unwrap_or_else(|| stem.to_string());
+        // 只给了文件名也要先查系统快捷方式：有些调用方（插件上报、旧数据）
+        // 手里没有全路径，但 exe 名足够反查"用户看见的名字"。
+        return shortcut_name(stem)
+            .or_else(|| known(stem).map(|s| s.to_string()))
+            .unwrap_or_else(|| stem.to_string());
     }
     if let Some(v) = cache().lock().ok().and_then(|c| c.get(path).cloned()) {
         return v;
     }
-    // **内置表优先**：它是人工整理过的名字，而版本信息经常是全大写英文
-    // （微信的 FileDescription 就是 "WEIXIN"，QQ 是 "QQ"），
-    // 直接用会让统计页变成一串大写缩写。有中文名就用中文名。
-    let mut name = match known(stem) {
-        Some(v) => v.to_string(),
-        None => file_description(path)
-            .filter(|d| !is_generic(d))
-            // 版本信息本身是纯大写英文（WEIXIN / WECHAT）时，也别直接摆上去：
-            // 能靠前缀认出是哪个软件就换成中文名，认不出才原样显示。
-            .map(|d| known_prefix(&d).map(|x| x.to_string()).unwrap_or(d))
-            .unwrap_or_else(|| known(stem).map(|s| s.to_string()).unwrap_or_else(|| stem.to_string())),
-    };
+    // 优先级：**系统里的快捷方式名** > 版本信息 > 内置表 > 文件名。
+    //
+    // 第一步就是"读系统已有的名字"：微信的 exe 叫 Weixin.exe、版本信息也是英文，
+    // 但开始菜单里明明是「微信」——那个名字才是用户在任务栏上看到的。
+    let mut name = shortcut_name(stem)
+        .or_else(|| file_description(path).filter(|d| !is_generic(d)))
+        .map(|d| {
+            // 版本信息是纯英文 / 全大写时（WEIXIN、Qianwen）也别直接摆上去：
+            // 先试内置表，最后才原样用。
+            if has_cjk(&d) {
+                d
+            } else {
+                known(stem)
+                    .map(|x| x.to_string())
+                    .or_else(|| known_prefix(&d).map(|x| x.to_string()))
+                    .unwrap_or(d)
+            }
+        })
+        .unwrap_or_else(|| known(stem).map(|s| s.to_string()).unwrap_or_else(|| stem.to_string()));
     // 版本信息里偶尔带尾部括号或多余空白，收一下
     name = name.trim().to_string();
     if name.is_empty() {
@@ -290,6 +483,35 @@ pub fn display(path: &str, stem: &str) -> String {
         c.insert(path.to_string(), name.clone());
     }
     name
+}
+
+#[cfg(test)]
+mod probe {
+    /// 手工验证用：`cargo test -- --ignored --nocapture probe_real_names`
+    #[test]
+    #[ignore]
+    fn probe_real_names() {
+        for (path, stem) in [
+            ("", "Weixin"),
+            (r"C://Users//64381//AppData//Local//Programs//QianwenApp//qianwen.exe", "qianwen"),
+            ("", "WeChat"),
+            ("", "chrome"),
+            ("", "Code"),
+        ] {
+            println!("{stem:12} -> {}", super::display(path, stem));
+        }
+        let m = super::shortcuts().lock().unwrap();
+        let mut hits: Vec<_> = m.iter().filter(|(k, _)| {
+            let k = k.to_lowercase();
+            k.contains("weixin") || k.contains("wechat") || k.contains("qianwen")
+        }).collect();
+        hits.sort();
+        println!("--- 快捷方式表命中 ---");
+        for (k, v) in hits {
+            println!("  {k} -> {v}");
+        }
+        println!("表大小 {}", m.len());
+    }
 }
 
 #[cfg(test)]

@@ -497,7 +497,7 @@ mod tests {
         // 周一 09:00–12:00 连续专注（直接改 profiles 里的第一套）
         let p = &mut c.settings.focus_clock.profiles[0];
         for h in 9..12 {
-            p.days[0][h] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: "s1".into() };
+            p.days[0][h] = HourPlan { on: true, work: 60, brk: 0, from: 0, to: 60, seg: "s1".into(), wins: Vec::new() };
         }
         let a = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap()
             .and_hms_opt(9, 5, 0).unwrap();

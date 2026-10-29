@@ -1429,47 +1429,60 @@ function ccRenderRuns(root, override, only) {
   //    分割点看「有效边界」：上一小时没到整点、或这一小时没从整点开始，
   //    中间就有没选中的分钟，必须切开——那个洞渲染时要让出来。
   //    切完的段只有首小时可以 from>0、尾小时可以 to<60，中间都是整小时。
+  // 这一小时里要画的窗口（预览优先）
+  const winsAt = (d, h) => {
+    const base = (fc.days[d] && fc.days[d][h]) || {};
+    if (!override) return hourWins(base);
+    const ov = override(d, h);
+    if (ov === undefined) return hourWins(base);
+    if (ov === null) return [];
+    return [{ from: ov.f, to: ov.t, seg: '__drag' }];
+  };
+
   const segs = [];
-  const pushSeg = (d, h0, h1) => {
+  const pushSeg = (d, sg) => {
     const mins = [];
-    for (let i = h0; i <= h1; i++) {
+    for (let i = sg.h0; i <= sg.h1; i++) {
       const p = hourAt(d, i);
       const w = p.on ? clampW(p.work) : clampW(fc.defWork);
       const b = p.on ? Math.max(0, Math.min(60 - w, clampW(p.brk))) : Math.min(clampW(fc.defBrk), 60 - w);
       mins.push(`${w}/${b}`);
     }
     segs.push({
-      d, h0, h1,
-      seg: segOf(d, h0),
+      d,
+      h0: sg.h0,
+      h1: sg.h1,
+      seg: sg.seg || '',
       sig: mins.join(','),
-      f0: Math.max(0, Math.min(59, Math.round(hourAt(d, h0).from || 0))),
-      t1: Math.max(1, Math.min(60, Math.round(hourAt(d, h1).to == null ? 60 : hourAt(d, h1).to))),
+      f0: Math.max(0, Math.min(59, Math.round(sg.f0 || 0))),
+      t1: Math.max(1, Math.min(60, Math.round(sg.t1))),
     });
   };
   cols.forEach((hs, d) => {
     if (allow && !allow.has(d)) return;
-    let h = 0;
-    while (h < 24) {
-      if (!hs.has(h)) { h++; continue; }
-      const from = h;
-      while (h + 1 < 24 && hs.has(h + 1)) h++;
-      const to = h;
-      let start = from;
-      for (let i = from + 1; i <= to; i++) {
-        const prev = hourAt(d, i - 1), cur = hourAt(d, i);
-        const cont = (prev.to == null ? 60 : prev.to) >= 60 && (cur.from || 0) <= 0
-          && ccSameSegId(segOf(d, i - 1), segOf(d, i));
-        // 只看时间上的连续是不够的：两个独立段可以首尾严丝合缝，
-        // 但它们是**两段**，必须各自成块（各自的圆角、标签、拖动范围）。
-        if (!cont) {
-          pushSeg(d, start, i - 1);
-          start = i;
-        }
-      }
-      pushSeg(d, start, to);
-      h++;
+    // 收集这一列所有窗口，按（小时, 起点）排好；同段且首尾相接才接成一条
+    const wins = [];
+    for (let h = 0; h < 24; h++) {
+      if (!hs.has(h)) continue;
+      for (const w of winsAt(d, h)) wins.push({ h, from: w.from, to: w.to, seg: w.seg });
     }
+    let cur = null;
+    for (const w of wins) {
+      const absFrom = w.h * 60 + w.from;
+      if (cur && ccSameSegId(cur.seg, w.seg) && cur.endAbs === absFrom) {
+        cur.h1 = w.h;
+        cur.t1 = w.to;
+        cur.endAbs = w.h * 60 + w.to;
+        continue;
+      }
+      if (cur) pushSeg(d, cur);
+      cur = {
+        h0: w.h, h1: w.h, f0: w.from, t1: w.to, seg: w.seg, endAbs: w.h * 60 + w.to,
+      };
+    }
+    if (cur) pushSeg(d, cur);
   });
+
 
   // 2) 每个「当天的一段连续小时」就是一块，**不再把相邻日期合并**。
   //
@@ -1687,6 +1700,114 @@ function ccNameDialog(mode) {
 
 /** 把一天拆成若干"连续时段"，连同摘要需要的统计值一起算出来。
  *  和 `ccDayRanges` 同一套连续性判据（上一小时排到整点、下一小时从整点开始）。 */
+/// 一小时里的窗口列表（统一出口：`wins` 优先，否则旧的单窗口字段）。
+///
+/// 为什么需要：`on/from/to` 只能表达"一小时一个窗口"，
+/// 于是 09:00–09:30 与 09:30–10:00 会被第二段撑成整小时、并成一段。
+/// `wins` 非空时以它为准，老配置照旧走单窗口。
+function hourWins(p) {
+  if (!p || !p.on) return [];
+  if (Array.isArray(p.wins) && p.wins.length) {
+    return p.wins
+      .filter((w) => w && (w.to == null ? 60 : +w.to) > (+w.from || 0))
+      .map((w) => ({
+        from: Math.max(0, Math.min(59, +w.from || 0)),
+        to: Math.max(1, Math.min(60, w.to == null ? 60 : +w.to)),
+        seg: w.seg || '',
+      }))
+      .sort((a, b) => a.from - b.from);
+  }
+  const f = Math.max(0, Math.min(59, p.from || 0));
+  const t = Math.max(1, Math.min(60, p.to == null ? 60 : p.to));
+  if (t <= f) return [];
+  return [{ from: f, to: t, seg: p.seg || '' }];
+}
+
+/** 把窗口列表写回一小时。只剩一个窗口时收回旧字段，避免配置无谓膨胀。 */
+function ccSetHourWins(p, wins, work, brk) {
+  const list = (wins || [])
+    .map((w) => ({
+      from: Math.max(0, Math.min(59, +w.from || 0)),
+      to: Math.max(1, Math.min(60, w.to == null ? 60 : +w.to)),
+      seg: w.seg || '',
+    }))
+    .filter((w) => w.to > w.from)
+    .sort((a, b) => a.from - b.from);
+  if (work != null) p.work = work;
+  if (brk != null) p.brk = brk;
+  if (!list.length) {
+    p.on = false;
+    p.from = 0;
+    p.to = 60;
+    p.seg = '';
+    p.wins = [];
+    return;
+  }
+  p.on = true;
+  p.from = list[0].from;
+  p.to = list[list.length - 1].to;   // 旧字段记"总范围"，给只读旧字段的地方一个近似
+  p.seg = list[0].seg || '';
+  p.wins = list.length > 1
+    ? list.map((w) => ({ from: w.from, to: w.to, seg: w.seg || '' }))
+    : [];
+}
+
+/** 某一小时在 [lo,hi) 这次操作之后的窗口列表。
+ *
+ *  `mode`：
+ *    · `add` 把这一段并进去（同段相接才连、不同段相接各留各的、重叠则截断旧段）
+ *    · `sub` 从各窗口里减去这一段（**两侧都留**，以前只留较长一侧）
+ */
+function ccWinsAfter(p, h, lo, hi, mode, segId) {
+  const hs = h * 60;
+  const a = Math.max(lo, hs);
+  const b = Math.min(hi, hs + 60);
+  const wins = hourWins(p).map((w) => ({ ...w }));
+  if (b <= a) return wins;
+  const af = a - hs;
+  const bt = b - hs;
+
+  if (mode === 'sub') {
+    const out = [];
+    for (const w of wins) {
+      if (bt <= w.from || af >= w.to) {
+        out.push(w);
+        continue;
+      }
+      // 两侧都保留：一小时现在能存两段了，不需要"留较长的一侧"
+      if (w.from < af) out.push({ from: w.from, to: af, seg: w.seg });
+      if (w.to > bt) out.push({ from: bt, to: w.to, seg: w.seg });
+    }
+    return out.sort((x, y) => x.from - y.from);
+  }
+
+  // add
+  let nf = af;
+  let nt = bt;
+  let nseg = segId || '';
+  const out = [];
+  for (const w of wins) {
+    const overlap = w.from < nt && w.to > nf;
+    const touching = w.to === nf || w.from === nt;
+    const same = !w.seg || !nseg ? true : w.seg === nseg;
+    if (!overlap && !(touching && same)) {
+      out.push(w);
+      continue;
+    }
+    if (overlap && !same) {
+      // 不同段且真的重叠：新段覆盖中间，旧段两侧截断
+      if (w.from < nf) out.push({ from: w.from, to: nf, seg: w.seg });
+      if (w.to > nt) out.push({ from: nt, to: w.to, seg: w.seg });
+      continue;
+    }
+    nf = Math.min(nf, w.from);
+    nt = Math.max(nt, w.to);
+    if (w.seg) nseg = w.seg;
+  }
+  out.push({ from: nf, to: nt, seg: nseg });
+  return out.sort((x, y) => x.from - y.from);
+}
+
 /** 新段 id：只要求"同一毫秒内也不撞"，不做持久化解析 */
 let _ccSegSeq = 0;
 function ccNewSegId() {
@@ -1723,42 +1844,56 @@ function ccSegIdIn(day, lo, hi) {
   for (let h = 0; h < 24; h++) {
     const hs = h * 60;
     if (hi <= hs || lo >= hs + 60) continue;
-    const p = day[h];
-    if (p && p.on && p.seg) return p.seg;
+    // **按窗口**判断，不能按小时：09:00–09:30 与 09:30–10:00 在同一个小时里，
+    // 按小时判断会让第二段"借用"第一段的 id，然后被合并成一段——
+    // 这正是"两个半小时变成一个一小时"的直接原因。
+    for (const w of hourWins(day[h])) {
+      const a = hs + w.from;
+      const b = hs + w.to;
+      if (b > lo && a < hi && w.seg) return w.seg;
+    }
   }
   return '';
 }
 
 function ccSegs(day) {
   const out = [];
-  let i = 0;
-  while (i < 24) {
-    if (!day[i].on) { i++; continue; }
-    const start = i;
-    let end = i;
-    while (end + 1 < 24 && day[end + 1].on
-      && (day[end].to == null ? 60 : day[end].to) >= 60
-      && (day[end + 1].from || 0) <= 0
-      && ccSameSeg(day[end], day[end + 1])) end++;
-    const f = Math.max(0, Math.min(59, day[start].from || 0));
-    const t = Math.max(1, Math.min(60, day[end].to == null ? 60 : day[end].to));
-    let mins = 0;
-    for (let h = start; h <= end; h++) {
-      const a = h === start ? f : 0;
-      const b = h === end ? t : 60;
-      mins += Math.max(0, b - a);
+  for (let h = 0; h < 24; h++) {
+    const p = day[h];
+    const ws = hourWins(p);
+    if (!ws.length) continue;
+    const work = Math.max(1, Math.min(60, p.work || 50));
+    const brk = Math.max(0, Math.min(60 - work, p.brk || 0));
+    for (const w of ws) {
+      const absFrom = h * 60 + w.from;
+      const last = out[out.length - 1];
+      // 同段 + 首尾相接 → 接成一段（跨小时的那一段）
+      if (last && ccSameSegId(last.seg, w.seg) && last.endAbs === absFrom) {
+        last.h1 = h;
+        last.t1 = w.to;
+        last.endAbs = h * 60 + w.to;
+        last.mins += w.to - w.from;
+        continue;
+      }
+      out.push({
+        h0: h,
+        h1: h,
+        f0: w.from,
+        t1: w.to,
+        seg: w.seg || '',
+        endAbs: h * 60 + w.to,
+        mins: w.to - w.from,
+        work,
+        brk,
+      });
     }
-    // 节奏取这一段的起点小时（同一段内通常一致）；番茄轮数按时长估算。
-    // 不足一轮就是 0：写"1 个番茄"是骗人的，15 分钟的段撑不起一整轮。
-    const work = Math.max(1, Math.min(60, day[start].work || 50));
-    const brk = Math.max(0, Math.min(60 - work, day[start].brk || 0));
-    const rounds = Math.floor(mins / Math.max(1, work + brk));
-    const endH = t >= 60 ? end + 1 : end;
-    out.push({
-      h0: start, h1: end, f0: f, t1: t, mins, work, brk, rounds,
-      range: `${pad(start)}:${pad(f)}–${pad(endH)}:${t >= 60 ? '00' : pad(t)}`,
-    });
-    i = end + 1;
+  }
+  // 补 range / rounds（原来在循环里算，现在统一收尾）
+  for (const sg of out) {
+    const endH = sg.t1 >= 60 ? sg.h1 + 1 : sg.h1;
+    sg.range = `${pad(sg.h0)}:${pad(sg.f0)}–${pad(endH)}:${sg.t1 >= 60 ? '00' : pad(sg.t1)}`;
+    sg.rounds = Math.floor(sg.mins / Math.max(1, sg.work + sg.brk));
+    delete sg.endAbs;
   }
   return out;
 }
@@ -1937,6 +2072,12 @@ function sleepSelSeg() {
 
 /** 周期模式：days 的投影，规则与 Rust 侧 sleep_window::cycle_mode 一致 */
 function sleepCycleMode(seg) {
+  // 显式模式优先：在「指定」里勾出周一到周五时，它就是「指定」。
+  // 早先靠 days 投影，集合恰好等于工作日就跳成「仅工作日」，
+  // 再点「指定」又立刻弹回去——用户看到的是"点不动"。
+  const m = (seg && seg.mode) || '';
+  if (m === 'everyday' || m === 'workdays' || m === 'custom') return m;
+  // 老数据没有 mode：按 days 投影，与升级前一致
   const d = (seg && seg.days) || [];
   if (!d.length) return 'everyday';
   if (d.length === 5 && d.every((x) => x < 5)) return 'workdays';
@@ -1963,7 +2104,8 @@ function sleepEnsureWindows() {
     id: 'w1',
     from: +seg.from,
     to: +seg.to,
-    days: [],
+    days: (seg.days || []).slice(),
+    mode: sleepCycleMode(seg),
     enabled: true,
     lockScreen: !!seg.lockScreen,
     shutdown: !!seg.shutdown,
@@ -5358,15 +5500,9 @@ const Act = window.Act = {
         const hs = h * 60;
         if (hi <= hs || lo >= hs + 60) continue;
         const p = day[h];
-        const r = ccHourResult(p, h, lo, hi, mode);
-        if (!r) {
-          if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; }
-          continue;
-        }
-        if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; p.seg = moveSeg; }
-        p.on = true;
-        p.from = r.f;
-        p.to = r.t;
+        const isNew = !p.on;
+        const wins = ccWinsAfter(p, h, lo, hi, mode, moveSeg);
+        ccSetHourWins(p, wins, isNew ? prof.defWork : null, isNew ? prof.defBrk : null);
       }
     };
     // 搬迁沿用原段的 id：搬过去还是"同一段"。
@@ -5416,18 +5552,12 @@ const Act = window.Act = {
       const hs = h * 60;
       if (hi <= hs || lo >= hs + 60) continue;   // 不涉及这一小时
       const p = days[h];
-      const r = ccHourResult(p, h, lo, hi, mode);
-      if (!r) {
-        if (p.on) { p.on = false; p.from = 0; p.to = 60; p.seg = ''; changed++; }
-        continue;
-      }
-      const wasOn = p.on;
-      const wasWin = p.on ? `${p.from || 0}-${p.to == null ? 60 : p.to}` : '';
-      if (!p.on) { p.work = prof.defWork; p.brk = prof.defBrk; p.seg = segId; }
-      p.on = true;
-      p.from = r.f;
-      p.to = r.t;
-      if (!wasOn || wasWin !== `${r.f}-${r.t}`) changed++;
+      const before = JSON.stringify(p);
+      const isNew = !p.on;
+      // 多窗口：这一小时可能同时有两段（09:00–09:30 + 09:30–10:00）
+      const wins = ccWinsAfter(p, h, lo, hi, mode, segId);
+      ccSetHourWins(p, wins, isNew ? prof.defWork : null, isNew ? prof.defBrk : null);
+      if (JSON.stringify(p) !== before) changed++;
     }
     if (!changed) { render(); return; }   // 没有实际变化就别写盘
     await saveConfig();
@@ -5712,6 +5842,8 @@ const Act = window.Act = {
     }
     days.sort((a, b) => a - b);
     seg.days = days;
+    // 手动改过日期就是「指定」：不能因为凑巧凑成工作日就自动跳模式
+    seg.mode = 'custom';
     S.sleepDaysLast = days.slice();
     const ok = await saveConfig();
     render();
@@ -5877,13 +6009,18 @@ const Act = window.Act = {
     if (cur === 'custom' && (seg.days || []).length) {
       S.sleepDaysLast = seg.days.slice().sort((a, b) => a - b);
     }
-    if (mode === 'everyday') seg.days = [];
-    else if (mode === 'workdays') seg.days = [0, 1, 2, 3, 4];
-    // 默认给"周一三五"而不是工作日全集：工作日全集会被 cycleMode 投影回
-    // 「仅工作日」，用户刚点完「指定」却看到按钮跳回去，会以为没生效。
-    else seg.days = (S.sleepDaysLast && S.sleepDaysLast.length)
-      ? S.sleepDaysLast.slice()
-      : [0, 2, 4];
+    seg.mode = mode;
+    if (mode === 'everyday') {
+      seg.days = [];
+    } else if (mode === 'workdays') {
+      seg.days = [0, 1, 2, 3, 4];
+    } else if (!(seg.days && seg.days.length)) {
+      // 「指定」：**保留已经选好的日期**。从「仅工作日」切过来时那就是周一到周五，
+      // 用户看到的是"指定 + 五个勾"，而不是被清空或被改回工作日。
+      seg.days = (S.sleepDaysLast && S.sleepDaysLast.length)
+        ? S.sleepDaysLast.slice()
+        : [0, 2, 4];
+    }
 
     // 旧字段跟着第一段走（多段模式下它只是"默认值"）
     const first = (clockCfgSleep().windows || [])[0];
@@ -6911,33 +7048,51 @@ function ccHourResult(p, h, lo, hi, mode) {
  *  与 clockMoveSeg 的写入顺序完全一致，所以松手不会跳变。 */
 function ccWinsForDay(d, dg, lo, hi) {
   const prof = clockProfile();
-  const day = prof.days[d] || [];
-  if (dg.mode !== 'move') {
-    // 新建 / 抹除只作用在按下的那一天（横向拖动不改变这一点）
-    return new Array(24).fill(null).map((_, h) => ccHourResult(day[h], h, lo, hi, dg.mode));
-  }
-  const wins = day.map((p) => (p && p.on
-    ? { f: p.from || 0, t: p.to == null ? 60 : p.to }
-    : null));
-  // ① 原段所在的天：把这一段覆盖的小时清空（其它段原样保留）
-  if (d === dg.d) {
-    const s0 = Math.floor(dg.segFrom / 60);
-    const s1 = Math.floor((dg.segTo - 1) / 60);
-    for (let h = s0; h <= s1; h++) wins[h] = null;
-  }
-  // ② 落点那天：把新区间并上去（目标已有窗口就取并集，和 add 一致）
-  if (d === dg.dCur) {
-    for (let h = 0; h < 24; h++) {
-      const hs = h * 60;
-      const a = Math.max(lo, hs), b = Math.min(hi, hs + 60);
-      if (b <= a) continue;
-      const prev = wins[h];
-      wins[h] = prev
-        ? { f: Math.min(prev.f, a - hs), t: Math.max(prev.t, b - hs) }
-        : { f: a - hs, t: b - hs };
+  const day = prof.days[d];
+  const out = new Array(24).fill(null);
+  for (let h = 0; h < 24; h++) {
+    const p = day[h];
+    const isSrc = d === dg.d;
+    const isDst = d === (dg.dCur == null ? dg.d : dg.dCur);
+    let wins = hourWins(p);
+    if (isSrc) wins = ccWinsAfter(p, h, dg.segFrom, dg.segTo, 'sub', '');
+    if (isDst) {
+      const seg = isSrc ? ccSegIdIn(day, dg.segFrom, dg.segTo) : '';
+      wins = ccWinsAfterSource(wins, h, lo, hi, seg);
     }
+    // 预览只关心"被拖的这一段落在这一小时的哪一截"，
+    // 所以取与 [lo,hi) 相交的那个窗口。
+    const hs = h * 60;
+    const hit = wins.find((w) => hs + w.to > lo && hs + w.from < hi);
+    out[h] = hit ? { f: hit.from, t: hit.to } : (wins.length ? null : null);
   }
-  return wins;
+  return out;
+}
+
+/** 预览用：把 [lo,hi) 并进已有窗口列表（不动配置） */
+function ccWinsAfterSource(wins, h, lo, hi, seg) {
+  const hs = h * 60;
+  const a = Math.max(lo, hs), b = Math.min(hi, hs + 60);
+  if (b <= a) return wins;
+  const af = a - hs, bt = b - hs;
+  const list = wins.map((w) => ({ ...w }));
+  let nf = af, nt = bt;
+  const out = [];
+  for (const w of list) {
+    const overlap = w.from < nt && w.to > nf;
+    const touching = w.to === nf || w.from === nt;
+    const same = !w.seg || !seg ? true : w.seg === seg;
+    if (!overlap && !(touching && same)) { out.push(w); continue; }
+    if (overlap && !same) {
+      if (w.from < nf) out.push({ from: w.from, to: nf, seg: w.seg });
+      if (w.to > nt) out.push({ from: nt, to: w.to, seg: w.seg });
+      continue;
+    }
+    nf = Math.min(nf, w.from);
+    nt = Math.max(nt, w.to);
+  }
+  out.push({ from: nf, to: nt, seg: seg || '__drag' });
+  return out.sort((x, y) => x.from - y.from);
 }
 
 /** 虚拟的一天里被选中多少分钟 */
