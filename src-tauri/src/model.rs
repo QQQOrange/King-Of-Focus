@@ -749,6 +749,74 @@ pub struct CustomBrowser {
     pub ext_page: String,
 }
 
+/// 一条语录来源。
+///
+/// 为什么要做成"可配置的列表"而不是写死两个 if：用户可能想接自己的接口
+/// （公司内部服务、自建博客的 JSON），也可能只想看内置句子。列表 + 选中 id
+/// 是最小的模型，同时解决了"默认提供多个来源"和"支持自定义"。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QuoteFeed {
+    /// 稳定 id（内置三个是写死的字符串，自定义的由前端生成）
+    pub id: String,
+    /// 显示名（界面上的来源标签）
+    pub name: String,
+    /// 类型：local（内置句子，不联网）| json（从 url 取 JSON）| text（url 返回纯文本）
+    pub kind: String,
+    /// 取语录用的一行地址（local 为空）
+    pub url: String,
+    /// 点来源标签时跳转的网站（local 为空 = 不可点）
+    pub home: String,
+    /// 内置来源（不允许删除，避免用户把自己的兜底删光）
+    pub builtin: bool,
+}
+
+impl Default for QuoteFeed {
+    fn default() -> Self {
+        QuoteFeed {
+            id: String::new(),
+            name: String::new(),
+            kind: "json".into(),
+            url: String::new(),
+            home: String::new(),
+            builtin: false,
+        }
+    }
+}
+
+/// 内置来源：一个纯本地 + 两个联网。
+///
+/// 「内置精选」永远在，且**永远不联网**——它就是离线时的兜底。
+/// 联网源都走同一套正向过滤器，取不到 / 不过滤就退到本地池，不会白屏。
+pub fn default_quote_feeds() -> Vec<QuoteFeed> {
+    vec![
+        QuoteFeed {
+            id: "local".into(),
+            name: "内置精选".into(),
+            kind: "local".into(),
+            url: String::new(),
+            home: String::new(),
+            builtin: true,
+        },
+        QuoteFeed {
+            id: "hitokoto".into(),
+            name: "一言 · 励志".into(),
+            kind: "json".into(),
+            url: "https://v1.hitokoto.cn/?encode=json&c=k&c=d".into(),
+            home: "https://hitokoto.cn".into(),
+            builtin: true,
+        },
+        QuoteFeed {
+            id: "hitokoto-poem".into(),
+            name: "一言 · 诗词".into(),
+            kind: "json".into(),
+            url: "https://v1.hitokoto.cn/?encode=json&c=i".into(),
+            home: "https://hitokoto.cn".into(),
+            builtin: true,
+        },
+    ]
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -839,6 +907,12 @@ pub struct Settings {
     /// 非空 = 自己写的这些和联网的那条一起参与轮换，界面上标明来源。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom_quotes: Vec<String>,
+    /// 可选的全部语录来源（默认三个内置，可增删自定义）
+    #[serde(default = "default_quote_feeds")]
+    pub quote_feeds: Vec<QuoteFeed>,
+    /// 当前选中的来源 id（空 = 用列表里第一个）
+    #[serde(default)]
+    pub quote_feed: String,
 }
 
 impl Default for Settings {
@@ -873,6 +947,8 @@ impl Default for Settings {
             backup: BackupCfg::default(),
             custom_quotes: Vec::new(),
             custom_browsers: Vec::new(),
+            quote_feeds: default_quote_feeds(),
+            quote_feed: "hitokoto".into(),
         }
     }
 }

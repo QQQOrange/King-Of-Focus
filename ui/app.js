@@ -290,44 +290,68 @@ function renderChrome() {
 
 /* ---------------- 激励语录（Hub 顶部） ----------------
  *
- * 语录有两个来源，界面上必须能一眼分清：
- *   · 自己写的（设置里存的那几条，滚动轮换）
- *   · 联网取到的（一言 hitokoto，后台按「语录刷新间隔」更新）
- * 自己写的优先排在前面——用户写的话本来就该先看到自己那句。
+ * 三个概念必须分清，否则界面一定会说胡话：
+ *   · 来源（feed）   用户可选的一组「从哪取句子」：内置精选 / 一言 / 自定义
+ *   · 当前这条（cur）这一次真正显示在屏幕上的句子，带它自己的来源与出处
+ *   · 本地池（pool） 自己写的 + 内置 121 条，**断网时唯一还能用的东西**
+ *
+ * 状态机很短：
+ *   点「换一条」 → 当前来源是本地？ → 直接在池里换（不联网）
+ *                → 是联网源？       → invoke quote_fetch
+ *                     ├ ok      → 换上，标签写来源名，可点开网址
+ *                     └ 失败     → 从本地池挑一条，标签写「内置精选 · 离线」
+ * 失败不弹窗、不卡住：用户点一次就必须看到一句话变了，这是这个区域唯一的硬要求。
  */
-const QUOTE_SRC = {
-  custom: '我写的',
-  // 联网的句子来自「一言」公开接口，把站点写出来，用户一眼知道出处
-  net: '一言 · hitokoto.cn',
-  local: '内置句子',
-  empty: '还没有语录',
-};
 
-function quotePool() {
+/** 全部来源（配置里的；被手改坏了就退回内置三个） */
+function quoteFeeds() {
   const st = (S.data && S.data.config && S.data.config.settings) || {};
-  const rt = (S.data && S.data.runtime) || {};
-  const pool = (st.customQuotes || []).filter(Boolean).map((t, i) => ({
-    key: 'c' + i, text: t, from: '', src: 'custom',
-  }));
-  if (rt.quote) {
-    // 有 from 才说明这条是联网取回来的；没有 from 的是本地兜底句
-    pool.push({ key: 'net', text: rt.quote, from: rt.quoteFrom || '', src: rt.quoteFrom ? 'net' : 'local' });
-  }
-  return pool;
+  const list = (st.quoteFeeds || []).filter((f) => f && f.id && f.name);
+  if (list.length) return list;
+  return [{ id: 'local', name: '内置精选', kind: 'local', url: '', home: '', builtin: true }];
 }
 
-/** 当前要显示的那一条。选了哪条记在 S.quoteAt，刷新页面/切页回来不会跳。 */
+/** 当前选中的来源；配置里那个 id 不存在时退回第一个（和 Rust 侧 sanitize 口径一致） */
+function quoteActiveFeed() {
+  const list = quoteFeeds();
+  const id = (((S.data && S.data.config && S.data.config.settings) || {}).quoteFeed || '').trim();
+  return list.find((f) => f.id === id) || list[0];
+}
+
+/** 本地池：自己写的排前面（用户写的话本来就该先看到），后面接内置 121 条 */
+function quoteLocalPool() {
+  const st = (S.data && S.data.config && S.data.config.settings) || {};
+  const own = (st.customQuotes || []).filter(Boolean)
+    .map((t) => ({ text: t, from: '', src: 'custom' }));
+  const base = (window.KOF_QUOTES || []).map((t) => ({ text: t, from: '', src: 'local' }));
+  return own.concat(base);
+}
+
+/** 当前要显示的那一条。
+ *
+ *  `S.quoteCur` 只对"当前来源"有效：用户切了来源，这条就作废，
+ *  不然会出现"标签写着内置精选、句子其实是一言取回来的"。
+ */
 function quoteView() {
-  const pool = quotePool();
-  if (!pool.length) {
-    return { key: '', text: '把想对自己说的话写下来，每次打开 Hub 都能看到。', from: '', src: 'empty' };
+  const feed = quoteActiveFeed();
+  const meta = (o) => Object.assign({
+    feed: feed.id, feedName: feed.name, home: feed.home || '', offline: false,
+  }, o);
+  if (S.quoteCur && S.quoteCur.feed === feed.id) return S.quoteCur;
+
+  if (feed.kind === 'local') {
+    const pool = quoteLocalPool();
+    if (pool.length) {
+      const q = pool[(S.quoteLocalIdx || 0) % pool.length];
+      return meta({ text: q.text, from: q.from, src: q.src });
+    }
   }
-  let it = pool.find((x) => x.key === S.quoteAt);
-  if (!it) {
-    it = pool[0];
-    S.quoteAt = it.key;
-  }
-  return it;
+  // 联网源：第一屏先用后端缓存的那条（它可能就是上次从同一个源取到的）
+  const rt = (S.data && S.data.runtime) || {};
+  if (rt.quote) return meta({ text: rt.quote, from: rt.quoteFrom || '', src: rt.quoteFrom ? 'net' : 'local' });
+  const pool = quoteLocalPool();
+  const q = pool[0] || { text: '把想对自己说的话写下来，每次打开 Hub 都能看到。', from: '' };
+  return meta({ text: q.text, from: q.from, src: q.src, offline: true });
 }
 
 /* ---------------- 视图：总览 ---------------- */
@@ -379,20 +403,28 @@ function viewOverview() {
 
   const q = quoteView();
   const qN = ((d.config.settings || {}).customQuotes || []).length;
+  const feed = quoteActiveFeed();
+  const srcTip = q.home
+    ? `点击打开 ${q.home}`
+    : '内置句子，没有网址';
   return `
   ${lockBanner}${unlockBanner}
-  <section class="hub-quote" aria-label="激励语录">
+  <section class="hub-quote${S.quoteBusy ? ' busy' : ''}" aria-label="激励语录" data-quote-box="1">
     <div class="qmark">“</div>
     <div class="qbody">
       <div class="qtext">${esc(q.text)}</div>
       <div class="qmeta">
-        <span class="qsrc ${q.src}">${QUOTE_SRC[q.src] || q.src}</span>
+        <span class="qsrc ${q.src}${q.home ? ' link' : ' plain'}" data-act="quote-open-src"
+          title="${esc(srcTip)}">${esc(q.feedName)}</span>
         ${q.from ? `<span class="qfrom">—— ${esc(q.from)}</span>` : ''}
-        ${q.src === 'net' ? '<span class="qhint">（来自 hitokoto.cn 公开接口）</span>' : ''}
+        ${q.offline ? '<span class="qoff" title="联网没取到，这一条来自本地预置">离线 · 本地精选</span>' : ''}
+        <span class="qhint">右键可换来源</span>
       </div>
     </div>
     <div class="qops">
-      <button class="btn btn-sm" data-act="quote-next" title="换一条（自己写的和联网的都会轮换）">换一条</button>
+      <button class="btn btn-sm" data-act="quote-next" ${S.quoteBusy ? 'disabled' : ''}
+        title="${feed.kind === 'local' ? '在本地预置里换一条（不联网）' : `立刻从 ${esc(feed.name)} 取一条`}">${S.quoteBusy ? '正在获取…' : '换一条'}</button>
+      <button class="btn btn-sm" data-act="quote-src-menu" title="切换 / 添加语录来源">来源 · ${esc(feed.name)}</button>
       <button class="btn btn-sm" data-act="quote-manage">我的语录${qN ? ` · ${qN}` : ''}</button>
       <button class="btn btn-sm" data-act="quote-add-new" title="直接写一句新的">＋ 添加</button>
     </div>
@@ -1332,9 +1364,13 @@ function clockProfile() {
  * 但已经不是落点"的那几天收拾干净，而重建**全部**的块会把手上那一块也换掉，
  * 落位动画（FLIP）就没有起点可用了。
  *
- * `pending` 传入 true 时，画出来的块带 `.pending`——**还没落盘的预览**（琥珀色）。
- * 正式渲染永远不传，所以"落盘之后就是另一种颜色"这件事只有一处开关。 */
-function ccRenderRuns(root, override, only, pending) {
+ * 注意这里**没有**"选中色"参数：块画出来永远是"已放置"色（--cc-set）。
+ * "正在被操作"这件事由 ccPaintSel 事后按区间逐块打 `.sel` 决定，
+ * 因为它需要知道"哪一段在动"，而渲染器只知道"有哪些段"。
+ *
+ * 这样也顺手修掉了一个老问题：以前拖某一天时，整张表重画都会带上选中色，
+ * 隔壁几天没被碰过的块也跟着变色，看起来像"它们也要变"。 */
+function ccRenderRuns(root, override, only) {
   const host = root || document;
   const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
   if (!grid) return;
@@ -1443,12 +1479,17 @@ function ccRenderRuns(root, override, only, pending) {
         : i === 0 ? '4px 4px 0 0'
           : i === solid.length - 1 ? '0 0 4px 4px'
             : '0';
+      // 首 / 尾那条带要额外标出来：边缘缩放的小手柄挂在它们上面
+      // （非整点的段，上边界在 :15 而不是格子顶，不能挂在容器上）
+      b.first = i === 0;
+      b.last = i === solid.length - 1;
     });
     const bands = parts.map((b) => (b.gap
       ? `<i class="cc-gap" style="flex:0 0 ${b.pct.toFixed(3)}%"></i>`
-      : `<i class="f" style="flex:0 0 ${b.pct.toFixed(3)}%;border-radius:${b.radius}"></i>`)).join('');
+      : `<i class="f${b.first ? ' first' : ''}${b.last ? ' last' : ''}"`
+        + ` style="flex:0 0 ${b.pct.toFixed(3)}%;border-radius:${b.radius}"></i>`)).join('');
     const run = document.createElement('div');
-    run.className = 'cc-run' + (pending ? ' pending' : '');
+    run.className = 'cc-run';
     run.dataset.d = String(d0);
     run.dataset.d1 = String(d0);
     run.dataset.h0 = String(h0);
@@ -1901,9 +1942,9 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
       </div>
       <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px;--cc-rows:${rows}">${grid}</div></div>
       <div class="cc-legend">
-        <span><i class="sw"></i>已设置（已保存）</span>
-        <span><i class="sw pending"></i>选中中（松手后才保存）</span>
-        <span class="hint">拖动时是琥珀色，松手落盘后变成蓝色；同一天相邻的时段会连成一整块</span>
+        <span><i class="sw sel"></i>选中 / 拖动中</span>
+        <span><i class="sw"></i>已放置（已保存）</span>
+        <span class="hint">同一个色相，只差 5% 明度：拖的时候亮一点点，松手后轻微加深就是存好了。同一天相邻的时段会连成一整块</span>
       </div>
       <div class="cc-days">
         <div class="cc-days-hd"><span>每日时长</span><span>合计 ${ccMinText(0, totalMins).dur}</span></div>
@@ -2793,6 +2834,7 @@ function viewHelp() {
     </div>
     <div>一句话：点得越具体，作用范围越小——不会出现"右键一段、却把一整天重排"的情况。</div>
     <div>拖选是"从起点到终点的一段连续区间"，松手即提交；贴着 0:00 / 24:00 的段只属于当天，不会牵连相邻那天。</div>
+    <div>按住某一段的上边缘或下边缘（5px 内，光标变成上下箭头）可以拉长或缩短它；最短一格，最长到显示范围的尽头。</div>
     <div>图表顶部还能设「显示范围」：只看 07:00–23:00 也行，只影响显示，范围外的时段照样生效。</div>
   `)}
 
@@ -3970,16 +4012,139 @@ const Act = window.Act = {
 
   /* ---- Hub：激励语录 ---- */
 
-  /** 换一条：在自己写的和联网的那条之间轮换 */
-  quoteNext() {
-    const pool = quotePool();
-    if (pool.length <= 1) {
-      toast('现在只有这一条，可以在「我的语录」里多写几句', '');
+  /** 换一条：**立刻**按当前来源取一条。
+   *
+   *  本地源不联网（秒换）；联网源真的发一次请求，成功就换上、失败就退到本地池。
+   *  两条路都保证"点一次，字就变了"——这是这个按钮唯一的承诺。
+   */
+  async quoteNext() {
+    if (S.quoteBusy) return;                 // 连点只认第一次，避免请求打架
+    const feed = quoteActiveFeed();
+    if (feed.kind === 'local' || !feed.url) {
+      Act.quoteLocalNext(feed, false);
       return;
     }
-    const i = pool.findIndex((x) => x.key === S.quoteAt);
-    S.quoteAt = pool[(i + 1) % pool.length].key;
+    S.quoteBusy = true;
     render();
+    let r = null;
+    try {
+      r = await invoke('quote_fetch', { id: feed.id });
+    } catch (e) {
+      r = { ok: false, reason: String(e) };
+    }
+    S.quoteBusy = false;
+    if (r && r.ok && r.text) {
+      S.quoteCur = {
+        text: r.text,
+        from: r.from || '',
+        src: r.from ? 'net' : 'local',
+        feed: feed.id,
+        feedName: r.feedName || feed.name,
+        home: r.home || feed.home || '',
+        offline: false,
+      };
+      render();
+      toast(`换好了 · 来自 ${r.feedName || feed.name}`, 'ok');
+      return;
+    }
+    // 失败：不弹错误对话框，静默退到本地池，并在标签上写明"离线"
+    Act.quoteLocalNext(feed, true);
+    toast(feed.kind === 'local' ? '已换一条本地句子' : '联网没取到，先从本地精选里挑了一条', '');
+  },
+
+  /** 从本地池换一条。offline=true 时标签改写成「内置精选」，让用户知道这句不是联网来的 */
+  quoteLocalNext(feed, offline) {
+    const pool = quoteLocalPool();
+    if (!pool.length) return;
+    const cur = S.quoteCur && S.quoteCur.text;
+    let i = S.quoteLocalIdx || 0;
+    for (let k = 0; k < pool.length; k++) {
+      i = (i + 1) % pool.length;
+      if (pool[i].text !== cur) break;       // 别换出一条一模一样的
+    }
+    S.quoteLocalIdx = i;
+    const q = pool[i];
+    S.quoteCur = {
+      text: q.text,
+      from: q.from || '',
+      src: q.src,
+      feed: feed.id,
+      feedName: offline ? '内置精选' : feed.name,
+      home: offline ? '' : (feed.home || ''),
+      offline: !!offline,
+    };
+    render();
+  },
+
+  /** 点来源标签：有网址就打开（本地句子没有网址，标签是纯装饰） */
+  async quoteOpenSrc() {
+    const q = quoteView();
+    if (!q.home) { toast('内置句子没有对应网址；想换来源可以右键语录', ''); return; }
+    try {
+      await invoke('open_url', { url: q.home });
+    } catch (e) {
+      toast('打开网址失败', 'err');
+    }
+  },
+
+  /** 右键语录 → 来源设置 */
+  quoteSrcMenu() {
+    S.quoteFeedEdit = null;
+    renderQuoteSrcModal();
+  },
+
+  /** 切换来源：立刻写盘，并作废当前这条（标签和句子必须同时换） */
+  async quotePickFeed(id) {
+    const list = quoteFeeds();
+    const f = list.find((x) => x.id === id);
+    if (!f) return;
+    if (f.id === quoteActiveFeed().id) { closeModal(); return; }
+    S.data.config.settings.quoteFeed = f.id;
+    S.quoteCur = null;
+    S.quoteLocalIdx = 0;
+    const ok = await saveConfig();
+    closeModal();
+    render();
+    toast(ok ? `语录来源已切换为「${f.name}」` : '来源没有保存成功', ok ? 'ok' : 'err');
+    if (ok && f.kind !== 'local') Act.quoteNext();   // 联网源：顺手取一条，别让用户再点一次
+  },
+
+  /** 删除自定义来源（内置的不允许删：它是断网时的兜底） */
+  async quoteDelFeed(id) {
+    const list = quoteFeeds().slice();
+    const i = list.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    if (list[i].builtin) { toast('内置来源不能删除', 'err'); return; }
+    list.splice(i, 1);
+    S.data.config.settings.quoteFeeds = list;
+    if (S.data.config.settings.quoteFeed === id) S.data.config.settings.quoteFeed = list[0].id;
+    S.quoteCur = null;
+    const ok = await saveConfig();
+    renderQuoteSrcModal();
+    render();
+    toast(ok ? `已删除来源「${list[i] ? list[i].name : id}」` : '删除失败', ok ? 'ok' : 'err');
+  },
+
+  /** 添加自定义来源：名称 + 地址 + 类型，三条都必须说得清 */
+  async quoteAddFeed() {
+    const name = (($('#qfeedName') || {}).value || '').trim();
+    const url = (($('#qfeedUrl') || {}).value || '').trim();
+    const kind = (($('#qfeedKind') || {}).value || 'json').trim();
+    if (!name) { toast('给这个来源起个名字', 'err'); const el = $('#qfeedName'); if (el) el.focus(); return; }
+    if (!/^https?:\/\//i.test(url)) { toast('地址要以 http:// 或 https:// 开头', 'err'); const el = $('#qfeedUrl'); if (el) el.focus(); return; }
+    const list = quoteFeeds().slice();
+    if (list.length >= 12) { toast('最多 12 个来源，先删掉一个', 'err'); return; }
+    if (list.some((x) => x.url === url)) { toast('这个地址已经加过了', ''); return; }
+    const id = 'u' + Date.now().toString(36);
+    list.push({ id, name: name.slice(0, 24), kind, url, home: url, builtin: false });
+    S.data.config.settings.quoteFeeds = list;
+    S.data.config.settings.quoteFeed = id;      // 刚加的就用它，用户马上能看到效果
+    S.quoteCur = null;
+    const ok = await saveConfig();
+    closeModal();
+    render();
+    toast(ok ? `已添加来源「${name}」并用它取一条` : '来源没有保存成功', ok ? 'ok' : 'err');
+    if (ok && kind !== 'local') Act.quoteNext();
   },
 
   /** 设置页里直接维护语录：加一条 / 删一条都立即写盘并重绘 */
@@ -4005,7 +4170,7 @@ const Act = window.Act = {
   async setQuotes(list) {
     S.data.config.settings.customQuotes = list.slice(0, 60);
     const ok = await saveConfig();
-    S.quoteAt = '';
+    S.quoteCur = null;
     render();
     toast(ok ? '语录已保存' : '保存失败', ok ? 'ok' : 'err');
   },
@@ -4044,7 +4209,7 @@ const Act = window.Act = {
     S.data.config.settings.customQuotes = (S.quoteEdit || []).slice();
     const ok = await saveConfig();      // 内部会 pull + 用后端真实状态回填
     closeModal();
-    S.quoteAt = '';
+    S.quoteCur = null;
     render();
     toast(ok ? '语录已保存' : '保存失败', ok ? 'ok' : 'err');
   },
@@ -4850,6 +5015,14 @@ const Act = window.Act = {
     if (!(opts && opts.noRender)) render();
     const t = ccMinText(nFrom, nTo);
     const en = I18N.getLang() === 'en';
+    // 缩放和搬家是两件事：一个改长度、一个换位置，提示词必须分开，
+    // 否则"已把周三的时段移过去"会让人以为整段跑掉了。
+    if (opts && opts.resize) {
+      toast(en
+        ? `Resized ${I18N.t(WD[d1])} to ${t.range} (${ccDurText(nTo - nFrom)})`
+        : `已把 ${I18N.t(WD[d1])} 的时段调整为 ${t.range}（共 ${ccDurText(nTo - nFrom)}）`, 'ok');
+      return true;
+    }
     const where = d0 === d1
       ? `${I18N.t(WD[d0])} ${t.range}`
       : `${I18N.t(WD[d0])} → ${I18N.t(WD[d1])} ${t.range}`;
@@ -5423,6 +5596,73 @@ function renderPicker() {
 }
 
 /** 「我的语录」管理面板：列出、删除、添加，保存前都只改本地副本 */
+/** 语录来源设置（右键 Hub 上的语录弹出）。
+ *
+ *  一屏说清三件事：现在用的是哪个、还有哪些能选、怎么加一个新的。
+ *  内置来源标「内置」且不给删除按钮——它是断网时唯一的兜底。
+ */
+function renderQuoteSrcModal() {
+  const list = quoteFeeds();
+  const cur = quoteActiveFeed();
+  const kindTxt = { local: '本地', json: '联网 · JSON', text: '联网 · 纯文本' };
+  const rows = list.map((f) => {
+    const on = f.id === cur.id;
+    return `<div class="fsrc${on ? ' on' : ''}">
+      <div class="fsrc-main">
+        <div class="fsrc-name">${esc(f.name)}
+          <span class="badge ${f.kind === 'local' ? '' : 'blue'}">${kindTxt[f.kind] || f.kind}</span>
+          ${f.builtin ? '<span class="badge">内置</span>' : ''}
+          ${on ? '<span class="badge gold">使用中</span>' : ''}
+        </div>
+        <div class="fsrc-url">${f.url ? esc(f.url) : `本地预置 ${(window.KOF_QUOTES || []).length} 条，永不联网`}</div>
+      </div>
+      <div class="fsrc-ops">
+        ${on ? '<span class="hint">当前</span>'
+    : `<button class="btn btn-sm" data-act="quote-pick-feed" data-id="${esc(f.id)}">用它</button>`}
+        ${f.builtin ? '' : `<button class="btn btn-sm danger-ghost" data-act="quote-del-feed" data-id="${esc(f.id)}">删除</button>`}
+      </div>
+    </div>`;
+  }).join('');
+
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:620px">
+      <div class="modal-hd">
+        <h3>语录来源</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="hint" style="margin-bottom:10px;line-height:1.8">
+          点「换一条」时，会按这里选中的来源取一句。<b>联网源取不到就自动退回本地预置</b>，
+          断网也照样能换，不会卡住。
+        </div>
+        <div class="flist">${rows}</div>
+
+        <div class="card" style="margin-top:16px;padding:14px 14px 12px">
+          <div class="card-title" style="font-size:13px">添加自定义来源</div>
+          <div class="hint" style="margin:6px 0 10px;line-height:1.7">
+            地址返回 JSON 时，会自动认 <code>hitokoto</code> / <code>text</code> / <code>content</code> / <code>sentence</code>
+            这几个字段；返回纯文本就选「纯文本」，取第一行。
+          </div>
+          <div class="qfeed-form">
+            <input type="text" id="qfeedName" maxlength="24" placeholder="名称（显示在语录下方）" />
+            <input type="text" id="qfeedUrl" maxlength="300" placeholder="https://example.com/api/quote" />
+            <select id="qfeedKind">
+              <option value="json">联网 · JSON</option>
+              <option value="text">联网 · 纯文本</option>
+            </select>
+            <button class="btn btn-sm btn-primary" data-act="quote-add-feed">添加</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <span class="hint" style="flex:1">右键语录随时回到这里</span>
+        <button class="btn" data-act="close-modal">关闭</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderQuoteModal() {
   const list = S.quoteEdit || [];
   const rows = list.length
@@ -5706,6 +5946,11 @@ document.addEventListener('click', async (e) => {
   if (act === 'range-apply') { await Act.applyRange(); return; }
   if (act === 'stats-refresh') { await Act.refreshStats(); return; }
   if (act === 'quote-next') { Act.quoteNext(); return; }
+  if (act === 'quote-open-src') { await Act.quoteOpenSrc(); return; }
+  if (act === 'quote-src-menu') { Act.quoteSrcMenu(); return; }
+  if (act === 'quote-pick-feed') { await Act.quotePickFeed(el.dataset.id); return; }
+  if (act === 'quote-del-feed') { await Act.quoteDelFeed(el.dataset.id); return; }
+  if (act === 'quote-add-feed') { await Act.quoteAddFeed(); return; }
   if (act === 'quote-manage') { Act.quoteManage(); return; }
   if (act === 'quote-add-new') { Act.quoteAddNew(); return; }
   if (act === 'set-quote-add') { await Act.setQuoteAdd(); return; }
@@ -5919,6 +6164,23 @@ function ccDragRange(dg) {
   const a = Math.max(0, Math.min(n - 1, dg.anchor));
   const c = Math.max(0, Math.min(n - 1, dg.cur));
 
+  // 边缘缩放：一端钉死，另一端跟着指针走。
+  //   下边 → 只动 hi；上边 → 只动 lo。
+  //   长度夹在 [一个粒度, 显示范围] 之间：最短一格（10 / 15 分钟），最长到视野尽头。
+  if (dg.resize) {
+    const view = ccView();
+    const minDur = ccStep();
+    let lo = dg.segFrom;
+    let hi = dg.segTo;
+    if (dg.resize === 'bottom') {
+      // 指针所在那一格的下沿就是新的结束时刻（拖到 10:15 中间 → 结束 10:15）
+      hi = Math.min(view.to, Math.max((c + 1) * st, lo + minDur));
+    } else {
+      lo = Math.max(view.from, Math.min(c * st, hi - minDur));
+    }
+    return { lo, hi };
+  }
+
   if (dg.mode === 'move') {
     // 整段平移：**长度恒定**，只按"拖了多远"平移，撞到显示范围的边就贴边停下。
     // 这里绝不能"先挪再裁"：那会把越过边界的部分剪掉，看起来是贴边，实际是丢分钟。
@@ -6092,8 +6354,9 @@ function paintCcDrag() {
   //    必须把窗口传给渲染器：只改单元格的 .on 不够——
   //    每小时的起止分钟若仍从配置里读，02:15 起的那一块就会被判成
   //    "上一小时 :15 结束"，在小时边界断成两块。
-  // 预览一律用"选中中"的颜色（琥珀）：松手落盘后才会换成已设置的蓝。
-  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined), null, true);
+  // 块本身按"已放置"色画；只有**这次真正在动的那一段**单独点亮（见 ccPaintSel）。
+  ccRenderRuns(document, (d, h) => (winsBy.has(d) ? (winsBy.get(d)[h] || null) : undefined));
+  ccPaintSel(days, lo, hi);
 
   const h0 = Math.floor(lo / 60);
   const h1 = Math.floor((hi - 1) / 60);
@@ -6104,11 +6367,12 @@ function paintCcDrag() {
     const rFrom = +r.dataset.h0 * 60 + (+r.dataset.f0 || 0);
     const rTo = +r.dataset.h1 * 60 + (+r.dataset.t1 || 60);
     const hit = +r.dataset.d === dCur && rFrom <= lo && rTo >= hi;
-    r.classList.toggle('carry', dg.mode === 'move' && hit);
+    // 缩放不出"手上那块半透明"的效果：它没有被搬走，只是在原地变长 / 变短
+    r.classList.toggle('carry', dg.mode === 'move' && !dg.resize && hit);
   });
   // 4) 原位留一条虚线占位：告诉用户它原本在哪，松手前不"凭空消失"
   grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
-  if (dg.mode === 'move') {
+  if (dg.mode === 'move' && !dg.resize) {
     const s0 = Math.floor(dg.segFrom / 60), s1 = Math.floor((dg.segTo - 1) / 60);
     const span = (s1 - s0 + 1) * 60;
     const slot = document.createElement('div');
@@ -6124,9 +6388,10 @@ function paintCcDrag() {
 
   // 6) 状态条
   const isEn = I18N.getLang() === 'en';
-  const verb = dg.mode === 'move' ? (isEn ? 'Move' : '移动')
-    : dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
-      : (isEn ? 'Select' : '选中');
+  const verb = dg.resize ? (isEn ? 'Resize' : '调整')
+    : dg.mode === 'move' ? (isEn ? 'Move' : '移动')
+      : dg.mode === 'sub' ? (isEn ? 'Cancel' : '取消')
+        : (isEn ? 'Select' : '选中');
   const dayTxt = dCur === dg.d
     ? I18N.t(WD[dCur])
     : `${I18N.t(WD[dg.d])} → ${I18N.t(WD[dCur])}`;
@@ -6185,19 +6450,45 @@ function ccRestorePreview(days) {
   // 这几天里可能还挂着上一帧留下的块：只重画它们，别的列原样保留
   ccRenderRuns(document, null, list);
   grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
+  // 重画只覆盖这几天；万一别处还挂着"选中中"，一并收掉（取消后不该有任何高亮残留）
+  ccSettleRuns();
   ccLiveTotals(null);
   ccResetLive();
 }
 
-/** 落盘之后：把仍然挂着的「选中中」琥珀块换回「已设置」的蓝。
+/** 「选中中」只给**真正在动的那一段**上色。
+ *
+ *  days = 这次操作涉及的天；[lo,hi) = 被操作的分钟区间。
+ *  只有"在这些天里、且与这个区间有交集"的块才加 `.sel`，
+ *  其余块一律摘掉——这是"局部高亮"的硬约束：拖周一的段，
+ *  周二、周三的块不能跟着变色（它们的数据一点都没动）。
+ *
+ *  用"区间有交集"而不是"整块被盖住"：拖到一半、段被拉长时，
+ *  正在变形的就是那一块，它当然要亮；而同一个小时里另一段没被碰过的，
+ *  边界不重叠就不会亮。
+ */
+function ccPaintSel(days, lo, hi) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  const set = new Set(days || []);
+  grid.querySelectorAll('.cc-run').forEach((r) => {
+    const d = +r.dataset.d;
+    const a = +r.dataset.h0 * 60 + (+r.dataset.f0 || 0);
+    const b = +r.dataset.h1 * 60 + (+r.dataset.t1 || 60);
+    r.classList.toggle('sel', set.has(d) && b > lo && a < hi);
+  });
+}
+
+/** 落盘之后：把仍然挂着的「选中中」块换回「已放置」色。
  *
  *  只换类、不重建节点——重建会打断落位动画（FLIP 需要同一块继续存在），
- *  而 CSS 上 `background-color` 有 180ms 过渡，于是这次换色本身就是"设置成功"的反馈。
+ *  而 CSS 上 `background-color` 有 160ms 过渡，于是这次换色本身就是"设置成功"的反馈：
+ *  同一色相、只深 5%，几乎察觉不到，但确实"定下来了"。
  */
 function ccSettleRuns() {
   const grid = document.getElementById('ccGrid');
   if (!grid) return;
-  grid.querySelectorAll('.cc-run.pending').forEach((r) => r.classList.remove('pending'));
+  grid.querySelectorAll('.cc-run.sel').forEach((r) => r.classList.remove('sel'));
 }
 
 /** 松手落位：优先 FLIP（从"手上那一块"的位置滑到最终位置），
@@ -6253,6 +6544,41 @@ function ccSegAtHour(d, h) {
   const day = clockProfile().days[d];
   if (!day) return null;
   return ccSegs(day).find((s) => s.h0 <= h && s.h1 >= h) || null;
+}
+
+/** 一段在屏幕上的上 / 下边界（像素）。
+ *  **不能用块容器的 rect**：容器占的是整格高度，02:10 起的段，
+ *  它的容器从 02:00 就开始了，手柄会画在那 10 分钟空白里。
+ *  这里按 h0*60+f0 精确换算，非整点的段手柄才贴得住色带。 */
+function ccSegEdgeY(d, seg) {
+  const g = ccDayGeom(d);
+  if (!g || !seg) return null;
+  const view = ccView();
+  const a = seg.h0 * 60 + (seg.f0 || 0);
+  const b = seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1);
+  return {
+    top: g.top + ((a - view.from) / 60) * g.hourH,
+    bottom: g.top + ((b - view.from) / 60) * g.hourH,
+    h: ((b - a) / 60) * g.hourH,
+  };
+}
+
+/** 指针落在这一段的上边还是下边？返回 'top' / 'bottom' / null。
+ *
+ *  热区宽度 = min(5px, 段高/3)：
+ *    · 5px 是"点得准"和"不抢正文"的平衡点。试过 7px：一小时 52px、15 分钟一格
+ *      只有 13px，7px 的热区把第一格的中心都吃掉了——想按着搬走却总在改大小；
+ *    · 段高/3 保证矮段（10 / 15 分钟 ≈ 9~13px）中间还留着 1/3 可以按着搬走，
+ *      否则整段都是热区，用户永远拖不动它、只会改大小。 */
+const CC_EDGE_PX = 5;
+function ccEdgeZone(d, seg, clientY) {
+  if (!seg || typeof clientY !== 'number') return null;
+  const y = ccSegEdgeY(d, seg);
+  if (!y || y.h <= 0) return null;
+  const z = Math.max(3, Math.min(CC_EDGE_PX, y.h / 3));
+  if (clientY <= y.top + z) return 'top';
+  if (clientY >= y.bottom - z) return 'bottom';
+  return null;
 }
 
 /** 当天包含 atMin（绝对分钟）的那一段；没有就返回 null */
@@ -6330,7 +6656,10 @@ function ccFlushDrag() {
   // 指针滑出图表两侧时保持当前天（在周首 / 周末停住），并在状态条说明到头了。
   let dCur = dg.dCur == null ? dg.d : dg.dCur;
   let edgeX = 0;
-  if (dg.mode === 'move') {
+  // 缩放只改长度，**不接受横向换天**：把一段的上边界拖到周三的列上，
+  // 意思到底是"拉长"还是"搬到周三"说不清，索性钉死在本天——
+  // 要换天请按段中间（那是平移）。
+  if (dg.mode === 'move' && !dg.resize) {
     const at = ccDayAtX(x);
     if (at != null) {
       dCur = at;
@@ -6373,8 +6702,12 @@ function ccDragBegin(d, clientY, clientX) {
   const gr = document.getElementById('ccGrid');
   if (gr) {
     gr.classList.remove('over-seg');
+    gr.classList.remove('over-edge');
     gr.querySelectorAll('.cc-run.over').forEach((r) => r.classList.remove('over'));
+    gr.querySelectorAll('.cc-run.edge-top, .cc-run.edge-bottom')
+      .forEach((r) => r.classList.remove('edge-top', 'edge-bottom'));
   }
+  S.ccEdgeKey = '';
 
   // 按下的位置落在某一段里 → 拖动 = **整段平移**（段的长度不变，只换位置）；
   // 落在空白 → 拖动 = 新建一段。
@@ -6382,10 +6715,15 @@ function ccDragBegin(d, clientY, clientX) {
   // 以前"落在已选中的格子上"是 sub（抹掉），再加一句"没拖动就算单击 → 取消这一格"，
   // 结果在段中间点一下就把一整段从中间劈开、点中的那块消失。现在点击什么都不改。
   const seg = ccSegAt(d, atMin);
+  // 落在段的上 / 下边界 7px 内 → 缩放这一段；否则才是"整段搬走"。
+  // 判定顺序就是优先级：**边缘 > 段身 > 空白**（越具体越优先）。
+  const zone = ccEdgeZone(d, seg, clientY);
+  if (zone) S.ccEdgeKey = '';   // 一开始拖就把悬停手柄收掉，别和拖动抢视线
 
   if (seg) {
     S.ccDrag = {
       d, dCur: d, anchor: idx, cur: idx, edge, edgeX: 0, mode: 'move', moved: false,
+      resize: zone || null,
       startY: clientY, startX: clientX, lastX: clientX, lastY: clientY,
       // painted = 当前 DOM 上"正在显示预览"的天；跨天时指针会一路掠过别的天，
       // 每帧都要据此把离开的天还原（见 paintCcDrag 第 0 步）
@@ -6504,7 +6842,8 @@ async function ccDragEnd() {
     // 关键：提交后**不整体重绘**。
     // 预览本来就是按最终结果画的，再 render 一次等于把 168 个格子重建一遍，
     // 既会打断落位动画，也会让"整页重新淡入"闪一下。
-    const ok = await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, dCur, lo, hi, { noRender: true });
+    const ok = await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, dCur, lo, hi,
+      { noRender: true, resize: !!dg.resize });
     // 提交是异步的（要等一次落盘）：这期间用户可能已经开始了下一次拖动。
     // 那时预览归新拖动所有，收尾动作不能再抢 DOM。
     const live = S.ccDrag;
@@ -6547,7 +6886,9 @@ document.addEventListener('mousedown', (e) => {
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (S.ccDrag) { e.preventDefault(); ccDragMove(e.clientY, e.clientX); }
+  if (S.ccDrag) { e.preventDefault(); ccDragMove(e.clientY, e.clientX); return; }
+  // 不拖动时：顺手判断指针是不是压在段的上 / 下边界上（给缩放做预告）
+  ccHoverEdge(e);
 });
 
 // 拖动期间禁掉滚轮：图表一滚动，指针与刻度就错位了（拖完自然恢复）
@@ -6567,6 +6908,15 @@ document.addEventListener('keydown', (e) => {
   ccCancelDrag();
 });
 
+// Hub 上的语录：右键弹出「来源」设置。
+// 只认 [data-quote-box]，不碰图表那边的格子右键——两套菜单各管各的。
+document.addEventListener('contextmenu', (e) => {
+  const box = e.target && e.target.closest ? e.target.closest('[data-quote-box]') : null;
+  if (!box) return;
+  e.preventDefault();
+  Act.quoteSrcMenu();
+});
+
 // 设置页的语录输入框：回车等于点「添加」
 document.addEventListener('keydown', (e) => {
   if (!e.target || e.target.id !== 'setQuoteNew') return;
@@ -6574,6 +6924,14 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   Act.setQuoteAdd();
 });
+
+/** 找出某一列里起止小时对应的那个块（块是渲染出来的，没有稳定 id） */
+function ccFindRun(d, h0, h1) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return null;
+  return [...grid.querySelectorAll('.cc-run')].find((r) => +r.dataset.d === d
+    && +r.dataset.h0 === h0 && +r.dataset.h1 === h1) || null;
+}
 
 /** 悬停到某一段上：整段轻微抬起 + 光标变 grab，预告"按住能整段搬走"。
  *  用 key 缓存，避免在同一个段里每移动一像素就操作一次 DOM。 */
@@ -6588,18 +6946,55 @@ function ccMarkHoverSeg(d, seg) {
   S.ccHoverKey = key;
   grid.querySelectorAll('.cc-run.over').forEach((r) => r.classList.remove('over'));
   if (!seg) return;
-  const run = [...grid.querySelectorAll('.cc-run')].find((r) => +r.dataset.d === d
-    && +r.dataset.h0 === seg.h0 && +r.dataset.h1 === seg.h1);
+  const run = ccFindRun(d, seg.h0, seg.h1);
   if (run) run.classList.add('over');
+}
+
+/** 收起边缘手柄（离开图表 / 开始拖动时） */
+function ccEdgeClear() {
+  const grid = document.getElementById('ccGrid');
+  if (S.ccEdgeKey) S.ccEdgeKey = '';
+  if (!grid) return;
+  grid.classList.remove('over-edge');
+  grid.querySelectorAll('.cc-run.edge-top, .cc-run.edge-bottom')
+    .forEach((r) => r.classList.remove('edge-top', 'edge-bottom'));
+}
+
+/** 悬停在某一段的上下边界 → 长出手柄 + 光标 ns-resize。
+ *
+ *  必须挂在 mousemove 而不是 mouseover 上：一个段可能只占半格
+ *  （10:15–10:45），指针在段内从中间走到下边界，压根不会换元素、
+ *  也就不会触发 mouseover。 */
+function ccHoverEdge(e) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  const cell = e.target && e.target.closest ? e.target.closest('.cc-cell') : null;
+  if (!cell || !grid.contains(cell)) { ccEdgeClear(); return; }
+  const d = +cell.dataset.d;
+  const g = ccGrainAt(d, e.clientY);
+  const seg = ccSegAt(d, g.idx * ccStep());
+  const zone = ccEdgeZone(d, seg, e.clientY);
+  const key = `${d}:${seg ? `${seg.h0}-${seg.h1}` : ''}:${zone || ''}`;
+  const marked = !!grid.querySelector('.cc-run.edge-top, .cc-run.edge-bottom');
+  // 重绘会把块整个换掉、类跟着丢；所以"key 没变但标记不见了"也要重新打上
+  if (key === S.ccEdgeKey && (marked || !zone)) return;
+  S.ccEdgeKey = key;
+  grid.classList.toggle('over-edge', !!zone);
+  grid.querySelectorAll('.cc-run.edge-top, .cc-run.edge-bottom')
+    .forEach((r) => r.classList.remove('edge-top', 'edge-bottom'));
+  if (!zone) return;
+  const run = ccFindRun(d, seg.h0, seg.h1);
+  if (run) run.classList.add(zone === 'top' ? 'edge-top' : 'edge-bottom');
 }
 
 document.addEventListener('mouseover', (e) => {
   const gr = document.getElementById('ccGrid');
-  if (S.ccDrag) { if (gr) gr.classList.remove('over-seg'); return; }
+  if (S.ccDrag) { if (gr) { gr.classList.remove('over-seg'); gr.classList.remove('over-edge'); } return; }
   const cell = e.target.closest('.cc-cell');
   if (!cell) {
     if (gr) gr.classList.remove('over-seg');
     ccMarkHoverSeg(0, null);
+    ccEdgeClear();
     return;
   }
   const d = +cell.dataset.d;
@@ -6619,6 +7014,7 @@ document.addEventListener('mouseout', (e) => {
   if (gr && e.target.closest && e.target.closest('#ccGrid')) {
     gr.classList.remove('over-seg');
     ccMarkHoverSeg(0, null);
+    ccEdgeClear();
   }
 });
 
@@ -7105,6 +7501,10 @@ function ccOpenDayMenu(d) {
 document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
 
 document.addEventListener('contextmenu', (e) => {
+  // 语录区的右键归来源菜单管（上面那个监听已处理）。
+  // 这里必须显式让路：末尾的 ccCloseMenu() 会把刚弹出来的来源面板关掉——
+  // 两个 document 级监听、同一个事件，靠"谁先注册"来分工太脆。
+  if (e.target && e.target.closest && e.target.closest('[data-quote-box]')) return;
   // 拖动中按右键 = 取消这次拖动，且不弹菜单（否则会一边拖一边弹窗）
   if (S.ccDrag) { e.preventDefault(); ccCancelDrag(); return; }
   if (!S.data) { ccCloseMenu(); return; }

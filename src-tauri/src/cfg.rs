@@ -1,4 +1,7 @@
-use crate::model::{ClockCfg, ClockProfile, Config, SleepCfg, DEFAULT_CLOCK_PROFILE_ID, MAX_CLOCK_PROFILES};
+use crate::model::{
+    default_quote_feeds, ClockCfg, ClockProfile, Config, QuoteFeed, SleepCfg,
+    DEFAULT_CLOCK_PROFILE_ID, MAX_CLOCK_PROFILES,
+};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -128,6 +131,7 @@ pub fn sanitize(c: &mut Config) {
     sanitize_clock(&mut c.settings.focus_clock);
     sanitize_sleep(&mut c.settings.sleep);
     sanitize_quotes(&mut c.settings.custom_quotes);
+    sanitize_quote_feeds(&mut c.settings.quote_feeds, &mut c.settings.quote_feed);
     sanitize_custom_browsers(&mut c.settings.custom_browsers);
 
     // 语言只有两档；写错（或老配置没有这个键）一律回落简体中文
@@ -193,6 +197,80 @@ fn sanitize_quotes(list: &mut Vec<String>) {
         }
     }
     *list = out;
+}
+
+/// 语录来源归一化：补内置、修 id、挡非法地址、限量，并把「当前来源」拉回合法值。
+///
+/// 三条硬约束：
+/// 1. **内置来源永远在**：用户就算把列表删空，也要有一个能用的兜底；
+/// 2. 地址只允许 http(s)，避免配置文件被手改成 `file://` 之类去读本地文件；
+/// 3. `quote_feed` 指向的来源必须真实存在，否则回落到第一个。
+fn sanitize_quote_feeds(list: &mut Vec<QuoteFeed>, active: &mut String) {
+    const MAX_ITEMS: usize = 12;
+    let builtins = default_quote_feeds();
+    let mut out: Vec<QuoteFeed> = Vec::new();
+
+    // 先把用户列表洗干净（保持顺序）
+    for f in list.iter() {
+        let name = f.name.trim().chars().take(24).collect::<String>();
+        let id = f.id.trim().chars().take(40).collect::<String>();
+        if name.is_empty() || id.is_empty() {
+            continue;
+        }
+        if out.iter().any(|x| x.id == id) {
+            continue;
+        }
+        let url = f.url.trim().to_string();
+        let home = f.home.trim().to_string();
+        let kind = match f.kind.as_str() {
+            "local" => "local",
+            "text" => "text",
+            _ => "json",
+        };
+        let ok = |u: &str| u.is_empty() || u.starts_with("http://") || u.starts_with("https://");
+        // 联网类型必须有可用地址，否则这条来源只会一直失败
+        if kind != "local" && (url.is_empty() || !ok(&url)) {
+            continue;
+        }
+        out.push(QuoteFeed {
+            id,
+            name,
+            kind: kind.into(),
+            url: if kind == "local" { String::new() } else { url },
+            home: if ok(&home) { home } else { String::new() },
+            builtin: f.builtin,
+        });
+        if out.len() >= MAX_ITEMS {
+            break;
+        }
+    }
+
+    // 内置的必须齐全：缺了就补回去（放在最前面，local 永远第一个）
+    for b in builtins.into_iter().rev() {
+        if out.iter().any(|x| x.id == b.id) {
+            // 老配置里可能有同名但字段被改过的，统一按内置值修正
+            if let Some(slot) = out.iter_mut().find(|x| x.id == b.id) {
+                *slot = b.clone();
+            }
+            continue;
+        }
+        out.insert(0, b);
+    }
+    if out.len() > MAX_ITEMS {
+        // 超量时优先丢掉排在后面的自定义来源，内置的一定留
+        while out.len() > MAX_ITEMS {
+            let idx = out.iter().rposition(|x| !x.builtin).unwrap_or(out.len() - 1);
+            out.remove(idx);
+        }
+    }
+    *list = out;
+
+    let cur = active.trim().to_string();
+    if !list.iter().any(|x| x.id == cur) {
+        *active = list.first().map(|x| x.id.clone()).unwrap_or_else(|| "local".into());
+    } else {
+        *active = cur;
+    }
 }
 
 /// 自律时段配置归一化：
@@ -505,5 +583,44 @@ mod tests {
         let mut many: Vec<String> = (0..80).map(|i| format!("q{i}")).collect();
         sanitize_quotes(&mut many);
         assert_eq!(many.len(), 60);
+    }
+
+    /// 语录来源：列表被删空也必须补回三个内置来源（断网兜底不能丢）
+    #[test]
+    fn quote_feeds_always_keep_builtins() {
+        let mut list: Vec<QuoteFeed> = Vec::new();
+        let mut active = String::new();
+        sanitize_quote_feeds(&mut list, &mut active);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].id, "local");
+        assert_eq!(active, "local");
+    }
+
+    /// 自定义来源：非 http 地址直接丢掉；合法地址保留并补上 builtin=false
+    #[test]
+    fn custom_feed_needs_http_url() {
+        let mut list = default_quote_feeds();
+        list.push(QuoteFeed {
+            id: "u1".into(), name: "坏".into(), kind: "json".into(),
+            url: "file:///c:/x.json".into(), home: String::new(), builtin: false,
+        });
+        list.push(QuoteFeed {
+            id: "u2".into(), name: "好".into(), kind: "json".into(),
+            url: "https://example.com/q".into(), home: String::new(), builtin: false,
+        });
+        let mut active = "u2".into();
+        sanitize_quote_feeds(&mut list, &mut active);
+        assert!(list.iter().all(|f| f.id != "u1"), "非 http 地址应当被丢弃");
+        assert!(list.iter().any(|f| f.id == "u2"));
+        assert_eq!(active, "u2");
+    }
+
+    /// 当前来源指向一个已经被删掉的 id → 回落到第一个（界面不能空着）
+    #[test]
+    fn active_feed_resets_when_missing() {
+        let mut list = default_quote_feeds();
+        let mut active = "gone".into();
+        sanitize_quote_feeds(&mut list, &mut active);
+        assert_eq!(active, list[0].id);
     }
 }

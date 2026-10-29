@@ -91,6 +91,11 @@ const STATE = {
       update: { enabled: true, repo: 'x/y', token: '', skippedVersion: '', lastCheck: 0 },
       hud: { enabled: true, quoteMinutes: 60, offsetX: 20, offsetY: 20 },
       customQuotes: ['先把手上的这一段做完。', '慢一点没关系，方向对就行。'],
+      quoteFeeds: [
+        { id: 'local', name: '内置精选', kind: 'local', url: '', home: '', builtin: true },
+        { id: 'hitokoto', name: '一言 · 励志', kind: 'json', url: 'https://v1.hitokoto.cn/?encode=json&c=k', home: 'https://hitokoto.cn', builtin: true },
+      ],
+      quoteFeed: 'hitokoto',
       notify: { enabled: true, workBefore: 5, breakBefore: 2, breakNotify: true, focusWindow: false },
       backup: { password: '', autoOnStart: false },
     },
@@ -148,6 +153,20 @@ window.__TAURI__ = {
       if (args.offset_y != null) h.offsetY = args.offset_y;
       return null;
     }
+    // 语录：默认成功；把 STATE.__quoteMode 置成 'fail' 就模拟断网
+    if (cmd === 'quote_fetch') {
+      if (STATE.__quoteMode === 'fail') return { ok: false, reason: 'offline', feed: args.id };
+      STATE.__quoteN = (STATE.__quoteN || 0) + 1;
+      return {
+        ok: true,
+        text: '联网取到的第 ' + STATE.__quoteN + ' 句：把注意力放回手上这件事。',
+        from: '测试作者《测试作品》',
+        feed: args.id,
+        feedName: '一言 · 励志',
+        home: 'https://hitokoto.cn',
+      };
+    }
+    if (cmd === 'open_url') { STATE.__openedUrl = args.url; return null; }
     if (cmd === 'set_always_on_top') { STATE.config.settings.alwaysOnTop = !!args.enabled; return null; }
     if (cmd === 'set_run_as_admin') {
       STATE.config.settings.runAsAdmin = !!args.enabled;
@@ -1536,10 +1555,13 @@ window.__itest = async () => {
     const fills = new Set();
     document.querySelectorAll('.cc-run i.f').forEach((el) => fills.add(getComputedStyle(el).backgroundColor));
     out.push(['所有色块的填充色只有一种', [...fills].length, 1]);
-    // 色块颜色回到原来的亮蓝（用户要求），单独留变量只是为了以后好调
+    // 三种状态只用两个色：选中高亮（拖拽也用它）与放置后（深 5%）
     const root = getComputedStyle(document.documentElement);
-    const blockC = root.getPropertyValue('--cc-block').trim();
-    out.push(['色块色是原来的亮蓝', blockC.toUpperCase(), '#3F7CFF']);
+    out.push(['选中 / 拖拽色 = --cc-sel', root.getPropertyValue('--cc-sel').trim().toUpperCase(), '#3F7CFF']);
+    out.push(['放置色 = --cc-set', root.getPropertyValue('--cc-set').trim().toUpperCase(), '#3C76F2']);
+    // custom property 里的 var() 在 computed 阶段就解析掉了，这里读到的是最终色
+    out.push(['--cc-block 解析成放置色', root.getPropertyValue('--cc-block').trim().toUpperCase(), '#3C76F2']);
+    out.push(['橙色变量已经不存在', root.getPropertyValue('--cc-pending').trim(), '']);
   }
 
   // ---- 26c. 统计报告：类型分段选择 + 每条可导出 / 可删除 ----
@@ -1613,62 +1635,149 @@ window.__itest = async () => {
   }
 
 
-  // ---- 26f. Hub 顶部：激励语录（自定义 + 联网，来源要标明）----
+  // ---- 26f. Hub 顶部：激励语录（来源可切、可加、断网可换、来源可点）----
   {
-    S.quoteAt = '';
+    S.quoteCur = null;
+    STATE.__quoteMode = 'ok';
     await Act.nav('overview');
     await wait(280);
-    const qc = document.querySelector('.hub-quote');
+    const qc = () => document.querySelector('.hub-quote');
+    const qtxt = () => qc().querySelector('.qtext').textContent;
+    const qsrc = () => qc().querySelector('.qsrc');
     const hero = document.querySelector('.hero');
-    out.push(['Hub 顶部有语录区', !!qc]);
-    out.push(['语录区在 hero 之前', !!(qc && hero)
-      && (qc.compareDocumentPosition(hero) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0, true]);
-    out.push(['默认显示自己写的第一条',
-      qc.querySelector('.qtext').textContent, '先把手上的这一段做完。']);
-    out.push(['来源标为「我写的」', qc.querySelector('.qsrc').textContent, '我写的']);
-    out.push(['有「换一条」按钮', !!qc.querySelector('[data-act="quote-next"]'), true]);
-    out.push(['有「我的语录」入口', /我的语录/.test(qc.querySelector('[data-act="quote-manage"]').textContent), true]);
-    out.push(['入口上显示条数', /· 2/.test(qc.querySelector('[data-act="quote-manage"]').textContent), true]);
+    out.push(['Hub 顶部有语录区', !!qc()]);
+    out.push(['语录区在 hero 之前', !!(qc() && hero)
+      && (qc().compareDocumentPosition(hero) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0, true]);
+    // 首屏用后端缓存的那条（同一次联网结果的落盘），标签写来源名而不是"网络"
+    out.push(['首屏先用缓存的那条', qtxt(), '你今天做的事，是你明天想成为的人。']);
+    out.push(['来源标签写的是来源名', qsrc().textContent, '一言 · 励志']);
+    out.push(['有网址的来源可以点', qsrc().classList.contains('link'), true]);
+    out.push(['缓存那条的出处照实标', qc().querySelector('.qfrom').textContent, '—— 关于自律']);
+    out.push(['有「换一条」按钮', !!qc().querySelector('[data-act="quote-next"]'), true]);
+    out.push(['有「我的语录」入口', /我的语录/.test(qc().querySelector('[data-act="quote-manage"]').textContent), true]);
+    out.push(['入口上显示条数', /· 2/.test(qc().querySelector('[data-act="quote-manage"]').textContent), true]);
 
-    // 换一条 → 第二条自定义
-    qc.querySelector('[data-act="quote-next"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
-    await wait(200);
-    out.push(['换一条走到下一条自定义',
-      document.querySelector('.hub-quote .qtext').textContent, '慢一点没关系，方向对就行。']);
-    // 再换 → 联网那条，来源要变成「网络 · 一言」并带出处
-    document.querySelector('[data-act="quote-next"]').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
-    await wait(200);
-    out.push(['再换一条轮到联网语录',
-      document.querySelector('.hub-quote .qtext').textContent, '你今天做的事，是你明天想成为的人。']);
-    out.push(['联网语录标明来源站点', document.querySelector('.hub-quote .qsrc').textContent, '一言 · hitokoto.cn']);
-    out.push(['联网语录写清"来自哪个接口"',
-      /hitokoto\.cn/.test((document.querySelector('.hub-quote .qhint') || {}).textContent || ''), true]);
-    out.push(['联网语录带出处',
-      (document.querySelector('.hub-quote .qfrom') || {}).textContent, '—— 关于自律']);
+    // ① 点「换一条」→ 立即联网取一条（不是在本地下一条里轮换）
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(260);
+    out.push(['换一条真的发了一次联网请求', STATE.__quoteN, 1]);
+    out.push(['换上联网取回的那句', qtxt(), '联网取到的第 1 句：把注意力放回手上这件事。']);
+    out.push(['联网句带作者出处', qc().querySelector('.qfrom').textContent, '—— 测试作者《测试作品》']);
+    out.push(['联网成功时不显示离线标记', !!qc().querySelector('.qoff'), false]);
+    // ② 再点一次 → 又一次请求（每次点击都重新联网）
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(260);
+    out.push(['再点一次又请求一次', STATE.__quoteN, 2]);
+    out.push(['句子跟着换', qtxt(), '联网取到的第 2 句：把注意力放回手上这件事。']);
 
-    // 管理面板：添加一句 → 保存 → 回到 Hub 能看到
-    document.querySelector('[data-act="quote-manage"]')
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    // ③ 断网：退回本地池，标签改写成「内置精选」并给离线标记
+    STATE.__quoteMode = 'fail';
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(260);
+    out.push(['断网时给出离线标记', (qc().querySelector('.qoff') || {}).textContent, '离线 · 本地精选']);
+    out.push(['断网时标签改成内置精选', qsrc().textContent, '内置精选']);
+    out.push(['断网时不再可点（没有网址）', qsrc().classList.contains('link'), false]);
+    out.push(['断网这条来自本地池',
+      window.KOF_QUOTES.indexOf(qtxt()) >= 0 || STATE.config.settings.customQuotes.indexOf(qtxt()) >= 0, true]);
+    const offline1 = qtxt();
+    // ④ 断网也能继续换，而且要真的换掉
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(220);
+    out.push(['断网再换一条也变了', qtxt() !== offline1, true]);
+    out.push(['断网时不会再去发请求', STATE.__quoteN, 2]);
+    // ⑤ 联网回来后自动恢复
+    STATE.__quoteMode = 'ok';
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(260);
+    out.push(['网络恢复后重新走联网', STATE.__quoteN, 3]);
+    out.push(['恢复后离线标记消失', !!qc().querySelector('.qoff'), false]);
+
+    // ⑥ 点来源标签 → 打开对应网址
+    STATE.__openedUrl = '';
+    qsrc().click();
+    await wait(160);
+    out.push(['点来源能跳到对应网址', STATE.__openedUrl, 'https://hitokoto.cn']);
+
+    // ⑦ 右键语录 → 来源设置（列出全部来源、标出当前）
+    fire('contextmenu', qc(), { clientX: 300, clientY: 200 });
+    await wait(200);
+    out.push(['右键弹出「语录来源」', (document.querySelector('.modal-hd h3') || {}).textContent, '语录来源']);
+    out.push(['列出全部来源', document.querySelectorAll('.fsrc').length, 2]);
+    out.push(['当前来源有「使用中」标记',
+      document.querySelector('.fsrc.on .badge.gold').textContent, '使用中']);
+    out.push(['内置来源没有删除按钮',
+      document.querySelectorAll('[data-act="quote-del-feed"]').length, 0]);
+    out.push(['有「添加自定义来源」入口', !!document.getElementById('qfeedName'), true]);
+    out.push(['本地来源写明条数', /121 条/.test(
+      [...document.querySelectorAll('.fsrc-url')].map((e) => e.textContent).join('|')), true]);
+
+    // ⑧ 切到本地来源：立刻换成本地句子，且不再联网
+    document.querySelector('[data-act="quote-pick-feed"][data-id="local"]').click();
+    await wait(320);
+    const n0 = STATE.__quoteN;
+    out.push(['切换后配置里记下新来源', STATE.config.settings.quoteFeed, 'local']);
+    out.push(['切到本地后标签是内置精选', qsrc().textContent, '内置精选']);
+    out.push(['切到本地后句子来自本地池',
+      window.KOF_QUOTES.indexOf(qtxt()) >= 0 || STATE.config.settings.customQuotes.indexOf(qtxt()) >= 0, true]);
+    const beforeLocal = qtxt();
+    qc().querySelector('[data-act="quote-next"]').click();
+    await wait(220);
+    out.push(['本地来源不会联网', STATE.__quoteN, n0]);
+    // 本地池是「自己写的 + 内置」合起来的，所以"换掉"要比的是**当前这条**，
+    // 不能比之前离线时那条（离线时也可能落到同一个池子的同一条上）
+    out.push(['本地来源也能换', qtxt() !== beforeLocal, true]);
+
+    // ⑨ 添加自定义来源：加完自动切过去并取一条
+    fire('contextmenu', qc(), { clientX: 300, clientY: 200 });
+    await wait(180);
+    $('#qfeedName').value = '我的接口';
+    $('#qfeedUrl').value = 'https://example.com/quote.json';
+    document.querySelector('[data-act="quote-add-feed"]').click();
+    await wait(360);
+    const feeds = STATE.config.settings.quoteFeeds || [];
+    out.push(['自定义来源加进了配置', feeds.length, 3]);
+    out.push(['新来源字段完整',
+      [feeds[2].name, feeds[2].kind, feeds[2].url, feeds[2].builtin].join('|'),
+      '我的接口|json|https://example.com/quote.json|false']);
+    out.push(['加完自动切到新来源', STATE.config.settings.quoteFeed, feeds[2].id]);
+    out.push(['加完顺手取了一条', /联网取到的第/.test(qtxt()), true]);
+
+    // ⑩ 非法地址被拦下
+    fire('contextmenu', qc(), { clientX: 300, clientY: 200 });
+    await wait(180);
+    const before = (STATE.config.settings.quoteFeeds || []).length;
+    $('#qfeedName').value = '坏地址';
+    $('#qfeedUrl').value = 'file:///c:/x.json';
+    document.querySelector('[data-act="quote-add-feed"]').click();
+    await wait(200);
+    out.push(['非 http 地址被拦下', (STATE.config.settings.quoteFeeds || []).length, before]);
+
+    // ⑪ 删除自定义来源（内置的不给删）
+    document.querySelectorAll('[data-act="quote-del-feed"]').forEach((b) => b.click());
+    await wait(320);
+    out.push(['删掉后只剩内置来源', (STATE.config.settings.quoteFeeds || []).length, 2]);
+    out.push(['删掉后自动退回第一个来源', STATE.config.settings.quoteFeed, 'local']);
+
+    // ⑫ 我的语录：添加 → 保存 → 入口条数跟着变
+    document.querySelector('[data-act="quote-manage"]').click();
     await wait(200);
     out.push(['管理面板列出已有语录', document.querySelectorAll('.qrow').length, 2]);
-    const inp = document.querySelector('#quoteNew');
-    inp.value = '今天先赢一小局。';
-    document.querySelector('[data-act="quote-add"]')
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    $('#quoteNew').value = '今天先赢一小局。';
+    document.querySelector('[data-act="quote-add"]').click();
     await wait(150);
     out.push(['添加后列表变 3 条', document.querySelectorAll('.qrow').length, 3]);
-    document.querySelector('[data-act="quote-save"]')
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    document.querySelector('[data-act="quote-save"]').click();
     await wait(400);
     out.push(['保存到配置', (STATE.config.settings.customQuotes || []).length, 3]);
-    out.push(['保存后回到 Hub 且仍是语录',
-      !!document.querySelector('.hub-quote'), true]);
-    out.push(['入口条数跟着更新',
-      /· 3/.test(document.querySelector('[data-act="quote-manage"]').textContent), true]);
+    out.push(['保存后回到 Hub 且仍是语录', !!qc(), true]);
+    out.push(['入口条数跟着更新', /· 3/.test(
+      document.querySelector('[data-act="quote-manage"]').textContent), true]);
 
     // 复位，别影响后面的用例
     STATE.config.settings.customQuotes = STATE.config.settings.customQuotes.slice(0, 2);
-    S.quoteAt = '';
+    STATE.config.settings.quoteFeed = 'hitokoto';
+    STATE.__quoteMode = 'ok';
+    S.quoteCur = null;
     render();
     await wait(150);
   }
@@ -2270,28 +2379,124 @@ window.__itest = async () => {
       await clearAll();
     }
 
-    // 两种状态两种颜色：选中中（未落盘）= 琥珀，已设置 = 蓝
+    // 三态两色：选中 / 拖拽 = --cc-sel，放置 = --cc-set（同一色相、只深 5%）
     {
       await clearAll();
-      pd()[1][9].on = true; pd()[1][9].from = 0; pd()[1][9].to = 60;
+      const plan = (d, h) => { pd()[d][h].on = true; pd()[d][h].from = 0; pd()[d][h].to = 60; };
+      plan(1, 9); plan(3, 9);                       // 周二 9 点、周四 9 点
       await saveConfig(); render(); await wait(200);
-      const bg = (el) => (el ? getComputedStyle(el.querySelector('i.f')).backgroundColor : '-');
-      const blue = bg(document.querySelector('.cc-run[data-d="1"]'));
-      out.push(['已设置的块是蓝色系', blue, 'rgb(63, 124, 255)']);
+      const bg = (sel) => {
+        const el = document.querySelector(sel);
+        return el ? getComputedStyle(el.querySelector('i.f')).backgroundColor : '-';
+      };
+      const setC = bg('.cc-run[data-d="1"]');
+      const otherC = bg('.cc-run[data-d="3"]');
+      out.push(['放置后是 --cc-set', setC, 'rgb(60, 118, 242)']);
+
       fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
       document.dispatchEvent(new MouseEvent('mousemove', {
         bubbles: true, clientY: gY(1, 10, 1), clientX: colCenter(1),
       }));
       await wait(180);
-      const pend = document.querySelector('.cc-run.pending');
-      const amber = bg(pend);
-      out.push(['拖动中的块带 pending 标记', !!pend, true]);
-      out.push(['拖动中是琥珀色（与已设置明显不同）', amber, 'rgb(255, 176, 32)']);
-      out.push(['两态颜色确实不同', amber !== blue, true]);
+      const selRun = document.querySelector('.cc-run.sel');
+      const selC = selRun ? getComputedStyle(selRun.querySelector('i.f')).backgroundColor : '-';
+      out.push(['拖动中的块带 sel 标记', !!selRun, true]);
+      out.push(['拖动中沿用选中高亮色', selC, 'rgb(63, 124, 255)']);
+      out.push(['拖动不再是橙色', /255, ?176/.test(selC), false]);
+      out.push(['只有一块带 sel（局部高亮）', document.querySelectorAll('.cc-run.sel').length, 1]);
+      out.push(['带 sel 的就是被操作的那天', selRun ? +selRun.dataset.d : -1, 1]);
+      out.push(['另一天的块颜色一点没变', bg('.cc-run[data-d="3"]'), otherC]);
+      out.push(['另一天的块也没被标记', document.querySelector('.cc-run[data-d="3"]').className.indexOf('sel'), -1]);
       document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
       await wait(420);
-      out.push(['落盘后不再有待提交色块', document.querySelectorAll('.cc-run.pending').length, 0]);
-      out.push(['落盘后立刻回到蓝色', bg(document.querySelector('.cc-run[data-d="1"]')), blue]);
+      out.push(['落盘后不再有 sel 残留', document.querySelectorAll('.cc-run.sel').length, 0]);
+      out.push(['落盘后回到放置色', bg('.cc-run[data-d="1"]'), setC]);
+      const rgb = (v) => v.match(/\d+/g).map(Number);
+      // 用感知亮度比而不是单通道差：蓝色通道本来就深，按通道算会误判成"两种颜色"
+      const lum = (v) => { const [r, g2, b2] = rgb(v); return 0.2126 * r + 0.7152 * g2 + 0.0722 * b2; };
+      const drop = (lum(selC) - lum(setC)) / lum(selC);
+      out.push(['放置色比选中色略深（0 < 差 ≤ 8% 亮度）', drop > 0.01 && drop <= 0.08, true]);
+      await clearAll();
+    }
+
+    // 边缘缩放：上下边界 5px 内可拉长 / 缩短，段身仍是"搬走"
+    {
+      await clearAll();
+      for (const h of [9, 10]) { pd()[1][h].on = true; pd()[1][h].from = 0; pd()[1][h].to = 60; }
+      await saveConfig(); render(); await wait(200);
+      const grid = document.getElementById('ccGrid');
+      const geo = () => ccSegEdgeY(1, { h0: 9, h1: 10, f0: 0, t1: 60 });
+
+      // ① 悬停上边界 → 手柄 + ns-resize
+      fire('mousemove', cell(1, 9), { clientY: geo().top + 2, clientX: colCenter(1) });
+      await wait(90);
+      out.push(['上边界出现缩放手柄', !!document.querySelector('.cc-run.edge-top'), true]);
+      out.push(['上边界光标是 ns-resize', getComputedStyle(cell(1, 9)).cursor, 'ns-resize']);
+      // ② 悬停下边界
+      fire('mousemove', cell(1, 10), { clientY: geo().bottom - 2, clientX: colCenter(1) });
+      await wait(90);
+      out.push(['下边界出现缩放手柄', !!document.querySelector('.cc-run.edge-bottom'), true]);
+      // ③ 段身中线 → 手柄消失（这里是"搬走"）
+      fire('mousemove', cell(1, 10), { clientY: (geo().top + geo().bottom) / 2, clientX: colCenter(1) });
+      await wait(90);
+      out.push(['段身中线没有手柄', document.querySelectorAll('.cc-run.edge-top,.cc-run.edge-bottom').length, 0]);
+      out.push(['段身中线不是缩放手柄态', grid.classList.contains('over-edge'), false]);
+
+      // ④ 下边界往下拖 1 小时 → 11:00 变 12:00
+      fire('mousedown', cell(1, 10), { clientY: geo().bottom - 2, clientX: colCenter(1) });
+      out.push(['按下下边界 = 缩放模式', S.ccDrag ? S.ccDrag.resize : '-', 'bottom']);
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 11, 3), clientX: colCenter(1),
+      }));
+      await wait(170);
+      out.push(['缩放中状态条写「调整」', $('#clockLive').textContent.indexOf('调整') >= 0, true]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['拉到 12:00', pd()[1][11].on, true]);
+      out.push(['总时长 3 小时', ccDayMinutes(pd()[1]), 180]);
+      out.push(['起止分钟没被抹掉', `${pd()[1][9].from}-${pd()[1][11].to}`, '0-60']);
+
+      // ⑤ 最短 = 一格：往下边界往回拖过头，也只缩到 15 分钟
+      fire('mousedown', cell(1, 9), { clientY: ccSegEdgeY(1, { h0: 9, h1: 11, f0: 0, t1: 60 }).bottom - 2, clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 9, 0), clientX: colCenter(1),
+      }));
+      await wait(170);
+      const rMin = ccDragRange(S.ccDrag);
+      out.push(['最短保留一个粒度', rMin.hi - rMin.lo, 15]);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['落位后只剩一格', ccDayMinutes(pd()[1]), 15]);
+
+      // ⑥ 最长到可视范围尽头：上边界往上顶到 0:00 就停住，不会翻到前一天
+      fire('mousedown', cell(1, 9), { clientY: ccSegEdgeY(1, { h0: 9, h1: 9, f0: 0, t1: 15 }).top + 2, clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: geo().top - 400, clientX: colCenter(1),
+      }));
+      await wait(170);
+      const rMax = ccDragRange(S.ccDrag);
+      // 这里图表只显示 07:00–22:00，所以"尽头"是 07:00，不是 0:00
+      out.push(['上边界不会越过显示范围起点', rMax.lo, fc().viewFrom]);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await wait(200);
+      out.push(['Esc 取消缩放：段没变', ccDayMinutes(pd()[1]), 15]);
+
+      // ⑦ 缩放时横向拖到别的列 → 不换天（换天请按段身）
+      fire('mousedown', cell(1, 9), { clientY: ccSegEdgeY(1, { h0: 9, h1: 9, f0: 0, t1: 15 }).top + 2, clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(1, 12, 1), clientX: colCenter(2),
+      }));
+      await wait(170);
+      out.push(['缩放不接受横向换天', S.ccDrag ? S.ccDrag.dCur : -1, 1]);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await wait(200);
+
+      // ⑧ 在边缘按一下不拖 → 什么都不改（点击不改结构的规则同样适用）
+      fire('mousedown', cell(1, 9), { clientY: ccSegEdgeY(1, { h0: 9, h1: 9, f0: 0, t1: 15 }).top + 2, clientX: colCenter(1) });
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(260);
+      out.push(['边缘单击不改结构', ccDayMinutes(pd()[1]), 15]);
+      out.push(['边缘单击后没有 sel 残留', document.querySelectorAll('.cc-run.sel').length, 0]);
       await clearAll();
     }
 
@@ -2536,7 +2741,9 @@ window.__itest = async () => {
           if (!pe || pe.tagName === 'SCRIPT' || pe.tagName === 'STYLE') continue;
           if (pe.closest('#toastRoot')) continue;   // 瞬时提示不算界面文案
           // 用户自己写的内容（语录正文、条目名）本来就不该翻译
-          if (pe.closest('.qrow') || pe.closest('.qtext')) continue;
+          // 语录正文、作者出处都是**数据**（用户自己写的句子 / 接口给的作品名），
+          // 不该被当成"界面文案残留"；来源标签属于界面，仍然要翻。
+          if (pe.closest('.qrow') || pe.closest('.qtext') || pe.closest('.qfrom')) continue;
           const tx = (n.nodeValue || '').trim();
           if (tx && /[\u4e00-\u9fa5]/.test(tx)) {
             left.push(v + ':' + tx.slice(0, 22));
@@ -2640,6 +2847,7 @@ window.__itest = async () => {
   return out;
 };
 </script>
+<script src="quotes_data.js"></script>
 <script src="i18n.js"></script>
 <script src="app.js"></script>
 <script>

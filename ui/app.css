@@ -40,16 +40,19 @@
   --warn: #f5a524;
   /* 强调色（按钮 / 滑块 / 选中态）：需要足够醒目 */
   --cc-fill: #3f7cff;
-  /* 时段色块的填充色：一整块只有这一种颜色，不做渐变 / 描边 / 深浅分层。
-     数值和 --cc-fill 一致（用户确认要回到原来的亮蓝）；单独留一个变量，
-     以后要调色只改这一处，不用满地找。 */
-  --cc-block: #3f7cff;
-
-  /* 两种状态必须一眼分得开，否则"松手了没有"看不出来：
-   *   已设置（已落盘）  = --cc-block（蓝，冷色，安稳）
-   *   选中中（拖动预览） = --cc-pending（琥珀，暖色，警示"还没提交"）
-   * 色相相差 180°，色弱也能靠明度差区分；两者都足够饱和，缩略图里也认得出来。 */
-  --cc-pending: #ffb020;
+  /* 时段色块的配色：**只有一个色相**，三种状态靠"极小的明度差"区分。
+   *
+   *   选中高亮（选中 / 拖拽中）  = --cc-sel  #3f7cff
+   *   已放置（松手落盘之后）      = --cc-set  #3c76f2  ← 在 sel 上压 5% 黑
+   *
+   * 为什么不再用橙色：橙色和蓝色是互补色，切换时整块"跳"了一下，
+   * 视觉上像换了个东西，而不是"同一个东西被放下了"。现在两个状态同色相，
+   * 只有 5% 的明度差——几乎看不出来，但看得见"我松手了"。
+   * 5% 是刻意选的：再深一档（>8%）就会像两种颜色，再浅一档（<3%）肉眼分不出。 */
+  --cc-sel: #3f7cff;
+  --cc-set: #3c76f2;
+  /* 兼容旧名字：色块 / 每日时长条 / 图例默认都用"已放置"色 */
+  --cc-block: var(--cc-set);
 
   /* 深色 */
   --bg: #090b10;
@@ -113,8 +116,9 @@
   --blue: #0284c7;
   --warn: #b45309;
   --cc-fill: #2f6df0;
-  --cc-block: #2f6df0;
-  --cc-pending: #d97706;
+  --cc-sel: #2f6df0;
+  --cc-set: #2d68e4;
+  --cc-block: var(--cc-set);
 
   --bg: #f5f6fa;
   --bg-soft: #ffffff;
@@ -798,8 +802,10 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
   background: transparent;
   border: 0;
   border-top: 1px solid var(--line);
-  /* 上下拖才能伸缩，光标直接给这个暗示 */
-  cursor: ns-resize;
+  /* 空白格 = 按住往下拖新建一段 → 十字光标（"在这里画"）。
+   * ns-resize 留给**已有的段边缘**（缩放），两者不能共用一个光标，
+   * 否则"新建"和"改大小"看起来是同一件事。 */
+  cursor: crosshair;
   transition: background .1s;
   z-index: 1;
   /* 触摸时不要触发浏览器的滚动/缩放手势，否则移动端拖不动 */
@@ -819,6 +825,10 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
  *   拖动中 → grabbing（正在搬）
  */
 .cc.over-seg .cc-cell { cursor: grab; }
+/* 边缘可缩放：优先级高于"可抓"——同一格上下两个热区都命中时，
+ * 光标必须说的是"这一下会改大小"，而不是"这一下会搬走"。
+ * 声明顺序放在 .over-seg 之后、.dragging 之前，正是这个优先级。 */
+.cc.over-edge .cc-cell { cursor: ns-resize; }
 .cc.dragging, .cc.dragging .cc-cell { cursor: grabbing !important; }
 /* 拖动期间别让浏览器顺手选中文字 / 拖出图片 */
 body.cc-dragging { user-select: none; -webkit-user-select: none; }
@@ -912,16 +922,41 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
 /* 起止分钟让出来的占位带：完全透明，就是"这一小时没选满"，不是另一种颜色 */
 .cc-run .cc-gap { background: transparent; }
 /* 整块唯一的填充色。没有渐变、没有浅色尾段、没有休息段改色。
- * 两个状态共用同一条色带，只换颜色：
- *   .pending = 拖动中的预览（还没松手、还没落盘）→ 琥珀
- *   没有 .pending = 已设置、已保存 → 蓝
- * 去掉类时保留 background 过渡，于是"松手落位"会看到琥珀→蓝的一次变色，
- * 等于给"设置成功"一个不用看提示条也能感知到的确认。 */
+ * 三种状态共用同一条色带，只换 5% 的明度：
+ *   默认（已放置、已保存）      → --cc-set
+ *   .sel（选中中 / 拖拽中）     → --cc-sel（略亮一点点）
+ * 落盘后摘掉 .sel，background 有 160ms 过渡，于是"松手"是一次几乎看不见、
+ * 但确实存在的轻微加深——这就是保存成功的反馈，不需要第二种颜色。
+ *
+ * `position: relative` 是给边缘缩放手柄（::before/::after）当定位基准的。 */
 .cc-run .f {
-  background: var(--cc-block);
-  transition: background-color .18s var(--mo-ease);
+  position: relative;
+  background: var(--cc-set);
+  transition: background-color .16s var(--mo-ease);
 }
-.cc-run.pending .f { background: var(--cc-pending); }
+.cc-run.sel .f { background: var(--cc-sel); }
+/* ── 边缘缩放手柄 ───────────────────────────────────────────
+ * 指针走到段的上 / 下边界 7px 以内时，在那条边上长出一根 24×3 的小横条，
+ * 同时整张表的光标变成 ns-resize。它只是**提示**，不是可点的 DOM：
+ * `pointer-events` 依旧交给格子，命中判定在 JS 里按坐标算（见 ccEdgeZone）。
+ * 为什么不放真元素：色块高度是按分钟算出来的百分比，插一个绝对定位的子元素
+ * 会挤占 flex 空间，把色带的比例算错。
+ *
+ * .first / .last 由 addBlock 打在首尾填色带上：非整点的段，
+ * 它的上边界不在格子顶、而在 :15 处，手柄必须跟着填色带走。 */
+.cc-run.edge-top .f.first::before,
+.cc-run.edge-bottom .f.last::after {
+  content: ''; position: absolute; left: 50%;
+  width: 24px; height: 3px; margin-left: -12px; border-radius: 2px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .28);
+  animation: ccEdgeIn .12s var(--mo-ease);
+  pointer-events: none;
+}
+.cc-run.edge-top .f.first::before { top: -2px; }
+.cc-run.edge-bottom .f.last::after { bottom: -2px; }
+@keyframes ccEdgeIn { from { opacity: 0; transform: scaleX(.6); } to { opacity: 1; transform: none; } }
+
 /* 色块上的时长文字（滴答清单里色块会写 09:00 - 12:00） */
 .cc-run-txt {
   position: absolute; top: 3px; left: 6px; right: 6px;
@@ -938,8 +973,7 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   margin-left: 5px;
 }
 .cc-run-txt.two em { display: block; margin-left: 0; }
-/* 琥珀（选中中）底色偏亮，白字读不清 —— 换成深色字，两种主题都够对比 */
-.cc-run.pending .cc-run-txt { color: #24180a; text-shadow: none; }
+
 /* 短块（10 / 15 分钟 ≈ 13px 高）：缩到 8.5px 才塞得下一行，
    不加省略号——起止时间被截一半反而看不懂 */
 .cc-run-txt.tight {
@@ -1165,7 +1199,7 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
   margin-right: 5px; vertical-align: -1px;
   background: var(--cc-block);
 }
-.cc-legend .sw.pending { background: var(--cc-pending); }
+.cc-legend .sw.sel { background: var(--cc-sel); }
 
 /* 「通用时长」行：之后新框选 / 单击选中的时段都沿用这套专注 / 休息 */
 .cc-def {
@@ -2036,3 +2070,48 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
   font-size: 11px; color: var(--text-3); line-height: 1.6;
 }
 .cc-modal .cc-menu-scope { flex-wrap: wrap; }
+
+/* ── 语录：来源标签 / 离线标记 / 来源设置面板 ──────────────────
+ * 来源标签现在**可以点**（点了打开对应网站），所以它得看起来像个链接；
+ * 但它是句子下面的次要信息，不能抢 qtext 的注意力，于是只在 hover 时描边+变色。 */
+.hub-quote .qsrc.link { cursor: pointer; transition: background .12s, color .12s, box-shadow .12s; }
+.hub-quote .qsrc.link:hover {
+  background: rgba(77, 141, 255, .2); color: var(--cc-fill);
+  box-shadow: 0 0 0 1px rgba(77, 141, 255, .35) inset;
+}
+.hub-quote .qsrc.plain { cursor: default; }
+/* 离线标记：用金色而不是红色——"没网"不是错误，是降级，别让人以为出了故障 */
+.hub-quote .qoff {
+  padding: 2px 8px; border-radius: var(--r-pill); font-size: 10.5px; font-weight: 600;
+  background: rgba(255, 199, 95, .14); color: var(--gold);
+}
+/* 取句子期间整块微微压暗，给"正在联网"一个不含动画噪声的提示 */
+.hub-quote.busy .qtext { opacity: .55; }
+.hub-quote.busy .qmark { opacity: .5; }
+
+/* 来源列表：一行一个来源，左边名字 + 地址，右边动作 */
+.flist { display: flex; flex-direction: column; gap: 8px; }
+.fsrc {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: var(--inset-bg);
+}
+.fsrc.on { border-color: rgba(77, 141, 255, .45); background: rgba(77, 141, 255, .08); }
+.fsrc-main { flex: 1; min-width: 0; }
+.fsrc-name { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fsrc-url {
+  margin-top: 3px; font-size: 11px; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.fsrc-ops { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+/* 添加来源的四个控件：名称 / 地址 / 类型 / 按钮，窄屏自动换行 */
+.qfeed-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.qfeed-form input[type="text"] { flex: 1 1 150px; min-width: 0; }
+.qfeed-form select {
+  font: inherit; font-size: 12px; padding: 6px 8px; border-radius: var(--r-sm);
+  color: var(--text); background: var(--cell-bg); border: 1px solid var(--line); outline: none;
+  cursor: pointer;
+}
+.qfeed-form select:focus-visible { border-color: var(--gold); }

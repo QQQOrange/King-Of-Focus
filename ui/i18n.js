@@ -471,6 +471,11 @@
 
     /* —— 拖拽与语录设置 —— */
     '移动': 'Move',
+    '调整': 'Resize',
+    '选中 / 拖动中': 'Selected / dragging',
+    '已放置（已保存）': 'Placed (saved)',
+    '同一个色相，只差 5% 明度：拖的时候亮一点点，松手后轻微加深就是存好了。同一天相邻的时段会连成一整块':
+      'Same hue, 5% darker once saved — dragging looks slightly brighter. Adjacent windows on one day merge into a single block.',
     '选中': 'Select',
     '这些句子会和联网取到的「一言」一起在 Hub 顶部轮换，每条都会标明来源。 最多 60 条、每条 120 字；这里改完立刻生效，不用打开 Hub。':
       'These rotate at the top of the Hub together with online quotes, each labelled with its source. Up to 60 lines of 120 characters; changes apply immediately.',
@@ -759,6 +764,8 @@
       'Right-click a window: that window only (start to end, whole hours included) — change rhythm, start/end minutes, or remove it.',
     '右键空白格 = 格子：只作用于这一小时，把它选上并设定起止分钟。':
       'Right-click an empty cell: that hour only — select it and set its start/end minutes.',
+    '按住某一段的上边缘或下边缘（5px 内，光标变成上下箭头）可以拉长或缩短它；最短一格，最长到显示范围的尽头。':
+      'Drag the top or bottom edge (within 5px, cursor turns into a vertical arrow) to lengthen or shorten it; minimum one slot, maximum the whole visible range.',
     '一句话：点得越具体，作用范围越小——不会出现"右键一段、却把一整天重排"的情况。':
       'In short: the more specific the click, the smaller the scope — no more "right-clicked one window, re-arranged the whole day".',
     '拖选是"从起点到终点的一段连续区间"，松手即提交；贴着 0:00 / 24:00 的段只属于当天，不会牵连相邻那天。':
@@ -805,6 +812,30 @@
       'Right-click has three levels: day header = whole day, window = that window, empty cell = that cell',
     '图表显示范围；睡眠时段（锁定 + 倒计时关机 + 积分解锁）':
       'Chart display range; sleep hours (lock + countdown shutdown + points unlock)',
+    /* —— 语录来源 —— */
+    '右键可换来源': 'Right-click to switch source',
+    '换一条': 'Another one',
+    '正在获取…': 'Fetching…',
+    '我的语录': 'My quotes',
+    '内置精选': 'Curated picks',
+    '一言 · 励志': 'Hitokoto · Motivation',
+    '一言 · 诗词': 'Hitokoto · Poetry',
+    '离线 · 本地精选': 'Offline · curated',
+    '来源': 'Source',
+    '语录来源': 'Quote sources',
+    '用它': 'Use this',
+    '当前': 'Current',
+    '使用中': 'In use',
+    '内置': 'Built-in',
+    '本地': 'Local',
+    '联网 · JSON': 'Online · JSON',
+    '联网 · 纯文本': 'Online · plain text',
+    '添加自定义来源': 'Add a custom source',
+    '名称（显示在语录下方）': 'Name (shown under the quote)',
+    '本地预置': 'Local preset',
+    '永不联网': 'never online',
+    '右键语录随时回到这里': 'Right-click the quote to come back here',
+    '关闭': 'Close',
     /* —— 三张右键菜单（帧内文案，弹窗出现时才渲染）—— */
     '时段设置': 'Window settings',
     '格子设置': 'Cell settings',
@@ -995,6 +1026,12 @@
   }
 
   var RULES = [
+    /* —— 语录 —— */
+    [/^来源 · 一言 · 励志$/, 'Source · Hitokoto · Motivation'],
+    [/^来源 · 一言 · 诗词$/, 'Source · Hitokoto · Poetry'],
+    [/^来源 · 内置精选$/, 'Source · Curated picks'],
+    [/^来源 · (.+)$/, 'Source · $1'],
+    [/^正在获取…$/, 'Fetching…'],
     /* —— 积分 / 关于 里的动态文案 —— */
     [/^今天第 n 次 ×1\.4（第 1 次 (\d+)，第 2 次 (\d+)，第 3 次 (\d+)）$/,
       'n-th unlock ×1.4 today (1st $1, 2nd $2, 3rd $3)'],

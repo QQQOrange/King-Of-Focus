@@ -1201,6 +1201,37 @@ pub fn sleep_unlock(shared: State<'_, Arc<Shared>>, minutes: Option<u32>) -> Res
     crate::sleep::unlock(&shared, minutes.unwrap_or(0))
 }
 
+/// 换一条语录：按指定来源**立刻**取一条。
+///
+/// 返回值刻意不用 `Err` 表示失败——"网络挂了"和"这句没过正向过滤"都是
+/// 正常业务结果，界面要靠它决定"退到本地池"并给用户一个明确的说明。
+/// 只有"这个来源根本不存在"才走 Err（那是真 bug）。
+#[tauri::command]
+pub fn quote_fetch(shared: State<'_, Arc<Shared>>, id: String) -> Result<Value, String> {
+    let cfg = shared.config();
+    let feed = crate::quotes::feed_by_id(&cfg, &id).ok_or_else(|| "没有这个语录来源".to_string())?;
+    if feed.kind == "local" {
+        // 本地源不联网：内置池在前端（离线也要能立刻换），这里只报告类型
+        return Ok(json!({"ok": false, "reason": "local", "feed": feed.id}));
+    }
+    match crate::quotes::fetch_feed(&feed) {
+        Some((text, from)) => {
+            // 顺手同步给 HUD，并落盘当"最后一次联网结果"，下次启动第一屏就是它
+            crate::quotes::set_quote(&shared, text.clone(), from.clone());
+            crate::quotes::save_cache(&text, &from);
+            Ok(json!({
+                "ok": true,
+                "text": text,
+                "from": from,
+                "feed": feed.id,
+                "feedName": feed.name,
+                "home": feed.home,
+            }))
+        }
+        None => Ok(json!({"ok": false, "reason": "offline", "feed": feed.id})),
+    }
+}
+
 /// 用积分强行解锁
 #[tauri::command]
 pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Value, String> {

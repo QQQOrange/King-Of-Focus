@@ -426,6 +426,7 @@ fn main() {
             cmds::hide_window,
             cmds::show_main,
             cmds::points_unlock,
+            cmds::quote_fetch,
             cmds::sleep_state,
             cmds::sleep_unlock,
             cmds::hud_state,
