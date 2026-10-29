@@ -221,6 +221,25 @@ pub fn soft_close(hwnd: isize) -> bool {
     }
 }
 
+/// 还原一个被最小化的窗口。
+///
+/// `SW_RESTORE` = 9：既能把"最小化"还原，也能把"最大化"还原回原来的尺寸，
+/// 这里只在最小化时调用，所以不用担心把用户的最大化窗口改小。
+///
+/// 用途：浏览器最小化到任务栏时，窗口句柄还在、但 UI 树可能不完整，
+/// 地址栏也拿不到输入焦点。先还原再操作，比直接报"找不到窗口"可靠得多。
+pub fn restore(hwnd: isize) -> bool {
+    unsafe {
+        if hwnd == 0 || IsWindow(hwnd as Hwnd) == 0 {
+            return false;
+        }
+        ShowWindow(hwnd as Hwnd, SW_RESTORE) != 0
+    }
+}
+
+/// SW_RESTORE = 9：还原到"既不是最小化也不是最大化"的正常状态。
+const SW_RESTORE: i32 = 9;
+
 /// SW_MINIMIZE = 6：最小化并**保持进程运行**（不破坏现场，随时可还原）。
 const SW_MINIMIZE: i32 = 6;
 

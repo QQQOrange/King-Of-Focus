@@ -178,6 +178,18 @@
 
 * { box-sizing: border-box; }
 
+/* ── 主题切换的两帧内关掉所有过渡 ──────────────────────────
+ * 切主题时，页面上几百个节点会同时给 background / color 插值，
+ * WebView2 在大范围 transition 下会掉帧，看起来就是"点一下卡一下"。
+ * `theme-swapping` 只在 `applyTheme()` 改 data-theme 的那两帧存在，
+ * 所以之后 hover / 按钮 / 面板的过渡完全不受影响。 */
+html.theme-swapping,
+html.theme-swapping *,
+html.theme-swapping *::before,
+html.theme-swapping *::after {
+  transition: none !important;
+}
+
 html, body {
   margin: 0;
   height: 100%;

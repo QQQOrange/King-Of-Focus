@@ -1124,9 +1124,22 @@ pub fn open_ext_page(key: &str) -> Result<String, String> {
         match crate::extpage::open_ext_page_via_uia(pid, d.ext_page, d.name) {
             Ok(msg) => return Ok(suffix(msg)),
             Err(e) => {
-                // 命令行这条路已经被证伪（Chromium 丢内部 URL），
-                // 但万一用户装的是很旧的版本，试一下不亏；失败以 UIA 的原因为准。
-                let _ = launch_cmd(&exe).spawn();
+                // **只有"一个窗口都没有"才值得再启动一次**。
+                // 这种情形是浏览器的"启动提速"常驻进程：进程在、窗口不在，
+                // 新起一次会把它带出窗口。别的情况下再 spawn 没有任何帮助——
+                // 浏览器已经在跑，新进程只会被现有实例接管，结果是
+                // "浏览器被打开了，却停在新建标签页"，正是要修的现象。
+                if e.contains("没找到") {
+                    let _ = launch_cmd(&exe).spawn();
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    if let Some(pid2) = running_pid(d) {
+                        if let Ok(msg) =
+                            crate::extpage::open_ext_page_via_uia(pid2, d.ext_page, d.name)
+                        {
+                            return Ok(suffix(msg));
+                        }
+                    }
+                }
                 return Err(e);
             }
         }
@@ -1821,6 +1834,8 @@ mod tests {
         assert_eq!(hits[0].version, "1.2.3");
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+
 
     /// 真机探针（默认不跑）：
     /// `cargo test probe_real_ext -- --ignored --nocapture`

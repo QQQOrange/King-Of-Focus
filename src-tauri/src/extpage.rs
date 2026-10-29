@@ -56,7 +56,7 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetWindowRect, GetWindowTextLengthW, GetWindowThreadProcessId,
-    IsWindowVisible, PostMessageW, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
+    IsIconic, IsWindowVisible, PostMessageW, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
 };
 use windows::core::VARIANT;
 
@@ -82,11 +82,18 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     if !class.starts_with(CHROME_CLASS_PREFIX) {
         return BOOL(1);
     }
+    // 最小化到任务栏时，GetWindowRect 返回 (-32000,-32000,-32000,-32000)，
+    // 宽高算出来是 0 —— 以前这条"面积下限"会把**最小化的浏览器**整个滤掉，
+    // 上层于是以为"浏览器没开窗口"，退化成"再启动一次浏览器"：
+    // 表现就是"点了没反应"（Edge 已在跑，新进程直接交给现有实例，什么都不发生），
+    // 或者"只打开了浏览器但停在新建标签页"。
+    // 所以最小化的窗口要照收，交给 run() 先还原再操作。
+    let minimized = IsIconic(hwnd).as_bool();
     let mut r = RECT::default();
     let _ = GetWindowRect(hwnd, &mut r);
     let w = (r.right - r.left) as i64;
     let h = (r.bottom - r.top) as i64;
-    if w < 400 || h < 300 {
+    if !minimized && (w < 400 || h < 300) {
         return BOOL(1);
     }
     // 刚启动的窗口标题可能还是空的（页面没加载完），不能因此就把它排除掉，
@@ -182,10 +189,17 @@ impl Uia {
         if c.contains("addressbar") && !c.contains("textfield") {
             s += 4;
         }
-        if name.contains("地址") || n.contains("address") {
+        // 「地址」这一族是强特征：Chromium 的地址栏中文名叫「地址和搜索栏」，
+        // 英文叫 "Address and search bar"——它**同时**含"地址"和"搜索"两个字。
+        // 老规则无条件给"搜索"扣 6 分，于是这类地址栏只要 class 没识别出来
+        // （class 为空 / 换了版本改名）就会变成负分被丢掉，表现就是
+        // "Edge 明明开着、却说找不到窗口/地址栏"。所以先判"这是不是地址栏"，
+        // 只有在**没有**地址特征时才把"搜索"当成搜索框来扣分。
+        let addr = name.contains("地址") || n.contains("address") || n.contains("omnibox");
+        if addr {
             s += 5;
         }
-        if n.contains("search") || name.contains("搜索") {
+        if !addr && (n.contains("search") || name.contains("搜索")) {
             s -= 6;
         }
         if n.contains("find") || name.contains("查找") {
@@ -224,14 +238,20 @@ impl Uia {
     /// 老代码只匹配「新建标签页」/ "new tab"，于是 Opera 上永远找不到按钮 →
     /// 退回"在当前页跳转"或直接失败。这里 name 与 class 双轨匹配。
     fn find_new_tab(&self, root: &IUIAutomationElement) -> Option<IUIAutomationElement> {
+        // 取**分数最高**的那个，而不是"第一个名字像的"。
+        // 前者能稳定选中 class=EdgeNewTabButton 的真按钮；
+        // 后者会被页面上「开启 xxx 新标签页」这类开关骗走（实测踩过）。
+        let mut best: Option<(i32, IUIAutomationElement)> = None;
         for e in self.find_all(root, UIA_ButtonControlTypeId.0) {
-            let name = Self::name_of(&e);
-            let class = Self::class_of(&e);
-            if new_tab_button_matches(&name, &class) {
-                return Some(e);
+            let score = new_tab_button_score(&Self::name_of(&e), &Self::class_of(&e));
+            if score <= 0 {
+                continue;
+            }
+            if best.as_ref().map(|(b, _)| score > *b).unwrap_or(true) {
+                best = Some((score, e));
             }
         }
-        None
+        best.map(|(_, e)| e)
     }
 
     fn tab_names(&self, root: &IUIAutomationElement) -> Vec<String> {
@@ -251,19 +271,48 @@ fn value_pattern(e: &IUIAutomationElement) -> Option<IUIAutomationValuePattern> 
 }
 
 /// 「新建标签」按钮的判据（抽成纯函数，便于逐条断言）
-fn new_tab_button_matches(name: &str, class: &str) -> bool {
-    // class 是 Chromium 内部的稳定标识，跨语言最可靠
-    if class == "AddTabButton" {
-        return true;
-    }
+/// 新建标签按钮的**优先级打分**（0 = 不是这个按钮）。
+///
+/// 只用"名字里含新标签页"来判会出大事：扩展设置页里就有
+/// 「开启 Infinity 新标签页 (Pro)」这种**开关**，它的名字同样命中，
+/// 而且往往排在真正的按钮前面 —— 于是 `find_new_tab` 拿到一个
+/// `invoke=false` 的开关，点不动，最后报"找不到新建标签页按钮"。
+/// 实测 Edge 的按钮是 `name="新建标签页" class="EdgeNewTabButton"`
+/// （class 是 Chromium 内部的稳定标识，比名字可靠得多）。
+fn new_tab_button_score(name: &str, class: &str) -> i32 {
+    let c = class.to_lowercase();
     let n = name.to_lowercase();
-    // "新建标签页" 也包含 "新建标签"，一条覆盖两种写法
-    name.contains("新建标签")
-        || name.contains("新标签页")
-        || name.contains("新建选项卡")
-        || name.contains("新建标签页")
-        || n.contains("new tab")
-        || n == "+"
+    // 页面上提到"新标签页"的开关 / 链接，一律不是按钮
+    if c.contains("toggle-switch")
+        || c.contains("view-link")
+        || c.contains("toolbaractionview")
+        || c.contains("checkbox")
+    {
+        return 0;
+    }
+    // class 命中：最可靠，跨语言
+    if c == "addtabbutton" || c == "edgenewtabbutton" || c == "newtabbutton" {
+        return 10;
+    }
+    // 名字要**精确**等于这些写法（"包含"太宽，会吃到页面文案）
+    if name == "新建标签页"
+        || name == "新建标签"
+        || name == "新标签页"
+        || name == "新建选项卡"
+        || name == "+"
+        || n == "new tab"
+    {
+        return 8;
+    }
+    // 退化：确实包含"新建标签"，但分数低一档（给精确匹配让路）
+    if name.contains("新建标签") {
+        return 4;
+    }
+    0
+}
+
+fn new_tab_button_matches(name: &str, class: &str) -> bool {
+    new_tab_button_score(name, class) > 0
 }
 
 /// 这个地址栏显示的是不是"没有用户内容"的页面 —— 决定能不能直接复用当前标签。
@@ -474,6 +523,15 @@ pub fn open_ext_page_via_uia(pid: u32, url: &str, browser_name: &str) -> Result<
 }
 
 fn run(hwnd: HWND, url: &str, name: &str) -> Result<String, String> {
+    // 最小化状态下 UIA 树可能不完整、地址栏也拿不到焦点：
+    // 先还原窗口并给它一点时间画出来，再找地址栏。
+    if unsafe { IsIconic(hwnd).as_bool() } {
+        let _ = crate::proc::restore(hwnd.0 as isize);
+        // 还原之后工具栏 / 标签带要重新画出来，给足时间（实测 200ms 时
+        // 偶尔还拿不到"新建标签"按钮，见下面的重试）
+        std::thread::sleep(std::time::Duration::from_millis(320));
+    }
+
     let uia = Uia::new()?;
 
     // 等地址栏出现（冷启动时窗口可能先出来、UI 后画出来）
@@ -512,16 +570,32 @@ fn run(hwnd: HWND, url: &str, name: &str) -> Result<String, String> {
 
     if !reuse {
         let before = uia.tab_names(&root).len();
-        let clicked = uia
-            .find_new_tab(&root)
-            .map(|btn| unsafe {
-                btn.GetCurrentPattern(UIA_InvokePatternId)
-                    .ok()
-                    .and_then(|u| u.cast::<IUIAutomationInvokePattern>().ok())
-                    .map(|p| p.Invoke().is_ok())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
+        // 只找一次不够稳：窗口刚从最小化还原、或浏览器正忙时，
+        // UIA 树里的工具栏是**逐步**建出来的，这一次读不到不等于没有。
+        // 8 × 120ms ≈ 1s 的重试，比直接报"找不到新建标签页按钮"实用得多。
+        // 注意重试的是**"找到并真的点下去"**这一整件事：
+        // 只重试"找到"没用——刚还原时元素已经能读到，但 Invoke 还会 E_FAIL
+        // （元素还没完成布局），那一次点不动就等于没点。
+        let clicked = wait_until(
+            || {
+                let btn = uia.find_new_tab(&root)?;
+                unsafe {
+                    let p = btn
+                        .GetCurrentPattern(UIA_InvokePatternId)
+                        .ok()?
+                        .cast::<IUIAutomationInvokePattern>()
+                        .ok()?;
+                    if p.Invoke().is_ok() {
+                        Some(())
+                    } else {
+                        None
+                    }
+                }
+            },
+            8,
+            120,
+        )
+        .is_some();
         if !clicked {
             return Err(format!(
                 "找不到 {name} 的「新建标签页」按钮。\n\
@@ -632,6 +706,18 @@ mod tests {
         assert!(!new_tab_button_matches("扩展", "ExtensionsToolbarButton"));
         assert!(!new_tab_button_matches("关闭", "ThemedFrameCloseButton"));
         assert!(!new_tab_button_matches("重新载入", "ReloadStopButton"));
+        // 页面上"提到"新标签页的开关不能被当成按钮（实测踩过：
+        // 「开启 Infinity 新标签页 (Pro)」排在真按钮前面，点它点了没反应）
+        assert!(
+            !new_tab_button_matches("开启 Infinity 新标签页 (Pro)", "toggle-switch"),
+            "扩展设置里的开关不能被当成新建标签按钮"
+        );
+        assert!(new_tab_button_matches("新建标签页", "EdgeNewTabButton"));
+        assert!(
+            new_tab_button_score("新建标签页", "EdgeNewTabButton")
+                > new_tab_button_score("新建标签", "ToolbarButton"),
+            "class 命中的真按钮要压过只靠名字的候选"
+        );
     }
 
     /// 地址栏候选打分：Opera 的真输入框要赢过外壳和搜索框
@@ -645,6 +731,13 @@ mod tests {
         assert!(opera_field > 0, "Opera 的地址栏必须能被选中");
         assert!(opera_search <= 0, "搜索框不能被当成地址栏：{opera_search}");
         assert!(edge_field > 0, "Edge 的地址栏必须能被选中");
+        // Edge 的 class 有时读不到（空串）：只剩 name，也不能被判成搜索框丢掉
+        let edge_bare = Uia::omnibox_score("地址和搜索栏", "");
+        assert!(edge_bare > 0, "只有名字时也要认得出 Edge 地址栏：{edge_bare}");
+        let edge_en = Uia::omnibox_score("Address and search bar", "");
+        assert!(edge_en > 0, "英文界面同理：{edge_en}");
+        // 真正的搜索框仍要被排除
+        assert!(Uia::omnibox_score("搜索框", "OmniboxViewViews") < Uia::omnibox_score("地址和搜索栏", ""));
     }
 
     /// 「能不能复用当前标签」的判据。
@@ -663,6 +756,64 @@ mod tests {
         assert!(!is_empty_page("edge://extensions/"));
         assert!(!is_empty_page("opera://extensions/"));
     }
+
+    /// 真机探针（默认不跑）：把 Edge 窗口里所有 Edit 控件的 UIA 属性打出来。
+    ///
+    /// `cargo test probe_edge_omnibox -- --ignored --nocapture`
+    ///
+    /// 排查"点了没跳到扩展页"时，先看这里：地址栏的真实 name / class 决定了
+    /// `omnibox_score` 能不能选中它。
+    #[test]
+    #[ignore]
+    fn probe_edge_omnibox() {
+        let apps = crate::proc::screen_apps();
+        for a in apps.iter() {
+            let low = a.name.to_lowercase();
+            if !low.contains("msedge") && !low.contains("chrome") && !low.contains("opera") {
+                continue;
+            }
+            println!("== {} pid={} title={:?}", a.name, a.pid, a.title);
+            let wins = windows_of(a.pid);
+            println!("   窗口数 {}", wins.len());
+            let Some(w) = wins.first() else { continue };
+            let uia = match Uia::new() {
+                Ok(u) => u,
+                Err(e) => {
+                    println!("   UIA 初始化失败：{e}");
+                    continue;
+                }
+            };
+            let root = match uia.root(w.hwnd) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("   取窗口根节点失败：{e}");
+                    continue;
+                }
+            };
+            let edits = uia.find_all(&root, UIA_EditControlTypeId.0);
+            println!("   Edit 控件 {} 个", edits.len());
+            for e in edits {
+                let name = Uia::name_of(&e);
+                let class = Uia::class_of(&e);
+                let aid = unsafe {
+                    e.CurrentAutomationId()
+                        .map(|b| b.to_string())
+                        .unwrap_or_default()
+                };
+                let ro = value_pattern(&e)
+                    .and_then(|vp| unsafe { vp.CurrentIsReadOnly().ok() })
+                    .map(|b| b.as_bool())
+                    .unwrap_or(false);
+                let score = Uia::omnibox_score(&name, &class);
+                println!(
+                    "     name={name:?} class={class:?} aid={aid:?} readonly={ro} score={score}"
+                );
+            }
+            let found = uia.find_omnibox(&root).is_some();
+            println!("   find_omnibox -> {found}");
+        }
+    }
+
 
     /// 结果校验：标签名判断要认中英文
     #[test]

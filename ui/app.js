@@ -180,6 +180,19 @@ function guardDiscipline(what) {
 }
 
 /* ---------------- 主题 ---------------- */
+
+/** 只改那三个「跟随系统 / 浅色 / 深色」按钮的选中态。
+ *
+ *  切主题以前靠整页 `render()` 顺手刷新按钮，那是整页重建（上千个节点），
+ *  代价远大于"把三个 class 换一下"，还会把滚动位置和输入焦点弄丢。 */
+function paintThemeChoice() {
+  const pref = (S.data && S.data.config && S.data.config.settings.theme) || 'system';
+  document.querySelectorAll('[data-act="theme"]').forEach((b) => {
+    const on = b.dataset.v === pref;
+    b.classList.toggle('active', on);
+    b.classList.toggle('gold', on);
+  });
+}
 const themeMedia = window.matchMedia('(prefers-color-scheme: light)');
 
 function cssVar(n) {
@@ -194,8 +207,16 @@ function resolveTheme(pref) {
 function applyTheme() {
   const pref = (S.data && S.data.config && S.data.config.settings.theme) || 'system';
   const t = resolveTheme(pref);
-  if (document.documentElement.dataset.theme !== t) {
-    document.documentElement.dataset.theme = t;
+  const root = document.documentElement;
+  if (root.dataset.theme !== t) {
+    // 换主题那一瞬间，页面上几百个节点会同时给 background/color 插值，
+    // WebView2 在大范围 transition 下会掉帧（看起来就是"卡一下"）。
+    // 用一个只活两帧的类把过渡关掉：颜色立刻到位，之后交互的过渡照旧。
+    root.classList.add('theme-swapping');
+    root.dataset.theme = t;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      root.classList.remove('theme-swapping');
+    }));
     // 主题切换后重绘饼图（canvas 颜色是算出来的）
     if (S.view === 'stats') {
       const cur = currentSlices();
@@ -5142,12 +5163,32 @@ const Act = window.Act = {
     toast('保护名单已保存', 'ok');
   },
 
+  /** 切主题。
+   *
+   *  **不要在这里 `render()`，也不要 `await saveConfig()`**——这两件事是点
+   *  「跟随系统」卡顿的全部来源：
+   *    · `saveConfig()` 末尾会 `pull()`（第二个 IPC），并把当前视图整个重绘一次；
+   *    · `render()` 再把整页重建一次。
+   *  而主题是纯 CSS 变量的：改 `data-theme` 就已经换色了，DOM 一个都不用动。
+   *  所以这里只做"立刻生效 + 落盘放后台"，滚动位置和输入焦点都不会丢。 */
   async setTheme(v) {
-    S.data.config.settings.theme = v;
-    await saveConfig();
-    applyTheme();
-    render();
-    toast(v === 'system' ? '已跟随系统外观' : v === 'light' ? '已切换到浅色' : '已切换到深色', 'ok');
+    const st = S.data.config.settings;
+    const prev = st.theme || 'system';
+    const msg = v === 'system' ? '已跟随系统外观' : v === 'light' ? '已切换到浅色' : '已切换到深色';
+    if (v === prev) { toast(msg, 'ok'); return; }
+    st.theme = v;
+    applyTheme();        // ① 立刻换色（只改 data-theme，无 DOM 重建）
+    paintThemeChoice();  // ② 三个按钮的选中态
+    renderChrome();      // ③ 侧栏那行「◐ 跟随系统（浅）」
+    const ok = await saveConfigQuiet();   // ④ 只落盘，不回拉
+    if (!ok) {
+      // 落盘失败：pull() 已经把 S.data 换回后端真实状态，再刷一次按钮态即可
+      applyTheme();
+      paintThemeChoice();
+      renderChrome();
+      return;
+    }
+    toast(msg, 'ok');
   },
   /** 切换界面语言：写配置 → 重绘内容 → 全量应用。
    *  先 render 再 applyLang：重绘出来的节点是中文原文，切换/还原都走同一条路。 */
@@ -6453,6 +6494,24 @@ async function saveConfig() {
   // 无论成败都拉一次：失败时用服务端的真实状态把界面上的改动冲掉
   await pull();
   return ok;
+}
+
+/** 只落盘、**不回拉状态**的保存。
+ *
+ *  给"改完立刻就能在本地看到效果"的偏好用（主题这类纯前端开关）。
+ *  `saveConfig()` 末尾那次 `pull()` 会再走一趟 `get_state`，并且可能顺手 `render()`
+ *  一次——对表单类保存是必要的（后端会 sanitize、改字段），但主题切换因此要等
+ *  **两个 IPC 来回 + 两次整页重绘**，表现就是"点一下卡一下"。
+ *  失败时仍然回拉一次，保证界面不会停在后端并不认可的状态上。 */
+async function saveConfigQuiet() {
+  try {
+    await invoke('save_config', { config: S.data.config });
+    return true;
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+    await pull();
+    return false;
+  }
 }
 
 async function loadStats() {
