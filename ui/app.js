@@ -1826,33 +1826,120 @@ function sleepStateOf(rt) {
   if (st.inWindow) {
     return { cls: 'gold', txt: '在睡眠时段内（未锁定：请检查「锁定屏幕」开关或测试模式）' };
   }
-  return { cls: '', txt: `现在不在睡眠时段，下次锁定 ${minToHm(fromM)}` };
+  // 多段时不能猜"下次锁定几点"：两段之间到底哪段先来、明天是否生效，
+  // 得把周期算进去才准。算不准就别说，别给一个错的时刻。
+  const multi = Array.isArray(s.windows) && s.windows.length > 1;
+  return {
+    cls: '',
+    txt: multi ? '现在不在任何睡眠时段内' : `现在不在睡眠时段，下次锁定 ${minToHm(fromM)}`,
+  };
 }
 
-/** 「睡眠管理」卡片：睡眠时段、倒计时、积分解锁价格 */
-function sleepCardHtml(rt) {
-  const s = (S.data.config.settings.sleep) || {};
-  const st = (rt && rt.sleep) || {};
-  const on = !!s.enabled;
-  const fromM = s.from == null ? 23 * 60 : +s.from;
-  const toM = s.to == null ? 7 * 60 : +s.to;
-  const count = s.countdownMin == null ? 10 : +s.countdownMin;
+/* ── 睡眠时段：多段 + 生效周期 ──────────────────────────────
+ *
+ * 数据层只有一个真相：`settings.sleep.windows[]`。每段自带 from/to/days/
+ * 锁屏/关机/倒计时/启动清单；`days` 又是"生效周期"的唯一真相，
+ * 模式（每天 / 工作日 / 指定）只是它的投影——这样就不会出现
+ * "模式说每天、days 里却躺着周一"这种自相矛盾的配置。
+ *
+ * 兼容：`windows` 为空时用旧的 from/to 合成一段（伪 id `__legacy`），
+ * 界面照常显示、保存时写回旧字段。用户一旦碰周期或添加时段，
+ * `sleepEnsureWindows()` 会把它落成真正的 windows[0]，前后参数一字不变。
+ */
+
+/** 段列表：windows 为空时合成一段"旧字段" */
+function sleepSegs() {
+  const s = clockCfgSleep();
+  if (Array.isArray(s.windows) && s.windows.length) return s.windows;
+  return [{
+    id: '__legacy',
+    from: s.from == null ? 23 * 60 : +s.from,
+    to: s.to == null ? 7 * 60 : +s.to,
+    days: [],
+    enabled: true,
+    lockScreen: s.lockScreen !== false,
+    shutdown: s.shutdown !== false,
+    countdownMin: s.countdownMin == null ? 10 : +s.countdownMin,
+    wake: s.wake || { enabled: false, items: [] },
+  }];
+}
+
+/** 正在编辑的那一段（选中的 id 失效就退回第一段） */
+function sleepSelSeg() {
+  const list = sleepSegs();
+  return list.find((x) => x.id === S.sleepSel) || list[0];
+}
+
+/** 周期模式：days 的投影，规则与 Rust 侧 sleep_window::cycle_mode 一致 */
+function sleepCycleMode(seg) {
+  const d = (seg && seg.days) || [];
+  if (!d.length) return 'everyday';
+  if (d.length === 5 && d.every((x) => x < 5)) return 'workdays';
+  return 'custom';
+}
+
+/** 周期的一句话描述 */
+function sleepCycleText(seg) {
+  const m = sleepCycleMode(seg);
+  if (m === 'everyday') return '每天';
+  if (m === 'workdays') return '仅工作日';
+  const WD = ['一', '二', '三', '四', '五', '六', '日'];
+  const d = (seg.days || []).slice().sort((a, b) => a - b);
+  return d.map((k) => '周' + (WD[k] || '?')).join('、');
+}
+
+/** 把"单段"升级成"多段"：用户碰周期或多段时，必须存在真正的段对象。
+ *  升级前后 from/to/开关一个字都不变，所以对用户是无感的。 */
+function sleepEnsureWindows() {
+  const s = clockCfgSleep();
+  if (Array.isArray(s.windows) && s.windows.length) return s.windows;
+  const seg = sleepSelSeg();
+  s.windows = [{
+    id: 'w1',
+    from: +seg.from,
+    to: +seg.to,
+    days: [],
+    enabled: true,
+    lockScreen: !!seg.lockScreen,
+    shutdown: !!seg.shutdown,
+    countdownMin: +seg.countdownMin || 10,
+    wake: seg.wake || { enabled: false, items: [] },
+  }];
+  S.sleepSel = 'w1';
+  return s.windows;
+}
+
+/** 多段时的时段列表（单段不渲染列表：只有一段时列表纯属占地方） */
+function sleepSegListHtml() {
+  const s = clockCfgSleep();
+  const multi = Array.isArray(s.windows) && s.windows.length > 1;
+  if (!multi) return '';
+  const cur = sleepSelSeg();
+  const rows = s.windows.map((w, i) => `
+    <div class="sl-row${w.id === cur.id ? ' on' : ''}">
+      <span class="sl-idx">${i + 1}</span>
+      <span class="sl-time">${minToHm(w.from)} – ${w.to >= 1440 ? '24:00' : minToHm(w.to)}</span>
+      <span class="sl-cycle">${esc(sleepCycleText(w))}</span>
+      <span class="sl-tags">${w.lockScreen ? '<b>锁屏</b>' : '<b class="off">不锁</b>'}${w.shutdown ? '<b>关机</b>' : '<b class="off">不关</b>'}</span>
+      <button class="btn btn-sm" data-act="sleep-pick-seg" data-id="${esc(w.id)}"
+        ${w.id === cur.id ? 'disabled' : ''}>${w.id === cur.id ? '编辑中' : '编辑'}</button>
+      <button class="btn btn-sm danger-ghost" data-act="sleep-del-seg" data-id="${esc(w.id)}">删</button>
+    </div>`).join('');
+  return `<div class="sl-list"><div class="sl-hd">共 ${s.windows.length} 段睡眠</div>${rows}</div>`;
+}
+
+/** 表单：作用对象是"选中的那一段"（单段时就是伪段） */
+function sleepFormHtml(seg) {
+  const s = clockCfgSleep();
+  const fromM = +seg.from;
+  const toM = +seg.to;
+  const count = +seg.countdownMin || 10;
   const price = s.unlockPrice == null ? 10 : +s.unlockPrice;
   const umin = s.unlockMin == null ? 30 : +s.unlockMin;
-  const state = sleepStateOf(rt);
+  const mode = sleepCycleMode(seg);
+  const WD = ['一', '二', '三', '四', '五', '六', '日'];
+  const days = (seg.days || []).slice().sort((a, b) => a - b);
   return `
-  <div class="card" id="sleepCard">
-    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px">
-      <div>
-        <div class="card-title">睡眠管理</div>
-        <div class="card-sub">和「自律时段」是两件事：那边管白天什么时候不许玩，这里管夜里这台机器该关着了。</div>
-        <div class="card-sub">到了睡眠时段，开机 / 唤醒后会限制所有功能，倒计时结束自动关机；想现在用，只能用积分解锁。</div>
-      </div>
-      <div class="switch" data-act="sleep-enable" title="启用 / 停用睡眠管理"><input type="checkbox" ${on ? 'checked' : ''}><i></i></div>
-    </div>
-
-    <div class="sleep-state ${state.cls}"><span class="cs-dot"></span><span>${esc(state.txt)}</span></div>
-
     <div class="sleep-grid">
       <label class="sf"><span class="sf-lab">睡眠时段</span>
         <span class="sf-in">
@@ -1860,6 +1947,21 @@ function sleepCardHtml(rt) {
           <em>至</em>
           <input type="time" id="sleepTo" value="${minToHm(toM)}">
           <em class="hint">（结束填 00:00 = 到次日 0 点，例如 23:00 – 00:00）</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">生效周期</span>
+        <span class="sf-in">
+          <span class="sl-seg">
+            <button class="${mode === 'everyday' ? 'active' : ''}" data-act="sleep-cycle" data-v="everyday"
+              title="每天都按这个时段管">每天</button>
+            <button class="${mode === 'workdays' ? 'active' : ''}" data-act="sleep-cycle" data-v="workdays"
+              title="周一到周五生效，周末不管">仅工作日</button>
+            <button class="${mode === 'custom' ? 'active' : ''}" data-act="sleep-cycle" data-v="custom"
+              title="自己挑星期几">指定</button>
+          </span>
+          <span class="sl-days"${mode === 'custom' ? '' : ' hidden'}>${WD.map((d, k) => `<button
+            class="${days.includes(k) ? 'on' : ''}" data-act="sleep-day" data-v="${k}"
+            title="周${d}">${d}</button>`).join('')}</span>
         </span>
       </label>
       <label class="sf"><span class="sf-lab">开机后</span>
@@ -1879,24 +1981,51 @@ function sleepCardHtml(rt) {
       </label>
       <label class="sf"><span class="sf-lab">到点关机</span>
         <span class="sf-in">
-          <input type="checkbox" id="sleepShutdown" ${s.shutdown === false ? '' : 'checked'}>
+          <input type="checkbox" id="sleepShutdown" ${seg.shutdown === false ? '' : 'checked'}>
           <em>真的执行关机（关掉 = 只锁定、不关机）</em>
         </span>
       </label>
       <label class="sf"><span class="sf-lab">限制功能</span>
         <span class="sf-in">
-          <input type="checkbox" id="sleepLockOn" ${s.lockScreen === false ? '' : 'checked'}>
+          <input type="checkbox" id="sleepLockOn" ${seg.lockScreen === false ? '' : 'checked'}>
           <em>睡眠时段内全屏锁定（关掉就只剩倒计时关机）</em>
         </span>
       </label>
+    </div>`;
+}
+
+/** 「睡眠管理」卡片 */
+function sleepCardHtml(rt) {
+  const s = clockCfgSleep();
+  const st = (rt && rt.sleep) || {};
+  const on = !!s.enabled;
+  const seg = sleepSelSeg();
+  const multi = Array.isArray(s.windows) && s.windows.length > 1;
+  const state = sleepStateOf(rt);
+  return `
+  <div class="card" id="sleepCard">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px">
+      <div>
+        <div class="card-title">睡眠管理</div>
+        <div class="card-sub">和「自律时段」是两件事：那边管白天什么时候不许玩，这里管夜里这台机器该关着了。</div>
+        <div class="card-sub">到了睡眠时段，开机 / 唤醒后会限制所有功能，倒计时结束自动关机；想现在用，只能用积分解锁。</div>
+      </div>
+      <div class="switch" data-act="sleep-enable" title="启用 / 停用睡眠管理"><input type="checkbox" ${on ? 'checked' : ''}><i></i></div>
     </div>
 
-    ${wakeHtml(rt)}
+    <div class="sleep-state ${state.cls}"><span class="cs-dot"></span><span>${esc(state.txt)}</span></div>
 
-    <div class="row" style="margin-top:14px;align-items:center">
+    ${sleepSegListHtml()}
+    ${multi ? `<div class="sl-edit-hd">正在编辑第 ${(s.windows.findIndex((x) => x.id === seg.id) + 1) || 1} 段 · ${esc(sleepCycleText(seg))}</div>` : ''}
+
+    ${sleepFormHtml(seg)}
+
+    ${wakeHtml(rt, seg)}
+
+    <div class="row" style="margin-top:14px;align-items:center;flex-wrap:wrap">
       <button class="btn btn-sm" data-act="sleep-save">保存睡眠设置</button>
-      <span class="hint">判定只看当前时刻是否在睡眠时段内，与自律时段、自律规则完全独立。</span>
-      <span class="hint">关机指令发出后 30 秒内仍可用积分解锁撤回；解锁到期后如果还在时段内，会重新开始倒计时。</span>
+      <button class="btn btn-sm" data-act="sleep-add-seg" title="加一段不同时间 / 不同策略的睡眠">＋ 添加时段</button>
+      <span class="hint">判定只看当前时刻是否落在任一段睡眠时段内，与自律时段、自律规则完全独立。</span>
     </div>
   </div>`;
 }
@@ -1907,8 +2036,13 @@ function sleepCardHtml(rt) {
  *  如果不同步，用户刚敲进去、还没点保存的路径就被清空了。
  */
 function wakeSyncDom() {
-  const s = clockCfgSleep();
-  const w = s.wake || (s.wake = { items: [] });
+  const seg = sleepSelSeg();
+  const w = seg.wake || (seg.wake = { items: [] });
+  // 单段伪段：wake 是 settings.sleep.wake 的引用，写进去就等于写到全局，无需额外同步
+  if (seg.id === '__legacy') {
+    const s = clockCfgSleep();
+    if (s.wake !== w) s.wake = w;
+  }
   const all = (w.items || []).concat(S.wakeDraft || []);
   const byId = new Map(all.map((x) => [x.id, x]));
   document.querySelectorAll('[data-wkrow]').forEach((row) => {
@@ -1928,8 +2062,10 @@ function wakeSyncDom() {
  *  为什么放在睡眠卡片里而不是新开一页：它天然属于"这一轮睡眠的收尾动作"，
  *  离开睡眠时段单独讲反而要重复解释一遍"什么时候算结束"。
  */
-function wakeHtml(rt) {
-  const w = (clockCfgSleep().wake) || {};
+function wakeHtml(rt, seg) {
+  // 清单属于**这一段**：午睡结束后开 A、夜间结束后开 B 才成立。
+  // 单段模式下 seg 是伪段，它的 wake 就是 settings.sleep.wake（同一份）。
+  const w = ((seg || sleepSelSeg()).wake) || {};
   // 新加的行先留在草稿里：空目标是过不了后端归一化的（会被丢掉），
   // 直接写进配置等于"点了添加却什么都没加"。保存时再合并。
   const items = (w.items || []).concat(S.wakeDraft || []);
@@ -2982,7 +3118,11 @@ function viewHelp() {
     <div>和自律时段是两件事：那边管"白天什么时候不许玩"，这里管"夜里这台机器该关着了"。</div>
     <div>到了睡眠时段，开机 / 唤醒后会全屏锁定、限制所有功能，倒计时（默认 10 分钟，可改）结束自动关机。</div>
     <div>锁定期内设置改不了、程序也退不掉。想现在用，只能用积分解锁买断一段时间（价格在卡片里配）。</div>
-    <div>卡片里还有「睡眠结束后自动启动」：默认关闭，打开后可以按星期配一组要打开的软件 / 网页，睡眠结束后自动拉起。</div>
+    <div>可以有多段：比如午睡 13:00–14:00 只关机不锁屏，夜间 23:00–07:00 才全屏锁定。点「＋ 添加时段」就多一段。</div>
+    <div>每段都能单独设「生效周期」：每天、仅工作日、指定星期几。</div>
+    <div>每天适合固定作息；仅工作日适合周末晚睡晚起；指定适合「只在周日晚上早睡」这类安排。</div>
+    <div>切周期只改「哪几天生效」，时间、锁屏、开机后多久关机都不会被改动。</div>
+    <div>每段还有自己的「睡眠结束后自动启动」：默认关闭，打开后按清单打开软件 / 网页，睡眠结束后自动拉起。</div>
     <div>前提是程序在运行；睡眠时段之外它什么都不做。</div>
   `)}
 
@@ -5445,6 +5585,9 @@ const Act = window.Act = {
 
   async sleepSave() {
     const s = clockCfgSleep();
+    const seg = sleepSelSeg();
+    const isLegacy = seg.id === '__legacy';
+
     const fromM = hmToMin(($('#sleepFrom') || {}).value);
     let toM = hmToMin(($('#sleepTo') || {}).value);
     const count = Math.round(+($('#sleepCount') || {}).value);
@@ -5461,47 +5604,176 @@ const Act = window.Act = {
     if (!Number.isFinite(price) || price < 0 || price > 1000) { toast('积分钟价请填 0–1000', 'err'); return; }
     if (!Number.isFinite(umin) || umin < 5 || umin > 240) { toast('一次解锁时长请填 5–240 分钟', 'err'); return; }
 
-    s.from = fromM;
-    s.to = toM;
-    s.countdownMin = count;
+    // 写回"这一段"
+    seg.from = fromM;
+    seg.to = toM;
+    seg.countdownMin = count;
+    seg.shutdown = shutdown;
+    seg.lockScreen = lock;
     s.unlockPrice = price;
     s.unlockMin = umin;
-    s.shutdown = shutdown;
-    s.lockScreen = lock;
+
+    if (isLegacy) {
+      // 单段模式：写回旧字段（Rust 侧 legacy 路径读的就是它们）
+      s.from = fromM;
+      s.to = toM;
+      s.countdownMin = count;
+      s.shutdown = shutdown;
+      s.lockScreen = lock;
+    } else {
+      // 多段模式：旧字段保留成"新建段时的默认值"，跟着第一段走，避免两套值越飘越远
+      const first = (s.windows || [])[0];
+      if (first) {
+        s.from = first.from;
+        s.to = first.to;
+        s.countdownMin = first.countdownMin;
+        s.shutdown = first.shutdown;
+        s.lockScreen = first.lockScreen;
+      }
+    }
 
     // 自动启动那一块：开关在别处即时保存，这里只收"延迟 / 叫醒 / 每一行"
-    if (s.wake) {
-      const dl = Math.round(+($('#wakeDelay') || {}).value);
-      if (Number.isFinite(dl) && dl >= 0 && dl <= 300) s.wake.delaySecs = dl;
-      const ws = $('#wakeSystem');
-      if (ws) s.wake.wakeSystem = !!ws.checked;
-      const rows = [...document.querySelectorAll('[data-wkrow]')];
-      // 草稿行也要能保存：否则"新加的那一项"永远写不进去
-      const byId = new Map((s.wake.items || []).concat(S.wakeDraft || []).map((x) => [x.id, x]));
-      const next = [];
-      for (const row of rows) {
-        const id = row.dataset.wkrow;
-        const it = byId.get(id);
-        if (!it) continue;
-        const get = (k) => (row.querySelector('[data-wk="' + k + '"]') || {}).value;
-        const kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
-        const target = String(get('target') || '').trim();
-        const args = String(get('args') || '').trim();
-        const en = (row.querySelector('[data-wk="enabled"]') || {}).checked;
-        if (!target) continue;                       // 空行直接丢掉，不写进配置
-        if (kind === 'url' && !/^https?:\/\//i.test(target)) {
-          toast(`「${target}」不是 http(s) 地址，已跳过`, 'err');
-          continue;
-        }
-        next.push({ ...it, kind, target, args: kind === 'url' ? '' : args, enabled: en !== false });
+    const w = seg.wake || (seg.wake = { enabled: false, delaySecs: 20, wakeSystem: true, items: [] });
+    const dl = Math.round(+($('#wakeDelay') || {}).value);
+    if (Number.isFinite(dl) && dl >= 0 && dl <= 300) w.delaySecs = dl;
+    const ws = $('#wakeSystem');
+    if (ws) w.wakeSystem = !!ws.checked;
+    const rows = [...document.querySelectorAll('[data-wkrow]')];
+    // 草稿行也要能保存：否则"新加的那一项"永远写不进去
+    const byId = new Map((w.items || []).concat(S.wakeDraft || []).map((x) => [x.id, x]));
+    const next = [];
+    for (const row of rows) {
+      const id = row.dataset.wkrow;
+      const it = byId.get(id);
+      if (!it) continue;
+      const get = (k) => (row.querySelector('[data-wk="' + k + '"]') || {}).value;
+      const kind = (get('kind') || 'app') === 'url' ? 'url' : 'app';
+      const target = String(get('target') || '').trim();
+      const args = String(get('args') || '').trim();
+      const en = (row.querySelector('[data-wk="enabled"]') || {}).checked;
+      if (!target) continue;                       // 空行直接丢掉，不写进配置
+      if (kind === 'url' && !/^https?:\/\//i.test(target)) {
+        toast(`「${target}」不是 http(s) 地址，已跳过`, 'err');
+        continue;
       }
-      s.wake.items = next;
-      S.wakeDraft = [];
+      next.push({ ...it, kind, target, args: kind === 'url' ? '' : args, enabled: en !== false });
     }
+    w.items = next;
+    S.wakeDraft = [];
+
     const ok = await saveConfig();
     if (!ok) { render(); return; }
     render();
-    toast(`睡眠管理已更新：${minToHm(fromM)} – ${minToHm(toM)}，开机 ${count} 分钟后${shutdown ? '关机' : '只锁定'}`, 'ok');
+    const head = isLegacy ? '' : `第 ${((s.windows || []).findIndex((x) => x.id === seg.id) + 1) || 1} 段：`;
+    toast(`睡眠管理已更新 ${head}${minToHm(fromM)} – ${toM >= 1440 ? '24:00' : minToHm(toM)}（${sleepCycleText(seg)}），开机 ${count} 分钟后${shutdown ? '关机' : '只锁定'}`, 'ok');
+  },
+
+  /** 添加一段新睡眠。**新段默认不锁屏**：多一段只是多一个"到点关机"，
+   *  不能因为加了一段就把用户整屏锁上——那是最容易吓到人的默认值。 */
+  async sleepAddSeg() {
+    const s = clockCfgSleep();
+    const wins = sleepEnsureWindows();
+    if (wins.length >= 8) { toast('最多 8 段睡眠，先删掉一段', 'err'); return; }
+    // 找一个不撞的时间当默认值：从 13:00 起每加一段往后挪 1 小时
+    const base = 13 * 60 + (wins.length - 1) * 60;
+    const from = Math.min(base, 22 * 60);
+    const id = 'w' + Date.now().toString(36);
+    wins.push({
+      id,
+      from,
+      to: Math.min(from + 60, 1439),
+      days: [],
+      enabled: true,
+      lockScreen: false,
+      shutdown: true,
+      countdownMin: 10,
+      wake: { enabled: false, delaySecs: 20, wakeSystem: true, items: [] },
+    });
+    S.sleepSel = id;
+    const ok = await saveConfig();
+    render();
+    toast(ok ? `已添加一段：${minToHm(from)} – ${minToHm(from + 60)}（每天 · 只关机不锁屏）` : '添加失败', ok ? 'ok' : 'err');
+  },
+
+  /** 切换正在编辑的段（纯界面状态，不落盘） */
+  sleepPickSeg(id) {
+    S.sleepSel = id;
+    render();
+  },
+
+  /** 删一段。**永远至少保留一段**：全删光等于"睡眠管理静默失效"，
+   *  用户会以为还在管，其实什么都没发生。 */
+  async sleepDelSeg(id) {
+    const s = clockCfgSleep();
+    const wins = Array.isArray(s.windows) ? s.windows : [];
+    if (wins.length <= 1) { toast('至少要保留一段；完全不想管就把右上角的开关关掉', 'err'); return; }
+    const i = wins.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const name = `${minToHm(wins[i].from)} – ${wins[i].to >= 1440 ? '24:00' : minToHm(wins[i].to)}`;
+    wins.splice(i, 1);
+    if (S.sleepSel === id) S.sleepSel = wins[0].id;
+    const first = wins[0];
+    s.from = first.from;
+    s.to = first.to;
+    s.countdownMin = first.countdownMin;
+    s.shutdown = first.shutdown;
+    s.lockScreen = first.lockScreen;
+    const ok = await saveConfig();
+    render();
+    toast(ok ? `已删除 ${name}` : '删除失败', ok ? 'ok' : 'err');
+  },
+
+  /** 切周期模式：每天 / 仅工作日 / 指定。
+   *
+   *  只动 `days`，不碰时间与开关——所以来回切不会丢任何设置。
+   *  切到"指定"时优先恢复**上一次的自定义集合**（用户往往只是临时切走看一眼），
+   *  没有历史就先用工作日当起点。
+   */
+  async sleepCycle(mode) {
+    sleepEnsureWindows();          // 单段 → 多段，先把参数落成真段
+    const seg = sleepSelSeg();
+    const cur = sleepCycleMode(seg);
+    if (cur === 'custom' && (seg.days || []).length) {
+      S.sleepDaysLast = seg.days.slice().sort((a, b) => a - b);
+    }
+    if (mode === 'everyday') seg.days = [];
+    else if (mode === 'workdays') seg.days = [0, 1, 2, 3, 4];
+    // 默认给"周一三五"而不是工作日全集：工作日全集会被 cycleMode 投影回
+    // 「仅工作日」，用户刚点完「指定」却看到按钮跳回去，会以为没生效。
+    else seg.days = (S.sleepDaysLast && S.sleepDaysLast.length)
+      ? S.sleepDaysLast.slice()
+      : [0, 2, 4];
+
+    // 旧字段跟着第一段走（多段模式下它只是"默认值"）
+    const first = (clockCfgSleep().windows || [])[0];
+    if (first) { clockCfgSleep().from = first.from; clockCfgSleep().to = first.to; }
+    const ok = await saveConfig();
+    render();
+    if (!ok) { toast('周期没保存成功', 'err'); return; }
+    toast(`这一段的生效周期：${sleepCycleText(seg)}`, 'ok');
+  },
+
+  /** 指定模式里勾 / 取消某一天 */
+  async sleepToggleDay(k) {
+    sleepEnsureWindows();
+    const seg = sleepSelSeg();
+    const d = +k;
+    const days = (seg.days || []).slice();
+    const at = days.indexOf(d);
+    if (at >= 0) {
+      // 不允许把最后一天也取消：那会变成"一天都不生效"，
+      // 界面上是个幽灵段（看着有、其实永不触发）。想每天都生效请切「每天」。
+      if (days.length === 1) { toast('至少要选一天；想每天都生效请切到「每天」', 'err'); return; }
+      days.splice(at, 1);
+    } else {
+      days.push(d);
+    }
+    days.sort((a, b) => a - b);
+    seg.days = days;
+    S.sleepDaysLast = days.slice();
+    const ok = await saveConfig();
+    render();
+    if (!ok) toast('没保存成功', 'err');
   },
 
   /** 锁屏浮层上的「积分解锁」 */
@@ -6170,6 +6442,11 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-fit') { await Act.clockFit(el.dataset.v === '1'); return; }
   if (act === 'sleep-enable') { await Act.sleepEnable(); return; }
   if (act === 'sleep-save') { await Act.sleepSave(); return; }
+  if (act === 'sleep-add-seg') { await Act.sleepAddSeg(); return; }
+  if (act === 'sleep-del-seg') { await Act.sleepDelSeg(el.dataset.id); return; }
+  if (act === 'sleep-pick-seg') { Act.sleepPickSeg(el.dataset.id); return; }
+  if (act === 'sleep-cycle') { await Act.sleepCycle(el.dataset.v); return; }
+  if (act === 'sleep-day') { await Act.sleepToggleDay(el.dataset.v); return; }
   if (act === 'sleep-unlock') { await Act.sleepUnlock(); return; }
   if (act === 'wake-enable') { await Act.wakeEnable(); return; }
   if (act === 'wake-add') { await Act.wakeAdd(); return; }

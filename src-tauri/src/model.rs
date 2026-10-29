@@ -706,9 +706,155 @@ pub struct SleepCfg {
     pub unlock_min: u32,
     /// 积分解锁的价格基数：每分钟多少分。0 = 这段睡眠不许用积分解锁
     pub unlock_price: i64,
-    /// 睡眠结束后的自动唤醒 / 自动启动
+    /// 睡眠结束后的自动唤醒 / 自动启动（**单段模式**下的清单，兼容旧配置）
     #[serde(default)]
     pub wake: WakeCfg,
+    /// 多段睡眠时段。
+    ///
+    /// 为空时退回"上面那套 from / to / countdownMin / shutdown / lockScreen / wake"
+    /// 合成的**单段**语义——老配置一个字都不用改，行为完全不变。
+    /// 非空时以这里为准，上面那组字段退化成"新建一段时的默认值"。
+    ///
+    /// 为什么要多段：一个 from/to 表达不了"午睡 13:00–14:00 + 夜间 23:00–07:00"，
+    /// 而这两段该锁屏的强度、该不该关机、结束后该开什么程序往往完全不同。
+    #[serde(default)]
+    pub windows: Vec<SleepWindow>,
+}
+
+/// 一个睡眠时段（多段模式下的一项）。
+///
+/// 判定口径与旧单段一致：左闭右开、支持跨夜；额外多一个"只在哪几天生效"。
+/// 跨夜 + 星期要小心：23:00–07:00 标周一时，指的是"周一 23:00 到周二 07:00"，
+/// 所以 02:00 那半边要用**昨天**的星期去比（见 `covers`）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SleepWindow {
+    /// 稳定 id（前端生成；空则由 sanitize 补）
+    pub id: String,
+    pub from: u32,
+    pub to: u32,
+    /// 只在哪几天生效：0=周一 … 6=周日。**空 = 每天**
+    #[serde(default)]
+    pub days: Vec<u8>,
+    pub enabled: bool,
+    /// 这一段内是否全屏锁定
+    pub lock_screen: bool,
+    /// 这一段到点是否真的关机
+    pub shutdown: bool,
+    /// 这一段落在里面之后多少分钟内关机
+    pub countdown_min: u32,
+    /// 这一段专属的"结束后自动启动"清单
+    #[serde(default)]
+    pub wake: WakeCfg,
+}
+
+impl Default for SleepWindow {
+    fn default() -> Self {
+        SleepWindow {
+            id: String::new(),
+            from: 23 * 60,
+            to: 7 * 60,
+            days: Vec::new(),
+            enabled: true,
+            lock_screen: true,
+            shutdown: true,
+            countdown_min: 10,
+            wake: WakeCfg::default(),
+        }
+    }
+}
+
+impl SleepWindow {
+    /// 起止相同 = 空时段（不能理解成 24 小时，否则半夜开机就被关机）
+    pub fn is_empty(&self) -> bool {
+        self.from == self.to
+    }
+
+    /// 这一段在 `weekday`（0=周一）的 `min` 分钟是否生效。
+    pub fn covers(&self, min: u32, weekday: u32) -> bool {
+        if !self.enabled || self.is_empty() {
+            return false;
+        }
+        let day_ok = |d: u32| self.days.is_empty() || self.days.iter().any(|x| *x as u32 == d);
+        if self.from < self.to {
+            self.from <= min && min < self.to && day_ok(weekday)
+        } else if min >= self.from {
+            // 跨夜的"晚上这半边"：算今天
+            day_ok(weekday)
+        } else if min < self.to {
+            // 跨夜的"过了半夜这半边"：这一段是**昨天**开始的
+            day_ok((weekday + 6) % 7)
+        } else {
+            false
+        }
+    }
+
+    /// 人类可读的时间段（日志 / 提示用）
+    pub fn label(&self) -> String {
+        let hm = |m: u32| format!("{:02}:{:02}", m / 60, m % 60);
+        // 1440 表示"次日 0 点"，显示成 24:00 更像作息表里的写法
+        let to = if self.to == 24 * 60 { "24:00".to_string() } else { hm(self.to) };
+        format!("{} – {}", hm(self.from), to)
+    }
+
+    /* ── 生效周期：三种模式，但**只有一个真相** `days` ──
+     *
+     * 模式是 `days` 的投影，不是独立字段。这样就不可能出"模式说每天、
+     * days 里却躺着周一"这种自相矛盾的状态——那类不一致一旦出现在配置里，
+     * 判定和界面就会各说各话，排查成本极高。
+     *
+     *   everyday  → days 为空（旧单段配置天然就是这种，零迁移）
+     *   workdays  → days = [0,1,2,3,4]（周一至周五）
+     *   custom    → 其它任意子集
+     */
+    pub fn cycle_mode(&self) -> &'static str {
+        if self.days.is_empty() {
+            "everyday"
+        } else if self.days.len() == 5 && self.days.iter().all(|d| *d < 5) {
+            "workdays"
+        } else {
+            "custom"
+        }
+    }
+
+    /// 切模式。**只动 days，不碰 from/to/开关**，所以切来切去不会丢时段。
+    ///
+    /// `keep` 是"上一次的自定义集合"：从 everyday 切到 custom 时，
+    /// 原样恢复它比给一个空集合好——用户往往只是临时切走看一眼再切回来。
+    pub fn set_cycle_mode(&mut self, mode: &str, keep: Option<&[u8]>) {
+        match mode {
+            "everyday" => self.days.clear(),
+            "workdays" => self.days = vec![0, 1, 2, 3, 4],
+            _ => {
+                // 没有历史时给"周一三五"：工作日全集会被 cycle_mode 投影回
+                // workdays，等于用户点了"指定"却没变化。
+                let mut d: Vec<u8> = keep
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v.to_vec())
+                    .unwrap_or_else(|| vec![0, 2, 4]);
+                d.retain(|x| *x < 7);
+                d.sort_unstable();
+                d.dedup();
+                self.days = d;
+            }
+        }
+    }
+
+    /// 周期的一句话描述（界面 / 日志用，不参与判定）
+    pub fn cycle_text(&self) -> String {
+        const WD: [&str; 7] = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+        match self.cycle_mode() {
+            "everyday" => "每天".into(),
+            "workdays" => "仅工作日".into(),
+            _ => self
+                .days
+                .iter()
+                .filter(|d| (**d as usize) < 7)
+                .map(|d| WD[*d as usize])
+                .collect::<Vec<_>>()
+                .join("、"),
+        }
+    }
 }
 
 /// 睡眠结束后要自动打开的一项（软件或网页）
@@ -783,6 +929,9 @@ impl Default for SleepCfg {
             unlock_min: 30,
             unlock_price: 10,
             wake: WakeCfg::default(),
+            // 默认**空** = 走旧的单段语义。老配置读进来就是这个状态，行为不变；
+            // 用户在界面上点"添加时段"之后才会有 windows。
+            windows: Vec::new(),
         }
     }
 }
@@ -794,6 +943,9 @@ impl SleepCfg {
     }
 
     /// 某个"当天分钟数"是否落在睡眠时段内（左闭右开，支持跨夜）
+    ///
+    /// 兼容层：只看旧的单段字段。多段判定请用 `active` / `segments`，
+    /// 它们会自动处理"windows 为空时退回单段"。
     pub fn covers_minute(&self, min: u32) -> bool {
         if self.is_empty() {
             return false;
@@ -803,6 +955,45 @@ impl SleepCfg {
         } else {
             min >= self.from || min < self.to
         }
+    }
+
+    /// 把旧字段合成"一段"，用于 windows 为空时的兼容路径。
+    fn legacy_segment(&self) -> SleepWindow {
+        SleepWindow {
+            id: "legacy".into(),
+            from: self.from,
+            to: self.to,
+            days: Vec::new(),
+            enabled: true,
+            lock_screen: self.lock_screen,
+            shutdown: self.shutdown,
+            countdown_min: self.countdown_min,
+            wake: self.wake.clone(),
+        }
+    }
+
+    /// 所有"启用且非空"的时段。windows 为空 → 只有旧字段合成的那一段。
+    ///
+    /// 注意：总开关 `enabled` 不在这里过滤，由调用方判断——
+    /// 界面要在总开关关着时仍然把各段列出来给用户改。
+    pub fn segments(&self) -> Vec<SleepWindow> {
+        if self.windows.is_empty() {
+            let seg = self.legacy_segment();
+            return if seg.is_empty() { Vec::new() } else { vec![seg] };
+        }
+        self.windows
+            .iter()
+            .filter(|w| w.enabled && !w.is_empty())
+            .cloned()
+            .collect()
+    }
+
+    /// 当前时刻命中的那一段（多段重叠时取**先声明的**，先声明的优先级更高）。
+    pub fn active(&self, min: u32, weekday: u32) -> Option<SleepWindow> {
+        if !self.enabled {
+            return None;
+        }
+        self.segments().into_iter().find(|w| w.covers(min, weekday))
     }
 }
 

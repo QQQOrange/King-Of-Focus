@@ -383,6 +383,65 @@ fn sanitize_sleep(s: &mut SleepCfg) {
     s.countdown_min = s.countdown_min.clamp(1, 120);
     s.unlock_min = s.unlock_min.clamp(5, 240);
     s.unlock_price = s.unlock_price.clamp(0, 1000);
+    sanitize_sleep_windows(s);
+}
+
+/// 多段睡眠时段的归一化。
+///
+/// 四条规则，都是为了"多一段也不会把机器锁死或该锁不锁"：
+/// 1. 上限 8 段——再多说明是在把整天的判定切成碎片，重叠判断会变得不可预期；
+/// 2. 每段的 from/to/countdown 夹到合法区间，`from == to` 视为空段直接丢掉；
+/// 3. `days` 去掉越界值、排序去重（顺序影响不了判定，但影响界面显示与比较）；
+/// 4. id 缺失就补一个、重复就重命名——id 是"哪一段"的唯一凭据，不能撞。
+fn sanitize_sleep_windows(s: &mut SleepCfg) {
+    const MAX_WINDOWS: usize = 8;
+    if s.windows.is_empty() {
+        return; // 旧配置：保持单段语义，一个字都不改
+    }
+    let mut out: Vec<crate::model::SleepWindow> = Vec::new();
+    for w in s.windows.iter() {
+        let from = w.from.min(1439);
+        let to = w.to.min(1440);
+        if from == to {
+            continue; // 空段：留着只会让人以为"我有四段睡眠"其实少一段
+        }
+        let mut days: Vec<u8> = w.days.iter().copied().filter(|d| *d < 7).collect();
+        days.sort_unstable();
+        days.dedup();
+        // 说明：days 为空本身就是"每天"（cycle_mode 的投影规则），
+        // 不需要额外处理——"custom 但一天都没勾"在数据层等价于每天，
+        // 这是刻意选的降级方向：宁可多锁，也不留一个"看着有段、永远不触发"的幽灵。
+        let mut id = w.id.trim().chars().take(40).collect::<String>();
+        if id.is_empty() {
+            id = format!("w{}", out.len() + 1);
+        }
+        while out.iter().any(|x| x.id == id) {
+            id.push('_');
+        }
+        let mut wake = w.wake.clone();
+        sanitize_wake(&mut wake);
+        out.push(crate::model::SleepWindow {
+            id,
+            from,
+            to,
+            days,
+            enabled: w.enabled,
+            lock_screen: w.lock_screen,
+            shutdown: w.shutdown,
+            countdown_min: w.countdown_min.clamp(1, 120),
+            wake,
+        });
+        if out.len() >= MAX_WINDOWS {
+            break;
+        }
+    }
+    // 全都被丢光了（全是空段）→ 退回单段语义，别留一个"有 windows 但一段都没有"
+    // 的中间态：那会让 active() 永远返回 None，锁屏和关机全部失灵。
+    if out.is_empty() {
+        s.windows = Vec::new();
+    } else {
+        s.windows = out;
+    }
 }
 
 fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {

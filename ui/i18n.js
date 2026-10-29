@@ -718,6 +718,38 @@
     '到了睡眠时段，开机 / 唤醒后会限制所有功能，倒计时结束自动关机；想现在用，只能用积分解锁。':
       'Booting or waking up inside sleep hours locks everything down and shuts down when the countdown ends; points are the only way to use it now.',
     '睡眠时段': 'Sleep window',
+    /* —— 多段睡眠 + 生效周期 —— */
+    '现在不在任何睡眠时段内': 'Not inside any sleep window right now',
+    '生效周期': 'Repeat',
+    '可以有多段：比如午睡 13:00–14:00 只关机不锁屏，夜间 23:00–07:00 才全屏锁定。点「＋ 添加时段」就多一段。':
+      'Multiple windows are allowed: a 13:00–14:00 nap that only shuts down, plus 23:00–07:00 that also locks the screen.',
+    '每段都能单独设「生效周期」：每天、仅工作日、指定星期几。':
+      'Each window has its own Repeat: every day, workdays only, or specific days.',
+    '每天适合固定作息；仅工作日适合周末晚睡晚起；指定适合「只在周日晚上早睡」这类安排。':
+      'Every day suits a fixed routine; workdays only suits later weekends; pick-days suits something like "early sleep on Sunday only".',
+    '切周期只改「哪几天生效」，时间、锁屏、开机后多久关机都不会被改动。':
+      'Switching the repeat only changes which days apply — times, locking and the countdown stay untouched.',
+    '每段还有自己的「睡眠结束后自动启动」：默认关闭，打开后按清单打开软件 / 网页，睡眠结束后自动拉起。':
+      'Each window also has its own "launch after sleep": off by default; once on it opens the listed apps / pages when that window ends.',
+    '每天': 'Every day',
+    '仅工作日': 'Workdays only',
+    '指定': 'Pick days',
+    '＋ 添加时段': '+ Add window',
+    '判定只看当前时刻是否落在任一段睡眠时段内，与自律时段、自律规则完全独立。':
+      'Only the current time decides, across any sleep window; independent of discipline hours and rules.',
+    '共 ': 'Total ',
+    ' 段睡眠': ' sleep windows',
+    '编辑中': 'Editing',
+    '编辑': 'Edit',
+    '锁屏': 'Lock',
+    '关机': 'Shut down',
+    '不锁': 'No lock',
+    '不关': 'No shutdown',
+    '至少保留一段；完全不想管就把右上角的开关关掉':
+      'Keep at least one window; switch off the toggle at the top right if you want none at all.',
+    '至少要选一天；想每天都生效请切到「每天」':
+      'Pick at least one day; use "Every day" if it should always apply.',
+    '最多 8 段睡眠，先删掉一段': 'At most 8 sleep windows; remove one first.',
     '积分解锁': 'Points unlock',
     '至': 'to',
     '（结束填 00:00 = 到次日 0 点，例如 23:00 – 00:00）': '(end 00:00 = next midnight, e.g. 23:00 – 00:00)',
@@ -1072,6 +1104,14 @@
   }
 
   var RULES = [
+    /* —— 多段睡眠的动态文案 —— */
+    [/^共 (\d+) 段睡眠$/, '$1 sleep windows'],
+    [/^正在编辑第 (\d+) 段 · (.+)$/, 'Editing window $1 · $2'],
+    [/^周[一二三四五六日](、周[一二三四五六日])*$/,
+      function (m) {
+        var WD = { '一': 'Mon', '二': 'Tue', '三': 'Wed', '四': 'Thu', '五': 'Fri', '六': 'Sat', '日': 'Sun' };
+        return m.replace(/周([一二三四五六日])/g, function (_, d) { return WD[d] || d; }).replace(/、/g, ', ');
+      }],
     /* —— 语录 —— */
     [/^来源 · 一言 · 励志$/, 'Source · Hitokoto · Motivation'],
     [/^来源 · 一言 · 诗词$/, 'Source · Hitokoto · Poetry'],

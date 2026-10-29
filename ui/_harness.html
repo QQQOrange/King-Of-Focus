@@ -2536,6 +2536,158 @@ window.__itest = async () => {
     await wait(200);
   }
 
+  // ---- 26h4. 多段睡眠 + 生效周期（每天 / 仅工作日 / 指定）----
+  {
+    const sl = () => S.data.config.settings.sleep;
+    const wins = () => (sl().windows || []);
+    const goSleep = async () => {
+      S.view = 'clock'; S.ccFull = false;
+      render(); await wait(260);
+    };
+    // 从干净的单段状态开始
+    sl().windows = [];
+    sl().enabled = true;
+    sl().from = 23 * 60;
+    sl().to = 7 * 60;
+    sl().countdownMin = 10;
+    sl().shutdown = true;
+    sl().lockScreen = true;
+    S.sleepSel = null;
+    S.sleepDaysLast = null;
+    await saveConfig();
+    await goSleep();
+
+    // ① 默认是单段：没有列表，但有「添加时段」入口
+    out.push(['单段时不出列表', !!document.querySelector('.sl-list'), false]);
+    out.push(['单段时也能加时段', !!document.querySelector('[data-act="sleep-add-seg"]'), true]);
+    out.push(['周期默认「每天」高亮',
+      document.querySelector('.sl-seg .active').textContent.trim(), '每天']);
+    out.push(['每天模式下不显示星期按钮',
+      document.querySelector('.sl-days').hasAttribute('hidden'), true]);
+
+    // ② 切成「仅工作日」：自动把单段升级成 windows，参数一字不变
+    await Act.sleepCycle('workdays');
+    await wait(300);
+    out.push(['切周期会落成真正的段', wins().length, 1]);
+    out.push(['仅工作日 = 周一到周五', wins()[0].days.join(','), '0,1,2,3,4']);
+    out.push(['切周期不丢时间', `${wins()[0].from}/${wins()[0].to}`, '1380/420']);
+    out.push(['切周期不丢开关', `${wins()[0].lockScreen}/${wins()[0].shutdown}`, 'true/true']);
+    out.push(['模式按钮跟着高亮',
+      document.querySelector('.sl-seg .active').textContent.trim(), '仅工作日']);
+
+    // ③ 切成「指定」：亮出 7 个星期按钮，并记住上一次的自定义集合
+    await Act.sleepCycle('custom');
+    await wait(300);
+    out.push(['指定模式亮出星期按钮',
+      document.querySelector('.sl-days').hasAttribute('hidden'), false]);
+    out.push(['星期按钮是 7 个', document.querySelectorAll('.sl-days button').length, 7]);
+    // 默认给「周一三五」：工作日全集会被投影回"仅工作日"，等于点了没反应
+    out.push(['指定模式给一个明确的非工作日默认', wins()[0].days.join(','), '0,2,4']);
+    // 取消周一、周五 → 只剩周三；再点周六 → 周三+周六
+    for (const d of [0, 4]) {
+      const b = document.querySelector(`.sl-days button[data-act="sleep-day"][data-v="${d}"]`);
+      if (b) { b.click(); await wait(220); }
+    }
+    {
+      const b = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="5"]');
+      if (b) { b.click(); await wait(220); }
+    }
+    out.push(['勾选结果写进 days', wins()[0].days.join(','), '2,5']);
+    out.push(['星期按钮的亮起状态跟着变',
+      [...document.querySelectorAll('.sl-days button.on')].map((b) => +b.dataset.v).join(','), '2,5']);
+
+    // ④ 最后一天不能取消：否则会变成"永不触发"的幽灵段
+    {
+      const b2 = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="2"]');
+      if (b2) { b2.click(); await wait(220); }
+      out.push(['取消一天还剩一天', wins()[0].days.join(','), '5']);
+      const b5 = document.querySelector('.sl-days button[data-act="sleep-day"][data-v="5"]');
+      if (b5) { b5.click(); await wait(220); }
+    }
+    out.push(['最后一天取消被拦下', wins()[0].days.join(','), '5']);
+    out.push(['拦下时给出提示', /至少要选一天/.test(
+      (document.getElementById('toastRoot') || {}).textContent || ''), true]);
+
+    // ⑤ 切回「每天」：days 清空，但时间和开关仍然原样
+    await Act.sleepCycle('everyday');
+    await wait(280);
+    out.push(['每天 = days 为空', wins()[0].days.length, 0]);
+    out.push(['切回每天时间还在', `${wins()[0].from}/${wins()[0].to}`, '1380/420']);
+    out.push(['切回每天锁屏还在', wins()[0].lockScreen, true]);
+
+    // ⑥ 加第二段：新段默认不锁屏（不能一加就整屏锁上）
+    await Act.sleepAddSeg();
+    await wait(340);
+    out.push(['加完是两段', wins().length, 2]);
+    out.push(['新段默认不锁屏只关机',
+      `${wins()[1].lockScreen}/${wins()[1].shutdown}`, 'false/true']);
+    out.push(['列表出现了，两行', document.querySelectorAll('.sl-row').length, 2]);
+    out.push(['正在编辑的是新加那段',
+      document.querySelector('.sl-edit-hd').textContent.indexOf('第 2 段') >= 0, true]);
+    out.push(['第一段仍是 23:00–07:00',
+      `${wins()[0].from}/${wins()[0].to}`, '1380/420']);
+
+    // ⑦ 给第二段设一个不同时间 + 仅工作日，两段互不影响
+    await Act.sleepCycle('workdays');
+    await wait(280);
+    $('#sleepFrom').value = '13:00';
+    $('#sleepTo').value = '14:00';
+    $('#sleepCount').value = '5';
+    await Act.sleepSave();
+    await wait(360);
+    out.push(['第二段时间已改', `${wins()[1].from}/${wins()[1].to}`, '780/840']);
+    out.push(['第二段是仅工作日', wins()[1].days.join(','), '0,1,2,3,4']);
+    out.push(['第一段没被牵连', `${wins()[0].from}/${wins()[0].to}`, '1380/420']);
+    out.push(['第一段仍是每天', wins()[0].days.length, 0]);
+    out.push(['两段倒计时各异', `${wins()[0].countdownMin}/${wins()[1].countdownMin}`, '10/5']);
+
+    // ⑧ 点「编辑」切回第一段：表单显示的是第一段的值
+    document.querySelectorAll('[data-act="sleep-pick-seg"]')[0].click();
+    await wait(240);
+    out.push(['切回第一段后表单跟着换', `${$('#sleepFrom').value}/${$('#sleepTo').value}`, '23:00/07:00']);
+    out.push(['切回第一段后周期显示每天',
+      document.querySelector('.sl-seg .active').textContent.trim(), '每天']);
+
+    // ⑨ 每段的启动清单是独立的
+    wins()[0].wake = { enabled: true, delaySecs: 20, wakeSystem: true, items: [
+      { id: 'a1', kind: 'app', target: 'C:/a.exe', args: '', days: [], enabled: true },
+    ] };
+    wins()[1].wake = { enabled: true, delaySecs: 20, wakeSystem: true, items: [
+      { id: 'b1', kind: 'url', target: 'https://b.example', args: '', days: [], enabled: true },
+    ] };
+    await saveConfig();
+    render(); await wait(300);
+    out.push(['第一段只看到自己的清单',
+      [...document.querySelectorAll('[data-wkrow]')].map((r) => r.dataset.wkrow).join(','), 'a1']);
+    document.querySelectorAll('[data-act="sleep-pick-seg"]')[1].click();
+    await wait(240);
+    out.push(['第二段只看到自己的清单',
+      [...document.querySelectorAll('[data-wkrow]')].map((r) => r.dataset.wkrow).join(','), 'b1']);
+
+    // ⑩ 删段：删到只剩一段可以，再删就被拦下
+    document.querySelectorAll('[data-act="sleep-del-seg"]')[1].click();
+    await wait(340);
+    out.push(['删掉一段后只剩一段', wins().length, 1]);
+    out.push(['只剩一段时列表收起', !!document.querySelector('.sl-list'), false]);
+    const delBtn = document.querySelector('[data-act="sleep-del-seg"]');
+    out.push(['只剩一段时没有删除入口（列表已收起）', delBtn, null]);
+
+    // ⑪ 老配置兼容：windows 清空 → 退回单段语义，UI 照常显示
+    sl().windows = [];
+    await saveConfig();
+    render(); await wait(280);
+    out.push(['退回单段后表单还在', !!$('#sleepFrom'), true]);
+    out.push(['退回单段后周期是每天',
+      document.querySelector('.sl-seg .active').textContent.trim(), '每天']);
+
+    // 收尾
+    sl().enabled = false;
+    sl().windows = [];
+    await saveConfig();
+    S.sleepSel = null;
+    render(); await wait(200);
+  }
+
   // ---- 26i. 积分 / 帮助 / 关于：解锁只针对"当前这一段" ----
   {
     const boot = S.data.runtime;

@@ -18,9 +18,9 @@
 //! 把手头的事收尾；从唤醒那一刻重新给满倒计时，才符合"我醒了，但我不该醒"的场景。
 
 use crate::cfg;
-use crate::model::Config;
+use crate::model::{Config, SleepWindow};
 use crate::shared::Shared;
-use chrono::{Local, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -40,6 +40,12 @@ struct Arm {
     start: i64,
     /// 已经发过关机指令
     fired: bool,
+    /// 这一轮属于**哪一段**（用段起点当 key）。
+    ///
+    /// 多段之后必须区分：午睡段结束时 `fired` 是 true，紧接着进夜间段，
+    /// 如果还沿用上一轮的 fired，夜间段就永远不会关机——该锁的时候没锁，
+    /// 这是这个功能最不能出的错。key 一变就重新武装。
+    key: i64,
 }
 
 fn arm_slot() -> &'static Mutex<Option<Arm>> {
@@ -91,32 +97,37 @@ fn minute_of_ts(ts: i64) -> u32 {
         .unwrap_or(0)
 }
 
+/// 某个时间戳是周几（0=周一 … 6=周日），和 `SleepWindow.days` 同一套下标。
+fn weekday_of_ts(ts: i64) -> u32 {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|x| x.with_timezone(&Local).weekday().num_days_from_monday())
+        .unwrap_or(0)
+}
+
 /// 这一轮睡眠时段的起点（用于界面显示"锁定自 23:00"）。
 /// `from <= to` → 今天 from；`from > to` 跨夜 → 分钟数 < to 时算昨天开始的。
-fn window_start_at(cfg: &Config, ts: i64) -> i64 {
-    let s = &cfg.settings.sleep;
+fn window_start_of(w: &SleepWindow, ts: i64) -> i64 {
     let min = minute_of_ts(ts) as i64;
-    if s.from < s.to {
-        return ts - (min - s.from as i64) * 60;
+    if w.from < w.to {
+        return ts - (min - w.from as i64) * 60;
     }
-    if min < s.to as i64 {
+    if min < w.to as i64 {
         // 已经过了半夜，这一轮是昨天开始的
-        ts - (min + 24 * 60 - s.from as i64) * 60
+        ts - (min + 24 * 60 - w.from as i64) * 60
     } else {
-        ts - (min - s.from as i64) * 60
+        ts - (min - w.from as i64) * 60
     }
 }
 
-/// 这一轮睡眠时段还有多久结束（unix 秒）
-fn window_end_at(cfg: &Config, ts: i64) -> i64 {
-    let s = &cfg.settings.sleep;
+/// 这一轮睡眠时段到什么时候结束（unix 秒）
+fn window_end_of(w: &SleepWindow, ts: i64) -> i64 {
     let min = minute_of_ts(ts) as i64;
-    let left = if s.from < s.to {
-        s.to as i64 - min
-    } else if min >= s.from as i64 {
-        24 * 60 - min + s.to as i64
+    let left = if w.from < w.to {
+        w.to as i64 - min
+    } else if min >= w.from as i64 {
+        24 * 60 - min + w.to as i64
     } else {
-        s.to as i64 - min
+        w.to as i64 - min
     };
     ts + left.max(0) * 60
 }
@@ -141,12 +152,23 @@ pub struct SleepState {
     pub window_end: i64,
     /// 这次会不会真的关机（关 = 只锁）
     pub will_shutdown: bool,
+    /// 当前这一段自己的参数（多段时界面显示"这一段"的，而不是全局默认值）
+    pub seg_from: u32,
+    pub seg_to: u32,
+    pub seg_countdown: u32,
+    pub seg_shutdown: bool,
+    pub seg_lock: bool,
+    /// 当前段的名字（时间 + 周期），日志和文案用
+    pub seg_label: String,
 }
 
 impl SleepState {
     pub fn to_json(&self, cfg: &Config) -> Value {
         let s = &cfg.settings.sleep;
         let price = if s.unlock_price <= 0 { 0 } else { s.unlock_price * s.unlock_min as i64 };
+        // from / to / countdownMin / shutdown / lockScreen 一律给**当前段**的值。
+        // 多段之后如果还报全局默认值，sleep 窗口就会显示"锁定至 07:00"而实际段是
+        // 13:00–14:00 的午睡——界面说的时间不是正在生效的那个，比不显示更糟。
         json!({
             "enabled": self.enabled,
             "inWindow": self.in_window,
@@ -158,14 +180,16 @@ impl SleepState {
             "windowStart": self.window_start,
             "windowEnd": self.window_end,
             "willShutdown": self.will_shutdown,
-            "from": s.from,
-            "to": s.to,
-            "countdownMin": s.countdown_min,
+            "from": self.seg_from,
+            "to": self.seg_to,
+            "countdownMin": self.seg_countdown,
             "unlockMin": s.unlock_min,
             "price": price,
             "balance": cfg.points.balance,
-            "shutdown": s.shutdown,
-            "lockScreen": s.lock_screen,
+            "shutdown": self.seg_shutdown,
+            "lockScreen": self.seg_lock,
+            "segLabel": self.seg_label,
+            "windows": s.windows.len(),
         })
     }
 }
@@ -176,28 +200,42 @@ impl SleepState {
 /// 单独拎出来是因为 `guard::exit_blocked` 只有 `&Config` 可用（拿不到进程内的
 /// 倒计时状态），而"能不能退出""能不能改设置"只取决于这一层。
 pub fn locked_by_cfg(cfg: &Config, ts: i64) -> bool {
-    let s = &cfg.settings.sleep;
     if crate::testmode::on() {
         return false;
     }
-    s.enabled
-        && s.lock_screen
-        && !s.is_empty()
-        && s.covers_minute(minute_of_ts(ts))
-        && ts >= cfg.points.unlock_until
+    let s = &cfg.settings.sleep;
+    // 锁不锁由**当前命中的那一段**决定：午睡段可能只想关机不想锁屏，
+    // 夜间段才全屏锁。用全局 s.lock_screen 会把两段的策略混成一个。
+    match s.active(minute_of_ts(ts), weekday_of_ts(ts)) {
+        Some(w) => w.lock_screen && ts >= cfg.points.unlock_until,
+        None => false,
+    }
 }
 
 fn state_at(cfg: &Config, ts: i64, arm: Option<Arm>) -> SleepState {
     let s = &cfg.settings.sleep;
-    let min = minute_of_ts(ts);
-    let in_window = s.enabled && !s.is_empty() && s.covers_minute(min);
+    let win = s.active(minute_of_ts(ts), weekday_of_ts(ts));
+    let in_window = win.is_some();
     let unlocked_until = cfg.points.unlock_until;
     let unlocked = ts < unlocked_until;
     let locked = locked_by_cfg(cfg, ts);
-    let countdown = s.countdown_min.max(1) as i64 * 60;
+    let countdown = win.as_ref().map(|w| w.countdown_min.max(1) as i64 * 60).unwrap_or(0);
     let (deadline, fired) = match arm {
         Some(a) if in_window && !unlocked => (a.start + countdown, a.fired),
         _ => (0, false),
+    };
+    let (seg_from, seg_to, seg_cd, seg_sd, seg_lk, seg_label, wstart, wend) = match win.as_ref() {
+        Some(w) => (
+            w.from,
+            w.to,
+            w.countdown_min,
+            w.shutdown,
+            w.lock_screen,
+            format!("{}（{}）", w.label(), w.cycle_text()),
+            window_start_of(w, ts),
+            window_end_of(w, ts),
+        ),
+        None => (0, 0, 0, false, false, String::new(), 0, 0),
     };
     SleepState {
         enabled: s.enabled,
@@ -207,9 +245,15 @@ fn state_at(cfg: &Config, ts: i64, arm: Option<Arm>) -> SleepState {
         deadline,
         remain: if deadline > 0 { deadline - ts } else { 0 },
         fired,
-        window_start: if in_window { window_start_at(cfg, ts) } else { 0 },
-        window_end: if in_window { window_end_at(cfg, ts) } else { 0 },
-        will_shutdown: s.shutdown && !cfg.settings.dry_run,
+        window_start: wstart,
+        window_end: wend,
+        will_shutdown: seg_sd && !cfg.settings.dry_run,
+        seg_from,
+        seg_to,
+        seg_countdown: seg_cd,
+        seg_shutdown: seg_sd,
+        seg_lock: seg_lk,
+        seg_label,
     }
 }
 
@@ -278,7 +322,8 @@ fn abort_shutdown() {
 pub fn unlock(shared: &Arc<Shared>, minutes: u32) -> Result<Value, String> {
     let mut c = shared.config();
     let s = &c.settings.sleep;
-    if !s.enabled || s.is_empty() || !s.covers_minute(minute_of_day()) {
+    let now = Local::now().timestamp();
+    if s.active(minute_of_day(), weekday_of_ts(now)).is_none() {
         return Err("现在不在睡眠时段里，不用解锁".into());
     }
     if s.unlock_price <= 0 {
@@ -331,20 +376,24 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             let cfg = shared.config();
             let s = &cfg.settings.sleep;
             let min = minute_of_day();
-            let in_window = s.enabled && !s.is_empty() && s.covers_minute(min);
+            let win = s.active(min, weekday_of_ts(ts));
+            let in_window = win.is_some();
             let unlocked = ts < cfg.points.unlock_until;
+            // 这一轮属于哪一段：用段起点当 key（同一段在整轮里恒定不变）
+            let seg_key = win.as_ref().map(|w| window_start_of(w, ts)).unwrap_or(0);
 
             // ① 武装 / 解除
             {
                 let mut a = arm_slot().lock().unwrap();
                 if !in_window || unlocked {
                     *a = None;
-                } else if a.is_none() {
-                    // 起点取「开机时刻」和「这一轮睡眠时段开始时刻」里较晚的那个：
+                } else if a.map(|x| x.key != seg_key).unwrap_or(true) {
+                    // key 变了 = 换了一段（或刚进来）：重新给满倒计时。
+                    // 起点取「开机时刻」和「这一段开始时刻」里较晚的那个：
                     // 开机 2 分钟就进睡眠时段 → 还剩 8 分钟；时段开始后才开机 → 从开机算。
                     // 这样才真的是"开机后 N 分钟内关机"，而不是"软件启动后 N 分钟"。
-                    let started = boot_ts(ts).max(window_start_at(&cfg, ts)).min(ts);
-                    *a = Some(Arm { start: started, fired: false });
+                    let started = boot_ts(ts).max(seg_key).min(ts);
+                    *a = Some(Arm { start: started, fired: false, key: seg_key , ..Default::default() });
                 }
             }
             let st = state_at(&cfg, ts, *arm_slot().lock().unwrap());
@@ -431,10 +480,10 @@ mod tests {
         let mut c = with_sleep(0, 1440);
         c.settings.sleep.countdown_min = 10;
         let ts = Local::now().timestamp();
-        let st = state_at(&c, ts, Some(Arm { start: ts - 60, fired: false }));
+        let st = state_at(&c, ts, Some(Arm { start: ts - 60, fired: false , ..Default::default() }));
         // 已经过了 1 分钟 → 还剩 9 分钟（允许 ±2 秒的取整误差）
         assert!((st.remain - 9 * 60).abs() <= 2, "{}", st.remain);
-        let st2 = state_at(&c, ts, Some(Arm { start: ts - 11 * 60, fired: false }));
+        let st2 = state_at(&c, ts, Some(Arm { start: ts - 11 * 60, fired: false , ..Default::default() }));
         assert!(st2.remain < 0, "超过 10 分钟就该到点了");
     }
 
@@ -444,7 +493,7 @@ mod tests {
         let mut c = with_sleep(0, 1440);
         let ts = Local::now().timestamp();
         c.points.unlock_until = ts + 600;
-        let st = state_at(&c, ts, Some(Arm { start: ts, fired: false }));
+        let st = state_at(&c, ts, Some(Arm { start: ts, fired: false , ..Default::default() }));
         assert!(st.in_window);
         assert!(!st.locked, "解锁期间不该锁");
         assert_eq!(st.deadline, 0, "解锁期间不该有倒计时");
@@ -466,13 +515,216 @@ mod tests {
         assert!(crate::guard::exit_blocked_at(&c, now).is_none());
     }
 
+    /* ── 多段睡眠 ── */
+
+    fn multi_cfg() -> Config {
+        let mut c = Config::default();
+        c.settings.sleep.enabled = true;
+        c.settings.sleep.windows = vec![
+            // 午睡：不锁屏、只关机（5 分钟），这不是笔误——两段本来就该能配不同策略
+            SleepWindow {
+                id: "nap".into(),
+                from: 13 * 60,
+                to: 14 * 60,
+                lock_screen: false,
+                shutdown: true,
+                countdown_min: 5,
+                ..Default::default()
+            },
+            SleepWindow {
+                id: "night".into(),
+                from: 23 * 60,
+                to: 7 * 60,
+                lock_screen: true,
+                shutdown: true,
+                countdown_min: 10,
+                ..Default::default()
+            },
+        ];
+        c
+    }
+
+    /// 多段：各自命中自己的时间，跨夜那段也能命中凌晨
+    #[test]
+    fn multi_segments_hit_their_own_time() {
+        let c = multi_cfg();
+        let s = &c.settings.sleep;
+        assert_eq!(s.active(13 * 60 + 30, 0).map(|w| w.id), Some("nap".into()));
+        assert_eq!(s.active(23 * 60 + 30, 0).map(|w| w.id), Some("night".into()));
+        // 周一凌晨 02:00 属于"周日入夜"那一轮 → 每天生效，照样命中
+        assert_eq!(s.active(2 * 60, 0).map(|w| w.id), Some("night".into()));
+        assert!(s.active(9 * 60, 0).is_none(), "09:00 两段都不在");
+    }
+
+    /// 每段的锁屏策略是独立的：午睡不锁屏，夜间锁
+    #[test]
+    fn lock_policy_is_per_segment() {
+        let c = multi_cfg();
+        let ts_at = |h: u32| {
+            let n = Local::now();
+            Local
+                .with_ymd_and_hms(n.year(), n.month(), n.day(), h, 30, 0)
+                .single()
+                .unwrap()
+                .timestamp()
+        };
+        assert!(!locked_by_cfg(&c, ts_at(13)), "午睡段关了锁屏，不该锁");
+        assert!(locked_by_cfg(&c, ts_at(23)), "夜间段开着锁屏，必须锁");
+    }
+
+    /// 老配置（windows 为空）仍然走单段语义，一个字段都没变
+    #[test]
+    fn legacy_single_segment_still_works() {
+        let c = with_sleep(23 * 60, 7 * 60);
+        let s = &c.settings.sleep;
+        assert!(s.windows.is_empty());
+        assert_eq!(s.segments().len(), 1);
+        assert!(s.active(2 * 60, 0).is_some());
+        assert!(s.active(12 * 60, 0).is_none());
+    }
+
+    /// 多段覆盖了旧字段时，旧字段不再参与判定（避免"两套真相"）
+    #[test]
+    fn windows_override_legacy_fields() {
+        let mut c = multi_cfg();
+        c.settings.sleep.from = 9 * 60;
+        c.settings.sleep.to = 10 * 60;
+        let s = &c.settings.sleep;
+        assert!(s.active(9 * 60 + 30, 0).is_none(), "旧字段不该再生效");
+        assert!(s.active(13 * 60 + 30, 0).is_some());
+    }
+
+    /* ── 生效周期三模式 ── */
+
+    /// 三种模式的判定投影：每天 / 仅工作日 / 指定
+    #[test]
+    fn cycle_mode_projection() {
+        let mut w = SleepWindow::default();
+        assert_eq!(w.cycle_mode(), "everyday");
+
+        w.set_cycle_mode("workdays", None);
+        assert_eq!(w.days, vec![0, 1, 2, 3, 4]);
+        assert_eq!(w.cycle_mode(), "workdays");
+
+        w.set_cycle_mode("custom", Some(&[6, 5]));
+        assert_eq!(w.days, vec![5, 6], "自定义要先排序");
+        assert_eq!(w.cycle_mode(), "custom");
+
+        w.set_cycle_mode("everyday", None);
+        assert!(w.days.is_empty());
+        assert_eq!(w.cycle_mode(), "everyday");
+    }
+
+    /// custom 没有历史时给「周一三五」——不能给工作日全集，否则投影回 workdays，
+    /// 用户点了"指定"却发现按钮跳回去，会以为没生效。
+    #[test]
+    fn custom_default_is_not_workdays() {
+        let mut w = SleepWindow::default();
+        w.set_cycle_mode("custom", None);
+        assert_eq!(w.days, vec![0, 2, 4]);
+        assert_eq!(w.cycle_mode(), "custom");
+    }
+
+    /// 反过来：用户在 custom 里手动勾成工作日全集时，投影就是 workdays。
+    /// 这是**有意**的等价——同一个集合不该有两种说法。
+    #[test]
+    fn custom_matching_workdays_projects_to_workdays() {
+        let mut w = SleepWindow::default();
+        w.set_cycle_mode("custom", Some(&[0, 1, 2, 3, 4]));
+        assert_eq!(w.cycle_mode(), "workdays");
+    }
+
+    /// 切模式**只动 days**，不许把时间/开关改掉（这是最容易写错的地方）
+    #[test]
+    fn cycle_switch_keeps_time_and_flags() {
+        let mut w = SleepWindow {
+            from: 22 * 60 + 30,
+            to: 6 * 60 + 15,
+            lock_screen: false,
+            shutdown: false,
+            countdown_min: 42,
+            ..Default::default()
+        };
+        let before = (w.from, w.to, w.lock_screen, w.shutdown, w.countdown_min);
+        w.set_cycle_mode("workdays", None);
+        w.set_cycle_mode("custom", Some(&[2]));
+        w.set_cycle_mode("everyday", None);
+        assert_eq!(
+            (w.from, w.to, w.lock_screen, w.shutdown, w.countdown_min),
+            before
+        );
+    }
+
+    /// 从"指定"切走再切回：恢复上一次的自定义集合，而不是清空或给工作日
+    #[test]
+    fn custom_mode_remembers_last_set() {
+        let mut w = SleepWindow::default();
+        w.set_cycle_mode("custom", Some(&[6, 0, 3]));
+        assert_eq!(w.days, vec![0, 3, 6]);
+        w.set_cycle_mode("everyday", None);
+        assert!(w.days.is_empty());
+        // 界面会把上一次的自定义集合传回来
+        w.set_cycle_mode("custom", Some(&[0, 3, 6]));
+        assert_eq!(w.days, vec![0, 3, 6]);
+    }
+
+    /// 跨夜 + 按星期：days 标的是**开始日**。
+    /// 周一 23:00–07:00 → 周二凌晨 02:00 仍属于周一那轮；周一凌晨 02:00 不属于。
+    #[test]
+    fn cross_night_days_bind_to_start_day() {
+        let mut w = SleepWindow {
+            from: 23 * 60,
+            to: 7 * 60,
+            days: vec![0],
+            ..Default::default()
+        };
+        assert!(w.covers(23 * 60 + 30, 0), "周一 23:30 = 周一那轮");
+        assert!(w.covers(2 * 60, 1), "周二 02:00 仍是周一那轮");
+        assert!(!w.covers(2 * 60, 0), "周一 02:00 是周日那轮，没标");
+        assert!(!w.covers(23 * 60 + 30, 1), "周二 23:30 不在这轮的星期里");
+
+        // 不跨夜时，星期就是当天
+        w.from = 13 * 60;
+        w.to = 14 * 60;
+        assert!(w.covers(13 * 60 + 30, 0));
+        assert!(!w.covers(13 * 60 + 30, 1));
+    }
+
+    /// 仅工作日：周六不触发、周五触发
+    #[test]
+    fn workdays_skip_weekend() {
+        let mut w = SleepWindow {
+            from: 23 * 60,
+            to: 7 * 60,
+            ..Default::default()
+        };
+        w.set_cycle_mode("workdays", None);
+        assert!(w.covers(23 * 60 + 30, 4), "周五晚上该生效");
+        assert!(!w.covers(23 * 60 + 30, 5), "周六晚上不该生效");
+        // 周六凌晨属于周五那轮 → 仍然生效（周五晚睡到周六早上）
+        assert!(w.covers(2 * 60, 5), "周六凌晨是周五那轮，必须生效");
+    }
+
+    /// 段被禁用 / 空段 → 不参与判定，也不会让整张表失效
+    #[test]
+    fn disabled_or_empty_segments_are_ignored() {
+        let mut c = multi_cfg();
+        c.settings.sleep.windows[1].enabled = false;
+        let s = &c.settings.sleep;
+        assert!(s.active(23 * 60 + 30, 0).is_none(), "禁用段不该命中");
+        assert!(s.active(13 * 60 + 30, 0).is_some(), "其它段照常");
+
+        c.settings.sleep.windows[0].to = c.settings.sleep.windows[0].from;
+        assert!(c.settings.sleep.active(13 * 60 + 30, 0).is_none(), "空段不该命中");
+    }
+
     /// 关掉睡眠开关 → 什么都不发生
     #[test]
     fn disabled_never_locks() {
         let mut c = with_sleep(0, 1440);
         c.settings.sleep.enabled = false;
         let ts = Local::now().timestamp();
-        let st = state_at(&c, ts, Some(Arm { start: ts, fired: false }));
+        let st = state_at(&c, ts, Some(Arm { start: ts, fired: false , ..Default::default() }));
         assert!(!st.in_window);
         assert!(!st.locked);
     }

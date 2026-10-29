@@ -2234,3 +2234,61 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
   .wk { grid-template-columns: 70px minmax(0, 1fr) auto; }
   .wk input[data-wk="args"] { grid-column: 1 / -1; }
 }
+
+/* ── 睡眠时段列表（多段时才有）──
+ * 一行 = 一段；点「编辑」把下面那张表单切到这一段。
+ * 当前正在编辑的那一行给一条左侧高亮，避免"改了半天不知道在改哪段"。 */
+.sl-list {
+  margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  overflow: hidden; background: var(--inset-bg);
+}
+.sl-hd {
+  padding: 6px 11px; font-size: 11.5px; color: var(--text-3);
+  background: var(--panel-a); border-bottom: 1px solid var(--line);
+}
+.sl-row {
+  display: grid; grid-template-columns: 20px 108px minmax(0, 1fr) auto auto auto;
+  align-items: center; gap: 8px; padding: 7px 11px; font-size: 12px;
+  border-left: 2px solid transparent;
+}
+.sl-row + .sl-row { border-top: 1px solid var(--line); }
+.sl-row.on { border-left-color: var(--cc-fill); background: rgba(77, 141, 255, .07); }
+.sl-idx { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.sl-time { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sl-cycle { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sl-tags { display: flex; gap: 4px; }
+.sl-tags b {
+  font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: rgba(77, 141, 255, .16); color: var(--cc-fill);
+}
+.sl-tags b.off { background: rgba(255, 255, 255, .06); color: var(--text-3); }
+
+/* 「正在编辑第 N 段」那一行：只是一句定位，不要抢注意力 */
+.sl-edit-hd {
+  margin: 12px 0 -2px; font-size: 11.5px; color: var(--text-3);
+  padding-left: 2px;
+}
+
+/* 生效周期：三段胶囊 + 星期按钮。
+ * 胶囊和「外观」页那套同形（外层 34px 容器、内部 999px），但字号更小，
+ * 因为它嵌在表单行里、和 input 同一视觉层级。 */
+.sl-seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px;
+  background: var(--cell-bg); border: 1px solid var(--line); }
+.sl-seg > button {
+  font: inherit; font-size: 11.5px; padding: 4px 12px; border: 0; cursor: pointer;
+  border-radius: 999px; background: transparent; color: var(--text-3);
+  transition: background .12s var(--mo-ease), color .12s var(--mo-ease);
+}
+.sl-seg > button:hover { color: var(--text-2); }
+.sl-seg > button.active { background: var(--cc-fill); color: #fff; font-weight: 600; }
+.sl-days { display: inline-flex; gap: 3px; margin-left: 6px; }
+.sl-days[hidden] { display: none; }
+.sl-days > button {
+  font: inherit; font-size: 11.5px; width: 24px; height: 24px; padding: 0;
+  border-radius: 50%; cursor: pointer; border: 1px solid var(--line);
+  background: transparent; color: var(--text-3);
+}
+.sl-days > button.on {
+  background: rgba(77, 141, 255, .18); color: var(--cc-fill);
+  border-color: rgba(77, 141, 255, .5); font-weight: 600;
+}
