@@ -1837,6 +1837,376 @@ window.__itest = async () => {
     }
   }
 
+  // ---- 26f-2c. 跨**多**天拖动：掠过的中间天不能留下幽灵时段 ----
+  //
+  // 回归的是「周二拖到周五，周三 / 周四莫名多出一段」：
+  //   dCur 是一跳一跳地变的（周二 → 周三 → 周四 → 周五），而预览只重绘
+  //   「源天 + 当前落点天」。离开的那一天没人还原，格子上的 .on 就留在 DOM 里；
+  //   块又是按 DOM 的 .on 画的，于是中间天凭空多出一块。
+  //   落位走的是"不整体重绘"的提交，没人来纠正，幽灵就这么留在了屏幕上。
+  {
+    await openFull();
+    await wait(240);
+    /** 配置里某天选了哪几小时 */
+    const cfgOn = (d) => pd()[d].map((p, h) => (p.on ? h : -1)).filter((h) => h >= 0);
+    /** DOM 上某天被涂成选中的小时（含预览残留） */
+    const domOn = (d) => [...document.querySelectorAll(`.cc-cell[data-d="${d}"].on`)]
+      .map((c) => +c.dataset.h);
+    // 横向落点取"这一列里第一格"的水平中心：显示范围可能不含 12 点，
+    // 写死 cell(d, 12) 在缩范围后会拿到 null。
+    const colCenter = (d) => {
+      const r = document.querySelector(`.cc-cell[data-d="${d}"]`).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      await saveConfig(); await wait(130);
+    };
+    /** 从 src 天 h 点抓起来，依次经过 mids，最后在 dst 天松手 */
+    const dragAcross = async (src, h, mids, dst) => {
+      fire('mousedown', cell(src, h), { clientY: gY(src, h, 1), clientX: colCenter(src) });
+      for (const d of mids.concat([dst])) {
+        document.dispatchEvent(new MouseEvent('mousemove', {
+          bubbles: true, clientY: gY(d, h, 1) + 4, clientX: colCenter(d),
+        }));
+        await wait(130);
+      }
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(380);
+    };
+
+    // ① 周二 9–11 → 经过周三、周四 → 周五
+    await clearAll();
+    await Act.clockCommitRange(1, 9 * 60, 11 * 60, 'add');
+    await wait(200);
+    await dragAcross(1, 9, [2, 3], 4);
+    out.push(['跨多天：落点周五有段', cfgOn(4), [9, 10]]);
+    out.push(['跨多天：周二已清空', cfgOn(1), []]);
+    out.push(['跨多天：周三不留幽灵（DOM）', domOn(2), []]);
+    out.push(['跨多天：周四不留幽灵（DOM）', domOn(3), []]);
+    out.push(['跨多天：周三不留幽灵（配置）', cfgOn(2), []]);
+    out.push(['跨多天：周四不留幽灵（配置）', cfgOn(3), []]);
+    out.push(['跨多天：整张表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+    // ② 星期边界：周一 → 周日，中间六天全被掠过
+    await clearAll();
+    await Act.clockCommitRange(0, 14 * 60, 15 * 60, 'add');
+    await wait(200);
+    await dragAcross(0, 14, [1, 2, 3, 4, 5], 6);
+    out.push(['跨周边界：周日有段', cfgOn(6), [14]]);
+    out.push(['跨周边界：周一已清空', cfgOn(0), []]);
+    out.push(['跨周边界：中间五天既没写配置也没留 DOM',
+      [1, 2, 3, 4, 5].filter((d) => cfgOn(d).length || domOn(d).length), []]);
+    out.push(['跨周边界：整张表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+    // ③ 快速连续两次拖动（第一次落位还没走完就抓第二下）
+    await clearAll();
+    await Act.clockCommitRange(2, 9 * 60, 10 * 60, 'add');
+    await wait(200);
+    fire('mousedown', cell(2, 9), { clientY: gY(2, 9, 1), clientX: colCenter(2) });
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(3, 9, 1) + 4, clientX: colCenter(3) }));
+    await wait(110);
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(4, 9, 1) + 4, clientX: colCenter(4) }));
+    await wait(110);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(50);
+    fire('mousedown', cell(4, 9), { clientY: gY(4, 9, 1), clientX: colCenter(4) });
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(3, 9, 1) + 4, clientX: colCenter(3) }));
+    await wait(110);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(480);
+    out.push(['快速连拖：第二段落在周四', cfgOn(3), [9]]);
+    out.push(['快速连拖：周五已清空', cfgOn(4), []]);
+    out.push(['快速连拖：周三无幽灵', domOn(2), []]);
+    out.push(['快速连拖：整张表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+    // ④ 中途拖出图表再接回来：横向停在原地，掠过的天仍要还原，
+    //    回到源天但换了时刻 → 走"真正提交"的那条路（不整体重绘）
+    await clearAll();
+    await Act.clockCommitRange(1, 9 * 60, 11 * 60, 'add');
+    await wait(200);
+    fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
+    for (const d of [2, 3]) {
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(d, 9, 1) + 4, clientX: colCenter(d) }));
+      await wait(110);
+    }
+    const outsideX = cell(6, 12).getBoundingClientRect().right + 60;
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(6, 9, 1) + 4, clientX: outsideX }));
+    await wait(120);
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(1, 12, 1) + 4, clientX: colCenter(1) }));
+    await wait(130);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    await wait(380);
+    out.push(['拖出图表再回来：段落到新的时刻', cfgOn(1), [12, 13]]);
+    out.push(['拖出图表再回来：没有别的天被涂上',
+      [0, 2, 3, 4, 5, 6].filter((d) => domOn(d).length || cfgOn(d).length), []]);
+    out.push(['拖出图表再回来：整张表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+    // ⑤ Esc 取消跨多天拖动：所有掠过的天都要还原，原段原样保留
+    await clearAll();
+    await Act.clockCommitRange(1, 9 * 60, 11 * 60, 'add');
+    await wait(200);
+    fire('mousedown', cell(1, 9), { clientY: gY(1, 9, 1), clientX: colCenter(1) });
+    for (const d of [2, 3, 4]) {
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(d, 9, 1) + 4, clientX: colCenter(d) }));
+      await wait(110);
+    }
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await wait(200);
+    out.push(['Esc 取消跨多天：原段还在', cfgOn(1), [9, 10]]);
+    out.push(['Esc 取消跨多天：掠过的天全干净',
+      [0, 2, 3, 4, 5, 6].filter((d) => domOn(d).length), []]);
+    out.push(['Esc 取消跨多天：整张表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+    // ⑥ 精确回归：周三 02:10–03:10 → 周五 → 周六
+    //    旧实现在中间天留下 `2-3@0/60`（= 02:00–04:00）：格子按时间轴涂的是
+    //    第 2、3 小时，块上的分钟却回落到配置的 0/60，于是"多出一整段两小时"。
+    {
+      const runOf = (d) => {
+        const r = [...document.querySelectorAll(`.cc-run[data-d="${d}"]`)][0];
+        return r ? `${r.dataset.h0}-${r.dataset.h1}@${r.dataset.f0}/${r.dataset.t1}` : '-';
+      };
+      const plan = (d) => pd()[d].map((p, h) => (p.on ? `${h}:${p.from}-${p.to}` : '')).filter(Boolean);
+      const oldGrain = fc().granularity;
+      fc().granularity = 10;              // 10 分钟粒度才表达得出 02:10
+      await clearAll();
+      pd()[2][2].on = true; pd()[2][2].from = 10; pd()[2][2].to = 60;
+      pd()[2][3].on = true; pd()[2][3].from = 0; pd()[2][3].to = 10;
+      await saveConfig(); render(); await wait(200);
+      out.push(['02:10 用例：起点块是 02:10–03:10', runOf(2), '2-3@10/10']);
+
+      fire('mousedown', cell(2, 2), { clientY: gY(2, 2, 1), clientX: colCenter(2) });
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(3, 2, 1), clientX: colCenter(3) }));
+      await wait(150);
+      out.push(['02:10 用例：经过周四时周四只是预览（配置仍空）', cfgOn(3), []]);
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(4, 2, 1), clientX: colCenter(4) }));
+      await wait(150);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['02:10 用例：落位周五，起止分钟不变', plan(4), ['2:10-60', '3:0-10']]);
+      out.push(['02:10 用例：周四没有 02:00–04:00 幽灵块', runOf(3), '-']);
+      out.push(['02:10 用例：周三已清空', plan(2), []]);
+      out.push(['02:10 用例：全表只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+
+      // 再从周五拖到周六
+      fire('mousedown', cell(4, 2), { clientY: gY(4, 2, 1), clientX: colCenter(4) });
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: gY(5, 2, 1), clientX: colCenter(5) }));
+      await wait(160);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(420);
+      out.push(['02:10 用例：第二次落位周六，起止分钟不变', plan(5), ['2:10-60', '3:0-10']]);
+      out.push(['02:10 用例：周五没有残留幽灵块', runOf(4), '-']);
+      out.push(['02:10 用例：第二次落位后仍只有一块', document.querySelectorAll('#ccGrid .cc-run').length, 1]);
+      fc().granularity = oldGrain;
+      await clearAll();
+    }
+
+
+    // 恢复成初始排班：后面的用例（英文界面扫描等）依赖时钟页非空
+    {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days = [ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10),
+        ccDay(8, 12, 50, 10), ccDay(8, 12, 50, 10), ccDay(9, 11, 45, 15), ccDay(0, 0, 50, 10)];
+      await saveConfig();
+      render();
+      await wait(160);
+    }
+  }
+
+  // ---- 26g. 完整图表的显示范围（只影响画哪一段，不影响判定）----
+  {
+    await openFull();
+    await wait(240);
+    const hlab = () => [...document.querySelectorAll('.cc-hlab')].map((e) => e.textContent.trim());
+    // 横向落点取这一列第一格的水平中心：显示范围可能不含 12 点
+    const colCenter = (d) => {
+      const r = document.querySelector(`.cc-cell[data-d="${d}"]`).getBoundingClientRect();
+      return r.left + r.width / 2;
+    };
+    const colCells = (d) => [...document.querySelectorAll(`.cc-cell[data-d="${d}"]`)];
+    const runOfDay = (d) => document.querySelector(`.cc-run[data-d="${d}"]`);
+    const clearAll = async () => {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days.forEach((day) => day.forEach((hh) => { hh.on = false; hh.from = 0; hh.to = 60; }));
+      await saveConfig(); await wait(130);
+    };
+
+    out.push(['默认显示范围是全天', `${fc().viewFrom || 0}/${fc().viewTo == null ? 1440 : fc().viewTo}`, '0/1440']);
+    out.push(['默认 24 行刻度', hlab().length, 24]);
+    out.push(['默认每天 24 格', colCells(0).length, 24]);
+
+    // 只显示 07:00–22:00
+    await Act.clockView('from', 7);
+    await Act.clockView('to', 22);
+    await wait(220);
+    out.push(['改范围后刻度从 7 开始', hlab()[0], '7']);
+    out.push(['改范围后到 21 结束', hlab()[hlab().length - 1], '21']);
+    out.push(['改范围后 15 行', hlab().length, 15]);
+    out.push(['改范围后每天 15 格', colCells(0).length, 15]);
+    out.push(['范围写进配置（分钟）', `${fc().viewFrom}/${fc().viewTo}`, '420/1320']);
+    const r0 = runOfDay(0);
+    out.push(['08–12 的块对齐到第 3 行', r0 ? r0.style.gridRow : '-', '3 / 7']);
+
+    // 在缩小的图里照样能拖：09:00 按下 → 拖到 10:45，落位 09:00–11:00
+    {
+      await clearAll();   // 先清空，否则按在 8–12 那段上是"整段平移"
+      const c9 = cell(2, 9);
+      fire('mousedown', c9, { clientY: gY(2, 9, 0), clientX: colCenter(2) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(2, 10, 3), clientX: colCenter(2),
+      }));
+      await wait(150);
+      const live = $('#clockLive').textContent;
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(320);
+      out.push(['缩范围后拖动仍按绝对时间换算', live.indexOf('09:00 – 11:00') > 0, true]);
+      out.push(['缩范围后落到的就是那个小时', pd()[2][9].on && pd()[2][10].on && pd()[2][8].on === false, true]);
+      await clearAll();
+    }
+
+    // 只有一半在视野里的段：平移要"整段搬走"，不能被视野剪短
+    {
+      await clearAll();
+      const plan = (h, f, t) => { pd()[2][h].on = true; pd()[2][h].from = f; pd()[2][h].to = t; };
+      plan(6, 0, 60); plan(7, 0, 60);          // 06:00–08:00，起点在视野外
+      await saveConfig(); render(); await wait(200);
+      out.push(['视野外的部分不画', cell(2, 6), null]);
+      fire('mousedown', cell(2, 7), { clientY: gY(2, 7, 2), clientX: colCenter(2) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(2, 9, 2), clientX: colCenter(2),
+      }));
+      await wait(150);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(320);
+      out.push(['半露的段平移后仍是 2 小时',
+        [6, 7, 8, 9].map((h) => (pd()[2][h].on ? 1 : 0)).join(''), '0011']);
+      out.push(['半露的段平移后分钟数不变', ccDayMinutes(pd()[2]), 120]);
+      await clearAll();
+    }
+
+    // 段比视野还长：钉住不动，而不是被截短
+    {
+      await Act.clockView('from', 9);
+      await Act.clockView('to', 10);
+      await wait(200);
+      const plan = (h, f, t) => { pd()[2][h].on = true; pd()[2][h].from = f; pd()[2][h].to = t; };
+      for (let h = 8; h < 12; h++) plan(h, 0, 60);   // 08:00–12:00，明显比视野长
+      await saveConfig(); render(); await wait(200);
+      fire('mousedown', cell(2, 9), { clientY: gY(2, 9, 1), clientX: colCenter(2) });
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        bubbles: true, clientY: gY(2, 9, 3), clientX: colCenter(2),
+      }));
+      await wait(150);
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await wait(320);
+      out.push(['比视野还长的段不会被截短', ccDayMinutes(pd()[2]), 240]);
+      out.push(['比视野还长的段原地不动', [8, 9, 10, 11].every((h) => pd()[2][h].on), true]);
+      await clearAll();
+      await Act.clockView('from', 7);
+      await Act.clockView('to', 22);
+      await wait(160);
+    }
+
+    // 范围外的时段：不显示，但要提示"另有 N 段"
+    await Act.clockView('from', 13);
+    await Act.clockView('to', 18);
+    await wait(220);
+    {
+      const p = fc().profiles.find((x) => x.id === fc().active) || fc().profiles[0];
+      p.days[0] = ccDay(8, 12, 50, 10);
+      await saveConfig(); render(); await wait(200);
+    }
+    const hint = document.querySelector('.cc-view .hint').textContent;
+    out.push(['范围外的段被统计出来', /另有 1 段/.test(hint), true]);
+    out.push(['范围外的段不画在图上', runOfDay(0), null]);
+    out.push(['范围外但配置里还在', pd()[0].filter((p) => p.on).length, 4]);
+
+    // 「全天」按钮恢复
+    await Act.clockViewReset();
+    await wait(220);
+    out.push(['恢复全天后 24 行', hlab().length, 24]);
+    out.push(['恢复全天写回配置', `${fc().viewFrom}/${fc().viewTo}`, '0/1440']);
+
+    // 起止不能倒挂：先设到 20，再把起点推到 22 → 自动夹在 19
+    await Act.clockView('from', 6);
+    await Act.clockView('to', 20);
+    await Act.clockView('from', 22);
+    out.push(['起点不能被推到终点之后', `${fc().viewFrom}/${fc().viewTo}`, '1140/1200']);
+    await Act.clockViewReset();
+    await wait(180);
+  }
+
+  // ---- 26h. 睡眠管理：参数保存 + 锁定浮层 ----
+  {
+    await Act.nav('clock');
+    await wait(220);
+    const sl = () => fc2().sleep;
+    function fc2() { return S.data.config.settings; }
+    out.push(['睡眠卡片存在', !!document.getElementById('sleepCard'), true]);
+
+    await Act.sleepEnable();
+    await wait(200);
+    out.push(['睡眠开关写进配置', !!sl().enabled, true]);
+
+    $('#sleepFrom').value = '22:30';
+    $('#sleepTo').value = '06:30';
+    $('#sleepCount').value = '15';
+    $('#sleepPrice').value = '8';
+    $('#sleepUnlockMin').value = '45';
+    $('#sleepShutdown').checked = true;
+    $('#sleepLockOn').checked = true;
+    await Act.sleepSave();
+    await wait(200);
+    out.push(['睡眠参数已保存',
+      [sl().from, sl().to, sl().countdownMin, sl().unlockPrice, sl().unlockMin, sl().shutdown, sl().lockScreen].join('/'),
+      '1350/390/15/8/45/true/true']);
+
+    // 结束填 00:00 = 到次日 0 点（不是"空时段"）
+    $('#sleepTo').value = '00:00';
+    await Act.sleepSave();
+    await wait(160);
+    out.push(['结束填 00:00 视为 24:00', sl().to, 1440]);
+
+    // 起止相同必须被拦下（否则会变成一段空时段，永远不触发）
+    const keepTo = sl().to;
+    $('#sleepFrom').value = '23:00';
+    $('#sleepTo').value = '23:00';
+    await Act.sleepSave();
+    await wait(160);
+    out.push(['起止相同被拦下（配置不变）', sl().to, keepTo]);
+
+    // 非法倒计时也拦
+    $('#sleepFrom').value = '23:00';
+    $('#sleepTo').value = '07:00';
+    $('#sleepCount').value = '0';
+    await Act.sleepSave();
+    await wait(160);
+    out.push(['倒计时 0 分钟被拦下', sl().countdownMin, 15]);
+    $('#sleepCount').value = '10';
+
+    // 锁定浮层：积分不够 → 按钮禁用；够 → 可点；解锁后 → 浮层消失
+    S.data.runtime.sleep = {
+      locked: true, remain: 300, shutdown: true, price: 240, unlockMin: 30,
+      balance: 100, windowEnd: 0, inWindow: true,
+    };
+    render();
+    out.push(['锁定中主界面被盖住', !!document.getElementById('sleepShield'), true]);
+    out.push(['浮层压在所有弹窗之上', getComputedStyle(document.getElementById('sleepShield')).zIndex, '9000']);
+    out.push(['积分不够时解锁按钮禁用', $('#sleepShield .sl-btn').disabled, true]);
+    S.data.runtime.sleep.balance = 9999;
+    render();
+    out.push(['积分够时解锁按钮可用', $('#sleepShield .sl-btn').disabled, false]);
+    out.push(['浮层显示倒计时', $('#sleepShield .sl-count b').textContent, '05:00']);
+    S.data.runtime.sleep.locked = false;
+    render();
+    out.push(['解锁后浮层消失', !!document.getElementById('sleepShield'), false]);
+
+    // 收尾：关掉睡眠，别影响后面的用例
+    if (sl().enabled) { await Act.sleepEnable(); await wait(150); }
+    out.push(['收尾后睡眠是关闭的', !!sl().enabled, false]);
+  }
+
   // ---- 26f-3. 动效规范：统一令牌 / 页面入场 / 弹窗退场 / 低配降级 ----
   {
     await Act.nav('overview');

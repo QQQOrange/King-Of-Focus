@@ -372,6 +372,19 @@ pub struct ClockCfg {
     pub def_work: u32,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub def_brk: u32,
+    /// 完整图表只看这一段时间（分钟，0..1440，整点对齐）。
+    ///
+    /// 只影响**怎么画**，不影响判定：范围外的时段照样生效，只是不出现在图上。
+    /// 默认 0 / 1440 = 全天（0:00–23:59）。
+    #[serde(default)]
+    pub view_from: u32,
+    #[serde(default = "default_view_to")]
+    pub view_to: u32,
+}
+
+/// 图表默认显示到当天最后一分钟（24:00）
+fn default_view_to() -> u32 {
+    1440
 }
 
 fn default_true() -> bool { true }
@@ -428,6 +441,8 @@ impl Default for ClockCfg {
             hours: Vec::new(),
             def_work: 0,
             def_brk: 0,
+            view_from: 0,
+            view_to: 1440,
         }
     }
 }
@@ -658,6 +673,68 @@ impl Default for StatsCfg {
     }
 }
 
+/// 睡眠管理
+///
+/// 和「自律时段」是两件事，不要混：
+///   · 自律时段 = 白天里"什么时候不许玩"（拦软件 / 网页、开遮罩）
+///   · 睡眠时段 = 夜里"这台机器该关着了"（全屏锁定 + 倒计时关机）
+///
+/// 判定口径：只要**当前时刻落在睡眠时段内**，就进入锁定状态并开始倒计时；
+/// 倒计时归零 → 自动关机。唯一例外是用积分解锁（买断一段时间）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SleepCfg {
+    pub enabled: bool,
+    /// 睡眠时段起点（分钟 0..1440）
+    pub from: u32,
+    /// 睡眠时段终点（分钟 0..1440）。`to <= from` 表示跨夜（23:00 → 07:00）
+    pub to: u32,
+    /// 落在睡眠时段里之后，多少分钟内关机（1..120，默认 10）
+    pub countdown_min: u32,
+    /// 到点是否真的执行关机。关 = 只锁定，不关机（想自己关的时候用）
+    pub shutdown: bool,
+    /// 睡眠时段内是否全屏锁定（限制其它功能）
+    pub lock_screen: bool,
+    /// 积分解锁一次买多少分钟（5..240）
+    pub unlock_min: u32,
+    /// 积分解锁的价格基数：每分钟多少分。0 = 这段睡眠不许用积分解锁
+    pub unlock_price: i64,
+}
+
+impl Default for SleepCfg {
+    fn default() -> Self {
+        SleepCfg {
+            enabled: false,
+            from: 23 * 60,
+            to: 7 * 60,
+            countdown_min: 10,
+            shutdown: true,
+            lock_screen: true,
+            unlock_min: 30,
+            unlock_price: 10,
+        }
+    }
+}
+
+impl SleepCfg {
+    /// 睡眠时段是否为空（起止相同 = 没有设置）
+    pub fn is_empty(&self) -> bool {
+        self.from == self.to
+    }
+
+    /// 某个"当天分钟数"是否落在睡眠时段内（左闭右开，支持跨夜）
+    pub fn covers_minute(&self, min: u32) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        if self.from < self.to {
+            min >= self.from && min < self.to
+        } else {
+            min >= self.from || min < self.to
+        }
+    }
+}
+
 /// 用户自己登记的浏览器（不在内置清单里的）。
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -742,6 +819,8 @@ pub struct Settings {
     pub mask: MaskCfg,
     /// 自律模式生效时间段（24 段）
     pub focus_clock: ClockCfg,
+    /// 睡眠管理（睡眠时段内锁定 + 倒计时关机）
+    pub sleep: SleepCfg,
     /// 时长统计
     pub stats: StatsCfg,
     /// 云同步
@@ -785,6 +864,7 @@ impl Default for Settings {
             lang: "zh-CN".into(),
             mask: MaskCfg::default(),
             focus_clock: ClockCfg::default(),
+            sleep: SleepCfg::default(),
             stats: StatsCfg::default(),
             sync: SyncCfg::default(),
             update: UpdateCfg::default(),

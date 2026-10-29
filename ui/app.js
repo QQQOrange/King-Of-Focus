@@ -219,6 +219,7 @@ async function pull() {
     S.data = await invoke('get_state');
     applyTheme();
     renderChrome();
+    syncSleepLock();
     if (S.view === 'overview' && !S.editing) render();
     // 浏览器插件页：状态一变就重画（插件装上/被停用/启动浏览器都能在 1.5s 内反映出来），
     // 状态没变就不重画，避免把用户正在输入的宽限毫秒清掉
@@ -1177,6 +1178,36 @@ function ccSnapWin(f, t) {
   return { f: a, t: b };
 }
 
+/* ───────── 图表显示范围 ─────────
+ *
+ * 完整图表默认铺满 0:00–24:00（设置项里写作 0:00–23:59）。但多数人真正关心的
+ * 只是"早上七点到晚上十一点"这一截：24 行铺下来要滚半天，还可能看不全。
+ * 于是把范围做成一个纯**显示**参数：
+ *
+ *   · 只影响画多少行、刻度从几点开始、拖动的坐标怎么换算
+ *   · 判定与存储完全不看它 —— 范围外的时段照样生效，只是不出现在图上
+ *   · 整点对齐（拖选最小粒度是 10 分钟，行边界再切碎的话，一行就不是一小时了）
+ */
+function ccView() {
+  const fc = S.data && S.data.config && S.data.config.settings.focusClock;
+  const rawF = fc ? +fc.viewFrom || 0 : 0;
+  const rawT = fc ? (fc.viewTo == null ? 1440 : +fc.viewTo) : 1440;
+  const from = Math.max(0, Math.min(23 * 60, Math.floor(rawF / 60) * 60));
+  const to = Math.max(from + 60, Math.min(1440, Math.floor(rawT / 60) * 60));
+  return { from, to, hours: (to - from) / 60 };
+}
+
+/** 某个小时在网格里的行号（第 1 行是星期表头） */
+function ccRow(h) {
+  return h - ccView().from / 60 + 2;
+}
+
+/** 显示范围的文案：06:00 – 22:00（终点 24:00 写成 24:00，和刻度一致） */
+function ccViewText(v) {
+  const w = v || ccView();
+  return `${pad(w.from / 60)}:00 – ${pad(w.to / 60)}:00`;
+}
+
 /** 归一化一套方案：7 天 × 24 小时 + 时长夹紧 */
 function ccNormProfile(p, idx) {
   if (!p || typeof p !== 'object') p = {};
@@ -1212,6 +1243,16 @@ function ccNormProfile(p, idx) {
 }
 
 /** 归一化 focusClock：多套「星期时段」方案（兼容旧版单套 days / 更旧的 hours） */
+/** 睡眠管理的配置（缺失时补一份默认，老配置升级上来也安全） */
+function clockCfgSleep() {
+  const s = S.data && S.data.config && S.data.config.settings;
+  if (!s) return { enabled: false, from: 23 * 60, to: 7 * 60, countdownMin: 10, shutdown: true, lockScreen: true, unlockMin: 30, unlockPrice: 10 };
+  if (!s.sleep) {
+    s.sleep = { enabled: false, from: 23 * 60, to: 7 * 60, countdownMin: 10, shutdown: true, lockScreen: true, unlockMin: 30, unlockPrice: 10 };
+  }
+  return s.sleep;
+}
+
 function clockCfg() {
   const s = S.data && S.data.config && S.data.config.settings;
   if (!s) return { enabled: false, applyRules: true, active: 'p1', profiles: [] };
@@ -1272,12 +1313,19 @@ function clockProfile() {
  * 3. 整块只用一种颜色：块里不再按 专注/休息 切出不同深浅的色带，
  *    未选中的分钟用透明占位带让开（这是"没选满"，不是另一种颜色）。
  *
- * `override(d,h)` 传入时，用它的返回值代替配置里的值（拖选预览用）。 */
-function ccRenderRuns(root, override) {
+ * `override(d,h)` 传入时，用它的返回值代替配置里的值（拖选预览用）。
+ * `only` 传入时只重画这几天的块：跨天拖动落位 / 取消后需要把"指针掠过、
+ * 但已经不是落点"的那几天收拾干净，而重建**全部**的块会把手上那一块也换掉，
+ * 落位动画（FLIP）就没有起点可用了。 */
+function ccRenderRuns(root, override, only) {
   const host = root || document;
   const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
   if (!grid) return;
-  grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => el.remove());
+  const allow = only ? new Set(only) : null;
+  grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => {
+    if (!allow) { el.remove(); return; }
+    if (el.dataset.d == null || allow.has(+el.dataset.d)) el.remove();
+  });
   const fc = clockProfile();
   // `override(d,h)` 让拖拽预览可以临时替换某天的窗口，而不去改配置：
   //   返回 undefined = 用配置；{f,t} = 用这个窗口；null = 这一小时不选中。
@@ -1322,6 +1370,7 @@ function ccRenderRuns(root, override) {
     });
   };
   cols.forEach((hs, d) => {
+    if (allow && !allow.has(d)) return;
     let h = 0;
     while (h < 24) {
       if (!hs.has(h)) { h++; continue; }
@@ -1389,9 +1438,10 @@ function ccRenderRuns(root, override) {
     run.dataset.h1 = String(h1);
     run.dataset.f0 = String(f0);
     run.dataset.t1 = String(t1);
-    // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始
+    // 第 1 行是星期表头、第 1 列是小时刻度 → 数据行/列都从 2 开始；
+    // 行号再减去「显示范围」的起始小时（默认 0，等于没变）
     run.style.gridColumn = `${d0 + 2}`;
-    run.style.gridRow = `${h0 + 2} / ${h1 + 3}`;
+    run.style.gridRow = `${ccRow(h0)} / ${ccRow(h1) + 1}`;
     // 色块上的时长文字（滴答清单风格）：09:00 – 12:00。
     // 注意结束分钟可能是 60，那是"到下一小时整点"，必须进成 12:00，
     // 不能直接写成 11:60（非法时间，之前真出现过）。
@@ -1630,15 +1680,20 @@ function ccMiniHtml(prof, wdNow) {
     </div>`;
 }
 
-/** 大日历的格子 HTML —— 只在完整页里生成（折叠时不算这 168 个格子） */
+/** 大日历的格子 HTML —— 只在完整页里生成（折叠时不算这 168 个格子）
+ *  行数跟着「显示范围」走：默认 24 行，设成 07:00–23:00 就只画 16 行。 */
 function ccGridHtml(prof, wdNow, hourNow) {
   const step = ccStep();
   const qn = ccQCnt();
   const hourH = ccHourH();
+  const view = ccView();
+  const h0 = view.from / 60;
+  const h1 = view.to / 60;
   let grid = `<div class="cc-corner" style="grid-row:1;grid-column:1">时</div>` + WD.map((w, i) =>
     `<div class="cc-dh${i === wdNow ? ' today' : ''}" style="grid-row:1;grid-column:${i + 2}">${w}${i === wdNow ? '·今' : ''}</div>`).join('');
-  for (let h = 0; h < 24; h++) {
-    grid += `<div class="cc-hlab" style="grid-row:${h + 2};grid-column:1">${h}</div>`;
+  for (let h = h0; h < h1; h++) {
+    const row = h - h0 + 2;
+    grid += `<div class="cc-hlab" style="grid-row:${row};grid-column:1">${h}</div>`;
     for (let dd = 0; dd < 7; dd++) {
       const p = prof.days[dd][h];
       const w = Math.max(0, Math.min(60, p.work || 0));
@@ -1657,17 +1712,134 @@ function ccGridHtml(prof, wdNow, hourNow) {
           style="top:${(q * 100 / qn).toFixed(4)}%;height:${(100 / qn).toFixed(4)}%"></i>`;
       }
       grid += `<div class="cc-cell${p.on ? ' on' : ''}${dd === wdNow && h === hourNow ? ' now' : ''}"
-        style="grid-row:${h + 2};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
+        style="grid-row:${row};grid-column:${dd + 2}" data-d="${dd}" data-h="${h}"
         title="${winTxt}${p.on ? ` · 专注 ${w} 分 / 休息 ${b} 分${t ? `（尾段 ${t} 分继续专注）` : ''}，右键可改` : '（未选中，拖动或右键可设置）'}">${qs}</div>`;
     }
   }
-  return { grid, hourH, step, qn };
+  return { grid, hourH, step, qn, rows: view.hours };
+}
+
+/** 分钟数 → "HH:MM"（睡眠时段用；1440 显示成 00:00，表示"到次日 0 点"） */
+function minToHm(m) {
+  const v = Math.max(0, Math.min(1440, Math.round(m || 0)));
+  return `${pad(Math.floor(v / 60) % 24)}:${pad(v % 60)}`;
+}
+/** "HH:MM" → 分钟数；非法输入返回 null */
+function hmToMin(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  const h = +m[1], mm = +m[2];
+  if (h > 24 || mm > 59) return null;
+  return Math.max(0, Math.min(1440, h * 60 + mm));
+}
+
+/** 睡眠状态那一句话（卡片用；pull 轮询时也用它原地刷新，不整页重绘） */
+function sleepStateOf(rt) {
+  const s = (S.data.config.settings.sleep) || {};
+  const st = (rt && rt.sleep) || {};
+  const fromM = s.from == null ? 23 * 60 : +s.from;
+  const toM = s.to == null ? 7 * 60 : +s.to;
+  if (!s.enabled) return { cls: '', txt: '未启用：睡眠时段内开机不会被限制' };
+  if (st.locked) {
+    const left = Math.max(0, st.remain || 0);
+    return {
+      cls: 'hot',
+      txt: st.shutdown
+        ? `锁定中 · ${Math.floor(left / 60)} 分 ${pad(left % 60)} 秒后自动关机`
+        : `锁定中 · 只锁屏，不关机（${minToHm(fromM)} – ${minToHm(toM)}）`,
+    };
+  }
+  if (st.inWindow && st.unlockedUntil > 0) {
+    const d = new Date(st.unlockedUntil * 1000);
+    return { cls: 'gold', txt: `已用积分解锁至 ${pad(d.getHours())}:${pad(d.getMinutes())}，到点后重新锁定` };
+  }
+  if (st.inWindow) {
+    return { cls: 'gold', txt: '在睡眠时段内（未锁定：请检查「锁定屏幕」开关或测试模式）' };
+  }
+  return { cls: '', txt: `现在不在睡眠时段，下次锁定 ${minToHm(fromM)}` };
+}
+
+/** 「睡眠管理」卡片：睡眠时段、倒计时、积分解锁价格 */
+function sleepCardHtml(rt) {
+  const s = (S.data.config.settings.sleep) || {};
+  const st = (rt && rt.sleep) || {};
+  const on = !!s.enabled;
+  const fromM = s.from == null ? 23 * 60 : +s.from;
+  const toM = s.to == null ? 7 * 60 : +s.to;
+  const count = s.countdownMin == null ? 10 : +s.countdownMin;
+  const price = s.unlockPrice == null ? 10 : +s.unlockPrice;
+  const umin = s.unlockMin == null ? 30 : +s.unlockMin;
+  const state = sleepStateOf(rt);
+  return `
+  <div class="card" id="sleepCard">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px">
+      <div>
+        <div class="card-title">睡眠管理</div>
+        <div class="card-sub">和「自律时段」是两件事：那边管白天什么时候不许玩，这里管夜里这台机器该关着了。</div>
+        <div class="card-sub">到了睡眠时段，开机 / 唤醒后会限制所有功能，倒计时结束自动关机；想现在用，只能用积分解锁。</div>
+      </div>
+      <div class="switch" data-act="sleep-enable" title="启用 / 停用睡眠管理"><input type="checkbox" ${on ? 'checked' : ''}><i></i></div>
+    </div>
+
+    <div class="sleep-state ${state.cls}"><span class="cs-dot"></span><span>${esc(state.txt)}</span></div>
+
+    <div class="sleep-grid">
+      <label class="sf"><span class="sf-lab">睡眠时段</span>
+        <span class="sf-in">
+          <input type="time" id="sleepFrom" value="${minToHm(fromM)}">
+          <em>至</em>
+          <input type="time" id="sleepTo" value="${minToHm(toM)}">
+          <em class="hint">（结束填 00:00 = 到次日 0 点，例如 23:00 – 00:00）</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">开机后</span>
+        <span class="sf-in">
+          <input type="number" id="sleepCount" min="1" max="120" step="1" value="${count}">
+          <em>分钟内自动关机</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">积分解锁</span>
+        <span class="sf-in">
+          <input type="number" id="sleepPrice" min="0" max="1000" step="1" value="${price}">
+          <em>分 / 分钟，一次买</em>
+          <input type="number" id="sleepUnlockMin" min="5" max="240" step="5" value="${umin}">
+          <em>分钟</em>
+          <em class="hint">（价格填 0 = 这段睡眠不许用积分解锁）</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">到点关机</span>
+        <span class="sf-in">
+          <input type="checkbox" id="sleepShutdown" ${s.shutdown === false ? '' : 'checked'}>
+          <em>真的执行关机（关掉 = 只锁定、不关机）</em>
+        </span>
+      </label>
+      <label class="sf"><span class="sf-lab">限制功能</span>
+        <span class="sf-in">
+          <input type="checkbox" id="sleepLockOn" ${s.lockScreen === false ? '' : 'checked'}>
+          <em>睡眠时段内全屏锁定（关掉就只剩倒计时关机）</em>
+        </span>
+      </label>
+    </div>
+
+    <div class="row" style="margin-top:14px;align-items:center">
+      <button class="btn btn-sm" data-act="sleep-save">保存睡眠设置</button>
+      <span class="hint">判定只看当前时刻是否在睡眠时段内，与自律时段、自律规则完全独立。</span>
+      <span class="hint">关机指令发出后 30 秒内仍可用积分解锁撤回；解锁到期后如果还在时段内，会重新开始倒计时。</span>
+    </div>
+  </div>`;
 }
 
 /** 完整页：大日历（可拖选 / 右键）+ 粒度 + 每日明细 */
 function ccDetailHtml(prof, wdNow, hourNow, frozen) {
-  const { grid, hourH, step, qn } = ccGridHtml(prof, wdNow, hourNow);
+  const { grid, hourH, step, qn, rows } = ccGridHtml(prof, wdNow, hourNow);
+  const view = ccView();
   const totalMins = prof.days.reduce((n, d) => n + ccDayMinutes(d), 0);
+  // 显示范围外还有多少段：不提醒一下的话，用户会以为"我排的时段没了"
+  const outside = prof.days.reduce((n, day) => n + ccSegs(day).filter((sg) => {
+    const a = sg.h0 * 60 + sg.f0;
+    const b = sg.h1 * 60 + (sg.t1 >= 60 ? 60 : sg.t1);
+    return b <= view.from || a >= view.to;
+  }).length, 0);
   const dayRows = prof.days.map((day, d) => {
     const m = ccDayMinutes(day);
     const seg = ccDayRanges(day);
@@ -1693,7 +1865,19 @@ function ccDetailHtml(prof, wdNow, hourNow, frozen) {
           title="每一格代表 ${g} 分钟">${g} 分钟</button>`).join('')}
         <span class="hint">现在每格 ${step} 分钟，一小时 ${qn} 格。切到 10 分钟更细（格子变多、日历变高），已排好的时段不受影响。</span>
       </div>
-      <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px">${grid}</div></div>
+      <div class="cc-gran cc-view">
+        <span class="cc-gran-lab">显示范围</span>
+        <label class="cc-view-pick">从 <select data-act="clock-view" data-k="from">
+          ${Array.from({ length: 23 }, (_, i) => `<option value="${i}"${i * 60 === view.from ? ' selected' : ''}>${pad(i)}:00</option>`).join('')}
+        </select></label>
+        <label class="cc-view-pick">到 <select data-act="clock-view" data-k="to">
+          ${Array.from({ length: 24 }, (_, i) => `<option value="${i + 1}"${(i + 1) * 60 === view.to ? ' selected' : ''}>${pad(i + 1)}:00</option>`).join('')}
+        </select></label>
+        <button class="btn btn-sm" data-act="clock-view-reset" title="恢复成全天（00:00 – 24:00）">全天</button>
+        <span class="hint">现在只看 ${ccViewText(view)}：<b>只影响显示</b>，范围外的时段照样生效${
+  outside ? `（另有 <b>${outside}</b> 段在范围外）` : ''}。</span>
+      </div>
+      <div class="cc-scroll"><div class="cc" id="ccGrid" style="--cc-hour-h:${hourH}px;--cc-rows:${rows}">${grid}</div></div>
       <div class="cc-legend">
         <span><i class="sw"></i>已选中（整块同色）</span>
         <span class="hint">同一天相邻的时段会连成一整块；块里的空白就是没选中的分钟</span>
@@ -1845,6 +2029,8 @@ function viewClock() {
       <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
     </div>
   </div>
+
+  ${sleepCardHtml(rt)}
 
   <div class="card">
     <div class="card-title">它和「自律规则」的关系</div>
@@ -3124,6 +3310,64 @@ function drawPie(canvas, slices, total, opts) {
 }
 
 /* ---------------- 渲染调度 ---------------- */
+/** 睡眠锁屏浮层：盖住整个应用，只留一个「积分解锁」按钮。
+ *
+ *  为什么要两层：全屏锁屏窗口管"整个桌面"，这一层管"应用内"——
+ *  托盘图标、任务栏预览都能把主窗口翻到前面来，光靠窗口层级挡不住，
+ *  但盖在 DOM 上的这一层永远在最上面（z-index 高于弹窗与 toast）。
+ *  状态每秒跟着 1.5s 轮询刷新，不额外起定时器。
+ */
+function syncSleepLock() {
+  const rt = (S.data && S.data.runtime) || {};
+  const st = rt.sleep || {};
+  // 卡片上的那句话也跟着秒级刷新（只换文本，不动整页）
+  const card = document.querySelector('#sleepCard .sleep-state');
+  if (card) {
+    const line = sleepStateOf(rt);
+    card.className = 'sleep-state ' + line.cls;
+    const span = card.querySelector('span:last-child');
+    if (span && span.textContent !== line.txt) {
+      // 换成一个**新的**文本节点再翻译：i18n 用 WeakMap 记住"原文"，
+      // 直接改 nodeValue 会让它以为还是上一句，英文界面下就漏翻。
+      span.textContent = '';
+      span.appendChild(document.createTextNode(line.txt));
+      I18N.apply(span);
+    }
+  }
+  let el = document.getElementById('sleepShield');
+  if (!st.locked) {
+    if (el) el.remove();
+    return;
+  }
+  const left = Math.max(0, st.remain || 0);
+  const mm = Math.floor(left / 60), ss = left % 60;
+  const price = st.price || 0;
+  const mins = st.unlockMin || 30;
+  const afford = (st.balance || 0) >= price && price > 0;
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sleepShield';
+    el.className = 'sleep-lock';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `
+    <div class="sl-box">
+      <div class="sl-moon">🌙</div>
+      <div class="sl-title">现在是睡眠时间</div>
+      <div class="sl-sub">这台电脑该关着了。睡眠时段内的一切功能都被限制。</div>
+      <div class="sl-count${left <= 60 ? ' hot' : ''}">
+        <b>${pad(mm)}:${pad(ss)}</b><span>${st.shutdown ? '后自动关机' : '（只锁定，不关机）'}</span>
+      </div>
+      <button class="btn btn-sm sl-btn" data-act="sleep-unlock" ${afford ? '' : 'disabled'}>
+        ${price ? `用 ${price} 积分解锁 ${mins} 分钟` : '这段睡眠没有开启积分解锁'}
+      </button>
+      <div class="sl-foot">
+        积分余额 ${st.balance || 0}${afford || !price ? '' : ' · 积分不够'}<br>
+        解锁到期后如果还在睡眠时段内，会自动重新锁定。
+      </div>
+    </div>`;
+}
+
 function render() {
   if (!S.data && S.view !== 'reports') { $('#content').innerHTML = '<div class="empty is-loading">加载中…</div>'; return; }
   // 只有真的换了页面才播入场：数据每 1.5s 刷一次，动画不能跟着重播
@@ -3156,6 +3400,9 @@ function render() {
 
   // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
   applyLangView();
+
+  // 睡眠锁屏：主界面也要挡住（锁屏窗口盖住整个桌面，这里管的是"应用内"）
+  syncSleepLock();
 
   if (viewChanged) {
     const box = $('#content');
@@ -4586,6 +4833,95 @@ const Act = window.Act = {
     toast(`已改为每格 ${g} 分钟：一小时 ${60 / g} 格，已排好的时段不受影响`, 'ok');
   },
 
+  /** 图表显示范围：from / to 两端，整点对齐，最少一小时。
+   *
+   *  这是纯显示参数（不影响判定与存储），所以不做「生效中禁止修改」的限制——
+   *  把一天看成 0–24 还是 7–23，跟"要不要自律"完全是两件事。 */
+  async clockView(k, v) {
+    const fc = clockCfg();
+    let from = Math.round((+fc.viewFrom || 0) / 60) * 60;
+    let to = Math.round((fc.viewTo == null ? 1440 : +fc.viewTo) / 60) * 60;
+    const h = Math.max(0, Math.min(24, Math.round(+v))) * 60;
+    if (k === 'from') from = Math.min(h, to - 60);
+    else to = Math.max(h, from + 60);
+    from = Math.max(0, Math.min(1380, from));
+    to = Math.max(from + 60, Math.min(1440, to));
+    if (from === (fc.viewFrom || 0) && to === (fc.viewTo == null ? 1440 : fc.viewTo)) return;
+    fc.viewFrom = from;
+    fc.viewTo = to;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+  },
+
+  async clockViewReset() {
+    const fc = clockCfg();
+    fc.viewFrom = 0;
+    fc.viewTo = 1440;
+    await saveConfig();
+    render();
+    toast('显示范围已恢复为全天（00:00 – 24:00）', 'ok');
+  },
+
+  /* ---- 睡眠管理 ---- */
+
+  async sleepEnable() {
+    const s = clockCfgSleep();
+    s.enabled = !s.enabled;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(s.enabled
+      ? `睡眠管理已启用：${minToHm(s.from)} – ${minToHm(s.to)} 之间开机，${s.countdownMin} 分钟后自动关机`
+      : '睡眠管理已关闭：睡眠时段内不再锁定、也不会关机', 'ok');
+  },
+
+  /** 保存睡眠参数。全部走一遍校验再落盘，避免"存了一半"的非法状态。 */
+  async sleepSave() {
+    const s = clockCfgSleep();
+    const fromM = hmToMin(($('#sleepFrom') || {}).value);
+    let toM = hmToMin(($('#sleepTo') || {}).value);
+    const count = Math.round(+($('#sleepCount') || {}).value);
+    const price = Math.round(+($('#sleepPrice') || {}).value);
+    const umin = Math.round(+($('#sleepUnlockMin') || {}).value);
+    const shutdown = !!($('#sleepShutdown') || {}).checked;
+    const lock = !!($('#sleepLockOn') || {}).checked;
+
+    if (fromM == null || toM == null) { toast('时间格式应为 HH:MM', 'err'); return; }
+    // 结束时间填 00:00 = 到次日 0 点（否则 23:00 – 00:00 会被当成"空时段"）
+    if (toM === 0 && fromM > 0) toM = 1440;
+    if (fromM === toM) { toast('睡眠时段的起止不能相同（会变成一段空时段）', 'err'); return; }
+    if (!Number.isFinite(count) || count < 1 || count > 120) { toast('关机倒计时请填 1–120 分钟', 'err'); return; }
+    if (!Number.isFinite(price) || price < 0 || price > 1000) { toast('积分钟价请填 0–1000', 'err'); return; }
+    if (!Number.isFinite(umin) || umin < 5 || umin > 240) { toast('一次解锁时长请填 5–240 分钟', 'err'); return; }
+
+    s.from = fromM;
+    s.to = toM;
+    s.countdownMin = count;
+    s.unlockPrice = price;
+    s.unlockMin = umin;
+    s.shutdown = shutdown;
+    s.lockScreen = lock;
+    const ok = await saveConfig();
+    if (!ok) { render(); return; }
+    render();
+    toast(`睡眠管理已更新：${minToHm(fromM)} – ${minToHm(toM)}，开机 ${count} 分钟后${shutdown ? '关机' : '只锁定'}`, 'ok');
+  },
+
+  /** 锁屏浮层上的「积分解锁」 */
+  async sleepUnlock() {
+    const st = (S.data.runtime && S.data.runtime.sleep) || {};
+    const mins = st.unlockMin || 30;
+    try {
+      const r = await invoke('sleep_unlock', { minutes: mins });
+      toast(`已用 ${r.spent} 积分解锁 ${r.minutes} 分钟（余额 ${r.balance}）`, 'ok');
+      await pull();
+      render();
+    } catch (e) {
+      toast(String(e).replace(/^Error:\s*/, ''), 'err');
+    }
+  },
+
   /** 勾选 / 取消"这套时段管哪些自律规则分组"。
    *
    * 空列表 = 全部（默认，也是老配置的语义）。
@@ -5163,6 +5499,12 @@ document.addEventListener('click', async (e) => {
   if (act === 'clock-prof-del') { await Act.clockProfDel(); return; }
   if (act === 'hud-corner') { await Act.hudCorner(el.dataset.v); return; }
   if (act === 'clock-gran') { await Act.clockGran(el.dataset.v); return; }
+  // 下拉框在 click 上什么都不做（真正的改动在 change 里，见下面那条监听）
+  if (act === 'clock-view') return;
+  if (act === 'sleep-enable') { await Act.sleepEnable(); return; }
+  if (act === 'sleep-save') { await Act.sleepSave(); return; }
+  if (act === 'sleep-unlock') { await Act.sleepUnlock(); return; }
+  if (act === 'clock-view-reset') { await Act.clockViewReset(); return; }
   // S.ccAnimIn 只在这一帧为真：完整图表页的入场动画不能每次重绘都重播，
   // 否则拖完一段松手（内部会 render 一次）整页就会重新淡入 = 闪一下。
   if (act === 'cc-open') { S.ccFull = true; S.ccAnimIn = true; render(); S.ccAnimIn = false; return; }
@@ -5330,11 +5672,15 @@ const ccDayGrains = () => 24 * ccQCnt();
 function ccDayGeom(d) {
   const grid = document.getElementById('ccGrid');
   if (!grid) return null;
-  const first = grid.querySelector(`.cc-cell[data-d="${d}"][data-h="0"]`);
-  const last = grid.querySelector(`.cc-cell[data-d="${d}"][data-h="23"]`);
-  if (!first || !last) return null;
+  // 不能写死 data-h=0 / 23：图表可以只显示其中一段（显示范围），
+  // 那两格根本不存在，写死会让整条拖拽链路直接失效。
+  const cells = grid.querySelectorAll(`.cc-cell[data-d="${d}"]`);
+  if (!cells.length) return null;
+  const first = cells[0];
+  const last = cells[cells.length - 1];
   const r0 = first.getBoundingClientRect();
-  return { top: r0.top, hourH: r0.height, bottom: last.getBoundingClientRect().bottom };
+  const r1 = last.getBoundingClientRect();
+  return { top: r0.top, hourH: r0.height, bottom: r1.bottom };
 }
 
 /** clientX → 落在哪一列（哪一天）。返回 null = 指针不在图表的横向范围内。
@@ -5371,11 +5717,16 @@ function ccDayAtX(clientX) {
 /** clientY → 当天第几个粒度（越界时夹住，并告诉调用方越到了哪边） */
 function ccGrainAt(d, clientY) {
   const g = ccDayGeom(d);
-  const n = ccDayGrains();
+  const view = ccView();
   if (!g || g.hourH <= 0) return { idx: 0, edge: 0 };
-  const raw = Math.floor(((clientY - g.top) / g.hourH) * ccQCnt());
+  const qn = ccQCnt();
+  const raw = Math.floor(((clientY - g.top) / g.hourH) * qn);
   const edge = clientY < g.top - 1 ? -1 : (clientY > g.bottom + 1 ? 1 : 0);
-  return { idx: Math.max(0, Math.min(n - 1, raw)), edge };
+  // 返回的是**整天**的粒度序号：显示范围只改"画哪一段"，
+  // 序号仍以 0:00 为原点，这样与 from/to 的绝对分钟一一对应。
+  const lo = view.from / ccStep();
+  const hi = view.to / ccStep() - 1;
+  return { idx: Math.max(lo, Math.min(hi, lo + raw)), edge };
 }
 
 /** 拖拽区间 [lo,hi)（分钟）：以锚点那一格为基准向两侧伸缩，最少一格 */
@@ -5386,12 +5737,18 @@ function ccDragRange(dg) {
   const c = Math.max(0, Math.min(n - 1, dg.cur));
 
   if (dg.mode === 'move') {
-    // 整段平移：长度固定，只按"拖了多远"平移；撞到 0:00 / 24:00 就贴边停下
+    // 整段平移：**长度恒定**，只按"拖了多远"平移，撞到显示范围的边就贴边停下。
+    // 这里绝不能"先挪再裁"：那会把越过边界的部分剪掉，看起来是贴边，实际是丢分钟。
+    // 所以夹的是**起点**，终点永远由起点 + 原长度推出来。
+    const view = ccView();
+    const len = dg.segTo - dg.segFrom;
     let lo = dg.segFrom + (c - a) * st;
-    let hi = dg.segTo + (c - a) * st;
-    if (lo < 0) { hi -= lo; lo = 0; }
-    if (hi > 1440) { lo -= hi - 1440; hi = 1440; }
-    return { lo: Math.max(0, lo), hi: Math.min(1440, hi) };
+    if (lo + len > view.to) lo = view.to - len;
+    if (lo < view.from) lo = view.from;
+    // 段比显示范围还长（例如只显示 9–10 点，却抓着一段 8–12 点）：
+    // 怎么挪都会越界，干脆钉住不动，而不是把它截短
+    if (lo + len > view.to) lo = dg.segFrom;
+    return { lo, hi: lo + len };
   }
 
   const lo = Math.min(a, c);
@@ -5525,6 +5882,18 @@ function paintCcDrag() {
   const dCur = dg.mode === 'move' ? (dg.dCur == null ? dg.d : dg.dCur) : dg.d;
   const { lo, hi } = ccDragRange(dg);
   const days = dCur === dg.d ? [dg.d] : [dg.d, dCur];
+
+  // 0) **先把上一帧涂过、这一帧不再涉及的天还原**。
+  //    跨多天拖动时 dCur 是"跳"的：周二 → 周三 → 周四 → 周五，
+  //    每跳一次，刚刚离开的那一天就再也不会出现在 days 里。
+  //    以前这里只重绘 days，于是周三、周四的格子一直留着预览态的 .on，
+  //    而块又是按 DOM 的 .on 画的 → 中间那天凭空多出一段。
+  //    落位时走的是 noRender 提交（为了不整页闪），没人来纠正，幽灵就留在屏幕上。
+  const stale = [];
+  if (dg.painted) for (const d of dg.painted) if (days.indexOf(d) < 0) stale.push(d);
+  if (stale.length) ccRestoreCells(stale);
+  dg.painted = days.slice();
+
   const winsBy = new Map();
   for (const d of days) winsBy.set(d, ccWinsForDay(d, dg, lo, hi));
 
@@ -5561,7 +5930,7 @@ function paintCcDrag() {
     const slot = document.createElement('div');
     slot.className = 'cc-slot';
     slot.style.gridColumn = `${dg.d + 2}`;
-    slot.style.gridRow = `${s0 + 2} / ${s1 + 3}`;
+    slot.style.gridRow = `${ccRow(s0)} / ${ccRow(s1) + 1}`;
     slot.innerHTML = `<i style="top:${(((dg.segFrom - s0 * 60) / span) * 100).toFixed(2)}%;`
       + `height:${(((dg.segTo - dg.segFrom) / span) * 100).toFixed(2)}%"></i>`;
     grid.appendChild(slot);
@@ -5604,12 +5973,13 @@ function ccResetLive() {
   I18N.apply(lab);
 }
 
-/** 撤回预览：按**配置里的真实值**把涉及的那几天重画（单击 / 取消拖动时用） */
-function ccRestorePreview(days) {
+/** 只还原**格子**（.on 与细分刻度）：按配置里的真实值重画指定的这几天，
+ *  不碰块、不碰合计。拖拽过程中要求"某一天退出预览"时用它——
+ *  完整的 ccRestorePreview 会把状态条和合计一起复位，那会打断正在进行的拖动。 */
+function ccRestoreCells(days) {
   const grid = document.getElementById('ccGrid');
-  if (!grid) return;
-  grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
-  const list = Array.isArray(days) ? days : [days];
+  if (!grid) return [];
+  const list = (Array.isArray(days) ? days : [days]).filter((d) => d != null);
   const prof = clockProfile();
   for (const d of list) {
     const day = prof.days[d] || [];
@@ -5619,8 +5989,18 @@ function ccRestorePreview(days) {
       ccPaintCell(c, d, h, p && p.on ? { f: p.from || 0, t: p.to == null ? 60 : p.to } : null);
     });
   }
+  return list;
+}
+
+/** 撤回预览：按**配置里的真实值**把涉及的那几天重画（单击 / 取消拖动时用） */
+function ccRestorePreview(days) {
+  const grid = document.getElementById('ccGrid');
+  if (!grid) return;
+  grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
+  const list = ccRestoreCells(days);
+  // 这几天里可能还挂着上一帧留下的块：只重画它们，别的列原样保留
+  ccRenderRuns(document, null, list);
   grid.querySelectorAll('.cc-run.carry').forEach((r) => r.classList.remove('carry'));
-  ccRenderRuns(document);
   ccLiveTotals(null);
   ccResetLive();
 }
@@ -5807,6 +6187,9 @@ function ccDragBegin(d, clientY, clientX) {
     S.ccDrag = {
       d, dCur: d, anchor: idx, cur: idx, edge, edgeX: 0, mode: 'move', moved: false,
       startY: clientY, startX: clientX, lastX: clientX, lastY: clientY,
+      // painted = 当前 DOM 上"正在显示预览"的天；跨天时指针会一路掠过别的天，
+      // 每帧都要据此把离开的天还原（见 paintCcDrag 第 0 步）
+      painted: [d],
       segFrom: seg.h0 * 60 + seg.f0,
       segTo: seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1),
     };
@@ -5814,6 +6197,7 @@ function ccDragBegin(d, clientY, clientX) {
     S.ccDrag = {
       d, dCur: d, anchor: idx, cur: idx, edge, edgeX: 0, mode: 'add', moved: false,
       startY: clientY, startX: clientX, lastX: clientX, lastY: clientY,
+      painted: [d],
     };
   }
   paintCcDrag();
@@ -5850,7 +6234,16 @@ function ccCancelDrag() {
   }
   document.body.classList.remove('cc-dragging');
   ccGhostDrop();
-  ccRestorePreview([dg.d, dg.dCur == null ? dg.d : dg.dCur]);
+  // 收尾要把"掠过"的那些天一起还原：它们只在某一帧里被涂过，
+  // 不属于最后那次落点，光还原 d / dCur 会把幽灵时段留在屏幕上。
+  ccRestorePreview(ccDragDays(dg));
+}
+
+/** 这次拖动在 DOM 上留下的所有天（含指针一路掠过、最后已经离开的那些）。
+ *  去重并保序，null 会被过滤掉。 */
+function ccDragDays(dg) {
+  const list = [dg.d, dg.dCur == null ? dg.d : dg.dCur].concat(dg.painted || []);
+  return list.filter((d, i) => d != null && list.indexOf(d) === i);
 }
 
 /** 松手：没动过 = 单击（不改结构）；动过 = 提交这段区间 */
@@ -5893,7 +6286,7 @@ async function ccDragEnd() {
   if (!dg.moved) {
     // 单击：**不改任何时段**，只把选区记下来给右键菜单用。
     // （这条是硬规则：点击不得改变时段的数量与结构。）预览也要撤回去。
-    ccRestorePreview([dg.d, dCur]);
+    ccRestorePreview(ccDragDays(dg));
     if (scroller) scroller.scrollTop = scrollTop;
     return;
   }
@@ -5901,7 +6294,7 @@ async function ccDragEnd() {
   if (dg.mode === 'move') {
     if (dCur === dg.d && lo === dg.segFrom && hi === dg.segTo) {
       // 原地放下：什么都不用提交，只把预览换成真实渲染
-      ccRestorePreview([dg.d]);
+      ccRestorePreview(ccDragDays(dg));
       render();
       // render 换掉了整个面板，滚动位置要在**换完**之后还原
       const sc0 = document.querySelector('#ccDetail .cc-scroll');
@@ -5912,13 +6305,28 @@ async function ccDragEnd() {
     // 预览本来就是按最终结果画的，再 render 一次等于把 168 个格子重建一遍，
     // 既会打断落位动画，也会让"整页重新淡入"闪一下。
     const ok = await Act.clockMoveSeg(dg.d, dg.segFrom, dg.segTo, dCur, lo, hi, { noRender: true });
-    if (ok) {
-      ccResetLive();          // 状态条回到摘要
-      ccLiveTotals(null);     // 行数据已经是最终值，这里只做一次兜底对齐
+    // 提交是异步的（要等一次落盘）：这期间用户可能已经开始了下一次拖动。
+    // 那时预览归新拖动所有，收尾动作不能再抢 DOM。
+    const live = S.ccDrag;
+    const busy = live ? (live.painted || []) : [];
+    // 一路掠过的中间天：既不是起点也不是落点，配置里从来没有它们，
+    // 必须按配置清一遍，否则它们会作为"幽灵时段"留在屏幕上（提交不重绘，没人纠正）。
+    const stale = (dg.painted || []).filter((d) => d !== dg.d && d !== dCur
+      && busy.indexOf(d) < 0);
+    if (ok && stale.length) {
+      // 只重画这几天：落点那一块要留给下面的 FLIP 当目标，不能一起重建
+      ccRestoreCells(stale);
+      ccRenderRuns(document, null, stale);
     }
-    const sc2 = document.querySelector('#ccDetail .cc-scroll');
-    if (sc2) sc2.scrollTop = scrollTop;
-    if (ok) ccLandRun(fromRect, dCur, h0, h1);
+    if (!live) {
+      if (ok) {
+        ccResetLive();          // 状态条回到摘要
+        ccLiveTotals(null);     // 行数据已经是最终值，这里只做一次兜底对齐
+      }
+      const sc2 = document.querySelector('#ccDetail .cc-scroll');
+      if (sc2) sc2.scrollTop = scrollTop;
+      if (ok) ccLandRun(fromRect, dCur, h0, h1);
+    }
     return;
   }
 
@@ -6467,6 +6875,13 @@ document.addEventListener('input', async (e) => {
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'hudOpacity') Act.hudOpacity(e.target.value);
+});
+
+/* 完整图表的「显示范围」下拉：改完立刻重画（纯显示参数，不需要二次确认） */
+document.addEventListener('change', async (e) => {
+  const el = e.target.closest('[data-act="clock-view"]');
+  if (!el) return;
+  await Act.clockView(el.dataset.k, el.value);
 });
 
 /* 时段明细起止时间修改 */

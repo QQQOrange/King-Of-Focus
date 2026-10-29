@@ -311,6 +311,13 @@ pub fn exit_blocked(cfg: &Config) -> Option<String> {
 
 /// 与 `exit_blocked` 相同，但"现在"可以指定（便于测试）。
 pub fn exit_blocked_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<String> {
+    // 睡眠时段：锁定期间不许退出（否则把程序一关就等于绕过了整条链路）。
+    // 用纯配置判定，不依赖进程内的倒计时状态。
+    let ts = now.and_local_timezone(Local).single().map(|x| x.timestamp())
+        .unwrap_or_else(|| Local::now().timestamp());
+    if crate::sleep::locked_by_cfg(cfg, ts) {
+        return Some("睡眠时段锁定中：只能用积分解锁，或者等这一段结束".into());
+    }
     // 注意用带 `now` 的那个版本：早期这里读的是真实时钟，
     // 导致"可注入时间"的函数在测试里行为随运行时刻变化。
     let info = lock_info_at(cfg, now);
@@ -356,6 +363,11 @@ pub fn session_quit_locked(cfg: &Config) -> bool {
 
 /// 被「禁止退出」挡住时给用户看的说明；没被挡住返回 None
 pub fn session_quit_hint(cfg: &Config) -> Option<String> {
+    // 睡眠时段优先：锁定期内连"强制退出"也走这条闸（不然 Ctrl+Alt+F4 一按，
+    // 程序没了，关机也就没了 —— 整套限制形同虚设）
+    if crate::sleep::locked_by_cfg(cfg, Local::now().timestamp()) {
+        return Some("睡眠时段锁定中：只能用积分解锁，或者等这一段结束".into());
+    }
     if !session_quit_locked(cfg) {
         return None;
     }

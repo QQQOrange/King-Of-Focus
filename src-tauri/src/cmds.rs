@@ -183,6 +183,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "clockHour": rt.clock_hour,
                 "clockLeft": rt.clock_left,
                 "clockSummary": crate::clock::summary(&config),
+                "sleep": crate::sleep::snapshot(&shared).to_json(&config),
+                "sleepText": crate::sleep::summary(&shared),
                 // Hub 顶部那块激励语录要显示"这条是哪来的"，所以连同出处一起给
                 "quote": rt.quote.clone(),
                 "quoteFrom": rt.quote_from.clone(),
@@ -253,6 +255,11 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
 
 #[tauri::command]
 pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(), String> {
+    // 睡眠时段锁定中：所有设置都改不了（这才是"限制所有功能"）。
+    // 唯一的出路是锁屏窗口上的「积分解锁」，或者等这一轮睡眠时段结束。
+    if crate::sleep::is_locked(&shared) {
+        return Err("睡眠时段锁定中：只能用积分解锁，或者等这一段结束".into());
+    }
     if crate::guard::is_locked(&shared) {
         let info = crate::guard::lock_info(&shared.config());
         return Err(format!(
@@ -1171,6 +1178,27 @@ pub fn show_main(app: AppHandle) {    if let Some(w) = app.get_webview_window("m
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/// 睡眠状态（锁屏窗口每秒轮询；主界面也用）
+#[tauri::command]
+pub fn sleep_state(shared: State<'_, Arc<Shared>>) -> Value {
+    let cfg = shared.config();
+    let mut v = crate::sleep::snapshot(&shared).to_json(&cfg);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("uptime".into(), json!(crate::sleep::uptime_secs()));
+        o.insert("text".into(), json!(crate::sleep::summary(&shared)));
+        o.insert("lang".into(), json!(cfg.settings.lang));
+        o.insert("testMode".into(), json!(crate::testmode::on()));
+        o.insert("dryRun".into(), json!(cfg.settings.dry_run));
+    }
+    v
+}
+
+/// 用积分解锁睡眠时段（锁屏窗口上的那个按钮）
+#[tauri::command]
+pub fn sleep_unlock(shared: State<'_, Arc<Shared>>, minutes: Option<u32>) -> Result<Value, String> {
+    crate::sleep::unlock(&shared, minutes.unwrap_or(0))
 }
 
 /// 用积分强行解锁

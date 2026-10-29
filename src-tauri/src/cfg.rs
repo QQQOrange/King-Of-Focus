@@ -1,4 +1,4 @@
-use crate::model::{ClockCfg, ClockProfile, Config, DEFAULT_CLOCK_PROFILE_ID, MAX_CLOCK_PROFILES};
+use crate::model::{ClockCfg, ClockProfile, Config, SleepCfg, DEFAULT_CLOCK_PROFILE_ID, MAX_CLOCK_PROFILES};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -126,6 +126,7 @@ pub fn sanitize(c: &mut Config) {
     // 自律时段：多套「星期时段」方案，每套都是 7 天 × 24 段，
     // 且 work + brk 不能超过 1 小时（否则会跟下一段的计划打架）
     sanitize_clock(&mut c.settings.focus_clock);
+    sanitize_sleep(&mut c.settings.sleep);
     sanitize_quotes(&mut c.settings.custom_quotes);
     sanitize_custom_browsers(&mut c.settings.custom_browsers);
 
@@ -237,6 +238,28 @@ fn sanitize_clock(hc: &mut ClockCfg) {
     // 粒度只允许 10 / 15（界面上就这两个选项；被手改成别的值一律退回 15）
     let step = hc.step();
     hc.granularity = step;
+
+    // 图表显示范围：整点对齐、至少一小时、最多一整天。
+    // 范围只是"看哪一段"，不影响判定，所以这里怎么夹都不会弄丢排班。
+    hc.view_from = (hc.view_from / 60 * 60).min(1380);
+    hc.view_to = (hc.view_to / 60 * 60).clamp(hc.view_from + 60, 1440);
+}
+
+/// 睡眠管理的参数收敛。
+///
+/// 这一层必须做死：`countdown_min` 会被直接用来算"多久之后关机"，
+/// 一个 0 或者 999999 都会变成"立刻关机"或"永远不关机"。
+fn sanitize_sleep(s: &mut SleepCfg) {
+    s.from = s.from.min(1439);
+    s.to = s.to.min(1440);
+    if s.from == s.to {
+        // 起止相同 = 没有睡眠时段。留一个明确的"空"状态，
+        // 而不是悄悄改成 24 小时（那会让人半夜开机就被关机，纯属惊吓）。
+        s.to = s.from;
+    }
+    s.countdown_min = s.countdown_min.clamp(1, 120);
+    s.unlock_min = s.unlock_min.clamp(5, 240);
+    s.unlock_price = s.unlock_price.clamp(0, 1000);
 }
 
 fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {

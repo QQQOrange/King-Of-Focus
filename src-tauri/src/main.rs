@@ -22,6 +22,7 @@ mod report_out;
 mod sched;
 mod server;
 mod shared;
+mod sleep;
 mod stats;
 mod testmode;
 mod sync;
@@ -373,6 +374,7 @@ fn main() {
             }
 
             monitor::start(app.handle().clone(), shared.clone());
+            crate::sleep::start(app.handle().clone(), shared.clone());
             server::start(app.handle().clone(), shared.clone());
 
             // 强制退出监听：Ctrl+Alt+F4（任意前台）/ Alt+F4（本程序在前台）
@@ -424,6 +426,8 @@ fn main() {
             cmds::hide_window,
             cmds::show_main,
             cmds::points_unlock,
+            cmds::sleep_state,
+            cmds::sleep_unlock,
             cmds::hud_state,
             cmds::hud_set_look,
             cmds::hud_save,

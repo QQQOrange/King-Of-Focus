@@ -758,7 +758,8 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
    *   15 分钟粒度 = 4 格 × 13px = 52px/小时
    *   10 分钟粒度 = 6 格 × 13px = 78px/小时（一天更高，靠滚动看）
    * 每格至少 13px 才点得准，所以粒度变细时行高跟着变高。 */
-  grid-template-rows: auto repeat(24, var(--cc-hour-h, 52px));
+  /* 行数由 JS 写进 --cc-rows（默认 24 = 全天；设了显示范围就只画那几行） */
+  grid-template-rows: auto repeat(var(--cc-rows, 24), var(--cc-hour-h, 52px));
   /* 行间距 0：同一天内连续几小时必须连成一整条，不能断开 */
   row-gap: 0;
   column-gap: 6px;
@@ -1929,3 +1930,72 @@ html[data-motion="low"] .is-loading::after { animation-duration: 2s; }
 html[data-motion="low"] .cc-detail.opening .cc-day .bar i { animation: none; }
 html[data-motion="low"] .cc-run.over { transform: none; }
 html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
+
+/* ── 完整图表的「显示范围」条 ──
+ * 和粒度那一行同构（同一套 label / hint），只是多了两个下拉：
+ * 它改的是"画哪一段"，所以视觉上必须轻，不能抢了图表的注意力。 */
+.cc-gran.cc-view { margin-top: 2px; }
+.cc-view-pick {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-3);
+}
+.cc-view-pick select {
+  font: inherit; font-size: 12px; padding: 4px 6px; border-radius: 8px;
+  color: var(--text); background: var(--bg-2, rgba(255,255,255,.04));
+  border: 1px solid var(--line); outline: none; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.cc-view-pick select:hover { border-color: var(--line-2, rgba(255,255,255,.22)); }
+.cc-view-pick select:focus-visible { border-color: var(--gold); }
+
+/* ── 睡眠管理卡片 ──
+ * 和「生效时间段」那种"重交互"的模块不同，这里全是表单：
+ * 左标签 / 右控件两列，标签固定宽度对齐，扫一眼就知道每一项在改什么。 */
+.sleep-state {
+  display: flex; align-items: center; gap: 8px;
+  margin: 14px 0 4px; padding: 9px 12px; border-radius: 10px;
+  background: rgba(255, 255, 255, .03); border: 1px solid var(--line);
+  font-size: 12.5px; color: var(--text-2);
+}
+.sleep-state.hot { border-color: rgba(255, 92, 92, .35); background: rgba(255, 92, 92, .08); color: var(--red); }
+.sleep-state.gold { border-color: rgba(255, 199, 95, .32); background: rgba(255, 199, 95, .07); color: var(--gold); }
+.sleep-grid { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 14px; }
+.sf { display: grid; grid-template-columns: 86px 1fr; align-items: center; gap: 10px; }
+.sf-lab { font-size: 12.5px; color: var(--text-2); }
+.sf-in { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-3); }
+.sf-in em { font-style: normal; }
+.sf-in input[type="time"],
+.sf-in input[type="number"] {
+  font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+  color: var(--text); background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--line); outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.sf-in input[type="number"] { width: 74px; }
+.sf-in input:hover { border-color: rgba(255, 255, 255, .22); }
+.sf-in input:focus-visible { border-color: var(--gold); }
+.sf-in input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--gold); }
+
+/* ── 睡眠锁屏浮层（应用内那一层）──
+ * 只在睡眠锁定期间存在；盖住侧栏、内容、弹窗、toast，只留解锁按钮可点。 */
+.sleep-lock {
+  position: fixed; inset: 0; z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(900px 520px at 50% 0%, rgba(23, 32, 58, .97), rgba(7, 8, 12, .985));
+  backdrop-filter: blur(6px);
+  animation: sl-in .3s ease both;
+}
+@keyframes sl-in { from { opacity: 0; } to { opacity: 1; } }
+.sl-box { text-align: center; max-width: 560px; padding: 0 24px; }
+.sl-moon { font-size: 40px; }
+.sl-title { margin-top: 12px; font-size: 30px; font-weight: 650; color: var(--text); }
+.sl-sub { margin-top: 8px; font-size: 13.5px; color: var(--text-3); }
+.sl-count { margin: 26px 0 4px; display: inline-flex; align-items: baseline; gap: 10px; }
+.sl-count b {
+  font-size: 46px; font-weight: 600; color: var(--gold);
+  font-variant-numeric: tabular-nums; letter-spacing: .02em;
+}
+.sl-count.hot b { color: var(--red); }
+.sl-count span { font-size: 13px; color: var(--text-3); }
+.sl-btn { margin-top: 22px; padding: 10px 20px; }
+.sl-foot { margin-top: 18px; font-size: 12px; color: var(--text-3); line-height: 1.9; }

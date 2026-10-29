@@ -702,6 +702,45 @@
     '本地备份在软件目录下的': 'Local backups live under',
     '检测到': 'Detected',
     '每 15 秒落盘一次，关掉窗口也不会丢。': 'Flushed every 15 s; closing the window loses nothing.',
+    /* —— 睡眠管理 —— */
+    '睡眠管理': 'Sleep hours',
+    '和「自律时段」是两件事：那边管白天什么时候不许玩，这里管夜里这台机器该关着了。':
+      'Separate from discipline hours: those govern daytime focus, this governs when the machine should be off.',
+    '到了睡眠时段，开机 / 唤醒后会限制所有功能，倒计时结束自动关机；想现在用，只能用积分解锁。':
+      'Booting or waking up inside sleep hours locks everything down and shuts down when the countdown ends; points are the only way to use it now.',
+    '睡眠时段': 'Sleep window',
+    '积分解锁': 'Points unlock',
+    '至': 'to',
+    '（结束填 00:00 = 到次日 0 点，例如 23:00 – 00:00）': '(end 00:00 = next midnight, e.g. 23:00 – 00:00)',
+    '开机后': 'After boot',
+    '分钟内自动关机': 'min until shutdown',
+    '分 / 分钟，一次买': 'pts / min, buy',
+    '分钟': 'min',
+    '到点关机': 'Shutdown',
+    '真的执行关机（关掉 = 只锁定、不关机）': 'Really shut down (off = lock only)',
+    '限制功能': 'Lock down',
+    '睡眠时段内全屏锁定（关掉就只剩倒计时关机）': 'Full-screen lock during sleep hours (off = countdown only)',
+    '保存睡眠设置': 'Save sleep settings',
+    '判定只看当前时刻是否在睡眠时段内，与自律时段、自律规则完全独立。':
+      'Only the current time decides; independent of discipline hours and rules.',
+    '关机指令发出后 30 秒内仍可用积分解锁撤回；解锁到期后如果还在时段内，会重新开始倒计时。':
+      'Points can still cancel the shutdown within 30 s; once an unlock expires inside the window the countdown restarts.',
+    '（价格填 0 = 这段睡眠不许用积分解锁）': '(0 = points unlock disabled)',
+    '未启用：睡眠时段内开机不会被限制': 'Off: booting during sleep hours is not restricted',
+    '在睡眠时段内（未锁定：请检查「锁定屏幕」开关或测试模式）':
+      'Inside sleep hours (not locked: check the lock toggle or test mode)',
+    '现在是睡眠时间': 'It is sleep time',
+    '这台电脑该关着了。睡眠时段内的一切功能都被限制。': 'This machine should be off. Everything is locked during sleep hours.',
+    '后自动关机': 'until shutdown',
+    '（只锁定，不关机）': '(lock only, no shutdown)',
+    '这段睡眠没有开启积分解锁': 'Points unlock is disabled',
+    '积分不够': 'Not enough points',
+    '解锁到期后如果还在睡眠时段内，会自动重新锁定。': 'When the unlock expires inside the window it locks again automatically.',
+    '显示范围': 'Shown range',
+    '从': 'From',
+    '到': 'To',
+    '全天': 'Full day',
+    '睡眠时段已用积分解锁至': 'Sleep hours unlocked until',
     '每 N 天生成一次，从锚点日算起，报告覆盖上一个完整 N 天':
       'Every N days from the anchor date, covering the previous N full days',
     '每个「自律周期」和每段「休息」结束前各提醒一次：主界面弹提示，HUD 上对应的倒计时会变金色闪烁。':
@@ -847,6 +886,17 @@
   }
 
   var RULES = [
+    /* —— 睡眠管理 —— */
+    [/^锁定中 · (\d+) 分 (\d+) 秒后自动关机$/, 'Locked · shuts down in $1 min $2 s'],
+    [/^锁定中 · 只锁屏，不关机（([0-9]{2}:[0-9]{2}) – ([0-9]{2}:[0-9]{2})）$/, 'Locked · no shutdown ($1 – $2)'],
+    [/^已用积分解锁至 ([0-9]{2}:[0-9]{2})，到点后重新锁定$/, 'Unlocked with points until $1, then locks again'],
+    [/^现在不在睡眠时段，下次锁定 ([0-9]{2}:[0-9]{2})$/, 'Not in sleep hours · next lock at $1'],
+    [/^用 (\d+) 积分解锁 (\d+) 分钟$/, 'Unlock $2 min for $1 pts'],
+    [/^积分余额 (\d+)$/, 'Balance $1 pts'],
+    [/^现在只看 ([0-9]{2}:[0-9]{2}) – ([0-9]{2}:[0-9]{2})：只影响显示，范围外的时段照样生效（另有 (\d+) 段在范围外）。$/,
+      'Showing $1 – $2 only; display-only, windows outside still apply ($3 outside).'],
+    [/^现在只看 ([0-9]{2}:[0-9]{2}) – ([0-9]{2}:[0-9]{2})：只影响显示，范围外的时段照样生效。$/,
+      'Showing $1 – $2 only; display-only, windows outside still apply.'],
     // 时段格子标题（7 天 × 24 小时，最占量的一条）
     [/^周(.) (\d\d:\d\d) – (\d\d:\d\d)（未选中，拖动或右键可设置）$/,
       function (m, p1, p2, p3) { return wd(p1) + ' ' + p2 + ' – ' + p3 + ' (empty; drag or right-click)'; }],
