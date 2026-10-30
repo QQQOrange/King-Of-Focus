@@ -1407,6 +1407,28 @@ unsafe fn follow_rect() -> Option<(Rect, isize)> {
     Some((r, fg as isize))
 }
 
+/// 某个窗口作为"洞口"时的矩形。窗口没了 / 不可见 / 已最小化 → None。
+///
+/// 和 `window_bounds` 分开是因为这里要的是"**能不能当洞口**"：
+/// 最小化的窗口 `GetWindowRect` 会给出 -32000 那种坐标，画上去就是一个看不见的洞。
+unsafe fn hole_bounds(h: Hwnd) -> Option<Rect> {
+    if h.is_null() || IsWindow(h) == 0 || IsWindowVisible(h) == 0 || IsIconic(h) != 0 {
+        return None;
+    }
+    window_bounds(h)
+}
+
+/// 遮罩是否允许渲染。
+///
+/// 遮罩的实现方式是"整屏盖一层 + 把选中窗口抬到遮罩之上"，所以
+/// **洞口矩形**和**被抬升的窗口句柄**必须同时存在：
+///   · 只有洞口、没有句柄 → 整屏覆盖、一个突出窗口都没有（用户报的 bug）；
+///   · 只有句柄、没有矩形 → 洞不知道该挖在哪。
+/// 两条缺一条就不画，宁可不显示也不能出现"全覆盖"。
+fn can_paint(on: bool, has_hole: bool, has_hwnd: bool) -> bool {
+    on && has_hole && has_hwnd
+}
+
 unsafe fn target_rect(ctl: &MaskCtl) -> Option<Rect> {
     let mut h = ctl.target.load(Ordering::Relaxed) as Hwnd;
     if h.is_null() || IsWindow(h) == 0 {
@@ -1857,17 +1879,57 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
             let follow = follow_cfg && !test_lock && manual == 0;
             let follow_now = if follow { fg_now } else { None };
             if follow {
-                followed_key = follow_now.map(|(_, h)| h).unwrap_or(0);
+                // 只在**真的拿到前台窗口**时更新；拿不到就保留上一次的。
+                // 以前这里无条件 `.unwrap_or(0)`：遮罩靠下面的 last_hole 继续画，
+                // 而"被抬到遮罩之上的窗口"变成空 —— 于是整屏全覆盖、一个突出窗口
+                // 都没有。这正是"没有选中任何窗口，遮罩却盖住了所有窗口"。
+                if let Some((_, h)) = follow_now {
+                    followed_key = h;
+                }
             }
-            // 跟随模式下拿不到前台窗口（比如焦点在本程序上）就当作"没有目标"，
-            // 绝不能回退到旧的手选目标，否则洞口会停在别的地方
-            // 跟随模式下前台若是本程序自己（比如刚点了按钮），保持上一帧的高亮，
-            // 不要因为"读不到前台"就把遮罩收掉
-            let target_now = if follow {
-                follow_now.map(|(r, _)| r).or(last_hole)
+            // 跟随模式下拿不到前台窗口（焦点在本程序上、前台被最小化、桌面切换中）
+            // 就沿用上一帧的洞口；但**矩形必须从那个窗口重新算**，
+            // 否则窗口挪了 / 关了还按旧矩形挖洞，洞和窗口就对不上。
+            // 注意：绝不能回退到旧的手选目标，那会让洞口停在别的地方。
+            let mut target_now = if follow {
+                match follow_now {
+                    Some((r, _)) => Some(r),
+                    None => hole_bounds(followed_key as Hwnd).or(last_hole),
+                }
             } else {
                 target_rect(&ctl)
             };
+
+            // 洞口归属的窗口：遮罩靠把它抬到上面来留洞。它必须和洞口同时存在。
+            // 非跟随模式读 ctl.target（target_rect 可能刚把它填好）；
+            // 跟随模式读 followed_key —— 两者都不再从"上一帧矩形"里凭空造句柄。
+            let hole: Hwnd = if follow {
+                followed_key as Hwnd
+            } else {
+                ctl.target.load(Ordering::Relaxed) as Hwnd
+            };
+            let hole_ok = !hole.is_null()
+                && IsWindow(hole) != 0
+                && IsWindowVisible(hole) != 0
+                && IsIconic(hole) == 0;
+            // 洞口没有归属窗口 = 只能整屏盖住、一个突出窗口都没有。
+            // 这种情况绝不能沿用上一帧的洞（那会真的画出来，正是用户看到的现象），
+            // 直接当作"没有目标"：立刻收起，1.5s 后照旧自动退出并给提示。
+            if !hole_ok && target_now.is_some() {
+                target_now = None;
+                last_hole = None;
+            }
+            // 洞口还得落在某块屏幕上。有些程序用"把窗口移到屏幕外"当隐藏，
+            // 这时句柄、可见性都正常，洞却挖在看不见的地方 —— 视觉上还是整屏覆盖。
+            if let Some(t0) = target_now {
+                let visible = mons.iter().any(|m| {
+                    t0.right > m.left && t0.left < m.right && t0.bottom > m.top && t0.top < m.bottom
+                });
+                if !visible {
+                    target_now = None;
+                    last_hole = None;
+                }
+            }
             if target_now.is_none() && on && !logged_miss {
                 logged_miss = true;
                 mlog(&format!(
@@ -1906,9 +1968,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
             };
 
-            // 遮罩是瞬开瞬关：没有过渡、没有延时。on 且拿得到目标就是全亮，
-            // 否则整块收起。上一版残留的 progress 状态机已删除。
-            if !on || target.is_none() {
+            // 遮罩是瞬开瞬关：没有过渡、没有延时。on 且"有洞口 + 有能抬起来的窗口"
+            // 才是全亮，否则整块收起。上一版残留的 progress 状态机已删除。
+            if !can_paint(on, target.is_some(), hole_ok) {
                 for o in overlays.iter_mut() {
                     o.hide();
                 }
@@ -1920,6 +1982,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 restore_demoted();
                 popups.clear();
                 popup_pid = 0;
+                // 洞口和它的归属窗口一起清：只清其中一个，下一帧又会被另一个拉回来，
+                // 出现"收了又画、画了又收"的空转。
+                last_hole = None;
+                followed_key = 0;
                 ctl.painted.store(false, Ordering::Relaxed);
                 MASK_ACTIVE.store(false, Ordering::Relaxed);
                 // 这里也要刷新诊断，否则界面会一直显示上一次的"已开启/洞口"
@@ -1990,12 +2056,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     o.set_clickthrough(!block_click);
                     o.paint_cover(alpha, flyout_now);
                 }
-                // 选中窗口 + 它的弹窗一起浮上来
-                let tgt = if follow {
-                    followed_key
-                } else {
-                    ctl.target.load(Ordering::Relaxed)
-                };
+                // 选中窗口 + 它的弹窗一起浮上来。
+                // 直接用上面算好的 hole：洞口画在哪、就该抬哪个窗口，
+                // 两套算法各算一次是上一版"洞有、窗口没抬"的来源。
+                let tgt = hole as isize;
                 let mut tpid = 0u32;
                 if tgt != 0 {
                     GetWindowThreadProcessId(tgt as Hwnd, &mut tpid);
@@ -2191,6 +2255,86 @@ mod tests {
 
     fn r(l: i32, t: i32, rr: i32, b: i32) -> Rect {
         Rect { left: l, top: t, right: rr, bottom: b }
+    }
+
+    /// 渲染闸门："遮罩存在 ⇒ 有且仅有一个窗口被突出"的代码级判据。
+    ///
+    /// 回归的是"没有选中任何窗口，遮罩却盖住所有窗口"：那时洞口矩形还在
+    /// （上一帧兜底），被抬升的窗口句柄却已经变成 0 —— 整屏盖住、无一突出。
+    #[test]
+    fn mask_needs_both_hole_and_window() {
+        // 开关没开：任何情况都不画
+        assert!(!can_paint(false, true, true));
+        assert!(!can_paint(false, false, false));
+        // 有洞、没有可抬升的窗口 → 就是"全屏覆盖、无突出窗口"，必须不画
+        assert!(!can_paint(true, true, false));
+        // 有窗口、没洞 → 不知道洞挖在哪，也不画
+        assert!(!can_paint(true, false, true));
+        // 两者齐了才画
+        assert!(can_paint(true, true, true));
+    }
+
+    /// 洞口窗口的有效性判定：空句柄一律不能当洞口。
+    #[test]
+    fn hole_bounds_rejects_null() {
+        let none = unsafe { hole_bounds(std::ptr::null_mut()) };
+        assert!(none.is_none());
+    }
+
+    /// 真窗口三态：隐藏 → 不是洞口；显示 → 是洞口；最小化 → 又不是洞口。
+    ///
+    /// 这是"没有突出窗口却全屏遮盖"的直接防线：最小化的窗口如果被当成洞口，
+    /// 洞会挖在 -32000 那种坐标上，屏幕上就是一个纯黑全覆盖。
+    /// 需要桌面环境，所以标 `#[ignore]`，手工跑：
+    ///   cargo test probe_hole_bounds -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_hole_bounds_real_window() {
+        const SW_SHOW_: i32 = 5;
+        const SW_MINIMIZE_: i32 = 6;
+        unsafe {
+            let cls = wide("KofProbeHoleCls");
+            let wc = WndClassW {
+                style: 0,
+                lpfn_wnd_proc: Some(DefWindowProcW),
+                cb_cls_extra: 0,
+                cb_wnd_extra: 0,
+                h_instance: GetModuleHandleW(std::ptr::null()),
+                h_icon: std::ptr::null_mut(),
+                h_cursor: std::ptr::null_mut(),
+                hbr_background: std::ptr::null_mut(),
+                lpsz_menu_name: std::ptr::null(),
+                lpsz_class_name: cls.as_ptr(),
+            };
+            let _ = RegisterClassW(&wc);
+            let h = CreateWindowExW(
+                0,
+                cls.as_ptr(),
+                wide("probe").as_ptr(),
+                WS_POPUP,
+                100,
+                100,
+                400,
+                300,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null_mut(),
+            );
+            if h.is_null() {
+                println!("CreateWindowExW 失败，跳过（无桌面环境？）");
+                return;
+            }
+            assert!(hole_bounds(h).is_none(), "隐藏的窗口不能当洞口");
+            ShowWindow(h, SW_SHOW_);
+            let shown = hole_bounds(h);
+            assert!(shown.is_some(), "显示的窗口应当能当洞口");
+            let r = shown.unwrap();
+            println!("shown = {:?} {}x{}", r, r.width(), r.height());
+            ShowWindow(h, SW_MINIMIZE_);
+            assert!(hole_bounds(h).is_none(), "最小化的窗口不能当洞口");
+            let _ = DestroyWindow(h);
+        }
     }
 
 
