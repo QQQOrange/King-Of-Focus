@@ -405,6 +405,25 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
     }
     log("强制退出开始");
 
+    cleanup_for_exit(shared);
+
+    // 退出。看门狗兜底：万一 Tauri 的退出流程卡住，2 秒后硬退。
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        log("退出超时，强制结束进程");
+        std::process::exit(0);
+    });
+    log("强制退出已触发");
+    app.exit(0);
+    true
+}
+
+/// 退出前的统一收尾：守护进程、媒体、遮罩、统计、互斥体、钩子。
+///
+/// 强制退出、托盘「退出」、设置页「退出」都走这一条。
+/// 以前普通退出只 `stop_guard()`，于是遮罩抬到最上层的窗口永远不会被还原 ——
+/// 用户退出程序后，自己的播放器还钉在 topmost 上。
+pub fn cleanup_for_exit(shared: &Shared) {
     for step in cleanup_steps() {
         match step {
             QuitStep::StopGuard => {
@@ -417,7 +436,8 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
                 crate::media::set_active(false);
             }
             QuitStep::StopMask => {
-                crate::mask::request_stop();
+                // 等遮罩线程收尾：还原被抬升/摘顶的窗口、注销热键、恢复定时器精度
+                crate::mask::stop_and_wait(600);
             }
             QuitStep::FlushStats => {
                 crate::stats::flush(shared);
@@ -434,16 +454,6 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
             },
         }
     }
-
-    // 退出。看门狗兜底：万一 Tauri 的退出流程卡住，2 秒后硬退。
-    std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(2000));
-        log("退出超时，强制结束进程");
-        std::process::exit(0);
-    });
-    log("强制退出已触发");
-    app.exit(0);
-    true
 }
 
 /// 仅在 KOF_DEBUG=1 时输出日志

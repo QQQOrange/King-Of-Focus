@@ -40,9 +40,23 @@ extern "system" {
     fn IsIconic(h: Hwnd) -> i32;
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FileTime {
+    low: u32,
+    high: u32,
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+    fn GetProcessTimes(
+        h: Handle,
+        creation: *mut FileTime,
+        exit: *mut FileTime,
+        kernel: *mut FileTime,
+        user: *mut FileTime,
+    ) -> i32;
     fn CloseHandle(h: Handle) -> i32;
     fn QueryFullProcessImageNameW(h: Handle, flags: u32, buf: *mut u16, size: *mut u32) -> i32;
     fn TerminateProcess(h: Handle, code: u32) -> i32;
@@ -196,6 +210,36 @@ pub fn is_alive(pid: u32) -> bool {
         let ok = GetExitCodeProcess(h, &mut code);
         CloseHandle(h);
         ok != 0 && code == STILL_ACTIVE
+    }
+}
+
+/// 进程创建时间（unix 秒）。拿不到返回 `None`。
+///
+/// PID 只是"这一刻的编号"：进程退出后系统会把它复用给新进程。
+/// 只拿 pid 当身份就会出现两类串台 ——
+/// 把新进程当成"已经处理过的"（跳过宽限直接强杀），或者退出时杀掉别人的进程。
+/// 凡是需要跨时间记住某个进程的地方，都要连这个时间一起比。
+pub fn creation_time(pid: u32) -> Option<i64> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut c = FileTime::default();
+        let mut e = FileTime::default();
+        let mut k = FileTime::default();
+        let mut u = FileTime::default();
+        let ok = GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        // FILETIME：从 1601-01-01 起的 100 纳秒数
+        let ticks = ((c.high as u64) << 32) | c.low as u64;
+        Some((ticks / 10_000_000) as i64 - 11_644_473_600)
     }
 }
 
@@ -357,4 +401,22 @@ pub fn find_window_by_pid(pid: u32) -> Option<isize> {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 自己的进程一定有创建时间，且落在合理区间（2001 年之后、不在未来）
+    #[test]
+    fn creation_time_of_self_is_reasonable() {
+        let t = creation_time(std::process::id()).expect("自己的进程拿得到创建时间");
+        assert!(t > 978_307_200, "创建时间太早：{t}");
+        assert!(t <= chrono::Local::now().timestamp() + 5, "创建时间在未来：{t}");
+    }
+
+    #[test]
+    fn creation_time_none_for_pid_zero() {
+        assert!(creation_time(0).is_none());
+    }
 }

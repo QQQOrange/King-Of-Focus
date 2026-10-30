@@ -403,11 +403,31 @@ fn heartbeat_age() -> i64 {
     }
 }
 
+/// 解析 `guard.pid`：新格式 `"pid 创建时间"`，老格式只有 `"pid"`（创建时间记 0）。
+fn parse_pid_file(s: &str) -> Option<(u32, i64)> {
+    let mut it = s.split_whitespace();
+    let pid: u32 = it.next()?.trim().parse().ok()?;
+    let created: i64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    Some((pid, created))
+}
+
 fn existing_guard() -> Option<u32> {
-    std::fs::read_to_string(pid_path())
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .filter(|p| proc::is_alive(*p))
+    let s = std::fs::read_to_string(pid_path()).ok()?;
+    let (pid, want) = parse_pid_file(&s)?;
+    if !proc::is_alive(pid) {
+        return None;
+    }
+    // 新格式连创建时间一起写。PID 被复用给别的进程时创建时间对不上，
+    // 这里必须判定为"守护已经不在"：否则 (a) 真正需要的守护不会被拉起、
+    // (b) 退出时 stop_guard 会把那个无辜进程杀掉。
+    // 老格式只有 pid（升级当次可能残留），按 pid 认。
+    if want != 0 {
+        let got = proc::creation_time(pid).unwrap_or(0);
+        if got != want {
+            return None;
+        }
+    }
+    Some(pid)
 }
 
 /// 确保守护进程在跑（只在锁定时调用）
@@ -431,7 +451,9 @@ pub fn guard_main() {
             return;
         }
     }
-    let _ = std::fs::write(pid_path(), std::process::id().to_string());
+    let own = std::process::id();
+    let created = proc::creation_time(own).unwrap_or(0);
+    let _ = std::fs::write(pid_path(), format!("{own} {created}"));
 
     let mut restarts = 0u32;
     loop {
@@ -533,6 +555,16 @@ pub fn quitting() -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// guard.pid 的两种格式都要能读：新格式带创建时间，老格式只有 pid
+    #[test]
+    fn parse_pid_file_accepts_both_formats() {
+        assert_eq!(super::parse_pid_file("1234 1700000000"), Some((1234, 1_700_000_000)));
+        assert_eq!(super::parse_pid_file("1234\n"), Some((1234, 0)));
+        assert_eq!(super::parse_pid_file(" 1234   99 "), Some((1234, 99)));
+        assert_eq!(super::parse_pid_file(""), None);
+        assert_eq!(super::parse_pid_file("abc"), None);
+    }
+
     use super::*;
     use crate::model::{ClockCfg, Config, HourPlan, Rule};
 

@@ -28,9 +28,16 @@ pub fn focus_main(app: &AppHandle, shared: &Shared) {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
+        // 主窗口被收进托盘（用户关闭窗口、程序在后台专注）时不要去叫醒它：
+        // 每拦一次就把窗口弹到脸上，等于"关不掉"。只更新内存里的页面，
+        // 等用户自己从托盘打开时看到的就是拦截现场。
+        if w.is_visible().unwrap_or(true) {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+            let _ = app.emit("goto-home", ());
+        }
+        return;
     }
     let _ = app.emit("goto-home", ());
 }
@@ -77,8 +84,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
         // 值 = (上次动手的时刻, 已尝试次数)。次数用来做退避：目标以管理员权限运行时
         // terminate 永远失败，原来每 700ms 重试一次且永不停止。
-        let mut pending: HashMap<u32, (Instant, u32)> = HashMap::new();
-        let mut logged: HashMap<u32, Instant> = HashMap::new();
+        let mut pending: HashMap<u64, (Instant, u32)> = HashMap::new();
+        let mut logged: HashMap<u64, Instant> = HashMap::new();
         let self_pid = std::process::id();
         let mut acc_ms: u64 = 0;
         let mut guard_running = false;
@@ -385,11 +392,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             // 用户开着"演练"却照样被结束进程，等于演练完全失效）
                             if cfg.settings.dry_run {
                                 let first = logged
-                                    .get(&a.pid)
+                                    .get(&app_key(a.pid))
                                     .map(|t| t.elapsed().as_secs() >= 20)
                                     .unwrap_or(true);
                                 if first {
-                                    logged.insert(a.pid, Instant::now());
+                                    logged.insert(app_key(a.pid), Instant::now());
                                     shared.log(
                                         "app",
                                         format!("{} — {}", a.name, a.title),
@@ -422,14 +429,14 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             continue;
                         }
                         let first = logged
-                            .get(&a.pid)
+                            .get(&app_key(a.pid))
                             .map(|t| t.elapsed().as_secs() >= 20)
                             .unwrap_or(true);
                         if !cfg.settings.dry_run {
                             proc::terminate(a.pid);
                         }
                         if first {
-                            logged.insert(a.pid, Instant::now());
+                            logged.insert(app_key(a.pid), Instant::now());
                             let label = format!("{} — {}", a.name, a.title);
                             crate::notify::blocked_app(&app, &label, "任务管理器");
                             shared.log(
@@ -466,7 +473,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             }
                         }
                         None => {
-                            pending.remove(&a.pid);
+                            pending.remove(&app_key(a.pid));
                         }
                     }
                 }
@@ -487,11 +494,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             // 演练模式下不关浏览器，只记一条（20 秒节流，避免刷屏）
                             let touched = if cfg.settings.dry_run {
                                 let first = logged
-                                    .get(&a.pid)
+                                    .get(&app_key(a.pid))
                                     .map(|t| t.elapsed().as_secs() >= 20)
                                     .unwrap_or(true);
                                 if first {
-                                    logged.insert(a.pid, Instant::now());
+                                    logged.insert(app_key(a.pid), Instant::now());
                                 }
                                 first
                             } else {
@@ -528,6 +535,20 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
     });
 }
 
+/// 进程身份键：pid + 创建时间。
+///
+/// 只拿 pid 当键会串台：被拦的进程退出后，PID 在 45 秒内被系统复用给新进程，
+/// 旧的时间戳会让新进程"看起来已经等够了宽限期"，直接跳过 WM_CLOSE 强杀；
+/// 日志去重表也会把新进程的首次提示吞掉。
+fn app_key(pid: u32) -> u64 {
+    key_of(pid, crate::proc::creation_time(pid).unwrap_or(0))
+}
+
+/// 纯函数版本：创建时间放高 32 位、pid 放低 32 位。
+fn key_of(pid: u32, created: i64) -> u64 {
+    ((created.max(0) as u64) << 32) | (pid as u64 & 0xFFFF_FFFF)
+}
+
 /// 返回本次是否真的触发了一次新的拦截（用来决定要不要跳首页）
 fn on_block(
     handle: &AppHandle,
@@ -535,8 +556,8 @@ fn on_block(
     cfg: &Config,
     app: &WinApp,
     rule: &Rule,
-    pending: &mut HashMap<u32, (Instant, u32)>,
-    logged: &mut HashMap<u32, Instant>,
+    pending: &mut HashMap<u64, (Instant, u32)>,
+    logged: &mut HashMap<u64, Instant>,
 ) -> bool {
     let label = if app.title.is_empty() {
         app.name.clone()
@@ -547,11 +568,11 @@ fn on_block(
     // 第一次看到这个目标：先弹通知，让用户知道发生了什么，下一次轮询再动手关。
     // poll_ms 默认 800ms，所以「看到通知 → 被关掉」大约 1 秒内完成。
     let fresh = logged
-        .get(&app.pid)
+        .get(&app_key(app.pid))
         .map(|t| t.elapsed().as_secs() >= 8)
         .unwrap_or(true);
     if fresh && !cfg.settings.dry_run {
-        logged.insert(app.pid, Instant::now());
+        logged.insert(app_key(app.pid), Instant::now());
         crate::mask::mlog(&format!(
             "拦截命中 应用={} 规则={} pid={}",
             label, rule.name, app.pid
@@ -567,9 +588,9 @@ fn on_block(
     }
 
     if cfg.settings.dry_run {
-        let first = !logged.contains_key(&app.pid);
+        let first = !logged.contains_key(&app_key(app.pid));
         if first {
-            logged.insert(app.pid, Instant::now());
+            logged.insert(app_key(app.pid), Instant::now());
             shared.log(
                 "app",
                 label,
@@ -581,13 +602,13 @@ fn on_block(
     }
 
     if cfg.settings.soft_close {
-        match pending.get(&app.pid) {
+        match pending.get(&app_key(app.pid)) {
             None => {
                 let ok = proc::soft_close(app.hwnd);
-                pending.insert(app.pid, (Instant::now(), 1));
-                let first = !logged.contains_key(&app.pid);
+                pending.insert(app_key(app.pid), (Instant::now(), 1));
+                let first = !logged.contains_key(&app_key(app.pid));
                 if first {
-                    logged.insert(app.pid, Instant::now());
+                    logged.insert(app_key(app.pid), Instant::now());
                     shared.log(
                         "app",
                         label,
@@ -609,12 +630,12 @@ fn on_block(
                 if t.elapsed().as_millis() as u64 >= wait {
                     let ok = proc::terminate(app.pid);
                     if ok {
-                        pending.remove(&app.pid);
+                        pending.remove(&app_key(app.pid));
                     } else {
-                        pending.insert(app.pid, (Instant::now(), n.saturating_add(1)));
-                        let first = !logged.contains_key(&app.pid);
+                        pending.insert(app_key(app.pid), (Instant::now(), n.saturating_add(1)));
+                        let first = !logged.contains_key(&app_key(app.pid));
                         if first {
-                            logged.insert(app.pid, Instant::now());
+                            logged.insert(app_key(app.pid), Instant::now());
                             shared.log(
                                 "app",
                                 label,
@@ -631,11 +652,11 @@ fn on_block(
     } else {
         let ok = proc::terminate(app.pid);
         let gate = logged
-            .get(&app.pid)
+            .get(&app_key(app.pid))
             .map(|t| t.elapsed().as_secs() >= 5)
             .unwrap_or(true);
         if gate || !ok {
-            logged.insert(app.pid, Instant::now());
+            logged.insert(app_key(app.pid), Instant::now());
             shared.log(
                 "app",
                 label,
@@ -649,5 +670,23 @@ fn on_block(
             return ok;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 同一个 PID 换成另一个进程（创建时间变了）必须得到不同的键，
+    /// 否则 pending/logged 会把新进程当成旧的：跳过宽限期直接强杀、吞掉首次提示。
+    #[test]
+    fn key_of_distinguishes_reused_pid() {
+        let a = key_of(1234, 1_700_000_000);
+        let b = key_of(1234, 1_700_000_001);
+        let c = key_of(5678, 1_700_000_000);
+        assert_ne!(a, b, "创建时间不同 = 不同进程");
+        assert_ne!(a, c, "pid 不同 = 不同进程");
+        assert_eq!(a, key_of(1234, 1_700_000_000), "同进程同键");
+        assert_eq!(key_of(0, -1), key_of(0, 0), "取不到创建时间时统一归零");
     }
 }

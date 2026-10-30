@@ -10269,6 +10269,9 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   render();
   applyLang();
   setInterval(pull, 1500);
+  // 从托盘恢复窗口时立刻刷一次：窗口隐藏期间 WebView 的定时器会被系统降频，
+  // 遮罩/自律状态可能早就变了，等下一拍轮询会在这一瞬间显示旧值。
+  window.addEventListener('focus', () => { pull(); });
   // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导
   promptBrowserSetup();
 

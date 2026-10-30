@@ -188,12 +188,20 @@ pub fn run(
             rep.closed.push(txt);
             continue;
         }
-        let ok = if cfg.settings.soft_close {
-            if crate::proc::soft_close(a.hwnd) {
-                true
-            } else {
-                crate::proc::terminate(a.pid)
+        let ok = if cfg.settings.soft_close && crate::proc::soft_close(a.hwnd) {
+            // 发出去 ≠ 关掉：播放器 / Electron 应用在播放时经常忽略 WM_CLOSE。
+            // 等 400ms，还活着就升级成强杀 —— 与常规拦截同一套两段式。
+            // 以前这里把"消息投递成功"直接当成"已关闭"，报告里写"已关闭"、
+            // 实际窗口还开着，用户以为收尾了。
+            let mut gone = false;
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                if !crate::proc::is_alive(a.pid) {
+                    gone = true;
+                    break;
+                }
             }
+            gone || crate::proc::terminate(a.pid)
         } else {
             crate::proc::terminate(a.pid)
         };

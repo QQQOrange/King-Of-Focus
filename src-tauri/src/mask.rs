@@ -15,7 +15,7 @@ use std::sync::atomic::{
 };
 use std::sync::Mutex;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Handle = *mut core::ffi::c_void;
 type Hwnd = *mut core::ffi::c_void;
@@ -136,6 +136,28 @@ static STOP: AtomicBool = AtomicBool::new(false);
 pub fn request_stop() {
     STOP.store(true, Ordering::Relaxed);
     wake();
+}
+
+/// 遮罩线程是否已经收尾退出（`stop_and_wait` 用它判断还来不来得及还原窗口）
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// 请求停止，并等它**真的收尾**（最多 `timeout_ms`）。
+///
+/// 退出流程必须等这一步：遮罩会把自己临时提到最上层的窗口还回去，
+/// 进程先退就没人还了 —— 用户的播放器/编辑器会永久挂在 topmost 上。
+pub fn stop_and_wait(timeout_ms: u64) -> bool {
+    if STOPPED.load(Ordering::Relaxed) {
+        return true;
+    }
+    request_stop();
+    let t0 = Instant::now();
+    while t0.elapsed().as_millis() < timeout_ms as u128 {
+        if STOPPED.load(Ordering::Relaxed) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    STOPPED.load(Ordering::Relaxed)
 }
 
 
@@ -1724,6 +1746,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 UnregisterHotKey(std::ptr::null_mut(), 0xA1);
                 timeEndPeriod(1);
                 mlog("遮罩线程收到停止指令，已收尾退出");
+                STOPPED.store(true, Ordering::Relaxed);
                 return;
             }
             // ---- 先等，再干活 ----

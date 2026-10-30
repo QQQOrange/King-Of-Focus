@@ -1169,7 +1169,8 @@ pub fn quit_app(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), St
     if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
         return Err(why);
     }
-    crate::guard::stop_guard();
+    // 走完整的收尾：只 stop_guard 的话，遮罩抬到最上层的窗口不会被还原
+    crate::forcequit::cleanup_for_exit(&shared);
     app.exit(0);
     Ok(())
 }

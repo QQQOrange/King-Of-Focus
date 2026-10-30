@@ -278,9 +278,12 @@ fn main() {
                             let on = m.on.load(Ordering::Relaxed);
                             m.on.store(!on, Ordering::Relaxed);
                         }
+                        // 只更新置顶，不把窗口叫出来：用户很可能正把主窗口收在托盘里
+                        // 用菜单切遮罩，弹窗会直接打断专注。
                         if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.set_always_on_top(sh_menu.config().settings.always_on_top);
-                            let _ = w.show();
+                            if w.is_visible().unwrap_or(true) {
+                                let _ = w.set_always_on_top(sh_menu.config().settings.always_on_top);
+                            }
                         }
                     }
                     "quit" => {
@@ -297,7 +300,7 @@ fn main() {
                                 sh_menu.say(why);
                             }
                             None => {
-                                crate::guard::stop_guard();
+                                crate::forcequit::cleanup_for_exit(&sh_menu);
                                 app.exit(0);
                             }
                         }
@@ -322,7 +325,7 @@ fn main() {
                 })
                 .build(app)?;
 
-            // 关窗口 = 收进托盘；遮罩如果开着，顺手关掉，避免黑屏下找不到人
+            // 关窗口 = 收进托盘，**不**动遮罩
             if let Some(win) = app.get_webview_window("main") {
                 let sh = shared.clone();
                 let w2 = win.clone();
@@ -347,10 +350,13 @@ fn main() {
                             let _ = crate::forcequit::force_quit(&app_h, &sh);
                             return;
                         }
-                        if sh.mask.on.load(Ordering::Relaxed) {
-                            sh.mask.on.store(false, Ordering::Relaxed);
-                            let _ = w2.set_always_on_top(sh.config().settings.always_on_top);
-                        }
+                        // 关闭主窗口 ≠ 关掉专注遮罩。
+                        //
+                        // 这里以前是"顺手把遮罩关掉，避免黑屏下找不到人"，结果是：
+                        // 用户点 X 把主窗口收进托盘（进程还在、自律还在继续），
+                        // 遮罩跟着消失 —— 专注场景直接失效，而且用户没有任何提示。
+                        // 遮罩开关只归"用户意向"和"跟随自律"两条，窗口生命周期不许碰它：
+                        // 想关遮罩有全局热键和托盘菜单，不需要靠关窗口来兜底。
                         if sh.config().settings.close_to_tray {
                             api.prevent_close();
                             let _ = w2.hide();
