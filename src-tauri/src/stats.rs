@@ -37,6 +37,23 @@ extern "system" {
     fn GetTickCount() -> u32;
 }
 
+/// 一段**连续使用**：当天的分钟数（0..1440，`t` 不含）。
+///
+/// 为什么还需要它：小时桶只回答"这一小时用了多久"，回答不了
+/// "几点到几点在用"——同一小时里先后用了两个软件，桶里看不出先后。
+/// 明细面板要的就是这个：`09:12–10:05`、`14:20–14:58` 这样一段一段。
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub f: u16,
+    pub t: u16,
+}
+
+impl Span {
+    fn mins(&self) -> u16 {
+        self.t.saturating_sub(self.f)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Acc {
@@ -60,6 +77,9 @@ pub struct Acc {
     /// 按浏览器累计，聚合时取最大的那个当主浏览器，界面上写成「标题（Chrome）」。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub browsers: BTreeMap<String, u64>,
+    /// 这一天里**连续使用**的时间段（按分钟）。未用过的 key 不会出现。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<Span>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -97,6 +117,20 @@ pub struct Slice {
     /// 打开这个站点用得最多的浏览器（空 = 不知道，界面就不加括号）
     #[serde(default)]
     pub browser: String,
+    /// 最长的若干段"连续使用"，带日期。前端点开某一项时列出来。
+    ///
+    /// 只留前 `SPAN_KEEP` 段：跨年聚合时会攒出上万段，全给前端既慢又没人看。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<Slot>,
+}
+
+/// 带日期的一段连续使用（`f`/`t` 是当天分钟数，`t` 不含）
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Slot {
+    pub date: String,
+    pub f: u16,
+    pub t: u16,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -167,6 +201,88 @@ pub fn domain_of(url: &str) -> String {
 /// 本产品统计的是"自律 / 工作"，人离开 1 分钟基本就是走了；而"看视频、读长文"
 /// 这类长时间无输入但确实在用的场景，由 `count_idle` 开关兜底。
 const IDLE_TIMEOUT_SECS: u32 = 60;
+
+/// 当前正在累积的"连续使用段"。
+///
+/// 采样每秒一次，切窗口/切应用时把上一段封口写进 `Acc.spans`。
+/// 只放内存：机器重启最多丢最后几分钟的段，比每条都写盘便宜得多。
+struct CurSpan {
+    date: String,
+    key: String,
+    on: bool,
+    span: Span,
+}
+
+static CUR_SPAN: Mutex<Option<CurSpan>> = Mutex::new(None);
+
+/// 把一段封口写进统计。调用前必须先释放 `CUR_SPAN` 锁（内部要锁 stats）。
+fn push_span(shared: &Shared, c: &CurSpan) {
+    if c.span.mins() == 0 {
+        return;
+    }
+    let Ok(mut cur) = shared.stats.lock() else {
+        return;
+    };
+    // 跨天的段不往回写：那时候 cur 已经是新的一天，写进去就串天了
+    if cur.date != c.date {
+        return;
+    }
+    let map = if c.on { &mut cur.on } else { &mut cur.off };
+    let Some(acc) = map.get_mut(&c.key) else {
+        return;
+    };
+    // 和上一段挨着就并起来，避免秒级抖动把一天切成几百个 1 分钟碎片
+    if let Some(last) = acc.spans.last_mut() {
+        if c.span.f <= last.t.saturating_add(1) {
+            if c.span.t > last.t {
+                last.t = c.span.t;
+            }
+            return;
+        }
+    }
+    acc.spans.push(c.span);
+}
+
+/// 封口当前段（切应用、开始空闲、跨天时调用）
+fn span_close(shared: &Shared) {
+    let old = CUR_SPAN.lock().ok().and_then(|mut g| g.take());
+    if let Some(c) = old {
+        push_span(shared, &c);
+    }
+}
+
+/// 把这一分钟并进当前段；换人/换档就封口再开新段。
+fn span_touch(shared: &Shared, date: &str, key: &str, on: bool, min: u16) {
+    let mut old: Option<CurSpan> = None;
+    {
+        let Ok(mut g) = CUR_SPAN.lock() else {
+            return;
+        };
+        let same = g
+            .as_ref()
+            .map(|c| c.date == date && c.key == key && c.on == on
+                && min <= c.span.t.saturating_add(1))
+            .unwrap_or(false);
+        if same {
+            if let Some(c) = g.as_mut() {
+                if min.saturating_add(1) > c.span.t {
+                    c.span.t = min + 1;
+                }
+            }
+            return;
+        }
+        old = g.take();
+        *g = Some(CurSpan {
+            date: date.to_string(),
+            key: key.to_string(),
+            on,
+            span: Span { f: min, t: min + 1 },
+        });
+    }
+    if let Some(c) = old {
+        push_span(shared, &c);
+    }
+}
 
 /// 上一次**真正记进统计**的那一秒落在哪。
 ///
@@ -292,6 +408,11 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
     {
         if let Ok(mut cur) = shared.stats.lock() {
             if cur.date != today {
+                // 跨天的最后一段直接丢掉：写回要换文件，误差最多一两分钟，
+                // 不值得为它把轮转逻辑搅复杂（注释见 push_span 的 date 检查）
+                if let Ok(mut g) = CUR_SPAN.lock() {
+                    g.take();
+                }
                 if !cur.date.is_empty() {
                     let _ = save_day(&cur);
                 }
@@ -315,6 +436,8 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
                 refund_idle(shared, *idle_run);
                 *idle_run = 0;
             }
+            // 人走了 = 这一段结束（不然下次回来会接成一段超长的假时段）
+            span_close(shared);
             return;
         }
         // 阈值内：照常记，但记着"这段是可能要被扣的"
@@ -407,6 +530,7 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
             hours: vec![0; 24],
             titles: BTreeMap::new(),
             browsers: BTreeMap::new(),
+            spans: Vec::new(),
         });
         e.secs += 1;
         if e.hours.len() < 24 {
@@ -425,14 +549,23 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
         }
         hit = Some(LastHit {
             date: cur.date.clone(),
-            key,
+            key: key.clone(),
             on: state_on,
             hour,
         });
     }
+    // key 要留给后面记时段用，所以上面 clone 了一份
+    let keep_key = key;
     if let (Some(h), Ok(mut g)) = (hit, LAST_HIT.lock()) {
         *g = Some(h);
     }
+    span_touch(
+        shared,
+        &today,
+        &keep_key,
+        state_on,
+        (now.hour() as u16) * 60 + now.minute() as u16,
+    );
     shared.stats_dirty.store(true, Ordering::Relaxed);
 }
 
@@ -462,6 +595,7 @@ pub fn flush(shared: &Shared) {
 fn merge(
     dst: &mut BTreeMap<String, Slice>,
     src: &BTreeMap<String, Acc>,
+    date: &str,
     titles: &mut BTreeMap<String, BTreeMap<String, u64>>,
     browsers: &mut BTreeMap<String, BTreeMap<String, u64>>,
 ) {
@@ -474,8 +608,16 @@ fn merge(
             title: String::new(),
             pages: 0,
             browser: String::new(),
+            spans: Vec::new(),
         });
         e.secs += v.secs;
+        for sp in v.spans.iter() {
+            e.spans.push(Slot {
+                date: date.to_string(),
+                f: sp.f,
+                t: sp.t,
+            });
+        }
         if !v.titles.is_empty() {
             let slot = titles.entry(k.clone()).or_default();
             for (t, n) in v.titles.iter() {
@@ -495,6 +637,18 @@ fn merge(
 ///   · 主标题 = 累计时长最长的那一个（比"最后一次看到的"稳定得多）
 ///   · pages  = 不同标题数，界面用它提示"共 N 个页面"
 ///   · label  = 主标题（没有标题才退回域名）
+/// 每个项目最多带多少段明细。跨年聚合会攒出上万段，全给前端既慢也没人看。
+const SPAN_KEEP: usize = 20;
+
+/// 只保留最长的若干段，然后按时间顺序排回去（展示时要按时间读）。
+fn trim_spans(spans: &mut Vec<Slot>) {
+    if spans.len() > SPAN_KEEP {
+        spans.sort_by(|a, b| (b.t - b.f).cmp(&(a.t - a.f)));
+        spans.truncate(SPAN_KEEP);
+    }
+    spans.sort_by(|a, b| a.date.cmp(&b.date).then(a.f.cmp(&b.f)));
+}
+
 fn finalize_labels(
     slices: &mut [Slice],
     titles: &BTreeMap<String, BTreeMap<String, u64>>,
@@ -544,8 +698,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
             } else {
                 load_day(&ds)
             };
-            merge(&mut on, &file.on, &mut titles, &mut browsers);
-            merge(&mut off, &file.off, &mut titles, &mut browsers);
+            merge(&mut on, &file.on, &file.date, &mut titles, &mut browsers);
+            merge(&mut off, &file.off, &file.date, &mut titles, &mut browsers);
             for acc in file.on.values() {
                 for (i, v) in acc.hours.iter().take(24).enumerate() {
                     on_hourly[i] += *v as u64;
@@ -567,6 +721,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let mut off: Vec<Slice> = off.into_values().collect();
     finalize_labels(&mut on, &titles, &browsers);
     finalize_labels(&mut off, &titles, &browsers);
+    on.iter_mut().for_each(|s| trim_spans(&mut s.spans));
+    off.iter_mut().for_each(|s| trim_spans(&mut s.spans));
     on.sort_by(|a, b| b.secs.cmp(&a.secs));
     off.sort_by(|a, b| b.secs.cmp(&a.secs));
     Agg {
@@ -861,6 +1017,7 @@ mod tests {
             title: String::new(),
             pages: 0,
             browser: String::new(),
+            spans: Vec::new(),
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("【教程】十分钟看懂 Rust".to_string(), 200u64);
@@ -887,6 +1044,7 @@ mod tests {
             title: String::new(),
             pages: 0,
             browser: String::new(),
+            spans: Vec::new(),
         }];
         finalize_labels(&mut slices, &std::collections::BTreeMap::new(), &std::collections::BTreeMap::new());
         assert_eq!(slices[0].label, "example.com");
@@ -904,6 +1062,7 @@ mod tests {
             title: String::new(),
             pages: 0,
             browser: String::new(),
+            spans: Vec::new(),
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("不该出现在软件行里".to_string(), 1u64);
@@ -927,7 +1086,7 @@ mod tests {
     #[test]
     fn titles_round_trip() {
         let mut f = DayFile::new("2026-10-29".into());
-        let mut acc = Acc { label: "d".into(), category: "site".into(), secs: 9, hours: vec![0; 24], titles: Default::default(), browsers: Default::default() };
+        let mut acc = Acc { label: "d".into(), category: "site".into(), secs: 9, hours: vec![0; 24], titles: Default::default(), browsers: Default::default(), spans: Default::default() };
         acc.titles.insert("T".into(), 9);
         f.on.insert("site|d.com".into(), acc);
         let raw = serde_json::to_string(&f).unwrap();
@@ -1020,6 +1179,46 @@ mod tests {
         let mut s2 = 7u64;
         assert_eq!(take_back(&mut empty, &mut s2, 3, 5), 0);
         assert_eq!(s2, 7);
+    }
+
+    /// 段长就是 end - start，边界不能出现负数
+    #[test]
+    fn span_length_never_negative() {
+        assert_eq!(Span { f: 545, t: 600 }.mins(), 55);
+        assert_eq!(Span { f: 600, t: 600 }.mins(), 0);
+        assert_eq!(Span { f: 600, t: 500 }.mins(), 0, "倒挂也不能算出负数");
+    }
+
+    /// 明细只留最长的 20 段，并且**展示前按时间排回去**
+    #[test]
+    fn trim_spans_keeps_longest_then_sorts_by_time() {
+        let mut v: Vec<Slot> = (0..30)
+            .map(|i| Slot {
+                date: format!("2026-10-{:02}", 1 + i % 3),
+                f: (i * 7) as u16,
+                t: (i * 7 + i as u16 + 1) as u16, // 越靠后越长
+            })
+            .collect();
+        trim_spans(&mut v);
+        assert_eq!(v.len(), SPAN_KEEP, "最多留 20 段");
+        // 留下的必须是最长的那些：最小的那几段应该已经没了
+        assert!(!v.iter().any(|x| x.t - x.f <= 4), "最短的段应被裁掉：{v:?}");
+        // 输出按 (日期, 起始) 升序
+        let mut sorted = v.clone();
+        sorted.sort_by(|a, b| a.date.cmp(&b.date).then(a.f.cmp(&b.f)));
+        assert_eq!(v, sorted, "展示顺序必须是时间序");
+    }
+
+    /// 不足 20 段时原样保留（只是排个序）
+    #[test]
+    fn trim_spans_keeps_everything_when_few() {
+        let mut v = vec![
+            Slot { date: "2026-10-02".into(), f: 600, t: 660 },
+            Slot { date: "2026-10-01".into(), f: 540, t: 600 },
+        ];
+        trim_spans(&mut v);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].date, "2026-10-01", "按日期升序");
     }
 
     /// 越界小时不能 panic（防御：hours 长度可能被老数据改坏）

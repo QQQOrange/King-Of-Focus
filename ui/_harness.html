@@ -4070,12 +4070,21 @@ window.__itest = async () => {
     // ② 真画一次：塞一份数据 → 画布加宽、两侧都有笔墨
     await Act.nav('stats');
     await wait(260);
-    const mk = (label, secs) => ({ key: 'app|' + label, label, category: 'app', secs, pages: 0, browser: '' });
+    const mk = (label, secs, extra) => ({
+      key: 'app|' + label, label, category: 'app', secs, pages: 0, browser: '',
+      hours: new Array(24).fill(0), spans: [], ...(extra || {}),
+    });
     S.stats = {
       start: '2026-10-27',
       end: '2026-10-27',
       on: [
-        mk('Visual Studio Code', 5400),
+        mk('Visual Studio Code', 5400, {
+          hours: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1500, 1800, 1200, 0, 0, 900, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+          spans: [
+            { date: '2026-10-30', f: 552, t: 605 },
+            { date: '2026-10-30', f: 860, t: 892 },
+          ],
+        }),
         mk('Microsoft Edge', 3600),
         mk('哔哩哔哩（Edge）这个名字特别长用来测截断', 1800),
         mk('微信', 900),
@@ -4113,6 +4122,51 @@ window.__itest = async () => {
       out.push(['左侧有引导线与标签', leftInk > 300, true]);
       out.push(['右侧有引导线与标签', rightInk > 300, true]);
       out.push(['中间仍是扇图本体', centerInk > 3000, true]);
+    }
+
+    // ③ 悬停：命中要准、强度要过渡、移开要恢复
+    const cv2 = document.querySelector('#pie');
+    const d2 = cv2 && cv2.__pie;
+    out.push(['布局挂在 canvas 上（命中测试才有依据）', !!(d2 && d2.arcs.length), true]);
+
+    if (d2) {
+      const rb = cv2.getBoundingClientRect();
+      const k = rb.width / d2.W;
+      const mid0 = (d2.arcs[0].a0 + d2.arcs[0].a1) / 2;
+      const rr = (d2.rOut + d2.rIn) / 2;
+      const px = rb.left + (d2.cx + Math.cos(mid0) * rr) * k;
+      const py = rb.top + (d2.cy + Math.sin(mid0) * rr) * k;
+
+      out.push(['命中：扇区本体', pieHit(cv2, { clientX: px, clientY: py }), 0]);
+      out.push(['命中：中心空洞不算任何项',
+        pieHit(cv2, { clientX: rb.left + d2.cx * k, clientY: rb.top + d2.cy * k }), -1]);
+      out.push(['命中：画布角落不算任何项',
+        pieHit(cv2, { clientX: rb.left + 4, clientY: rb.top + 4 }), -1]);
+
+      cv2.dispatchEvent(new PointerEvent('pointermove', { clientX: px, clientY: py, bubbles: true }));
+      out.push(['悬停立刻标记目标项', cv2.__pie.target, 1]);
+      await wait(280);
+      out.push(['高亮强度平滑到 1（不是瞬切）', cv2.__pie.t >= 0.98, true]);
+
+      cv2.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+      await wait(280);
+      out.push(['移开后强度回到 0', cv2.__pie.t === 0, true]);
+      out.push(['移开后没有高亮项', cv2.__pie.hover, -1]);
+
+      // ④ 点击展开：这一项到底在哪些时间段用过
+      cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
+      await wait(160);
+      const det = document.querySelector('#pieDetail');
+      out.push(['点击后出现明细面板', !!det && det.textContent.trim().length > 0, true]);
+      out.push(['明细里有「使用时段」', /使用时段/.test(det.textContent), true]);
+      out.push(['明细里列出具体时刻', /\d\d:\d\d – \d\d:\d\d/.test(det.textContent), true]);
+      out.push(['明细里 24 小时概览是 24 格', det.querySelectorAll('.pd-bars i').length, 24]);
+      out.push(['明细里写着总时长', /1 小时 30 分/.test(det.textContent), true]);
+      out.push(['展开不会改动扇图布局（不跳动）', cv2.__pie.labels.length, d2.labels.length]);
+
+      cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
+      await wait(160);
+      out.push(['再点同一项收起', document.querySelector('#pieDetail').textContent.trim(), '']);
     }
   }
 
