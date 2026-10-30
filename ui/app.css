@@ -1590,7 +1590,17 @@ html[data-motion="low"] .pie-detail { animation: none; }
   gap: 18px;
   align-items: start;
 }
-.stats-pie { min-width: 0; }
+/* 右边那列（当日日历）比扇图高得多：让扇图在整列里**垂直居中**，
+ * 上下留白对等，看起来才是"并排"而不是"扇图顶在上沿、左下角一大片空"。
+ * 用 justify-content 而不是 margin:auto —— 面板搬到分栏外面了，
+ * 开关面板不会改变这一列的高度，图就不会跟着上下跳。 */
+.stats-pie {
+  min-width: 0;
+  align-self: stretch;   /* 分栏是 align-items:start，这里必须自己撑满整列才有"居中"可言 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 .stats-day {
   min-width: 0;
   border-left: 1px solid var(--line);
@@ -1599,7 +1609,10 @@ html[data-motion="low"] .pie-detail { animation: none; }
   /* 轨道高度（与 JS 的 DC_H 同一个数）：写字的门槛按像素算，两边必须一致 */
   --dc-h: 480px;
 }
-@media (max-width: 900px) {
+/* 并排的门槛不能只看"塞不塞得下"：扇图是按 660px 画的，
+ * 左列被压到 560 以下标签就会小到读不清（10px × 比例）。
+ * 所以窗口窄于 1140 就直接叠成上下 —— 扇图占满宽度，当日日历跟在下面。 */
+@media (max-width: 1140px) {
   .stats-split { grid-template-columns: 1fr; }
   .stats-day {
     border-left: 0; padding-left: 0;
@@ -1635,10 +1648,17 @@ html[data-motion="low"] .stats-day.cal-flash { animation: none; }
 }
 .dc-today:hover { text-decoration: underline; }
 
+/* 聚焦条固定占一行：有/没有聚焦都不动时间轴位置（否则选中那一刻轨道会被顶下去） */
+.dc-slot {
+  display: flex; align-items: center;
+  min-height: 24px; margin-top: 7px;   /* 与 .dc-chip 的实际高度一致，插入/移除都不改行高 */
+}
+
 /* 聚焦提示条：明确写着"现在看的是哪一项"，也提供撤掉的出口 */
 .dc-chip {
-  display: flex; align-items: center; gap: 6px; margin-top: 7px;
-  padding: 3px 6px 3px 7px; border-radius: 7px;
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  height: 24px; box-sizing: border-box; line-height: 1;
+  padding: 0 6px 0 7px; border-radius: 7px;
   border: 1px solid var(--on-line); background: var(--on-bg);
   font-size: 10.5px; color: var(--text-2);
 }
@@ -1677,7 +1697,9 @@ html[data-motion="low"] .stats-day.cal-flash { animation: none; }
   display: flex; flex-direction: column; justify-content: center; padding: 0 4px;
   border: 0; border-radius: 3px; cursor: pointer; text-align: left;
   font: inherit; font-size: 9.5px; line-height: 1.25; color: #10151f;
-  transition: box-shadow .13s var(--mo-ease), filter .13s var(--mo-ease);
+  /* 高亮/压暗都靠过渡淡入，节点不重建 —— 点一下不会"啪"地闪 */
+  transition: box-shadow .13s var(--mo-ease), filter .13s var(--mo-ease),
+    opacity .16s var(--mo-ease);
 }
 .dc-ev .dc-n {
   font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

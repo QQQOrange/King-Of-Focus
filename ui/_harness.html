@@ -4519,6 +4519,11 @@ window.__itest = async () => {
       const pr = document.querySelector('#pie').getBoundingClientRect();
       const dr = dayEl.getBoundingClientRect();
       out.push(['当日日历站在饼图右边（并排而不是上下）', dr.left > pr.left + pr.width * 0.55, true]);
+      // 右列比扇图高得多：扇图必须在整列里垂直居中，否则左上角一大片空、图看着"顶在上沿"
+      const gapTop = Math.round(pr.top - dr.top);
+      const gapBot = Math.round(dr.bottom - pr.bottom);
+      out.push(['扇图在整列里垂直居中（上下留白对等）', Math.abs(gapTop - gapBot) <= 24, true]);
+      out.push(['扇图不再顶着上沿', gapTop > 40, true]);
     }
     out.push(['一条 24 小时时间轴', document.querySelectorAll('#dayCard .dc-track').length, 1]);
     out.push(['左侧 5 个整点刻度', document.querySelectorAll('#dayCard .dc-axis span').length, 5]);
@@ -4559,6 +4564,18 @@ window.__itest = async () => {
     out.push(['标题上写着这一天', document.querySelector('.dc-date').textContent.indexOf(day.slice(5)) >= 0, true]);
     out.push(['日历下面已经没有当日明细列表', document.querySelector('.cal-detail'), null]);
     out.push(['当日日历里数得出当天的段数', document.querySelectorAll('#dayCard .dc-ev').length, 3]);
+    // 点一天 = 整块「使用时长分布」切到那天（否则上面还是旧区间，数字和日期对不上）
+    out.push(['点一天会把统计区间切到那一天',
+      S.range === 'custom' ? S.customStart + '~' + S.customEnd : S.range, day + '~' + day]);
+    out.push(['区间行跟着切到「自定义 · 这一天」',
+      `${(document.querySelector('#cStart') || {}).value}~${(document.querySelector('#cEnd') || {}).value}`,
+      day + '~' + day]);
+    // 跳转：滚到「使用时长分布」卡片，并且当日日历脉冲一下
+    await wait(700);
+    out.push(['跳转：统计卡片被滚到视野里',
+      Math.abs(document.querySelector('#distCard').getBoundingClientRect().top) < 140, true]);
+    out.push(['跳转：当日日历闪一下指认位置',
+      document.querySelector('#dayCard').classList.contains('cal-flash'), true]);
 
     // 切到月视图：选中日期必须保留，当日日历也不许跟着漂
     modeBtn('month').click();
@@ -4653,18 +4670,30 @@ window.__itest = async () => {
       await wait(120);
     }
 
-    /* ---- 反向联动：点当日日历里的色块 → 扇图描边同一项 ---- */
+    /* ---- 反向联动：点当日日历里的色块 → 扇图描边同一项（且不许闪） ---- */
     {
       const pick = () => document.querySelector('#dayCard .dc-ev[data-key="app|Visual Studio Code"]');
       Act.focusClear();
       await wait(80);
+      // 记下节点与轨道位置：选中前后必须"同一批节点、同一个位置"
+      const nodeA = pick();
+      const gridNode = document.querySelector('#calBody');
+      const gridKid = gridNode.firstElementChild;
+      const lead0 = () => Math.round(
+        document.querySelector('#dayCard .dc-track').getBoundingClientRect().top
+        - document.querySelector('#dayCard').getBoundingClientRect().top);
+      const trackTop0 = lead0();
       pick().click();
-      await wait(200);
+      await wait(220);
       out.push(['点日历色块会聚焦该分类', S.calHit, 'app|Visual Studio Code']);
       out.push(['扇图同步描边同一项', document.querySelector('#pie').__pie.focus, 0]);
       out.push(['聚焦提示条出现', document.querySelector('#dayCard .dc-chip') != null, true]);
       out.push(['该项当天所有段一起高亮',
         document.querySelectorAll('#dayCard .dc-ev.hit').length, 2]);
+      // 闪烁的根因就是"整块 innerHTML 重写"：节点被换新 → 过渡从零开始 → 看起来闪一下
+      out.push(['选中后色块节点没有被重建（不闪）', pick() === nodeA, true]);
+      out.push(['选中后整张周/月网格也没有被重建', document.querySelector('#calBody').firstElementChild === gridKid, true]);
+      out.push(['聚焦条出现不会把时间轴顶下去', lead0() - trackTop0, 0]);
 
       // 悬停读数：色块太薄认不出时，标题行给出"几点到几点、多久"
       const sum0 = document.querySelector('#dcSum').textContent;
@@ -4676,12 +4705,25 @@ window.__itest = async () => {
       await wait(60);
       out.push(['移开后读数还原成当天合计', document.querySelector('#dcSum').textContent, sum0]);
 
-      pick().click();
+      // 切换到另一项：同样不能重建节点
+      const other = document.querySelector('#dayCard .dc-ev[data-key="site|b23.tv"]');
+      const keepA = pick();
+      other.click();
+      await wait(200);
+      out.push(['切到另一项后节点仍然没换', pick() === keepA, true]);
+      out.push(['切换后高亮跟着换到新的一项',
+        document.querySelectorAll('#dayCard .dc-ev.hit').length, 1]);
+      out.push(['切换后新项就是被点的那块',
+        document.querySelector('#dayCard .dc-ev.hit').dataset.key, 'site|b23.tv']);
+
+      other.click();
       await wait(150);
       out.push(['再点一次取消聚焦', S.calHit, '']);
       out.push(['取消后提示条消失', document.querySelector('#dayCard .dc-chip'), null]);
       out.push(['取消后色块不再被压暗',
         document.querySelectorAll('#dayCard .dc-ev.off').length, 0]);
+      out.push(['取消后节点还是同一批', pick() === keepA, true]);
+      out.push(['取消后时间轴位置不变', lead0() - trackTop0, 0]);
     }
 
     /* ---- 切状态筛选：三处一起换口径，日期不漂 ---- */
