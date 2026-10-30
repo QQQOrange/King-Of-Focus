@@ -122,6 +122,12 @@ pub struct Slice {
     /// 只留前 `SPAN_KEEP` 段：跨年聚合时会攒出上万段，全给前端既慢又没人看。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<Slot>,
+    /// 裁剪**之前**一共有多少段。
+    ///
+    /// 界面要如实写"共 N 段"：只数 `spans.len()` 会把被裁掉的也算成不存在，
+    /// 用户看到的就是"明细不全"却不知道是数据被裁了。
+    #[serde(default)]
+    pub span_count: u32,
 }
 
 /// 带日期的一段连续使用（`f`/`t` 是当天分钟数，`t` 不含）
@@ -609,6 +615,7 @@ fn merge(
             pages: 0,
             browser: String::new(),
             spans: Vec::new(),
+            span_count: 0,
         });
         e.secs += v.secs;
         for sp in v.spans.iter() {
@@ -638,7 +645,17 @@ fn merge(
 ///   · pages  = 不同标题数，界面用它提示"共 N 个页面"
 ///   · label  = 主标题（没有标题才退回域名）
 /// 每个项目最多带多少段明细。跨年聚合会攒出上万段，全给前端既慢也没人看。
-const SPAN_KEEP: usize = 20;
+/// 以前是 20 —— 一天里切来切去很容易就超过 20 段，于是"明细"其实是被砍过的：
+/// 用户看到的是"这一项就在这几个时段用过"，与事实不符。现在放到 400：
+/// 单日 / 单周 / 单月都不可能触顶，只有跨年聚合这种极端情况才会裁剪，
+/// 而那种情况界面会如实写"共 N 段（这里列 M 段）"。
+const SPAN_KEEP: usize = 400;
+
+/// 先记下真实段数，再裁剪。顺序不能反：反了 `span_count` 就永远等于上限。
+fn trim_slice(s: &mut Slice) {
+    s.span_count = s.spans.len() as u32;
+    trim_spans(&mut s.spans);
+}
 
 /// 只保留最长的若干段，然后按时间顺序排回去（展示时要按时间读）。
 fn trim_spans(spans: &mut Vec<Slot>) {
@@ -721,8 +738,8 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let mut off: Vec<Slice> = off.into_values().collect();
     finalize_labels(&mut on, &titles, &browsers);
     finalize_labels(&mut off, &titles, &browsers);
-    on.iter_mut().for_each(|s| trim_spans(&mut s.spans));
-    off.iter_mut().for_each(|s| trim_spans(&mut s.spans));
+    on.iter_mut().for_each(trim_slice);
+    off.iter_mut().for_each(trim_slice);
     on.sort_by(|a, b| b.secs.cmp(&a.secs));
     off.sort_by(|a, b| b.secs.cmp(&a.secs));
     Agg {
@@ -1018,6 +1035,7 @@ mod tests {
             pages: 0,
             browser: String::new(),
             spans: Vec::new(),
+            span_count: 0,
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("【教程】十分钟看懂 Rust".to_string(), 200u64);
@@ -1045,6 +1063,7 @@ mod tests {
             pages: 0,
             browser: String::new(),
             spans: Vec::new(),
+            span_count: 0,
         }];
         finalize_labels(&mut slices, &std::collections::BTreeMap::new(), &std::collections::BTreeMap::new());
         assert_eq!(slices[0].label, "example.com");
@@ -1063,6 +1082,7 @@ mod tests {
             pages: 0,
             browser: String::new(),
             spans: Vec::new(),
+            span_count: 0,
         }];
         let mut m = std::collections::BTreeMap::new();
         m.insert("不该出现在软件行里".to_string(), 1u64);
@@ -1189,27 +1209,36 @@ mod tests {
         assert_eq!(Span { f: 600, t: 500 }.mins(), 0, "倒挂也不能算出负数");
     }
 
-    /// 明细只留最长的 20 段，并且**展示前按时间排回去**
+    /// 超过上限时只留最长的那些，并且**展示前按时间排回去**
     #[test]
     fn trim_spans_keeps_longest_then_sorts_by_time() {
-        let mut v: Vec<Slot> = (0..30)
-            .map(|i| Slot {
-                date: format!("2026-10-{:02}", 1 + i % 3),
-                f: (i * 7) as u16,
-                t: (i * 7 + i as u16 + 1) as u16, // 越靠后越长
+        // 造 SPAN_KEEP + 6 段，长度随 i 递增：最短的 6 段应当被裁掉
+        let mut v: Vec<Slot> = (0..(SPAN_KEEP + 6))
+            .map(|i| {
+                let len = 1 + i as u16;
+                let f = ((i * 13) % 1200) as u16;
+                Slot {
+                    date: format!("2026-10-{:02}", 1 + i % 3),
+                    f,
+                    t: f + len,
+                }
             })
             .collect();
+        let lens: Vec<u16> = v.iter().map(|x| x.t - x.f).collect();
         trim_spans(&mut v);
-        assert_eq!(v.len(), SPAN_KEEP, "最多留 20 段");
-        // 留下的必须是最长的那些：最小的那几段应该已经没了
-        assert!(!v.iter().any(|x| x.t - x.f <= 4), "最短的段应被裁掉：{v:?}");
+        assert_eq!(v.len(), SPAN_KEEP, "最多留 SPAN_KEEP 段");
+        let kept_min = v.iter().map(|x| x.t - x.f).min().unwrap_or(0);
+        assert!(
+            kept_min >= lens.iter().filter(|l| **l <= kept_min).max().copied().unwrap_or(0),
+            "留下的必须是最长的那些"
+        );
         // 输出按 (日期, 起始) 升序
         let mut sorted = v.clone();
         sorted.sort_by(|a, b| a.date.cmp(&b.date).then(a.f.cmp(&b.f)));
         assert_eq!(v, sorted, "展示顺序必须是时间序");
     }
 
-    /// 不足 20 段时原样保留（只是排个序）
+    /// 不足上限时原样保留（只是排个序）——单日/单周根本不会触顶
     #[test]
     fn trim_spans_keeps_everything_when_few() {
         let mut v = vec![
@@ -1219,6 +1248,29 @@ mod tests {
         trim_spans(&mut v);
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].date, "2026-10-01", "按日期升序");
+    }
+
+    /// `span_count` 记的是**裁剪前**的段数：界面才能如实写"共 N 段（列 M 段）"
+    #[test]
+    fn trim_slice_reports_true_span_count() {
+        let mut sl = Slice {
+            spans: (0..(SPAN_KEEP + 3))
+                .map(|i| Slot { date: "2026-10-01".into(), f: i as u16, t: i as u16 + 1 })
+                .collect(),
+            ..Default::default()
+        };
+        trim_slice(&mut sl);
+        assert_eq!(sl.span_count as usize, SPAN_KEEP + 3, "真实段数不能被裁剪影响");
+        assert_eq!(sl.spans.len(), SPAN_KEEP);
+
+        // 没触顶时两者相等
+        let mut few = Slice {
+            spans: vec![Slot { date: "2026-10-01".into(), f: 10, t: 20 }],
+            ..Default::default()
+        };
+        trim_slice(&mut few);
+        assert_eq!(few.span_count, 1);
+        assert_eq!(few.spans.len(), 1);
     }
 
     /// 越界小时不能 panic（防御：hours 长度可能被老数据改坏）

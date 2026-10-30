@@ -2977,18 +2977,39 @@ function viewStats() {
     ['all', '两种状态汇总', ''],
   ];
 
+  // 明细清单：**全部条目**，每项都给出时长、占比，以及具体在哪些分钟用过。
+  // 以前只列前 30 项、而且没有"使用时间"这一列 —— 看得见用时，看不见它发生在什么时候。
+  const spanCell = (sl) => {
+    const list = sl.spans || [];
+    if (!list.length) return '<span class="muted">—</span>';
+    const byDate = new Map();
+    for (const sp of list) {
+      const d = String(sp.date || '').slice(5);
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d).push(hhmmOfMin(sp.f) + '–' + hhmmOfMin(sp.t));
+    }
+    let html = '';
+    for (const [d, arr] of byDate) {
+      html += `<span class="tsg"><b>${esc(d)}</b> ${esc(arr.join(' · '))}</span>`;
+    }
+    const total = sl.spanCount || list.length;
+    if (total > list.length) html += `<span class="muted">…${total - list.length}</span>`;
+    return html;
+  };
+
   const rows = cur.slices.length
-    ? cur.slices.slice(0, 30).map((s, i) => `<tr>
-        <td><span class="badge ${s.category === 'site' ? 'blue' : 'gold'}">${s.category === 'site' ? '网页' : '软件'}</span></td>
+    ? cur.slices.map((sl) => `<tr>
+        <td><span class="badge ${sl.category === 'site' ? 'blue' : 'gold'}">${sl.category === 'site' ? '网页' : '软件'}</span></td>
         <td>
-          <div>${esc(s.label)}${s.category === 'site' && s.browser
-    ? ` <span class="st-browser" title="打开这个网站用的浏览器">（${esc(s.browser)}）</span>` : ''}${s.category === 'site' && s.pages > 1
-    ? ` <span class="muted" style="font-size:11px">· 共 ${s.pages} 个页面</span>` : ''}</div>
-          ${s.category === 'site' && String(s.key || '').indexOf('site|') === 0
-    ? `<div class="muted" style="font-size:10.5px;line-height:1.4">${esc(String(s.key).slice(5))}</div>` : ''}
+          <div>${esc(sl.label)}${sl.category === 'site' && sl.browser
+    ? ` <span class="st-browser" title="打开这个网站用的浏览器">（${esc(sl.browser)}）</span>` : ''}${sl.category === 'site' && sl.pages > 1
+    ? ` <span class="muted" style="font-size:11px">· 共 ${sl.pages} 个页面</span>` : ''}</div>
+          ${sl.category === 'site' && String(sl.key || '').indexOf('site|') === 0
+    ? `<div class="muted" style="font-size:10.5px;line-height:1.4">${esc(String(sl.key).slice(5))}</div>` : ''}
         </td>
-        <td class="tnum">${fmtDur(s.secs)}</td>
-        <td class="tnum muted">${cur.total ? ((s.secs / cur.total) * 100).toFixed(1) : '0.0'}%</td>
+        <td class="tnum">${fmtDur(sl.secs)}</td>
+        <td class="tnum muted">${cur.total ? ((sl.secs / cur.total) * 100).toFixed(1) : '0.0'}%</td>
+        <td class="ts-cell">${spanCell(sl)}</td>
       </tr>`).join('')
     : '';
 
@@ -3041,10 +3062,24 @@ function viewStats() {
   </div>
 
   <div class="card">
-    <div class="card-title">明细（前 30 项）</div>
-    <table class="tbl">
-      <thead><tr><th style="width:70px">类型</th><th>名称</th><th style="width:120px">时长</th><th style="width:90px">占比</th></tr></thead>
+    <div class="card-title">
+      明细清单
+      <span class="badge">${cur.slices.length}</span>
+    </div>
+    <div class="card-sub">每一项的名称、时长、占比，以及具体在哪些时间段使用（精确到分钟）。</div>
+    <table class="tbl ts-tbl">
+      <thead><tr>
+        <th style="width:62px">类型</th>
+        <th>名称</th>
+        <th style="width:104px">时长</th>
+        <th style="width:66px">占比</th>
+        <th class="ts-th">使用时间</th>
+      </tr></thead>
       <tbody>${rows}</tbody>
+      <tfoot>
+        <tr><td></td><td>合计</td><td class="tnum">${fmtDur(cur.total)}</td>
+          <td class="tnum muted">${cur.total ? '100.0' : '0.0'}%</td><td></td></tr>
+      </tfoot>
     </table>
   </div>` : ''}
 
@@ -4069,19 +4104,72 @@ function hhmmOfMin(min) {
   return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
 }
 
+/** 量文字宽度用的离屏 ctx：布局阶段就要知道每个标签占多宽（命中测试也靠它） */
+let __pieM = null;
+function pieMeasure(text, font) {
+  if (!__pieM) __pieM = document.createElement('canvas').getContext('2d');
+  __pieM.font = font;
+  return __pieM.measureText(String(text == null ? '' : text)).width;
+}
+
+/** 按**实测字宽**截断（布局阶段就定下来，画的时候不再变，避免悬停时文字长度跳动） */
+function clipText2(str, font, maxW) {
+  const t0 = String(str == null ? '' : str);
+  if (!t0 || pieMeasure(t0, font) <= maxW) return t0;
+  let t = t0;
+  while (t.length > 1 && pieMeasure(t + '…', font) > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
+/** 时长文案：英文界面走短格式（canvas 不经过 DOM 翻译，混着写会露出中文） */
+function pieDur(secs) {
+  return I18N.getLang() === 'en' ? fmtDurShort(secs) : fmtDur(secs);
+}
+
+const PIE_W = 620;
+/** 一行两排字（名称 + 时长）的最小行距 */
+const PIE_ROW = 34;
+const PIE_NAME_FONT = '600 11.5px "Microsoft YaHei UI", sans-serif';
+const PIE_DUR_FONT = '10.5px "Microsoft YaHei UI", sans-serif';
+const PIE_NAME_FONT_ON = '700 13px "Microsoft YaHei UI", sans-serif';
+const PIE_DUR_FONT_ON = '600 11px "Microsoft YaHei UI", sans-serif';
+
 /** 扇图布局：扇区 + 标签位置一次性算好，绘制时不再重排。
  *
- *  分开算的原因：悬停只是改颜色/透明度，位置必须**一动不动**——
- *  否则鼠标一过就"跳一下"，比没有交互还难受。
+ *  为什么必须"算一次、画很多次"：
+ *   · 悬停只改颜色 / 字重 / 字号，**位置一个都不动**，否则鼠标一过就"跳一下"；
+ *   · 连线要正交且互不交叉，靠的是"标签行序 == 扇区角序"，
+ *     这个顺序在这里定死，之后每帧都照着画。
  */
-function pieLayout(slices, total, W, H) {
+function pieLayout(slices, total) {
   const items = slices.slice(0, 8).map((s, i) => ({ ...s, color: PALETTE[i % PALETTE.length] }));
-  const rest = slices.slice(8).reduce((a, b) => a + b.secs, 0);
-  if (rest > 0) items.push({ label: '其他', secs: rest, color: '#4a5468', category: 'rest' });
+  const restItems = slices.slice(8);
+  const restSecs = restItems.reduce((a, b) => a + b.secs, 0);
+  if (restSecs > 0) {
+    const hours = new Array(24).fill(0);
+    for (const s of restItems) {
+      const hs = s.hours || [];
+      for (let h = 0; h < 24; h++) hours[h] += hs[h] || 0;
+    }
+    items.push({
+      key: '__rest',
+      label: I18N.t('其他'),
+      secs: restSecs,
+      category: 'rest',
+      color: '#4a5468',
+      hours,
+      // 点开「其他」也要看得到时间段：把成员的段并过来并带上名字，
+      // 否则这一块就是"有总时长、没有明细"的死角。
+      spans: restItems.reduce((acc, s) => acc.concat((s.spans || []).map((sp) => ({
+        date: sp.date, f: sp.f, t: sp.t, label: s.label || s.key,
+      }))), []),
+      spanCount: restItems.reduce((a, s) => a + (s.spanCount || (s.spans || []).length), 0),
+      members: restItems.map((s) => s.label || s.key),
+    });
+  }
 
   const sum = items.reduce((a, b) => a + b.secs, 0);
-  const cx = W / 2;
-  const cy = H / 2;
+  const cx = PIE_W / 2;
   const rOut = 96;
   const rIn = 62;
 
@@ -4093,41 +4181,59 @@ function pieLayout(slices, total, W, H) {
     ang += a;
   }
 
-  // 标签：按角度分左右两列，再逐列推挤
-  const TOP = 20;
-  const BOT = H - 20;
-  const GAP = 32;
-  const labels = [];
+  // 先按角度分左右两列，才知道要几行、画布该多高
   const sides = { left: [], right: [] };
   for (const arc of arcs) {
     const cos = Math.cos(arc.mid);
     const sin = Math.sin(arc.mid);
-    sides[cos >= 0 ? 'right' : 'left'].push({ arc, cos, sin, wantY: cy + sin * (rOut + 10) });
+    sides[cos >= 0 ? 'right' : 'left'].push({ arc, cos, sin });
   }
-  for (const key of ['left', 'right']) {
-    const list = sides[key];
+  const rows = Math.max(sides.left.length, sides.right.length, 1);
+  // 条目多就把画布**加高**，而不是把行距压扁 —— 压到 20px 以下两行字就叠在一起了。
+  const H = Math.max(360, 46 + rows * PIE_ROW);
+  const cy = H / 2;
+  const TOP = 24;
+  const BOT = H - 24;
+
+  const labels = [];
+  for (const side of ['left', 'right']) {
+    const list = sides[side];
     if (!list.length) continue;
-    const ys = packLabels(list.map((x) => x.wantY), TOP, BOT, GAP);
+    const right = side === 'right';
+    const ys = packLabels(list.map((x) => cy + x.sin * (rOut + 12)), TOP, BOT, PIE_ROW);
     list.forEach((x, i) => { x.y = ys[i]; });
-    const right = key === 'right';
-    const anchorX = right ? cx + rOut + 42 : cx - rOut - 42;
-    const maxW = right ? W - anchorX - 14 : anchorX - 14;
-    for (const x of list) {
+
+    // 行序 = 角序（同一侧 sin 单调），按 y 排序拿到的就是"从上到下"；
+    // 让每条线的竖直段按这个顺序依次外扩，就保证了任意两条线都不相交。
+    const ordered = list.slice().sort((a, b) => a.y - b.y);
+    const anchorX = right ? cx + rOut + 46 : cx - rOut - 46;
+    const room = right ? (PIE_W - 10) - (anchorX + 8) : (anchorX - 8) - 10;
+    // 悬停时字号大一档（11.5 → 13，10.5 → 11），预留余量，
+    // 这样"放大"不会让文字突然被截断成另一句。
+    const maxW = Math.max(40, room * 0.86);
+
+    ordered.forEach((x, i) => {
+      const it = x.arc.it;
+      const nameTxt = clipText2(it.label || '', PIE_NAME_FONT, maxW);
+      const pct = sum ? ((it.secs / sum) * 100).toFixed(1) : '0.0';
+      const durTxt = clipText2(pieDur(it.secs) + ' · ' + pct + '%', PIE_DUR_FONT, maxW);
       labels.push({
         idx: arcs.indexOf(x.arc),
-        it: x.arc.it,
-        cos: x.cos,
-        sin: x.sin,
-        y: x.y,
+        it,
         right,
+        y: x.y,
         anchorX,
-        maxW,
-        elbowX: right ? cx + rOut + 22 : cx - rOut - 22,
+        colX: right ? cx + rOut + 12 + i * 2.4 : cx - rOut - 12 - i * 2.4,
+        p0x: cx + x.cos * (rOut + 3),
+        p0y: cy + x.sin * (rOut + 3),
+        nameTxt,
+        durTxt,
+        textW: Math.max(pieMeasure(nameTxt, PIE_NAME_FONT), pieMeasure(durTxt, PIE_DUR_FONT)),
       });
-    }
+    });
   }
 
-  return { items, arcs, labels, sum, cx, cy, rOut, rIn, W, H, total };
+  return { items, arcs, labels, sum, cx, cy, rOut, rIn, W: PIE_W, H, total };
 }
 
 /** 画一帧。`hover` = 高亮项索引（-1 无），`t` = 高亮强度 0..1。 */
@@ -4139,14 +4245,13 @@ function drawPieFrame(cv) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, d.W, d.H);
 
-  const { cx, cy, rOut, rIn, W, H, sum, arcs, labels } = d;
+  const { cx, cy, rOut, rIn, sum, arcs, labels } = d;
   const hover = d.hover;
   const t = d.t || 0;
-  const dim = 1 - 0.55 * t;          // 非高亮项的透明度
+  const dim = 1 - 0.6 * t;           // 非高亮项压暗的程度
   const cText = cssVar('--text');
   const cDim = cssVar('--text-3');
   const cStroke = cssVar('--panel-a');
-  const bg = cssVar('--panel-a');
 
   if (sum <= 0) {
     ctx.beginPath();
@@ -4158,7 +4263,7 @@ function drawPieFrame(cv) {
     for (let i = 0; i < arcs.length; i++) {
       const a = arcs[i];
       const on = hover === i;
-      const grow = on ? 4 * t : 0;
+      const grow = on ? 5 * t : 0;
       ctx.globalAlpha = hover < 0 || on ? 1 : dim;
       ctx.beginPath();
       ctx.arc(cx, cy, rOut + grow, a.a0, a.a1);
@@ -4169,6 +4274,15 @@ function drawPieFrame(cv) {
       ctx.strokeStyle = cStroke;
       ctx.lineWidth = 2;
       ctx.stroke();
+      if (on && t > 0.02) {
+        // 外沿再压一道淡亮边：高亮的扇区轮廓更清楚
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOut + grow - 1, a.a0, a.a1);
+        ctx.strokeStyle = cText;
+        ctx.globalAlpha = 0.32 * t;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -4185,24 +4299,42 @@ function drawPieFrame(cv) {
 
   if (sum <= 0) return;
 
-  // 引导线：水平出 → 竖直走 → 水平入（正交折线）。
-  // 以前是"从扇区斜着直接拉到标签"，角度一散就是一片交叉的斜线，看着很乱。
-  // 正交之后每条线只占自己那一行的走廊，交叉点几乎为零。
-  const isEn = I18N.getLang() === 'en';
+  /* ── 引导线：一段斜线（扇区 → 本行拐点）+ 一段水平线（拐点 → 标签） ──
+   *
+   *  为什么这样能保证"零交叉"：
+   *   ① 同侧标签的**行序**与**扇区角序**严格一致（pieLayout 里定的），
+   *      所以从圆周发出的斜线是一把"扇"，后一行的落点一定在前一行下面，互不穿越；
+   *   ② 每条线的竖直落点各自占一列（colX 每行外扩 2.4px），
+   *      第 i 行的水平段整段都在第 j<i 行竖直落点的外侧，够不着；
+   *   ③ 水平段各在自己的行高上（行距 34px），彼此不重叠。
+   *
+   *  以前是「扇区 → 水平 → 竖直 → 水平」的三段折线：拐点挤在圆周外侧，
+   *  数据一倾斜（比如一项占 95%）就有大量短横线互相穿过，看着就是一团乱麻。
+   */
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   for (const lb of labels) {
     const on = hover === lb.idx;
-    const alpha = hover < 0 || on ? 0.9 : 0.25;
-    const x0 = cx + lb.cos * (rOut + 3);
-    const y0 = cy + lb.sin * (rOut + 3);
+    const alpha = hover < 0 ? 0.82 : (on ? 1 : 0.16);
+    const dir = lb.right ? 1 : -1;
+    const R = 9;
+    const dy = lb.y - lb.p0y;
 
     ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(lb.elbowX, lb.y);
-    ctx.lineTo(lb.anchorX, lb.y);
-    // 先描一层底色再把本色压上去：多条线在肘点附近重叠时也能分辨（同地图路线）
-    ctx.strokeStyle = bg;
-    ctx.globalAlpha = alpha * 0.9;
-    ctx.lineWidth = 3.4;
+    ctx.moveTo(lb.p0x, lb.p0y);
+    if (Math.abs(dy) < 2) {
+      // 几乎同高：一条直线到底
+      ctx.lineTo(lb.anchorX, lb.y);
+    } else {
+      const sy = dy > 0 ? 1 : -1;
+      ctx.lineTo(lb.colX, lb.y - sy * R);
+      ctx.quadraticCurveTo(lb.colX, lb.y, lb.colX + dir * R, lb.y);
+      ctx.lineTo(lb.anchorX, lb.y);
+    }
+    // 先描一层底色再压本色：并行的段也能分辨（同地图路线）
+    ctx.strokeStyle = cStroke;
+    ctx.globalAlpha = alpha * (on ? 0.95 : 0.72);
+    ctx.lineWidth = on ? 4.8 : 3.6;
     ctx.stroke();
     ctx.strokeStyle = lb.it.color;
     ctx.globalAlpha = alpha;
@@ -4211,26 +4343,31 @@ function drawPieFrame(cv) {
     ctx.globalAlpha = 1;
 
     ctx.beginPath();
-    ctx.arc(lb.anchorX, lb.y, on ? 3 : 2, 0, Math.PI * 2);
+    ctx.arc(lb.anchorX, lb.y, on ? 3.2 : 2, 0, Math.PI * 2);
     ctx.fillStyle = lb.it.color;
-    ctx.globalAlpha = hover < 0 || on ? 1 : 0.35;
+    ctx.globalAlpha = hover < 0 || on ? 1 : 0.3;
     ctx.fill();
     ctx.globalAlpha = 1;
+  }
 
+  /* ── 标签：全部压在线之上，线不会穿过文字 ────────────────────────── */
+  for (const lb of labels) {
+    const on = hover === lb.idx;
     const tx = lb.right ? lb.anchorX + 8 : lb.anchorX - 8;
     ctx.textAlign = lb.right ? 'left' : 'right';
     ctx.textBaseline = 'middle';
-    // 高亮只改字重/颜色，**不改字号**——字号一变行宽就变，整列会跟着跳
-    ctx.font = `${on ? '700' : '600'} 11.5px "Microsoft YaHei UI", sans-serif`;
-    ctx.fillStyle = on ? lb.it.color : cText;
-    ctx.globalAlpha = hover < 0 || on ? 1 : 0.45;
-    ctx.fillText(clipText(ctx, lb.it.label || '', lb.maxW), tx, lb.y - 7);
+    ctx.globalAlpha = hover < 0 || on ? 1 : 0.38;
 
-    ctx.font = '10.5px "Microsoft YaHei UI", sans-serif';
+    // 悬停 = 放大一号 + 加粗 + 染成扇区色。
+    // 字号变化**不会**影响其它标签：位置在 pieLayout 里已经算死，
+    // canvas 也不会像 DOM 那样回流，所以"放大"和"不跳动"可以同时成立。
+    ctx.font = on ? PIE_NAME_FONT_ON : PIE_NAME_FONT;
+    ctx.fillStyle = on ? lb.it.color : cText;
+    ctx.fillText(lb.nameTxt, tx, lb.y - (on ? 8.5 : 7));
+
+    ctx.font = on ? PIE_DUR_FONT_ON : PIE_DUR_FONT;
     ctx.fillStyle = on ? cText : cDim;
-    const dur = isEn ? fmtDurShort(lb.it.secs) : fmtDur(lb.it.secs);
-    const pct = sum ? ((lb.it.secs / sum) * 100).toFixed(1) : '0.0';
-    ctx.fillText(clipText(ctx, dur + ' · ' + pct + '%', lb.maxW), tx, lb.y + 7);
+    ctx.fillText(lb.durTxt, tx, lb.y + (on ? 8.5 : 7));
     ctx.globalAlpha = 1;
   }
 }
@@ -4248,10 +4385,12 @@ function pieAnimate(cv) {
   cv.__raf = requestAnimationFrame(step);
 }
 
-/** 命中测试：扇区本体、标签文字、引导线都算。
+/** 命中测试：扇区本体、两行标签文字、引导线的**水平段和竖直段**都算。
  *
- *  线也能命中是因为它只有 1.4px 宽，只按"点没点中像素"判会很难点——
- *  这里给线留了 ±6px 的容差。
+ *  以前只按"行"判（|y - 行高| <= 13 且越过圆周就算命中），于是：
+ *   · 指到一条线旁边的空白也会亮；
+ *   · 反过来，指在竖直段上（离行很远）却命中不到 —— 用户说"线点不着"就是这个。
+ *  现在按每段线的真实几何走廊判，标签则按**实测文字宽度**判。
  */
 function pieHit(cv, ev) {
   const d = cv.__pie;
@@ -4261,20 +4400,30 @@ function pieHit(cv, ev) {
   const x = (ev.clientX - r.left) * (d.W / r.width);
   const y = (ev.clientY - r.top) * (d.H / r.height);
 
+  for (const lb of d.labels) {
+    const tx = lb.right ? lb.anchorX + 8 : lb.anchorX - 8;
+    const x1 = lb.right ? tx + lb.textW : tx - lb.textW;
+    const xa = Math.min(tx, x1) - 4;
+    const xb = Math.max(tx, x1) + 4;
+    // ① 两行文字（±16 覆盖 13px 名称 + 11px 时长）
+    if (y >= lb.y - 17 && y <= lb.y + 16 && x >= xa && x <= xb) return lb.idx;
+    // ② 水平段（colX → anchorX）
+    if (Math.abs(y - lb.y) <= 5
+      && x >= Math.min(lb.colX, lb.anchorX) - 4 && x <= Math.max(lb.colX, lb.anchorX) + 4) {
+      return lb.idx;
+    }
+    // ③ 竖直段（p0y → y），线只有 1.4px，给 ±5 的容差才点得着
+    if (Math.abs(x - lb.colX) <= 5
+      && y >= Math.min(lb.p0y, lb.y) - 4 && y <= Math.max(lb.p0y, lb.y) + 4) {
+      return lb.idx;
+    }
+  }
+
   const dx = x - d.cx;
   const dy = y - d.cy;
   const dist = Math.hypot(dx, dy);
-
-  // ① 标签/线：按行判（同一行的线、圆点、两行字都算）
-  for (const lb of d.labels) {
-    if (Math.abs(y - lb.y) > 13) continue;
-    if (lb.right ? x > d.cx + d.rOut - 4 : x < d.cx - d.rOut + 4) return lb.idx;
-  }
-
-  // ② 扇区本体
   if (dist >= d.rIn - 4 && dist <= d.rOut + 10) {
     let a = Math.atan2(dy, dx);
-    // 扇形从 -PI/2 开始顺时针画，先把它归一到同一圈再查表
     while (a < -Math.PI / 2) a += Math.PI * 2;
     for (let i = 0; i < d.arcs.length; i++) {
       const g = d.arcs[i];
@@ -4286,30 +4435,38 @@ function pieHit(cv, ev) {
 
 /** 展开面板：这一项在**哪些时间段**用过。
  *
- *  数据来自分钟级的 `spans`（后端采样时按连续使用分段），
- *  小时桶只用来画上面那条 24 格概览。
+ *  数据来自分钟级的 `spans`（后端采样时按连续使用分段）。
+ *  这里把**所有**段都列出来（列表自身可滚动）——以前只列 12 段，
+ *  用户看到的是"明细不全"。真的被后端裁剪时，标题会如实写"共 N 段（列出 M 段）"。
  */
 function pieDetailHtml(slice, sum) {
   if (!slice) return '';
   const pct = sum ? ((slice.secs / sum) * 100).toFixed(1) : '0.0';
   const spans = slice.spans || [];
   const hours = slice.hours || [];
+  const totalSpans = slice.spanCount || spans.length;
 
   const bars = Array.from({ length: 24 }, (_, h) => {
     const v = hours[h] || 0;
     const height = Math.max(2, Math.min(100, (v / 3600) * 100));
-    return `<i class="${v ? '' : 'off'}" style="height:${height}%" title="${pad(h)}:00 用了 ${Math.round(v / 60)} 分钟"></i>`;
+    return `<i class="${v ? '' : 'off'}" style="height:${height}%" title="${pad(h)}:00 ${I18N.getLang() === 'en' ? Math.round(v / 60) + ' min' : '用了 ' + Math.round(v / 60) + ' 分钟'}"></i>`;
   }).join('');
 
   const rows = spans.length
-    ? spans.slice(0, 12).map((sp) => {
+    ? spans.map((sp) => {
       const d = String(sp.date || '').slice(5);
       const mins = Math.max(0, (sp.t || 0) - (sp.f || 0));
-      return `<li><span class="pd-d">${esc(d)}</span>
+      const who = sp.label ? `<span class="pd-l">${esc(sp.label)}</span>` : '';
+      return `<li>${who}<span class="pd-d">${esc(d)}</span>
         <span class="pd-t">${hhmmOfMin(sp.f)} – ${hhmmOfMin(sp.t)}</span>
         <span class="pd-m">${fmtDur(mins * 60)}</span></li>`;
     }).join('')
     : '<li class="pd-none">这一版开始才有分段记录，更早的数据只有小时分布。</li>';
+
+  const cut = totalSpans > spans.length ? `（列出 ${spans.length} 段）` : '';
+  const mem = slice.members && slice.members.length
+    ? `<div class="pd-mem">这一块含 ${slice.members.length} 项：${esc(slice.members.join('、'))}</div>`
+    : '';
 
   return `<div class="pie-detail">
     <div class="pd-hd">
@@ -4323,7 +4480,8 @@ function pieDetailHtml(slice, sum) {
       <div class="pd-bars">${bars}</div>
       <div class="pd-ticks">${[0, 6, 12, 18].map((h) => `<span>${pad(h)}:00</span>`).join('')}</div>
     </div>
-    <div class="pd-sub">使用时段${spans.length > 12 ? `（共 ${spans.length} 段，这里列最长的 12 段）` : ''}</div>
+    ${mem}
+    <div class="pd-sub">使用时段 · 共 ${totalSpans} 段${cut}</div>
     <ul class="pd-list">${rows}</ul>
   </div>`;
 }
@@ -4331,24 +4489,29 @@ function pieDetailHtml(slice, sum) {
 /** 时长扇图：甜甜圈 + 正交引导线 + 悬停强调 + 点击展开明细 */
 function drawPie(canvas, slices, total, opts) {
   if (!canvas) return;
-  const W = 620;
-  const H = 360;
+  const lay = pieLayout(slices, total);
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  canvas.style.width = W + 'px';
-  canvas.style.height = H + 'px';
+  canvas.width = Math.round(lay.W * dpr);
+  canvas.height = Math.round(lay.H * dpr);
+  canvas.style.width = lay.W + 'px';
+  canvas.style.height = 'auto';            // 高度按比例走，窄屏不会被压扁
+  canvas.style.touchAction = 'manipulation';
 
-  const lay = pieLayout(slices, total, W, H);
   const prev = canvas.__pie;
+  // 数据没变（只是重画）时保留高亮；换了一批数据就把高亮清掉，免得指错项
+  const same = prev && prev.items.length === lay.items.length
+    && prev.items.every((it, i) => it.key === lay.items[i].key);
+  const keep = same ? prev.hover : -1;
+
   canvas.__pie = {
     ...lay,
     center: opts && opts.center ? opts.center
-      : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分'),
-    sub: opts && opts.sub ? opts.sub : '合计',
-    hover: prev ? prev.hover : -1,
-    t: prev ? prev.t : 0,
-    target: prev ? prev.target : 0,
+      : (I18N.getLang() === 'en' ? fmtDurShort(total)
+        : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分')),
+    sub: I18N.t((opts && opts.sub) || '合计'),
+    hover: keep,
+    t: keep >= 0 ? 1 : 0,
+    target: keep >= 0 ? 1 : 0,
     raf: 0,
   };
 
@@ -4356,24 +4519,26 @@ function drawPie(canvas, slices, total, opts) {
   if (canvas.__pieBound) return;
   canvas.__pieBound = true;
 
-  // 指针事件：桌面和触屏统一走 Pointer Events，移动端点一下也能展开
-  const sync = (ev) => {
-    const idx = pieHit(canvas, ev);
+  const setHover = (idx) => {
     const d = canvas.__pie;
-    if (d.hover === idx) return;
+    if (!d || d.hover === idx) return;
     d.hover = idx;
     d.target = idx >= 0 ? 1 : 0;
     canvas.style.cursor = idx >= 0 ? 'pointer' : 'default';
     pieAnimate(canvas);
   };
-  canvas.addEventListener('pointermove', sync);
-  canvas.addEventListener('pointerleave', () => {
-    const d = canvas.__pie;
-    if (!d || d.hover < 0) return;
-    d.hover = -1;
-    d.target = 0;
-    canvas.style.cursor = 'default';
-    pieAnimate(canvas);
+
+  // 指针事件：桌面和触屏统一走 Pointer Events
+  canvas.addEventListener('pointermove', (ev) => {
+    // 手指没有"悬停"：触屏上移动是滚页面，点亮只会让画面乱跳
+    if (ev.pointerType === 'touch') return;
+    setHover(pieHit(canvas, ev));
+  });
+  canvas.addEventListener('pointerleave', () => setHover(-1));
+  canvas.addEventListener('pointercancel', () => setHover(-1));
+  canvas.addEventListener('pointerup', (ev) => {
+    // 触屏点完要收掉高亮，否则会"粘"在某一项上
+    if (ev.pointerType === 'touch') setHover(-1);
   });
   canvas.addEventListener('pointerdown', (ev) => {
     const idx = pieHit(canvas, ev);
@@ -4381,14 +4546,15 @@ function drawPie(canvas, slices, total, opts) {
     const it = canvas.__pie.items[idx];
     const host = document.querySelector('#pieDetail');
     if (!host) return;
-    // 再点同一项 = 收起
-    if (host.dataset.key === it.key) {
+    const key = it.key || ('i' + idx);
+    // 再点同一项 = 收起（"其他"以前没有 key，永远收不起来，这里给个兜底 key）
+    if (host.dataset.key === key) {
       host.dataset.key = '';
       host.innerHTML = '';
       return;
     }
-    host.dataset.key = it.key;
-    host.innerHTML = pieDetailHtml({ ...it, color: it.color }, canvas.__pie.sum);
+    host.dataset.key = key;
+    host.innerHTML = pieDetailHtml(it, canvas.__pie.sum);
   });
 }
 

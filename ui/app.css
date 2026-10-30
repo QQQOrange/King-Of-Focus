@@ -1572,6 +1572,32 @@ html[data-motion="low"] .pie-detail { animation: none; }
 .pd-list .pd-m { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .pd-list .pd-none { color: var(--text-3); font-size: 11.5px; border-top: 0; }
 
+/* 「其他」展开时每行前面带成员名：光看时刻分不清是哪一项 */
+.pd-list .pd-l {
+  flex: 0 0 auto; max-width: 132px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text-2); font-size: 11.5px;
+}
+/* 段数多了要能滚：以前截断到 12 段，现在全部列出，靠滚动而不是靠删 */
+.pd-list { max-height: 260px; }
+.pd-mem { font-size: 11.5px; color: var(--text-3); margin-top: 10px; line-height: 1.7; }
+
+/* ── 明细清单：使用时间那一列 ────────────────────────────────
+ * 一项可能有很多段，用"日期 + 时刻"的小胶囊成组展示：
+ * 一行一个日期，日期后面的时刻用 · 连起来，扫一眼就知道哪天用了多久。 */
+.ts-tbl td { vertical-align: top; padding-top: 9px; padding-bottom: 9px; }
+.ts-tbl .ts-th { width: 42%; }
+.ts-cell { font-variant-numeric: tabular-nums; line-height: 1.9; }
+.tsg {
+  display: inline-block; margin: 0 6px 3px 0; padding: 1px 7px;
+  border-radius: 6px; background: var(--inset-bg); border: 1px solid var(--line);
+  font-size: 11px; color: var(--text-2); white-space: nowrap;
+}
+.tsg b { color: var(--text-3); font-weight: 600; margin-right: 6px; font-size: 10.5px; }
+.ts-tbl tfoot td {
+  border-top: 1px solid var(--line-2); font-weight: 600; color: var(--text-2);
+  padding-top: 9px;
+}
+
 canvas { display: block; }
 .legend { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; padding-right: 4px; }
 .leg {

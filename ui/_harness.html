@@ -4167,6 +4167,221 @@ window.__itest = async () => {
       cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
       await wait(160);
       out.push(['再点同一项收起', document.querySelector('#pieDetail').textContent.trim(), '']);
+
+      /* ---- ⑤ 引导线：正交折线的两条不变式 ----
+       * 同侧标签"行序 == 扇区角序"，且竖直段按行序依次外扩 —— 这两条同时成立，
+       * 任意一条水平段都从自己那一列开始往标签方向走，永远不会穿过别人的竖直段。
+       * 以前是"从扇区边缘斜拉到标签行"，角度一散就是一片交叉斜线。 */
+      {
+        const bad = [];
+        for (const right of [true, false]) {
+          const ls = d2.labels.filter((l) => l.right === right).sort((a, b) => a.y - b.y);
+          for (let i = 0; i < ls.length; i++) {
+            for (let j = i + 1; j < ls.length; j++) {
+              if (ls[j].y <= ls[i].y) bad.push('row');
+              const dx = right ? ls[j].colX - ls[i].colX : ls[i].colX - ls[j].colX;
+              if (dx <= 0) bad.push('col');
+            }
+          }
+        }
+        out.push(['引导线：同侧行序与角序一致、拐点依次外扩（不会交叉）', bad.slice(0, 3).join(','), '']);
+        out.push(['引导线起点在扇区外缘（不是从圆心斜拉）',
+          d2.labels.every((l) => Math.hypot(l.p0x - d2.cx, l.p0y - d2.cy) >= d2.rOut), true]);
+        out.push(['每条线都有自己的列（不共线重叠）',
+          new Set(d2.labels.map((l) => l.colX.toFixed(2))).size, d2.labels.length]);
+        // 直接数"不同项之间的线段交点"：这是"交叉最小化"最硬的证据
+        {
+          // 与绘制代码同构：斜线段 + 水平段
+          const segsOf = (lay) => {
+            const out = [];
+            for (const l of lay.labels) {
+              const dir = l.right ? 1 : -1;
+              const R = 9;
+              const sy = l.y >= l.p0y ? 1 : -1;
+              if (Math.abs(l.y - l.p0y) < 2) {
+                out.push({ k: l.idx, a: [l.p0x, l.p0y], b: [l.anchorX, l.y] });
+                continue;
+              }
+              out.push({ k: l.idx, a: [l.p0x, l.p0y], b: [l.colX, l.y - sy * R] });
+              out.push({ k: l.idx, a: [l.colX + dir * R, l.y], b: [l.anchorX, l.y] });
+            }
+            return out;
+          };
+          // 交点离四个端点都 > 8px 才算"看得见的交叉"：
+          // 一堆极小扇区挤在同一个角度上时，几条线从几乎同一个点出发，
+          // 那个"共点"不是交叉（画出来也看不出来）。
+          const hit = (p, q) => {
+            const [x1, y1] = p.a; const [x2, y2] = p.b;
+            const [x3, y3] = q.a; const [x4, y4] = q.b;
+            const dd = (x2 - x1) * (y4 - y3) - (y2 - y1) * (x4 - x3);
+            if (Math.abs(dd) < 1e-9) return false;
+            const t = ((x3 - x1) * (y4 - y3) - (y3 - y1) * (x4 - x3)) / dd;
+            const u = ((x3 - x1) * (y2 - y1) - (y3 - y1) * (x2 - x1)) / dd;
+            if (!(t > 0 && t < 1 && u > 0 && u < 1)) return false;
+            const px = x1 + t * (x2 - x1); const py = y1 + t * (y2 - y1);
+            const far = (ax, ay) => Math.hypot(px - ax, py - ay) > 8;
+            return far(x1, y1) && far(x2, y2) && far(x3, y3) && far(x4, y4);
+          };
+          const count = (lay) => {
+            const sg = segsOf(lay);
+            let n = 0;
+            for (let i = 0; i < sg.length; i++) {
+              for (let j = i + 1; j < sg.length; j++) {
+                if (sg[i].k === sg[j].k) continue;
+                if (hit(sg[i], sg[j])) n++;
+              }
+            }
+            return n;
+          };
+          out.push(['7 项时引导线交叉数', count(d2), 0]);
+          out.push(['9 项时引导线交叉数',
+            count(pieLayout(Array.from({ length: 9 }, (_, i) => mk('C' + i, 900 - i * 30)), 6000)), 0]);
+          // 更极端：一项占 95%，其余都是 8 秒的小碎片 —— 标签全挤在一侧
+          const skew = [mk('Huge', 9500)]
+            .concat(Array.from({ length: 7 }, (_, i) => mk('B' + i, 8)));
+          out.push(['极端倾斜（一项占 95%）时也无交叉', count(pieLayout(skew, 9556)), 0]);
+          out.push(['只有 1 项时也没有线交叉', count(pieLayout([mk('Solo', 100)], 100)), 0]);
+        }
+
+        // 标签不能出画布：悬停时字会大 13%，按放大后的宽度留余量再判一次
+        out.push(['标签不出画布（含悬停放大后）', d2.labels.every((l) => {
+          const w = l.textW * 1.14;
+          const left = l.right ? l.anchorX + 8 : l.anchorX - 8 - w;
+          return left >= 2 && left + w <= d2.W - 2;
+        }), true]);
+      }
+
+      /* ---- ⑥ 不同数据量：都不重叠、不出界 ---- */
+      {
+        const noOverlap = (lay) => {
+          const by = { l: [], r: [] };
+          for (const l of lay.labels) by[l.right ? 'r' : 'l'].push(l.y);
+          for (const kk of Object.keys(by)) {
+            by[kk].sort((a, b) => a - b);
+            for (let i = 1; i < by[kk].length; i++) {
+              if (by[kk][i] - by[kk][i - 1] < 30) return false;
+            }
+          }
+          return lay.labels.every((l) => l.y >= 18 && l.y <= lay.H - 18);
+        };
+        for (const n of [1, 3, 9, 20, 60]) {
+          const sl = Array.from({ length: n }, (_, i) => mk('A' + i, 2000 - i * 20));
+          const lay = pieLayout(sl, 60000);
+          out.push([`不同数据量都清晰（${n} 项）`, noOverlap(lay), true]);
+        }
+        // 20 项时环上只有 8 + 其他，但「其他」里面是谁必须说清楚
+        const many = Array.from({ length: 20 }, (_, i) => mk('M' + i, 2000 - i * 20, {
+          spans: [{ date: '2026-10-30', f: 600 + i, t: 620 + i }],
+          spanCount: 1,
+        }));
+        const lay = pieLayout(many, 60000);
+        const rest = lay.items.find((x) => x.key === '__rest');
+        out.push(['20 项时环上是 8 + 其他', lay.items.length, 9]);
+        out.push(['「其他」有稳定 key（再点能收起）', rest.key, '__rest']);
+        const restTxt = pieDetailHtml(rest, lay.sum).replace(/<[^>]+>/g, ' ');
+        out.push(['「其他」展开后列出含哪些项', /这一块含 12 项/.test(restTxt), true]);
+        out.push(['「其他」展开后也带时间段', /10:0\d – 10:2\d/.test(restTxt), true]);
+      }
+
+      /* ---- ⑦ 悬停强调：文字**真的放大**了（不只是变色） ---- */
+      {
+        const cv3 = document.querySelector('#pie');
+        const d3 = cv3.__pie;
+        const lb = d3.labels[0];
+        // 量"名称那一行"的文字包围盒：悬停时字更大，包围盒一定更高、更宽。
+        // 直接数像素会被抗锯齿和描边干扰，包围盒对"放大"是单调的。
+        const boxOf = () => {
+          const g = cv3.getContext('2d');
+          const dpr = window.devicePixelRatio || 1;
+          const tx0 = lb.right ? lb.anchorX + 8 : lb.anchorX - 8 - lb.textW - 24;
+          const x0 = Math.max(0, Math.round(tx0 * dpr));
+          const w = Math.max(8, Math.round((lb.textW + 48) * dpr));
+          const y0 = Math.round((lb.y - 22) * dpr);
+          const h = Math.round(20 * dpr);
+          const im = g.getImageData(x0, y0, w, h).data;
+          let top = -1; let bot = -1; let left = -1; let right = -1; let n = 0;
+          for (let yy = 0; yy < h; yy++) {
+            for (let xx = 0; xx < w; xx++) {
+              if (im[(yy * w + xx) * 4 + 3] <= 40) continue;
+              n++;
+              if (top < 0) top = yy;
+              bot = yy;
+              if (left < 0 || xx < left) left = xx;
+              if (xx > right) right = xx;
+            }
+          }
+          return { h: bot - top + 1, w: right - left + 1, n };
+        };
+        d3.hover = -1; d3.t = 0; d3.target = 0; drawPieFrame(cv3);
+        const b0 = boxOf();
+        d3.hover = lb.idx; d3.t = 1; d3.target = 1; drawPieFrame(cv3);
+        const b1 = boxOf();
+        out.push(['悬停时标签文字明显变大（包围盒更高）', b1.h > b0.h + 1, true]);
+        out.push(['悬停时标签文字变宽（真的放大，不只是变色）', b1.w > b0.w, true]);
+        out.push(['悬停放大用的是更大字号', parseFloat(PIE_NAME_FONT_ON.split('px')[0].split(' ').pop())
+          > parseFloat(PIE_NAME_FONT.split('px')[0].split(' ').pop()), true]);
+        d3.hover = -1; d3.t = 0; d3.target = 0; drawPieFrame(cv3);
+      }
+
+      /* ---- ⑧ 命中：线也能点中（竖直段 / 水平段），空白不误触 ---- */
+      {
+        const lb = d2.labels[0];
+        const at = (x, y) => ({ clientX: rb.left + x * k, clientY: rb.top + y * k });
+        out.push(['命中：引导线竖直段', pieHit(cv2, at(lb.colX, (lb.p0y + lb.y) / 2)), lb.idx]);
+        out.push(['命中：引导线水平段', pieHit(cv2, at((lb.colX + lb.anchorX) / 2, lb.y)), lb.idx]);
+        const tx = lb.right ? lb.anchorX + 8 + lb.textW / 2 : lb.anchorX - 8 - lb.textW / 2;
+        out.push(['命中：标签文字', pieHit(cv2, at(tx, lb.y)), lb.idx]);
+        out.push(['不命中：扇环与标签带之外的空白',
+          pieHit(cv2, at(d2.cx, d2.H - 5)), -1]);
+      }
+
+      /* ---- ⑨ 触屏：移动不点亮、抬手不粘住 ---- */
+      {
+        d2.hover = -1; d2.target = 0; d2.t = 0;
+        cv2.dispatchEvent(new PointerEvent('pointermove', {
+          clientX: px, clientY: py, pointerType: 'touch', bubbles: true,
+        }));
+        out.push(['触屏移动不会点亮（避免高亮粘住）', cv2.__pie.hover, -1]);
+        cv2.__pie.hover = 0; cv2.__pie.target = 1; cv2.__pie.t = 1;
+        cv2.dispatchEvent(new PointerEvent('pointerup', { clientX: px, clientY: py, pointerType: 'touch', bubbles: true }));
+        await wait(260);
+        out.push(['触屏抬手后高亮回到 0', cv2.__pie.t, 0]);
+        out.push(['触屏抬手后没有高亮项', cv2.__pie.hover, -1]);
+      }
+
+      /* ---- ⑩ 明细清单：全部条目 + 每项的使用时间（不遗漏） ---- */
+      {
+        const many = Array.from({ length: 35 }, (_, i) => mk('P' + i, 900 - i * 10, {
+          spans: [{ date: '2026-10-30', f: 540 + (i % 9) * 30, t: 560 + (i % 9) * 30 }],
+          spanCount: 1,
+        }));
+        S.stats.on = many;
+        S.stats.onSecs = many.reduce((a, b) => a + b.secs, 0);
+        render();
+        await wait(320);
+        const tbl = document.querySelector('.ts-tbl');
+        out.push(['明细表有「使用时间」列',
+          [...tbl.querySelectorAll('th')].some((th) => th.textContent.trim() === '使用时间'), true]);
+        out.push(['明细列出全部条目（不再只列前 30）', tbl.querySelectorAll('tbody tr').length, 35]);
+        out.push(['每个条目都带具体时刻', /10-30 09:00–09:20/.test(tbl.textContent), true]);
+        out.push(['明细有合计行', /合计/.test(tbl.querySelector('tfoot').textContent), true]);
+
+        // 段数被后端裁剪时要如实写「共 N 段（列出 M 段）」
+        const cut = pieDetailHtml({
+          key: 'k', label: 'X', secs: 600, hours: new Array(24).fill(0),
+          spans: [{ date: '2026-10-30', f: 600, t: 660 }], spanCount: 7,
+        }, 600).replace(/<[^>]+>/g, ' ');
+        out.push(['段数被裁剪时如实标注', /共 7 段（列出 1 段）/.test(cut), true]);
+      }
+
+      // 复原统计假数据，后面的用例还要用
+      S.stats.on = [mk('Visual Studio Code', 5400, {
+        hours: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1500, 1800, 1200, 0, 0, 900, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        spans: [{ date: '2026-10-30', f: 552, t: 605 }, { date: '2026-10-30', f: 860, t: 892 }],
+      }), mk('Microsoft Edge', 3600), mk('微信', 900)];
+      S.stats.onSecs = 9900;
+      render();
+      await wait(200);
     }
   }
 

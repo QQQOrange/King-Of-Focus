@@ -649,6 +649,21 @@
    * 拼接后读起来仍是一句通顺的英文。
    */
   var EXTRA = {
+    /* —— 统计页：明细清单 / 扇图展开面板 —— */
+    '类型': 'Type',
+    '占比': 'Share',
+    '时长': 'Duration',
+    '明细清单': 'Full breakdown',
+    '使用时间': 'When',
+    '使用时段': 'Time ranges',
+    '每一项的名称、时长、占比，以及具体在哪些时间段使用（精确到分钟）。':
+      'Name, duration, share and the exact time ranges of every item, to the minute.',
+    '这一版开始才有分段记录，更早的数据只有小时分布。':
+      'Minute-level ranges are recorded from this version on; older data only has hourly totals.',
+    '统计口径：只计入你在电脑前的时间；离开超过 1 分钟（无键鼠输入）的那段不计入。':
+      'Counting only time you were at the computer: any gap over 1 minute without keyboard or mouse input is excluded.',
+    '其他': 'Others',
+    '累计前台时长': 'Cumulative foreground time',
     '+ 新建': '+ New',
     '5 秒内': 'within 5 s',
     '= 一份软件 / 网站名单 + 一张周时间表。': '= one app/site list + one weekly schedule.',
@@ -1162,6 +1177,10 @@
   }
 
   var RULES = [
+    /* —— 统计页的动态文案 —— */
+    [/^使用时段 · 共 (\d+) 段（列出 (\d+) 段）$/, 'Time ranges · $1 total (listing $2)'],
+    [/^使用时段 · 共 (\d+) 段$/, 'Time ranges · $1 total'],
+    [/^这一块含 (\d+) 项：(.+)$/, 'This slice covers $1 items: $2'],
     /* —— 自动打开 —— */
     [/^规则「(.+)」$/, 'Rule "$1"'],
     [/^ · 自动打开 (\d+) 项$/, ' · auto-opens $1'],
