@@ -575,6 +575,8 @@
     '当前没有生效的自律规则': 'No rule is active right now',
     '浏览器插件：未连接': 'Extension: not connected',
     '浏览器插件：已连接': 'Extension: connected',
+    '统计口径：只计入你在电脑前的时间；离开超过 1 分钟（无键鼠输入）的那段不计入。':
+      'Counting only time you were at the computer: any gap over 1 minute without keyboard or mouse input is excluded.',
     '自律模式已开启': 'Discipline is on',
     '自律模式未开启': 'Discipline is off',
     '未以管理员身份运行': 'Not running as administrator',

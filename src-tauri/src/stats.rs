@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration as StdDuration;
 
@@ -161,6 +161,76 @@ pub fn domain_of(url: &str) -> String {
     host.trim_start_matches("www.").to_lowercase()
 }
 
+/// 空闲判定阈值（秒）：超过这么久没有任何输入，就认为人不在电脑前。
+///
+/// 对标 ActivityWatch 的 `aw-watcher-afk.timeout`（默认 180 秒）。这里取 60 秒：
+/// 本产品统计的是"自律 / 工作"，人离开 1 分钟基本就是走了；而"看视频、读长文"
+/// 这类长时间无输入但确实在用的场景，由 `count_idle` 开关兜底。
+const IDLE_TIMEOUT_SECS: u32 = 60;
+
+/// 上一次**真正记进统计**的那一秒落在哪。
+///
+/// 用途：空闲回溯。判定为"人不在"时，从最后一次输入到现在的这段时间
+/// 已经被一秒一秒记成活跃了，要把它们扣回去。
+#[derive(Clone)]
+struct LastHit {
+    date: String,
+    key: String,
+    /// 记在「自律时段内」还是「时段外」那一档
+    on: bool,
+    hour: usize,
+}
+
+static LAST_HIT: Mutex<Option<LastHit>> = Mutex::new(None);
+
+/// 从 `from_hour` 开始**向前**扣 `n` 秒，返回实际扣掉的秒数。
+///
+/// 为什么往前扣：空闲是从"最后一次输入"往后累积的，被误记的秒一定落在最近，
+/// 跨了整点就会落在前一个小时里。只扣当前小时会让 `sum(hours) != secs`。
+fn take_back(hours: &mut [u32], secs: &mut u64, n: u64, from_hour: usize) -> u64 {
+    if hours.is_empty() || n == 0 {
+        return 0;
+    }
+    let mut left = n;
+    let mut h = from_hour.min(hours.len() - 1);
+    loop {
+        let take = (hours[h] as u64).min(left);
+        hours[h] -= take as u32;
+        left -= take;
+        if left == 0 || h == 0 {
+            break;
+        }
+        h -= 1;
+    }
+    let done = n - left;
+    *secs = secs.saturating_sub(done);
+    done
+}
+
+/// 把"刚刚被误记成活跃的空闲秒数"从落点上扣回去。
+fn refund_idle(shared: &Shared, secs: u32) {
+    if secs == 0 {
+        return;
+    }
+    let Some(hit) = LAST_HIT.lock().ok().and_then(|g| g.clone()) else {
+        return;
+    };
+    let Ok(mut cur) = shared.stats.lock() else {
+        return;
+    };
+    // 跨天不追溯：昨天那份已经落盘，回扣会把两天都弄乱
+    if cur.date != hit.date {
+        return;
+    }
+    let map = if hit.on { &mut cur.on } else { &mut cur.off };
+    let Some(acc) = map.get_mut(&hit.key) else {
+        return;
+    };
+    if take_back(&mut acc.hours, &mut acc.secs, secs as u64, hit.hour) > 0 {
+        shared.stats_dirty.store(true, Ordering::Relaxed);
+    }
+}
+
 fn idle_secs() -> u32 {
     unsafe {
         let mut li = LastInputInfo {
@@ -186,10 +256,14 @@ pub fn start(shared: Arc<Shared>) {
     let sh = shared.clone();
     thread::spawn(move || {
         let mut ticks: u32 = 0;
+        // 本次"连续空闲"已经记进去多少秒（用来在跨过阈值时一次扣回）
+        let mut idle_run: u32 = 0;
         loop {
             let cfg = sh.config();
             if cfg.settings.stats.enabled {
-                sample(&sh, &cfg);
+                sample(&sh, &cfg, &mut idle_run);
+            } else {
+                idle_run = 0;
             }
             ticks += 1;
             if ticks % 15 == 0 {
@@ -210,7 +284,7 @@ pub fn start(shared: Arc<Shared>) {
     });
 }
 
-fn sample(shared: &Shared, cfg: &Config) {
+fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
     let now = Local::now();
     let today = now.format("%Y-%m-%d").to_string();
 
@@ -227,8 +301,26 @@ fn sample(shared: &Shared, cfg: &Config) {
         }
     }
 
-    if !cfg.settings.stats.count_idle && idle_secs() >= 60 {
-        return;
+    if !cfg.settings.stats.count_idle {
+        let idle = idle_secs();
+        if idle >= IDLE_TIMEOUT_SECS {
+            // **刚跨过阈值**：从"最后一次输入"到现在的每一秒都已经被记成活跃了
+            // （阈值内那几十秒是照记的，否则每次短暂停顿都会把一段切成碎片）。
+            // 既然确认人不在，就把这一段整个扣回去。
+            //
+            // ActivityWatch 的等价做法：变成 AFK 时，afk 事件的 timestamp 取
+            // `last_input`（而不是"发现的那一刻"），再用 filter_period_intersect
+            // 把这段从活跃时长里裁掉。两者结果一致：**离开的时间一秒都不算**。
+            if *idle_run > 0 {
+                refund_idle(shared, *idle_run);
+                *idle_run = 0;
+            }
+            return;
+        }
+        // 阈值内：照常记，但记着"这段是可能要被扣的"
+        *idle_run = idle_run.saturating_add(1);
+    } else {
+        *idle_run = 0;
     }
 
     let hwnd = unsafe { GetForegroundWindow() };
@@ -304,9 +396,11 @@ fn sample(shared: &Shared, cfg: &Config) {
         .unwrap_or(false);
     let hour = now.hour() as usize;
 
+    // 记下落点：万一接下来判定为空闲，就靠它把误记的秒扣回去
+    let mut hit: Option<LastHit> = None;
     if let Ok(mut cur) = shared.stats.lock() {
         let map = if state_on { &mut cur.on } else { &mut cur.off };
-        let e = map.entry(key).or_insert_with(|| Acc {
+        let e = map.entry(key.clone()).or_insert_with(|| Acc {
             label: label.clone(),
             category: category.clone(),
             secs: 0,
@@ -329,6 +423,15 @@ fn sample(shared: &Shared, cfg: &Config) {
                 *e.browsers.entry(browser_name.clone()).or_insert(0) += 1;
             }
         }
+        hit = Some(LastHit {
+            date: cur.date.clone(),
+            key,
+            on: state_on,
+            hour,
+        });
+    }
+    if let (Some(h), Ok(mut g)) = (hit, LAST_HIT.lock()) {
+        *g = Some(h);
     }
     shared.stats_dirty.store(true, Ordering::Relaxed);
 }
@@ -863,5 +966,69 @@ mod tests {
         assert!(check_range("  ", "2026-10-27").is_err());
         assert!(check_range("2026-10-28", "2026-10-27").is_err());
         assert!(check_range("2026-10-27", "2026-10-27").is_ok());
+    }
+
+
+    /// 同一小时内扣减：总量和小时桶同时减，保持 `sum(hours) == secs`
+    #[test]
+    fn take_back_same_hour() {
+        let mut hours = vec![0u32; 24];
+        hours[9] = 120;
+        let mut secs = 120u64;
+        assert_eq!(take_back(&mut hours, &mut secs, 30, 9), 30);
+        assert_eq!(hours[9], 90);
+        assert_eq!(secs, 90);
+    }
+
+    /// 跨整点的空闲要**往前**扣：只扣当前小时会让 sum(hours) 和 secs 对不上
+    #[test]
+    fn take_back_walks_back_into_previous_hour() {
+        let mut hours = vec![0u32; 24];
+        hours[8] = 100;
+        hours[9] = 20;
+        let mut secs = 120u64;
+        // 从 9 点开始往回收 50 秒：先扣完 9 点的 20，再扣 8 点的 30
+        assert_eq!(take_back(&mut hours, &mut secs, 50, 9), 50);
+        assert_eq!(hours[9], 0);
+        assert_eq!(hours[8], 70);
+        assert_eq!(secs, 70);
+        assert_eq!(hours.iter().map(|x| *x as u64).sum::<u64>(), secs);
+    }
+
+    /// 要扣的比记得还多（比如刚过零点）：扣到 0 为止，不能扣成负数、也不能 panic
+    #[test]
+    fn take_back_clamps_at_zero() {
+        let mut hours = vec![0u32; 24];
+        hours[0] = 10;
+        let mut secs = 10u64;
+        assert_eq!(take_back(&mut hours, &mut secs, 600, 0), 10);
+        assert_eq!(secs, 0);
+        assert_eq!(hours[0], 0);
+    }
+
+    /// 0 秒 / 空小时表都不该动任何东西
+    #[test]
+    fn take_back_noop_cases() {
+        let mut hours = vec![0u32; 24];
+        hours[3] = 5;
+        let mut secs = 5u64;
+        assert_eq!(take_back(&mut hours, &mut secs, 0, 3), 0);
+        assert_eq!(secs, 5);
+        assert_eq!(hours[3], 5);
+
+        let mut empty: Vec<u32> = Vec::new();
+        let mut s2 = 7u64;
+        assert_eq!(take_back(&mut empty, &mut s2, 3, 5), 0);
+        assert_eq!(s2, 7);
+    }
+
+    /// 越界小时不能 panic（防御：hours 长度可能被老数据改坏）
+    #[test]
+    fn take_back_out_of_range_hour_is_safe() {
+        let mut hours = vec![0u32; 24];
+        hours[23] = 40;
+        let mut secs = 40u64;
+        assert_eq!(take_back(&mut hours, &mut secs, 10, 99), 10);
+        assert_eq!(secs, 30);
     }
 }

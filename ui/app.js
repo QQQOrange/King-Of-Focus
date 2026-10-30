@@ -3015,6 +3015,7 @@ function viewStats() {
       使用时长分布 · ${cur.label}
       <span class="badge">合计 ${fmtDur(cur.total)}</span>
     </div>
+    <div class="hint" style="margin-bottom:6px">统计口径：只计入你在电脑前的时间；离开超过 1 分钟（无键鼠输入）的那段不计入。</div>
     <div class="card-sub">
       ${S.statsTab === 'on'
         ? '这里<b>只统计自律模式开启时段</b>内的前台使用时长，与"未开启"的数据完全隔离。'
