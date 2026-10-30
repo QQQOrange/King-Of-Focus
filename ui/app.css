@@ -1609,8 +1609,18 @@ html[data-motion="low"] .pie-detail { animation: none; }
 .cal-week {
   display: grid; grid-template-columns: 34px repeat(7, minmax(0, 1fr)); gap: 8px;
   align-items: stretch;
+  /* 表头 / 间距 / 合计的高度固定下来，刻度才能和轨道严格对齐 */
+  --cw-hd: 17px;
+  --cw-gap: 5px;
+  --cw-tot: 14px;
 }
-.cw-axis { position: relative; height: 100%; min-height: 260px; }
+.cw-axis {
+  height: 100%; box-sizing: border-box;
+  padding-top: calc(var(--cw-hd) + var(--cw-gap));
+  padding-bottom: calc(var(--cw-tot) + var(--cw-gap));
+}
+/* 绝对定位的刻度以这一层为基准，它的高度 = 轨道高度 */
+.cw-axis-in { position: relative; height: 100%; }
 .cw-axis span {
   position: absolute; right: 0; transform: translateY(-50%);
   font-size: 10px; color: var(--text-3); font-variant-numeric: tabular-nums;
@@ -1622,7 +1632,10 @@ html[data-motion="low"] .pie-detail { animation: none; }
   background: none; border: 0; padding: 0; cursor: pointer;
   color: inherit; font: inherit; text-align: center;
 }
-.cw-hd { display: flex; align-items: baseline; justify-content: center; gap: 5px; font-size: 11.5px; }
+.cw-hd {
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  height: var(--cw-hd); line-height: var(--cw-hd); font-size: 11.5px;
+}
 .cw-hd b { font-weight: 600; color: var(--text-3); }
 .cw-hd em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--text-2); }
 .cw-track {
@@ -1636,7 +1649,8 @@ html[data-motion="low"] .pie-detail { animation: none; }
 .cw-col.on .cw-track { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
 .cw-col.today .cw-hd b { color: var(--gold); }
 .cw-tot {
-  height: 14px; font-size: 10.5px; color: var(--text-3);
+  height: var(--cw-tot); line-height: var(--cw-tot);
+  font-size: 10.5px; color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
 .cw-col:hover .cw-track { border-color: var(--line-2); }

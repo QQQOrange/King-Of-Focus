@@ -3031,7 +3031,7 @@ function calWindowDays(days) {
 }
 
 function calRangeLabel() {
-  const r = calRange();
+  const r = calWindow();
   if (S.calMode === 'month') {
     const b = parseYmd(S.calAnchor || S.calSel || todayStr());
     return I18N.getLang() === 'en'
@@ -3043,13 +3043,38 @@ function calRangeLabel() {
 
 /** 颜色按"整个窗口内的累计时长"分配：同一个软件在每天都是同一种颜色 */
 function calColors(days) {
+  const m = new Map();
+  const used = new Set();
+
+  // ① 先沿用**饼图的配色**：同一个软件在上面的扇图和下面的日历里必须是同一种颜色，
+  //    否则读者每换一个图都要重新"对颜色"，看着就会觉得哪里不协调。
+  let cur = null;
+  try { cur = currentSlices(); } catch (e) { cur = null; }
+  const top = (cur && cur.slices ? cur.slices : []).slice(0, 8);
+  top.forEach((sl, i) => {
+    if (!sl || !sl.key) return;
+    const c = PALETTE[i % PALETTE.length];
+    m.set(sl.key, c);
+    used.add(c);
+  });
+
+  // ② 只在日历里出现的（别的时段/别的天才用到）按累计时长接着排，避开已被占用的颜色
   const tot = new Map();
   for (const d of days) {
-    for (const it of d.items || []) tot.set(it.key, (tot.get(it.key) || 0) + it.secs);
+    for (const it of d.items || []) {
+      if (m.has(it.key)) continue;
+      tot.set(it.key, (tot.get(it.key) || 0) + it.secs);
+    }
   }
   const arr = [...tot.entries()].sort((a, b) => b[1] - a[1]);
-  const m = new Map();
-  arr.forEach(([k], i) => m.set(k, PALETTE[i % PALETTE.length]));
+  let k = 0;
+  for (const [key] of arr) {
+    while (k < PALETTE.length && used.has(PALETTE[k])) k++;
+    const c = PALETTE[k % PALETTE.length];
+    m.set(key, c);
+    used.add(c);
+    k++;
+  }
   return m;
 }
 
@@ -3085,7 +3110,9 @@ function calWeekHtml(days, colors) {
   // 左侧刻度和 7 列放在同一个 grid 里，刻度才能和格子对齐
   const axis = [0, 6, 12, 18, 24]
     .map((h) => `<span style="top:${(h / 24) * 100}%">${pad(h)}</span>`).join('');
-  return `<div class="cal-week"><div class="cw-axis">${axis}</div>${cells}</div>`;
+  // 刻度必须和"轨道"等高：外层用 padding 让开表头/合计，内层才是真正的坐标系
+  // （绝对定位子元素以 padding box 为基准，直接给外层加 padding 是不生效的）
+  return `<div class="cal-week"><div class="cw-axis"><div class="cw-axis-in">${axis}</div></div>${cells}</div>`;
 }
 
 /** 月视图：7 × N 网格，每格一条横的 24 小时条 */
@@ -3202,6 +3229,21 @@ function pieFocusCal(it) {
     // 高亮保留得比卡片光晕久一点，方便对上是哪几块
     S.calHitAt = 0;
   }, 4200);
+}
+
+/** 时间范围变了，日历跟着落到同一个周期。
+ *
+ *  不这么做就会出现"上面是今日、下面是本周"的错位：
+ *  两边统计窗口不同，数字自然对不上，看起来就是"哪里不对"。
+ */
+function calFollowRange() {
+  const now = new Date();
+  if (S.range === 'today') S.calAnchor = todayStr();
+  else if (S.range === 'week') S.calAnchor = dateStr(weekStartOf(now));
+  else if (S.range === 'month') S.calAnchor = dateStr(new Date(now.getFullYear(), now.getMonth(), 1));
+  else if (S.range === 'year') S.calAnchor = dateStr(new Date(now.getFullYear(), 0, 1));
+  else if (S.range === 'custom') S.calAnchor = S.customStart || todayStr();
+  S.calKey = '';   // 强制重取
 }
 
 function calHtml() {
@@ -5466,13 +5508,15 @@ const Act = window.Act = {
   },
   async setRange(r) {
     S.range = r;
-    if (r === 'custom') { render(); return; }
+    if (r === 'custom') { calFollowRange(); render(); return; }
+    calFollowRange();
     await loadStats();
     render();
   },
   async applyRange() {
     S.customStart = ($('#cStart') || {}).value || todayStr();
     S.customEnd = ($('#cEnd') || {}).value || todayStr();
+    calFollowRange();
     await loadStats();
     render();
   },

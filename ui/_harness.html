@@ -4471,9 +4471,46 @@ window.__itest = async () => {
     out.push(['周视图 7 列', document.querySelectorAll('.cw-col').length, 7]);
     out.push(['每列一条 24 小时时间轴', document.querySelectorAll('.cw-track').length, 7]);
     out.push(['左侧有小时刻度', document.querySelectorAll('.cw-axis span').length, 5]);
+    // 刻度必须和轨道严格对齐：错位时 00:00 会高出轨道 20 多像素，看着就是"哪里不对"
+    {
+      const tr = document.querySelector('.cw-track').getBoundingClientRect();
+      const sp = [...document.querySelectorAll('.cw-axis span')];
+      const top0 = sp[0].getBoundingClientRect().top;
+      const bot4 = sp[4].getBoundingClientRect().bottom;
+      out.push(['刻度 00:00 与轨道顶部对齐', Math.abs(top0 - tr.top) <= 1.5, true]);
+      out.push(['刻度 24:00 与轨道底部对齐', Math.abs(bot4 - (tr.top + tr.height)) <= 1.5, true]);
+      const mid = sp.slice(1, 4).map((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2;
+      });
+      out.push(['6/12/18 点刻度落在正确高度',
+        mid.every((yy, i) => Math.abs(yy - (tr.top + tr.height * (6 * (i + 1)) / 24)) <= 1.5), true]);
+    }
+    // 周视图的范围标签必须就是 7 天（不能被"选中日"撑成两周）
+    {
+      const lab = document.querySelector('.cal-label').textContent.trim();
+      const parts = lab.split('~').map((x) => x.trim());
+      const toD = (t) => {
+        const [mm, dd] = t.split('-').map(Number);
+        return Date.UTC(2026, mm - 1, dd);
+      };
+      out.push(['周视图范围标签是 7 天', Math.round((toD(parts[1]) - toD(parts[0])) / 86400000), 6]);
+    }
     out.push(['周/月切换入口有两个按钮', document.querySelectorAll('[data-act="cal-mode"]').length, 2]);
     out.push(['不同类型用不同颜色区分',
       new Set([...document.querySelectorAll('.cw-track .cb')].map((e) => e.style.background)).size >= 2, true]);
+    // 同一个软件在饼图和日历里必须是同一种颜色（两个图并排看，颜色对不上最刺眼）
+    {
+      const pv = document.querySelector('#pie');
+      const it0 = pv && pv.__pie && pv.__pie.items ? pv.__pie.items.find((x) => x.key && x.key !== '__rest') : null;
+      const seg = it0 ? document.querySelector(`#calCard [data-key="${it0.key}"]`) : null;
+      const hex2rgb = (h) => {
+        const n = parseInt(String(h).slice(1), 16);
+        return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+      };
+      out.push(['日历与饼图对同一软件用同一种颜色',
+        seg && it0 ? seg.style.background : '(无)', it0 ? hex2rgb(it0.color) : '(无)']);
+    }
 
     // 点一天 → 当天明细
     const col = document.querySelector('.cw-col[data-date]');
@@ -4515,6 +4552,16 @@ window.__itest = async () => {
       document.querySelector('.cal-label').textContent !== lab0, true]);
     out.push(['翻页后选中日不变', S.calSel, day]);
     out.push(['翻页后明细还能看到', !!document.querySelector('.cal-detail'), true]);
+
+    // 时间范围切换后，日历要跟着落到同一个周期（否则上下面不同期，数字对不上）
+    if (document.querySelector('[data-act="range"][data-r="month"]')) {
+      document.querySelector('[data-act="range"][data-r="month"]').click();
+      await wait(500);
+      out.push(['切到「本月」后日历跟着落到本月', String(S.calAnchor).slice(0, 7), todayStr().slice(0, 7)]);
+      document.querySelector('[data-act="range"][data-r="today"]').click();
+      await wait(500);
+      out.push(['切回「今日」后日历回到今天', S.calAnchor, todayStr()]);
+    }
 
     // 收起明细
     document.querySelector('[data-act="cal-clear"]').click();
