@@ -105,8 +105,15 @@ impl Default for BreakCfg {
 pub struct Points {
     pub balance: i64,
     pub total_earned: i64,
-    /// 用积分强行解锁的截止时间
+    /// 用积分强行解锁**自律固化**的截止时间
     pub unlock_until: i64,
+    /// 用积分强行解锁**睡眠时段**的截止时间
+    ///
+    /// 以前两者共用 `unlock_until`：花积分买断睡眠时段会顺手把自律固化也解除，
+    /// 反过来解锁固化也会让睡眠锁失效（两套定价、互不相干的开关）。
+    /// 拆开之后各读各的；老配置没有这个字段时按"没解锁"处理。
+    #[serde(default)]
+    pub sleep_unlock_until: i64,
     pub unlock_count_today: u32,
     pub day: String,
 }
@@ -117,6 +124,7 @@ impl Default for Points {
             balance: 0,
             total_earned: 0,
             unlock_until: 0,
+            sleep_unlock_until: 0,
             unlock_count_today: 0,
             day: String::new(),
         }

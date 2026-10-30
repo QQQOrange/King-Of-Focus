@@ -133,9 +133,12 @@ $('#unlock').addEventListener('click', async () => {
   }
 });
 
+let fails = 0;
+
 async function tick() {
   try {
     const st = await invoke('sleep_state');
+    fails = 0;
     paint(st);
     // 已经解锁 / 出了睡眠时段：让出屏幕（Rust 那边也会隐藏，这里只是更快一步）
     if (st && !st.locked && !st.testMode) {
@@ -144,7 +147,11 @@ async function tick() {
       document.body.style.opacity = '1';
     }
   } catch (e) {
-    // 拿不到状态时不要挡住窗口（宁可少锁，也不要黑屏解不开）
+    // 拿不到状态时不要挡住窗口（宁可少锁，也不要黑屏解不开）。
+    // 这块是全屏 + 无边框 + 置顶的，一旦后端连不上而它又保持不透明，
+    // 用户面前就是一块没有关闭入口的黑屏，只能等系统层兜底。
+    // 连续三次失败才让出屏幕，避免后端偶发忙碌时闪一下。
+    if (++fails >= 3) document.body.style.opacity = '0';
   }
 }
 

@@ -81,7 +81,16 @@ pub fn blocked_rule<'a>(cfg: &Config, rules: &'a [Rule], app: &WinApp) -> Option
                 return Some(l);
             }
         } else if matcher::rule_blocks_app(l, app) {
-            return Some(l);
+            // 黑名单一侧以前完全没有保护：名单里写了 `*`、或标题规则过宽命中系统窗时，
+            // 会直接把 explorer / dwm 这类进程结束掉。白名单有保护、黑名单没有，
+            // 这个不对称本身就是 bug —— 拦"用户的应用"不该拦"系统的壳"。
+            let protected = matcher::is_protected(app, &cfg.settings.protected)
+                || l.extra_protected
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(&app.name));
+            if !protected {
+                return Some(l);
+            }
         }
     }
     None
@@ -182,6 +191,40 @@ mod tests {
         let d = state(&c, &now);
         assert!(d.clock_on);
         assert_eq!(active_rules(&c, &now, &d).len(), 1, "自律时间内应生效");
+    }
+
+    /// 黑名单一侧也要保护系统进程：名单里写 `*` 时不能把 explorer 结束掉。
+    /// 以前只有白名单分支判断 is_protected，黑名单是"名单命中就拦"。
+    #[test]
+    fn blacklist_skips_protected_process() {
+        let mut c = base();
+        clock_on(&mut c, 2, 10, 60, 0);
+        c.rules[0].apps = vec![crate::model::AppEntry {
+            kind: "name".into(),
+            value: "*".into(),
+            ..Default::default()
+        }];
+        let now = now_at(2, 10, 5);
+        let d = state(&c, &now);
+        assert!(d.clock_on, "前提：10:00 的专注段里");
+        let rules = active_rules(&c, &now, &d);
+        assert_eq!(rules.len(), 1, "前提：这条规则此刻生效");
+        let sys = crate::proc::WinApp {
+            pid: 4,
+            hwnd: 0,
+            path: r"C:\Windows\explorer.exe".into(),
+            name: "explorer".into(),
+            title: "桌面".into(),
+        };
+        assert!(blocked_rule(&c, &rules, &sys).is_none(), "系统进程必须放过");
+        let user_app = crate::proc::WinApp {
+            pid: 5,
+            hwnd: 0,
+            path: r"D:\Games\steam.exe".into(),
+            name: "steam".into(),
+            title: "Steam".into(),
+        };
+        assert!(blocked_rule(&c, &rules, &user_app).is_some(), "普通应用照常拦");
     }
 
     #[test]

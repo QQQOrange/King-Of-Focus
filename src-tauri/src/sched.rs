@@ -26,8 +26,17 @@ pub fn abs_ranges(schedule: &[Vec<Slot>]) -> Vec<(i64, i64)> {
         for s in slots_of(schedule, day) {
             let a = day as i64 * 1440 + s.start as i64;
             let mut b = day as i64 * 1440 + s.end as i64;
-            if b <= a {
+            if b < a {
                 b += 1440; // 跨夜
+            } else if b == a {
+                // 起止相同有两种含义：
+                // · 00:00–00:00 是老配置里"全天"的写法，保留 24 小时；
+                // · 其余（如 10:00–10:00）是拖着拖着留下的空段，不能当 24 小时，
+                //   以前 `b <= a` 一律按跨夜处理，周一 10:00–10:00 会连带拦住周二。
+                if s.start != 0 {
+                    continue;
+                }
+                b += 1440;
             }
             out.push((a, b));
         }
@@ -188,8 +197,11 @@ pub fn pomodoro_state(
     } else {
         brk.work_min as i64 - pos - 1
     };
-    let left = left_min * 60 + (60 - now.second() as i64);
-    (in_break, left.max(0))
+    let left = (left_min * 60 + (60 - now.second() as i64)).max(0);
+    // 阶段剩余不能超过"这一段还剩多久"：09:00–09:30 配 45/15 时，
+    // 09:10 的阶段剩余是 34 分钟，但整段只剩 20 分钟，界面与提醒阈值都得按 20 算。
+    let tail = slot_left_secs(schedule, now).unwrap_or(left).max(0);
+    (in_break, left.min(tail))
 }
 
 /// 休息中不拦截
@@ -223,6 +235,41 @@ mod tests {
         assert!(is_active(&s, &now_at(0, 0, 30, 0)), "周一凌晨应仍生效");
         assert!(!is_active(&s, &now_at(0, 1, 30, 0)), "周一 01:30 应已结束");
         assert!(!is_active(&s, &now_at(6, 22, 30, 0)), "周日 22:30 还没开始");
+    }
+
+    /// 起止相同的段（10:00–10:00）是空段，不是 24 小时。
+    /// 以前会被当成跨夜，连带把第二天也拦上。
+    #[test]
+    fn zero_length_slot_is_empty() {
+        let mut s = vec![vec![]; 7];
+        s[0] = vec![Slot { start: 10 * 60, end: 10 * 60 }];
+        assert!(!is_active(&s, &now_at(0, 12, 0, 0)), "长度 0 的段不该生效");
+        assert!(!is_active(&s, &now_at(1, 10, 30, 0)), "更不该跨到周二");
+    }
+
+    /// 00:00–00:00 是历史遗留的"全天"写法，仍然要覆盖整周
+    #[test]
+    fn all_day_slot_still_covers_week() {
+        let mut s = vec![vec![]; 7];
+        s[0] = vec![Slot { start: 0, end: 0 }];
+        assert!(is_active(&s, &now_at(0, 0, 0, 0)));
+        assert!(is_active(&s, &now_at(0, 18, 0, 0)));
+        assert!(!is_active(&s, &now_at(1, 3, 0, 0)), "周一的 24 小时到周一 24:00 为止");
+    }
+
+    /// 番茄阶段剩余不能超过"这一段还剩多久"
+    #[test]
+    fn pomodoro_left_clipped_by_slot_end() {
+        let mut s = vec![vec![]; 7];
+        s[0] = vec![Slot { start: 9 * 60, end: 9 * 60 + 30 }];
+        let brk = crate::model::BreakCfg {
+            kind: "pomodoro".into(),
+            work_min: 45,
+            break_min: 15,
+        };
+        let (in_break, left) = pomodoro_state(&s, &brk, &now_at(0, 9, 10, 0));
+        assert!(!in_break);
+        assert_eq!(left, 20 * 60, "整段只剩 20 分钟，不能报 34 分钟");
     }
 
     /// 跨周匹配时，剩余时间不能差出整整 7 天。

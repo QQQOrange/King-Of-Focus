@@ -12,12 +12,15 @@
   }
 
   function render(p) {
-    const kind = p.kind === 'site' ? 'site' : 'app';
+    // 后端会传 app / site / warn 三种。以前只认 site，其余一律当 app，
+    // 于是"自律时段内禁止退出"这条警告会显示成"拦截了某个应用"。
+    const kind = p.kind === 'warn' ? 'warn' : (p.kind === 'site' ? 'site' : 'app');
     $('ico').className = 'ico ' + kind;
-    $('ico').textContent = kind === 'site' ? '网' : '王';
+    $('ico').textContent = kind === 'site' ? '网' : (kind === 'warn' ? '!' : '王');
     $('title').textContent = p.title || '已被拦截';
     $('sub').innerHTML = p.body || '';
-    $('tag').textContent = p.tag || (kind === 'site' ? '网页自律规则' : '应用自律规则');
+    $('tag').textContent = p.tag
+      || (kind === 'site' ? '网页自律规则' : (kind === 'warn' ? '自律提醒' : '应用自律规则'));
   }
 
   function play(secs) {

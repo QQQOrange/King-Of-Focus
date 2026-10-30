@@ -715,6 +715,50 @@ pub fn mask_set(
     }
     // 参数改动也要立刻生效（比如拖不透明度滑块时能实时看到）
     crate::mask::wake();
+
+    // 这几个开关以前只改内存里的原子值，从不写配置：改完界面看着是生效的，
+    // 重启后透明度 / 跟随 / 屏蔽点击全部回退，而界面上没有任何"未保存"标记。
+    // 与 mask_follow_schedule / mask_media_pause 保持同一口径：改了就落盘。
+    let mut c = shared.config();
+    let mut dirty = false;
+    if let Some(o) = opacity {
+        let o = o.min(100);
+        if c.settings.mask.opacity != o {
+            c.settings.mask.opacity = o;
+            dirty = true;
+        }
+    }
+    if let Some(v) = follow {
+        if c.settings.mask.follow != v {
+            c.settings.mask.follow = v;
+            dirty = true;
+        }
+    }
+    if let Some(v) = follow_schedule {
+        if c.settings.mask.follow_schedule != v {
+            c.settings.mask.follow_schedule = v;
+            dirty = true;
+        }
+    }
+    if let Some(b) = block_click {
+        if c.settings.mask.block_click != b {
+            c.settings.mask.block_click = b;
+            dirty = true;
+        }
+    }
+    if let Some(v) = media_pause {
+        if c.settings.mask.media_pause != v {
+            c.settings.mask.media_pause = v;
+            dirty = true;
+        }
+    }
+    if dirty {
+        if let Err(e) = cfg::save(&c) {
+            crate::mask::mlog(&format!("遮罩设置保存失败：{e}"));
+        } else if let Ok(mut w) = shared.cfg.write() {
+            *w = c;
+        }
+    }
 }
 
 /// 设置全局快捷键（带冲突检测：注册失败会回滚到原来的组合）

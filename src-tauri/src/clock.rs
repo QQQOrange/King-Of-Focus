@@ -11,7 +11,9 @@
 //!
 //! 每段的"专注 + 休息"以**整点**为锚点循环：第 9 段（09:00–10:00）设成
 //! 专注 45 / 休息 15，就是 09:00–09:45 专注、09:45–10:00 休息。
-//! `work + brk > 60` 会在 sanitize 里被夹到 60，休息不会溢到下一段。
+//! `work + brk > 60` 会在 sanitize 里被夹到 60，休息不会溢到下一段；
+//! 反过来 `work + brk < 60` 时一小时里会跑不止一轮（25/5 跑两轮），
+//! 所以相位一律按 `offset % (work + brk)` 取模，不足一轮的尾段算专注。
 //!
 //! 每小时的选中窗口还可以用 `from`/`to` 收窄成"第几分钟到第几分钟"
 //! （默认 `0..60` = 整小时）：只有连续段的首/尾小时会带非默认值，
@@ -106,7 +108,7 @@ pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> 
     // 起止分钟窗口外 → 这一小时没被选中（比如只选了 09:15–09:45）
     // 命中哪一段就用哪一段算番茄相位：一小时两段时各自的 from/to 不同，
     // 拿"第一段"去套第二段的分钟会算出错误的剩余时间。
-    let (work, brk, from, to) = *wins
+    let (work, brk, _from, to) = *wins
         .iter()
         .find(|(_, _, f, t)| minute >= *f as i64 && minute < *t as i64)?;
     // 到窗口结束还剩多少分钟：专注/休息的阶段剩余时间都不能超过它
@@ -125,19 +127,23 @@ pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> 
         });
     }
 
-    let brk_end = (work + brk).min(60) as i64;
-    let in_break = minute >= work as i64 && minute < brk_end;
-    let phase_left = if in_break {
-        brk_end - minute
-    } else {
-        work as i64 - minute
-    };
+    // 周期 = 专注 + 休息，可能在 60 分钟内跑不止一轮：25/5 是两轮、50/5 + 尾段。
+    // 以前这里只判一次 `minute < work + brk`，25/5 到 09:30 之后
+    // 剩余被算成 25 - 35 = -10 → 倒计时卡 0、阶段提醒整段不发、
+    // 依赖 clock_left 的固化判定还会静默失效。
+    let cyc = (work + brk) as i64;
+    // 相位锚点是**整点**，不是窗口起点：窗口的 from/to 只决定"这一小时的哪几分钟
+    // 在范围内"，不改变节奏。这样 08:15 进来的那一段和 09:00 那一段节奏一致。
+    let off = minute.rem_euclid(cyc);
+    let in_break = off >= work as i64;
+    let phase_left = if in_break { cyc - off } else { work as i64 - off };
     Some(ClockState {
         weekday,
         hour,
         in_window: true,
         in_break,
-        // 窗口可能比阶段更早结束（如 09:00–09:30 的窗口里看不到 09:45 开始的休息）
+        // 窗口可能比阶段更早结束（如 09:00–09:30 的窗口里看不到 09:45 开始的休息），
+        // 尾段一律截到窗口末尾，剩余时间不会超过这一段还剩多久
         left: (phase_left.min(win_left) * 60 - sec).max(0),
         work,
         brk,
@@ -522,6 +528,24 @@ mod tests {
         let s = state_at(&c, monday(9, 55)).expect("09:55 在窗口里");
         assert!(s.in_break, "55 >= 45 是休息段");
         assert_eq!(s.left, 5 * 60);
+    }
+
+    /// 专注 + 休息小于 60 分钟时，一小时里要跑多轮（25/5 = 两轮）。
+    /// 以前只判一次 `minute < work + brk`，09:30 之后剩余被算成负数：
+    /// 倒计时卡 0、阶段提醒整段不发、依赖它的固化判定还会静默失效。
+    #[test]
+    fn state_cycles_several_times_in_one_hour() {
+        let mut days = all_off();
+        days[0][9] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
+        let c = cfg_with(days, true);
+        // 09:35 → 35 % 30 = 5，落在第二轮专注段（还有 20 分钟）
+        let s = state_at(&c, monday(9, 35)).expect("09:35 在窗口里");
+        assert!(!s.in_break, "35 % 30 = 5，应在第二轮专注");
+        assert_eq!(s.left, 20 * 60);
+        // 09:57 → 57 % 30 = 27 ≥ 25，落在第二轮休息（还有 3 分钟）
+        let s2 = state_at(&c, monday(9, 57)).expect("09:57 在窗口里");
+        assert!(s2.in_break, "57 % 30 = 27，应在第二轮休息");
+        assert_eq!(s2.left, 3 * 60);
     }
 
     #[test]

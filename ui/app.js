@@ -9715,12 +9715,14 @@ function ccBuildSegments(t) {
         let note = '未选中';
         let focusMin = 0, breakMin = 0;
         if (on) {
-          // 逐分钟判定：专注 work 分 → 休息 brk 分，循环，周期起点 = 选中窗口起点。
+          // 逐分钟判定：专注 work 分 → 休息 brk 分，循环，周期起点 = **整点**。
+          // 必须与后端 clock.rs 的相位锚点一致：窗口的 from/to 只收窄"哪几分钟可见"，
+          // 不改变节奏。用窗口起点当锚点会让界面显示与实际拦截错开。
           // 15 分钟刻度可能正好横跨边界（50/10 时 45–60 这一段就是），
           // 所以按"这一段里专注/休息各占多少分钟"来定类型，取多的那个。
           const lo = Math.max(a, winF), hi = Math.min(b, winT);
           for (let m = lo; m < hi; m++) {
-            const off = m - winF;
+            const off = m;
             if (brk <= 0 || cycle <= 0) { focusMin++; }
             else {
               const phase = ((off % cycle) + cycle) % cycle;

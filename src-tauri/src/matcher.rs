@@ -118,13 +118,61 @@ pub fn set_extra_browsers(list: Vec<String>) {
     }
 }
 
-pub fn is_browser(app: &WinApp) -> bool {
-    if BROWSERS.iter().any(|b| app.name.contains(b)) {
+/// 进程名是不是某个浏览器（内置清单 + 用户登记的自定义浏览器）。
+///
+/// 不能用 `contains`：`arc` 会命中 `arcsoft`、`opera` 命中 `operadriver`、
+/// `zen` 命中 `frozen`、`chrome` 命中 `chromedriver` —— 浏览器守护一开，
+/// 这些无关进程会被当成浏览器直接结束掉。只接受"完全相等"和两种明确变体：
+/// 纯数字后缀（360se6）与 `_proxy`（chrome_proxy）。
+pub fn is_browser_name(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    let name = lower.trim_end_matches(".exe");
+    if name.is_empty() {
+        return false;
+    }
+    if BROWSERS.iter().any(|b| browser_stem_match(&name, b)) {
         return true;
     }
-    let name = app.name.to_lowercase();
     EXTRA_BROWSERS
         .lock()
-        .map(|g| g.iter().any(|x| name.contains(x.as_str())))
+        .map(|g| g.iter().any(|x| browser_stem_match(&name, x)))
         .unwrap_or(false)
+}
+
+fn browser_stem_match(name: &str, stem: &str) -> bool {
+    if name == stem {
+        return true;
+    }
+    match name.strip_prefix(stem) {
+        Some(rest) => {
+            rest == "_proxy"
+                || (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        }
+        None => false,
+    }
+}
+
+pub fn is_browser(app: &WinApp) -> bool {
+    is_browser_name(&app.name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 浏览器判定不能用子串：`arc` 命中 arcsoft、`opera` 命中 operadriver，
+    /// 浏览器守护会把这些无关进程当成浏览器结束掉。
+    #[test]
+    fn browser_match_is_exact_not_substring() {
+        assert!(is_browser_name("chrome"));
+        assert!(is_browser_name("msedge"));
+        assert!(is_browser_name("chrome_proxy"), "扩展用的代理进程算浏览器");
+        assert!(is_browser_name("360se6"), "数字后缀是已知变体");
+        assert!(is_browser_name("Chrome.EXE"), "大小写与后缀要归一化");
+        assert!(!is_browser_name("arcsoft"), "arcsoft 不是浏览器");
+        assert!(!is_browser_name("operadriver"));
+        assert!(!is_browser_name("chromedriver"));
+        assert!(!is_browser_name("frozen"));
+        assert!(!is_browser_name(""));
+    }
 }

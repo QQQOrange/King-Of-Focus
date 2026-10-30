@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use chrono::{NaiveDateTime, TimeZone, Timelike};
+use chrono::{NaiveDateTime, Timelike};
 
 use crate::model::{Config, LaunchItem};
 use crate::shared::Shared;
@@ -227,7 +227,7 @@ fn find_url_window(url: &str) -> Option<Hwnd> {
     for (h, pid, title) in windows() {
         let path = crate::proc::exe_path(pid);
         let name = base_name(&path).to_lowercase();
-        let is_browser = crate::matcher::BROWSERS.iter().any(|b| name.contains(b));
+        let is_browser = crate::matcher::is_browser_name(&name);
         if !is_browser {
             continue;
         }
@@ -430,7 +430,18 @@ pub fn tick(
                 continue; // 这一段已经跑过
             }
         }
-        let (ok, fails) = run_items(&r.autolaunch.items);
+        // 演练模式只记录"本该打开什么"，不真的启动程序 / 打开网页。
+        // key 照旧标记，所以同一段只记一次，不会每秒刷日志。
+        let (ok, fails) = if cfg.settings.dry_run {
+            log(&format!(
+                "演练：进入自律时间，本应自动打开 {} 项（{}）",
+                r.autolaunch.items.len(),
+                r.name
+            ));
+            (0usize, Vec::<String>::new())
+        } else {
+            run_items(&r.autolaunch.items)
+        };
         if ok > 0 || !fails.is_empty() {
             names.push(r.name.clone());
         }

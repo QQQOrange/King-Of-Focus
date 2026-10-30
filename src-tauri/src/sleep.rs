@@ -20,7 +20,7 @@
 use crate::cfg;
 use crate::model::{Config, SleepWindow};
 use crate::shared::Shared;
-use chrono::{Datelike, Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -207,7 +207,7 @@ pub fn locked_by_cfg(cfg: &Config, ts: i64) -> bool {
     // 锁不锁由**当前命中的那一段**决定：午睡段可能只想关机不想锁屏，
     // 夜间段才全屏锁。用全局 s.lock_screen 会把两段的策略混成一个。
     match s.active(minute_of_ts(ts), weekday_of_ts(ts)) {
-        Some(w) => w.lock_screen && ts >= cfg.points.unlock_until,
+        Some(w) => w.lock_screen && ts >= cfg.points.sleep_unlock_until,
         None => false,
     }
 }
@@ -216,7 +216,7 @@ fn state_at(cfg: &Config, ts: i64, arm: Option<Arm>) -> SleepState {
     let s = &cfg.settings.sleep;
     let win = s.active(minute_of_ts(ts), weekday_of_ts(ts));
     let in_window = win.is_some();
-    let unlocked_until = cfg.points.unlock_until;
+    let unlocked_until = cfg.points.sleep_unlock_until;
     let unlocked = ts < unlocked_until;
     let locked = locked_by_cfg(cfg, ts);
     let countdown = win.as_ref().map(|w| w.countdown_min.max(1) as i64 * 60).unwrap_or(0);
@@ -340,14 +340,26 @@ pub fn unlock(shared: &Arc<Shared>, minutes: u32) -> Result<Value, String> {
     c.points.balance -= price;
     c.points.unlock_count_today += 1;
     let until = Local::now().timestamp() + mins as i64 * 60;
-    c.points.unlock_until = until;
+    c.points.sleep_unlock_until = until;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
         *w = c.clone();
     }
     // 已经排队关机的，赶紧撤回
     abort_shutdown();
-    *arm_slot().lock().unwrap() = None;
+    // 解锁窗口结束后要"重新开始一轮倒计时"，而不是接着段起点的旧账算：
+    // 这里先把起点挪到现在，主循环在解锁期间每秒也会继续把它推到当下，
+    // 于是买断一到点，倒计时是从 0 开始走的满时长。
+    let seg_key = s
+        .active(minute_of_day(), weekday_of_ts(until))
+        .as_ref()
+        .map(|w| window_start_of(w, until))
+        .unwrap_or(0);
+    *arm_slot().lock().unwrap() = Some(Arm {
+        start: Local::now().timestamp(),
+        fired: false,
+        key: seg_key,
+    });
     Ok(json!({
         "ok": true,
         "spent": price,
@@ -367,7 +379,13 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             let last = last_tick().load(Ordering::Relaxed);
             let resumed = last > 0 && ts - last > RESUME_GAP_SECS;
             if resumed {
-                *arm_slot().lock().unwrap() = None;
+                // 合盖/休眠回来：这一轮从"现在"重新给满倒计时。
+                // 以前是清空 arm，主循环再按"段起点"武装 —— 段起点往往在几小时前，
+                // 于是唤醒后的第一拍 remain 就是负的，机器立刻关机。
+                if let Some(a) = arm_slot().lock().unwrap().as_mut() {
+                    a.start = ts;
+                    a.fired = false;
+                }
             }
             last_tick().store(ts, Ordering::Relaxed);
 
@@ -376,15 +394,19 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             let min = minute_of_day();
             let win = s.active(min, weekday_of_ts(ts));
             let in_window = win.is_some();
-            let unlocked = ts < cfg.points.unlock_until;
+            let unlocked = ts < cfg.points.sleep_unlock_until;
             // 这一轮属于哪一段：用段起点当 key（同一段在整轮里恒定不变）
             let seg_key = win.as_ref().map(|w| window_start_of(w, ts)).unwrap_or(0);
 
             // ① 武装 / 解除
             {
                 let mut a = arm_slot().lock().unwrap();
-                if !in_window || unlocked {
+                if !in_window {
                     *a = None;
+                } else if unlocked {
+                    // 买断期间不锁不关，但也不能把这条记录扔掉：
+                    // 留着它、把起点每秒推到当下，解锁一到点就是"满时长重新倒数"。
+                    *a = Some(Arm { start: ts, fired: false, key: seg_key });
                 } else if a.map(|x| x.key != seg_key).unwrap_or(true) {
                     // key 变了 = 换了一段（或刚进来）：重新给满倒计时。
                     // 起点取「开机时刻」和「这一段开始时刻」里较晚的那个：
@@ -397,7 +419,11 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             let st = state_at(&cfg, ts, *arm_slot().lock().unwrap());
 
             // ② 到点关机（只发一次）
-            if st.locked && st.remain <= 0 && !st.fired && st.will_shutdown {
+            //
+            // 判据是"在时段内、计时中、时间到了"，**不是**"被锁屏"：
+            // 只关机不锁屏的时段（午睡常见）locked 恒为 false，以前永远不关机。
+            // deadline > 0 恰好排除了"解锁中"（那会儿 remain 也是 0）。
+            if st.in_window && st.deadline > 0 && st.remain <= 0 && !st.fired && st.will_shutdown {
                 if let Some(a) = arm_slot().lock().unwrap().as_mut() {
                     a.fired = true;
                 }
@@ -438,6 +464,8 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 只有测试里用 Local.with_ymd_and_hms 造时间，放进来避免正式构建报未使用导入
+    use chrono::TimeZone;
 
     fn with_sleep(from: u32, to: u32) -> Config {
         let mut c = Config::default();
@@ -446,6 +474,23 @@ mod tests {
         c.settings.sleep.to = to;
         c.settings.sleep.countdown_min = 10;
         c
+    }
+
+    /// 只关机不锁屏的时段也要到点关机。
+    /// 以前关机条件写的是 `st.locked`，而 locked 要求 lock_screen，
+    /// 于是"午睡只关机不锁屏"这种配置永远不会关机。
+    #[test]
+    fn shutdown_only_window_still_reaches_zero() {
+        let mut c = with_sleep(0, 1440);
+        c.settings.sleep.lock_screen = false;
+        c.settings.sleep.shutdown = true;
+        let ts = Local::now().timestamp();
+        let st = state_at(&c, ts, Some(Arm { start: ts - 11 * 60, fired: false , ..Default::default() }));
+        assert!(st.in_window, "应该在睡眠时段里");
+        assert!(!st.locked, "这段不锁屏");
+        assert!(st.deadline > 0, "倒计时该在走");
+        assert!(st.remain <= 0, "已经超过 10 分钟");
+        assert!(st.will_shutdown, "该关机");
     }
 
     /// 跨夜：23:00–07:00 覆盖 23:30 与 02:00，不覆盖 12:00
@@ -485,7 +530,7 @@ mod tests {
     fn unlock_suppresses_lock() {
         let mut c = with_sleep(0, 1440);
         let ts = Local::now().timestamp();
-        c.points.unlock_until = ts + 600;
+        c.points.sleep_unlock_until = ts + 600;
         let st = state_at(&c, ts, Some(Arm { start: ts, fired: false , ..Default::default() }));
         assert!(st.in_window);
         assert!(!st.locked, "解锁期间不该锁");
@@ -503,7 +548,7 @@ mod tests {
         assert!(why.is_some(), "睡眠锁定期间必须禁止退出");
 
         // 解锁之后立刻放行
-        c.points.unlock_until = ts + 600;
+        c.points.sleep_unlock_until = ts + 600;
         assert!(!locked_by_cfg(&c, ts));
         assert!(crate::guard::exit_blocked_at(&c, now).is_none());
     }

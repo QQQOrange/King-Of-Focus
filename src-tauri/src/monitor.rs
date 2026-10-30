@@ -75,7 +75,9 @@ pub fn place_hud(app: &tauri::AppHandle, cfg: &crate::model::Config) {
 
 pub fn start(app: AppHandle, shared: Arc<Shared>) {
     thread::spawn(move || {
-        let mut pending: HashMap<u32, Instant> = HashMap::new();
+        // 值 = (上次动手的时刻, 已尝试次数)。次数用来做退避：目标以管理员权限运行时
+        // terminate 永远失败，原来每 700ms 重试一次且永不停止。
+        let mut pending: HashMap<u32, (Instant, u32)> = HashMap::new();
         let mut logged: HashMap<u32, Instant> = HashMap::new();
         let self_pid = std::process::id();
         let mut acc_ms: u64 = 0;
@@ -157,6 +159,12 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     .rules
                     .iter()
                     .filter(|l| l.enabled && sched::is_active(&l.schedule, &now))
+                    // 只认**真的配了番茄**的规则：以前取的是"第一条生效规则"，
+                    // 它没配番茄就返回 (false, 0)，后面配了番茄的规则被完全忽略 ——
+                    // 休息段照常拦截、休息结束的收尾也不触发。
+                    .filter(|l| {
+                        l.brk.kind == "pomodoro" && l.brk.work_min > 0 && l.brk.break_min > 0
+                    })
                     .map(|l| sched::pomodoro_state(&l.schedule, &l.brk, &now))
                     .next()
                     .unwrap_or((false, 0))
@@ -257,27 +265,27 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     } else {
                         n.work_before.min(120) * 60
                     };
-                    if threshold > 0 {
-                        // 换阶段时剩余时间会跳大，用它来重置"已提醒"标记
-                        if phase_left as i64 > last_break_left + 5 {
-                            notified_phase = false;
-                        }
-                        if !notified_phase && (phase_left as i64) <= threshold as i64 {
-                            notified_phase = true;
-                            let mins = ((phase_left + 59) / 60).max(1);
-                            let msg = if break_now {
-                                format!("休息还剩 {mins} 分钟，准备回到专注")
-                            } else {
-                                format!("本轮专注还剩 {mins} 分钟，坚持一下")
-                            };
-                            shared.say(msg);
-                            if n.focus_window {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                }
+                    // 阶段重置必须独立于"这一拍要不要提醒"：
+                    // 关掉提醒（或阈值设 0）的那段时间里状态也得推进，
+                    // 否则重新打开时"已提醒"标记还停在旧阶段，本阶段就再也提醒不了。
+                    if phase_left as i64 > last_break_left + 5 {
+                        notified_phase = false;
+                    }
+                    last_break_left = phase_left;
+                    if threshold > 0 && !notified_phase && (phase_left as i64) <= threshold as i64 {
+                        notified_phase = true;
+                        let mins = ((phase_left + 59) / 60).max(1);
+                        let msg = if break_now {
+                            format!("休息还剩 {mins} 分钟，准备回到专注")
+                        } else {
+                            format!("本轮专注还剩 {mins} 分钟，坚持一下")
+                        };
+                        shared.say(msg);
+                        if n.focus_window {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
                             }
                         }
-                        last_break_left = phase_left;
                     }
                 }
             }
@@ -320,7 +328,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 }
             }
 
-            pending.retain(|_, t| t.elapsed().as_secs() < 45);
+            pending.retain(|_, (t, _)| t.elapsed().as_secs() < 45);
             logged.retain(|_, t| t.elapsed().as_secs() < 20);
 
             // 自律模式是否正在生效：规则生效中 / 时段专注中 / 固化锁定中
@@ -373,16 +381,32 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             .iter()
                             .any(|b| a.name == *b || a.name.contains(b));
                         if hit {
+                            // 演练模式只记录、不动手（原来这里连日志都不写，
+                            // 用户开着"演练"却照样被结束进程，等于演练完全失效）
+                            if cfg.settings.dry_run {
+                                let first = logged
+                                    .get(&a.pid)
+                                    .map(|t| t.elapsed().as_secs() >= 20)
+                                    .unwrap_or(true);
+                                if first {
+                                    logged.insert(a.pid, Instant::now());
+                                    shared.log(
+                                        "app",
+                                        format!("{} — {}", a.name, a.title),
+                                        "自律固化".into(),
+                                        "演练：锁定期间本应禁止打开此类工具".into(),
+                                    );
+                                }
+                                continue;
+                            }
                             proc::terminate(a.pid);
                             focus_main(&app, &shared);
-                            if !cfg.settings.dry_run {
-                                shared.log(
-                                    "app",
-                                    format!("{} — {}", a.name, a.title),
-                                    "自律固化".into(),
-                                    "锁定期间禁止打开此类工具".into(),
-                                );
-                            }
+                            shared.log(
+                                "app",
+                                format!("{} — {}", a.name, a.title),
+                                "自律固化".into(),
+                                "锁定期间禁止打开此类工具".into(),
+                            );
                         }
                     }
                 }
@@ -401,19 +425,23 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             .get(&a.pid)
                             .map(|t| t.elapsed().as_secs() >= 20)
                             .unwrap_or(true);
-                        proc::terminate(a.pid);
+                        if !cfg.settings.dry_run {
+                            proc::terminate(a.pid);
+                        }
                         if first {
                             logged.insert(a.pid, Instant::now());
                             let label = format!("{} — {}", a.name, a.title);
                             crate::notify::blocked_app(&app, &label, "任务管理器");
-                            if !cfg.settings.dry_run {
-                                shared.log(
-                                    "app",
-                                    label,
-                                    "任务管理器".into(),
-                                    "自律期间禁止打开任务管理器".into(),
-                                );
-                            }
+                            shared.log(
+                                "app",
+                                label,
+                                "任务管理器".into(),
+                                if cfg.settings.dry_run {
+                                    "演练：自律期间本应关闭任务管理器".into()
+                                } else {
+                                    "自律期间禁止打开任务管理器".into()
+                                },
+                            );
                         }
                     }
                 }
@@ -456,20 +484,35 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     let alive = hb_ts > 0 && now_ts - hb_ts <= cfg.settings.grace_secs as i64;
                     if hb_ts > 0 && !alive {
                         for a in apps.iter().filter(|a| matcher::is_browser(a)) {
-                            if proc::terminate(a.pid) {
+                            // 演练模式下不关浏览器，只记一条（20 秒节流，避免刷屏）
+                            let touched = if cfg.settings.dry_run {
+                                let first = logged
+                                    .get(&a.pid)
+                                    .map(|t| t.elapsed().as_secs() >= 20)
+                                    .unwrap_or(true);
+                                if first {
+                                    logged.insert(a.pid, Instant::now());
+                                }
+                                first
+                            } else {
+                                proc::terminate(a.pid)
+                            };
+                            if touched {
                                 let label = if hb_browser.is_empty() {
                                     a.name.clone()
                                 } else {
                                     hb_browser.clone()
                                 };
-                                if !cfg.settings.dry_run {
-                                    shared.log(
-                                        "app",
-                                        format!("{} — {}", label, a.title),
-                                        "浏览器守护".into(),
-                                        "扩展失联，已强制关闭浏览器".into(),
-                                    );
-                                }
+                                shared.log(
+                                    "app",
+                                    format!("{} — {}", label, a.title),
+                                    "浏览器守护".into(),
+                                    if cfg.settings.dry_run {
+                                        "演练：扩展失联，本应关闭浏览器".into()
+                                    } else {
+                                        "扩展失联，已强制关闭浏览器".into()
+                                    },
+                                );
                             }
                         }
                     }
@@ -492,7 +535,7 @@ fn on_block(
     cfg: &Config,
     app: &WinApp,
     rule: &Rule,
-    pending: &mut HashMap<u32, Instant>,
+    pending: &mut HashMap<u32, (Instant, u32)>,
     logged: &mut HashMap<u32, Instant>,
 ) -> bool {
     let label = if app.title.is_empty() {
@@ -541,7 +584,7 @@ fn on_block(
         match pending.get(&app.pid) {
             None => {
                 let ok = proc::soft_close(app.hwnd);
-                pending.insert(app.pid, Instant::now());
+                pending.insert(app.pid, (Instant::now(), 1));
                 let first = !logged.contains_key(&app.pid);
                 if first {
                     logged.insert(app.pid, Instant::now());
@@ -558,11 +601,17 @@ fn on_block(
                 }
                 first
             }
-            Some(t) => {
-                if t.elapsed().as_millis() >= 700 {
+            Some(kv) => {
+                let (t, n) = *kv;
+                // 每失败一次就把下一次的间隔拉长一倍（0.7s → 1.4s → 2.8s → 5.6s → 11s）。
+                // 原来失败也照样每 700ms 重来一次、永不停止，对着一个关不掉的目标持续开火。
+                let wait = 700u64.saturating_mul(1u64 << n.min(4));
+                if t.elapsed().as_millis() as u64 >= wait {
                     let ok = proc::terminate(app.pid);
-                    pending.insert(app.pid, Instant::now());
-                    if !ok {
+                    if ok {
+                        pending.remove(&app.pid);
+                    } else {
+                        pending.insert(app.pid, (Instant::now(), n.saturating_add(1)));
                         let first = !logged.contains_key(&app.pid);
                         if first {
                             logged.insert(app.pid, Instant::now());
