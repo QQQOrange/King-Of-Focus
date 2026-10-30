@@ -207,6 +207,14 @@ fn lnk_targets(raw: &[u8]) -> Vec<String> {
     out
 }
 
+/// 产品名（版本信息里的 FileDescription，如 "Microsoft Edge"）。
+///
+/// 媒体管控要靠它把 SMTC 会话归因到进程：很多播放器的会话 AUMID 用的是**产品名**
+/// （"MicrosoftEdge"），而进程名是 "msedge.exe"，光比进程名永远对不上。
+pub fn product_name(path: &str) -> Option<String> {
+    file_description(path)
+}
+
 /// 读 exe 版本信息里的 FileDescription。拿不到就 None（不抛错）。
 fn file_description(path: &str) -> Option<String> {
     let w = wide(path);

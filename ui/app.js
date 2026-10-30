@@ -2870,6 +2870,10 @@ function viewMask() {
               窗口回到前台、或遮罩关闭时<b>自动恢复</b>播放。只动我们暂停过的，
               你自己手动暂停的不会被乱动；归因不到的后台音乐一律不碰。
             </div>
+            <div class="hint" style="margin-top:2px">
+              需要播放器支持 Windows 的系统媒体控件（浏览器与主流播放器都支持）；
+              点上面的「自查」可以看到当前识别到几个媒体会话、暂停了谁。
+            </div>
           </div>
           <div class="switch" data-act="toggle-media-pause"><input type="checkbox" ${m.mediaPause ? 'checked' : ''}><i></i></div>
         </div>

@@ -1674,6 +1674,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
         let mut popups: Vec<Hwnd> = Vec::new();
         let mut popup_pid = 0u32;
         let mut popup_t = Instant::now();
+        // 媒体管控**必须**用自己的节流计时器：popup_t 每 500ms 会被下面的
+        // 弹窗扫描重置一次，共用的话 "popup_t.elapsed() >= 500" 在这里永远是 false，
+        // 媒体管控就只剩"scan_now 那一帧"才有机会跑 —— 等于不生效。
+        let mut media_t = Instant::now();
         // 放行程序（lazytyper 语音弹条等）的可见窗口，定期重收
         let mut pass_wins: Vec<Hwnd> = Vec::new();
         let mut pass_t = Instant::now();
@@ -2039,8 +2043,10 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ensure_above(tgt as Hwnd, &mut raised);
                 }
                 // ---- 媒体管控：暂停「被盖住」进程的媒体（真暂停，回到前台自动恢复）----
-                // 节奏：与 popups 同级（500ms）重算名单，避免每帧都 EnumWindows。
-                if media_should_run && (popup_t.elapsed().as_millis() >= 500 || scan_now) {
+                // 节奏：500ms 重算一次名单（EnumWindows + 一次归因，成本不低）。
+                // 计时器是**独立**的 media_t，绝不能复用 popup_t（见上面注释）。
+                if media_should_run && (media_t.elapsed().as_millis() >= 500 || scan_now) {
+                    media_t = Instant::now();
                     let covered = collect_covered_pids_with_target(tpid, &self_wins);
                     crate::media::pause_covered(&covered);
                 }
@@ -2143,7 +2149,7 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     ));
                 }
                 let report = format!(
-                    "on={} painted={}{} 抬升={}/{} err={} 摘顶={} 事件={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} alpha={} fps={} 循环={}/s 单帧={:.1}ms 置顶={} 窗口=({},{},{},{}) 覆盖层={} 副屏={}",
+                    "on={} painted={}{} 抬升={}/{} err={} 摘顶={} 事件={} 跟随窗口={:#x} 手动={:#x} 覆盖={:#x} alpha={} fps={} 循环={}/s 单帧={:.1}ms 置顶={} 窗口=({},{},{},{}) 覆盖层={} 副屏={} 媒体=[{}]",
                     ctl.on.load(Ordering::Relaxed),
                     ctl.painted.load(Ordering::Relaxed),
                     if follow { " 跟随前台" } else { "" },
@@ -2165,7 +2171,8 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     hole_end.right,
                     hole_end.bottom,
                     parts.join(" | "),
-                    mons.len()
+                    mons.len(),
+                    crate::media::diag()
                 );
                 if let Ok(mut d) = DIAG.lock() {
                     *d = report;

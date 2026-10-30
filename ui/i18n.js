@@ -675,6 +675,9 @@
     '后一天': 'Next day',
     '取消聚焦': 'Clear focus',
     '按时间轴看这一天做了什么': 'What you did today, on a timeline',
+    // 同一段文本节点被换行折成两句，词条按"归一化后的整段"写
+    '需要播放器支持 Windows 的系统媒体控件（浏览器与主流播放器都支持）； 点上面的「自查」可以看到当前识别到几个媒体会话、暂停了谁。':
+      'The player must support Windows system media controls (browsers and mainstream players do); use "Self-check" above to see how many sessions were found and which one was paused.',
     '正在载入…': 'Loading…',
     '这段时间还没有数据。': 'No data in this period.',
     '这一天没有使用记录。': 'No activity on this day.',
