@@ -4767,6 +4767,100 @@ window.__itest = async () => {
       out.push(['取消后时间轴位置不变', lead0() - trackTop0, 0]);
     }
 
+    /* ---- 单选与配色：点一个应用，只能它被选中，其它各自留色 ----
+     * 以前未选中压到 opacity .34、选中项又套 2~3px 白描边，
+     * 结果是"选中的一片白、其余糊成一片灰"，看着像全选 + 全变同色。 */
+    {
+      const ck = statsTabKey() + '|' + dayOf();
+      const keepDay = S.dayCache.get(ck);
+      // 造一天三个应用（A 两段、B/C 各一段），才验得出"颜色一一对应"
+      S.dayCache.set(ck, {
+        date: dayOf(), secs: 6000, items: [
+          { key: 'app|Alpha', label: 'Alpha', category: 'app', secs: 3600,
+            spans: [{ f: 100, t: 160 }, { f: 200, t: 260 }] },
+          { key: 'app|Beta', label: 'Beta', category: 'app', secs: 1800,
+            spans: [{ f: 300, t: 330 }] },
+          { key: 'app|Gamma', label: 'Gamma', category: 'app', secs: 600,
+            spans: [{ f: 400, t: 410 }] },
+        ],
+      });
+      Act.focusClear();
+      paintDay();
+      await wait(140);
+
+      const evs = () => [...document.querySelectorAll('#dayCard .dc-ev')];
+      const byKey = (k) => evs().filter((e) => e.dataset.key === k);
+      const bg = (e) => getComputedStyle(e).backgroundColor;
+
+      const before = evs().map(bg);
+      out.push(['三块三色（颜色映射按应用区分）', new Set(before).size, 3]);
+
+      byKey('app|Alpha')[0].click();
+      await wait(200);
+
+      out.push(['点一个应用后只有它被选中', new Set(evs()
+        .filter((e) => e.classList.contains('hit')).map((e) => e.dataset.key)).size, 1]);
+      out.push(['选中的就是这个应用', S.calHit, 'app|Alpha']);
+      out.push(['它的两段同时高亮', byKey('app|Alpha').filter((e) => e.classList.contains('hit')).length, 2]);
+      out.push(['别的应用没有被"连坐"选中',
+        byKey('app|Beta').concat(byKey('app|Gamma')).filter((e) => e.classList.contains('hit')).length, 0]);
+      {
+        const offs = evs().filter((e) => e.classList.contains('off'));
+        const offKeys = new Set(offs.map((e) => e.dataset.key));
+        const offCols = new Set(offs.map(bg));
+        out.push(['未选中项仍是各自的颜色（没有糊成同一种）', offCols.size, offKeys.size]);
+        out.push(['未选中项只是变淡，色彩映射没有改',
+          offs.every((e) => bg(e) !== 'rgb(0, 0, 0)' && bg(e) !== ''), true]);
+        out.push(['未选中项的不透明度仍能看出颜色',
+          Math.round(parseFloat(getComputedStyle(offs[0]).opacity) * 100), 58]);
+      }
+      {
+        const hit = evs().find((e) => e.classList.contains('hit'));
+        const off = evs().find((e) => e.classList.contains('off'));
+        out.push(['选中的块满色，未选中的退到背景里',
+          [getComputedStyle(hit).opacity, getComputedStyle(off).opacity].join('/'), '1/0.58']);
+        out.push(['选中的块比未选中的宽出一圈（横向站出来）',
+          Math.round(hit.getBoundingClientRect().width - off.getBoundingClientRect().width), 6]);
+        out.push(['选中的块有描边（与未选中形成硬对比）',
+          getComputedStyle(hit).boxShadow !== 'none', true]);
+        out.push(['未选中的块没有描边', getComputedStyle(off).boxShadow, 'none']);
+      }
+
+      // 同一应用再点一次 = 取消（开关语义）；再点回来仍然只选它
+      byKey('app|Alpha')[1].click();
+      await wait(180);
+      out.push(['同一个应用再点一次 = 取消选中', S.calHit, '']);
+      out.push(['取消后两段都不再高亮',
+        byKey('app|Alpha').filter((e) => e.classList.contains('hit')).length, 0]);
+      byKey('app|Alpha')[0].click();
+      await wait(180);
+      out.push(['重新选中后仍然只选它一个', S.calHit, 'app|Alpha']);
+      out.push(['两段又一起亮起来',
+        byKey('app|Alpha').filter((e) => e.classList.contains('hit')).length, 2]);
+
+      // 切到另一个应用：高亮整体搬过去，剩下的回到自己的颜色
+      byKey('app|Beta')[0].click();
+      await wait(180);
+      out.push(['切换后只有新应用被选中', S.calHit, 'app|Beta']);
+      out.push(['旧应用不再高亮', byKey('app|Alpha').filter((e) => e.classList.contains('hit')).length, 0]);
+      out.push(['切换后仍未出现"全选"', new Set(evs()
+        .filter((e) => e.classList.contains('hit')).map((e) => e.dataset.key)).size, 1]);
+
+      // 再点已选中的那块 = 取消，颜色与不透明度全部复原
+      byKey('app|Beta')[0].click();
+      await wait(320);   // 等 .16s 的不透明度过渡走完再量
+      out.push(['再点一次取消选中', S.calHit, '']);
+      out.push(['取消后没有任何块被压暗', evs().filter((e) => e.classList.contains('off')).length, 0]);
+      out.push(['取消后颜色与选中前完全一致',
+        evs().map(bg).join('|'), before.join('|')]);
+      out.push(['取消后不透明度全部回到 1',
+        new Set(evs().map((e) => getComputedStyle(e).opacity)).size, 1]);
+
+      if (keepDay) S.dayCache.set(ck, keepDay); else S.dayCache.delete(ck);
+      paintDay();
+      await wait(120);
+    }
+
     /* ---- 切状态筛选：三处一起换口径，日期不漂 ---- */
     {
       const d0 = S.dayDate;

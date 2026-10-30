@@ -3306,9 +3306,18 @@ function dcDur(secs) {
   return I18N.getLang() === 'en' ? fmtDurShort(secs) : fmtDur(secs);
 }
 
-/** 当天的配色：窗口里有数据就按整个窗口算（同一软件每天同色），否则只按这一天算 */
+/** 当天的配色。
+ *
+ *  窗口里**确实包含这一天**时，按整个窗口算（同一软件每天同色）；
+ *  否则只按这一天算 —— 拿一个不含当天的窗口去建色表，当天的应用一个都查不到，
+ *  会全部回落到 `--line-2`，看起来就是"所有颜色突然变成同一种颜色"。
+ */
 function dayColors(d) {
-  const days = (S.cal && S.cal.length) ? S.cal : (d ? [d] : []);
+  const days = (S.cal || []).slice();
+  // 无条件把这一天并进来：色表必须覆盖这一次真正要画的**全部**条目。
+  // 少一个，那个应用就会回落成 var(--line-2)（灰）—— 一片灰看着就是"颜色全变成一个样"。
+  if (d) days.push(d);
+  if (!days.length) return calColors([]);
   return calColors(days);
 }
 
@@ -3373,11 +3382,13 @@ function dayHtml() {
     const hPct = ((b.t - b.f) / 1440) * 100;
     const on = hasHit && b.key === S.calHit;
     const off = hasHit && !on;
+    // 很薄的段（< 8px，约 25 分钟以内）用光晕而不是描边：描边会把它自己的颜色盖掉
+    const thin = px < 8 ? ' thin' : '';
     const tm = hhmmOfMin(b.f) + '–' + hhmmOfMin(b.t);
     // 读数只留"时段 · 名称"：时长本来就由色块高度表达；时刻放最前面，
     // 窄列里被省略号截掉的是名字尾巴，而不是"几点到几点"。
     const tip = `${tm} · ${b.label}`;
-    return `<button class="dc-ev${on ? ' hit' : ''}${off ? ' off' : ''}" data-act="day-ev"
+    return `<button class="dc-ev${on ? ' hit' : ''}${off ? ' off' : ''}${thin}" data-act="day-ev"
       data-key="${esc(b.key)}" data-tip="${esc(tip)}"
       style="top:${(b.f / 1440) * 100}%;height:${Math.max(hPct, (DC_MIN / DC_H) * 100)}%;background:${b.c}">
       ${px >= 18 ? `<span class="dc-n">${esc(b.label)}</span>` : ''}
@@ -5847,6 +5858,8 @@ const Act = window.Act = {
     paintPieFocus();
   },
   /** 点色块/图例 = 聚焦这个分类（再点一次取消）：饼图、日历、当日日历同时响应 */
+  /** 点一个块 = 选中它所属的应用；再点同一个应用（任一段） = 取消。
+   *  同一时刻只可能有一个 key 处于选中态，所以"全选"在数据层不可能发生。 */
   focusPick(key) {
     if (!key) return;
     S.calHit = S.calHit === key ? '' : key;

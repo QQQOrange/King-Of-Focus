@@ -1721,9 +1721,24 @@ html[data-motion="low"] .stats-day.cal-flash { animation: none; }
   overflow: hidden; white-space: nowrap;
 }
 .dc-ev:hover { filter: brightness(1.12); }
-/* 命中的色块：用"字色"描边（深色下亮边、浅色下暗边，两边都清楚） */
-.dc-ev.hit { box-shadow: 0 0 0 2px var(--text), 0 0 0 3px var(--panel-a); z-index: 3; }
-.dc-ev.off { opacity: .34; }
+/* 选中 / 未选中的表达方式。
+ *
+ *  这里踩过坑：未选中压到 opacity .34 再给选中项套一道 2~3px 白描边，
+ *  结果是"被选中的一片白、其余的糊成一片灰" —— 十几个应用的颜色全丢了，
+ *  看起来就像"全都选中了、而且都变成同一个颜色"。
+ *
+ *  现在两种状态都保住各自的色相：
+ *    · 未选中：只降到 .58，颜色仍然认得出是谁（只是退到背景里）；
+ *    · 选中：满色 + 轻微提亮 + 左右各放宽 3px + 一圈 1px 描边 —— 细块也不会被描边吃掉。 */
+.dc-ev.off { opacity: .58; }
+.dc-ev.hit {
+  left: 0; right: 0;   /* 比同一行其它块宽 6px：不改变时间位置，横向"站"出来 */
+  z-index: 4;
+  box-shadow: 0 0 0 1px var(--text);
+  filter: brightness(1.14) saturate(1.06);
+}
+/* 很薄的段：描边会盖掉它本身的颜色，改用外发光 */
+.dc-ev.hit.thin { box-shadow: 0 0 6px 1px var(--text); }
 html[data-motion="low"] .dc-ev { transition: none; }
 
 /* 空档：斜纹 —— 和"某一段是别的软件"区分开 */
