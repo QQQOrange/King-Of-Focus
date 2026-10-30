@@ -64,8 +64,12 @@ const S = {
   calSel: '',
   cal: null,
   calKey: '',
-  calHit: '',      // 从饼图跳过来时要高亮的软件 key
-  calHitAt: 0,     // 高亮开始时间（到点自动褪掉）
+  calPending: false,   // 周/月网格正在取数（当日日历据此等待，不重复请求同一天）
+  // 「聚焦分类」：饼图描边、当日日历高亮、周/月网格描边三处共用同一个 key（'' = 不聚焦）
+  calHit: '',
+  // 当日日历：显示哪一天。默认跟着选中日/今天走
+  dayDate: '',
+  dayCache: new Map(),   // `${tab}|${date}` → 单日数据（日历窗口里已有那天时直接复用）
   reports: [],
   reportView: null,
   picker: null,
@@ -228,7 +232,7 @@ function applyTheme() {
     // 主题切换后重绘饼图（canvas 颜色是算出来的）
     if (S.view === 'stats') {
       const cur = currentSlices();
-      drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
+      drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长', focusKey: S.calHit });
     }
     if ($('#pieOn')) renderReportModal();
   }
@@ -2988,6 +2992,13 @@ function parseYmd(t) {
   return new Date(p[0], p[1] - 1, p[2]);
 }
 
+/** 三个视图共用同一个状态筛选：饼图、周/月网格、当日日历必须看同一批数据。
+ *  以前只有饼图认 statsTab，日历那边是自己拼的字符串 —— 一旦哪天加了新 tab，
+ *  两边就会各自算各自的，出现"上面 3 小时、下面 5 小时"。 */
+function statsTabKey() {
+  return S.statsTab === 'off' ? 'off' : (S.statsTab === 'on' ? 'on' : 'all');
+}
+
 /** 当前要加载的区间：周 = 7 天，月 = 覆盖整月的 7 的倍数天 */
 function calRange() {
   const base = parseYmd(S.calAnchor || S.calSel || todayStr());
@@ -3008,7 +3019,7 @@ function calRange() {
   const sel = S.calSel || lo;
   if (sel < lo) lo = sel;
   if (sel > hi) hi = sel;
-  const tab = S.statsTab === 'off' ? 'off' : (S.statsTab === 'on' ? 'on' : 'all');
+  const tab = statsTabKey();
   return { start: lo, end: hi, tab, key: lo + '|' + hi + '|' + tab };
 }
 
@@ -3145,90 +3156,258 @@ function calMonthHtml(days, colors) {
     <div class="cal-month">${cells}</div>`;
 }
 
-/** 选中那一天的明细：每个软件的时段、累计时长、占比 */
-function calDetailHtml(days, colors) {
-  const d = (days || []).find((x) => x.date === S.calSel);
-  if (!d) return '';
-  const dt = parseYmd(d.date);
-  const wd = DAYS[(dt.getDay() + 6) % 7];
-  const total = d.secs || 0;
-  const rows = (d.items || []).length
-    ? d.items.map((it) => {
-      const pct = total ? ((it.secs / total) * 100).toFixed(1) : '0.0';
-      const spans = (it.spans || []).map((sp) => `${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}`).join(' · ');
-      const hit = it.key && it.key === S.calHit ? ' class="hit"' : '';
-      return `<li${hit}>
-        <span class="sw" style="background:${colors.get(it.key) || 'var(--line-2)'}"></span>
-        <b class="cd-n">${esc(it.label)}${it.category === 'site'
-    ? ' <span class="badge blue">网页</span>' : ''}</b>
-        <span class="cd-m">${fmtDur(it.secs)}</span>
-        <span class="cd-p">${pct}%</span>
-        <span class="cd-sp">${spans || '—'}</span>
-      </li>`;
-    }).join('')
-    : '<li class="cd-none">这一天没有使用记录。</li>';
-  let bar = '';
-  for (const it of d.items || []) {
-    const c = colors.get(it.key) || 'var(--line-2)';
-    for (const sp of it.spans || []) {
-      bar += `<i style="left:${(sp.f / 1440) * 100}%;width:${Math.max(0.4, ((sp.t - sp.f) / 1440) * 100)}%;background:${c}"></i>`;
-    }
-  }
-  return `<div class="cal-detail">
-    <div class="cd-hd">
-      <b>${d.date.slice(5)} ${wd}</b>
-      <span class="cd-sum">共 ${fmtDur(total)}</span>
-      <button class="pd-x" data-act="cal-clear" title="收起">×</button>
-    </div>
-    <div class="cd-track">${bar}</div>
-    <div class="cd-ticks">${[0, 6, 12, 18, 24].map((h) => `<span>${pad(h === 24 ? 24 : h)}:00</span>`).join('')}</div>
-    <ul class="cd-list">${rows}</ul>
-  </div>`;
+/* ---------------- 当日日历（饼图右侧的单日时间轴） ----------------
+ *
+ *  一天的 24 小时等比铺在一条竖轨上：色块的位置 = 什么时候开始，高度 = 用了多久。
+ *  这块以前是"日历下面的一张明细表"，现在挪到饼图右侧、并且换成时间轴：
+ *  同一份数据，看位置比看列表快得多 —— 是清晨还是深夜、一段是长是短，一眼就出来。
+ *
+ *  为什么不做成"每个块都写字"：24 小时塞进 480px，1 分钟只有 0.33px，
+ *  短块根本放不下字。于是够高（>= 18px，约 55 分钟）才写名字、>= 36px 再写时刻，
+ *  不够高的靠悬停把读数打到标题行 —— 轨道上永远不跳字。
+ */
+
+const DC_H = 480;   // 轨道高度（px），与 CSS 的 --dc-h 一致：1 小时 = 20px
+const DC_MIN = 3;   // 一分钟的块也要看得见
+
+function dayOf() {
+  return S.dayDate || S.calSel || S.calAnchor || todayStr();
 }
 
-/** 从饼图点进来的联动：滚到「时间日历」，并高亮这个软件在那里的色块。
- *
- *  为什么还要调一次 calLoad：饼图按"时间段"统计，而日历按"某一周/某一月"显示，
- *  两者窗口可能完全不重叠。这里取该软件**最近有记录的那一天**做锚点，
- *  保证跳过去以后真的能看到它、而不是跳到一个空白周。
- */
-function pieFocusCal(it) {
-  const key = it && it.key ? it.key : '';
-  if (key === '__rest') {
-    // 「其他」是聚合出来的，没有单一软件可指：只做定位，不做逐块高亮
-    S.calHit = '';
-  } else {
-    S.calHit = key;
-  }
-  S.calHitAt = Date.now();
-  const dates = (it && it.spans ? it.spans : [])
-    .map((sp) => sp && sp.date)
-    .filter(Boolean)
-    .sort();
-  if (dates.length) {
-    const day = dates[dates.length - 1];
-    S.calSel = day;
-    S.calAnchor = day;
-  }
-  // 数据没变时 paintCal 就够；窗口变了则重新取
-  if (S.calKey !== calRange().key) calLoad();
-  else paintCal();
+function dayCacheKey(date) {
+  return statsTabKey() + '|' + date;
+}
 
-  const card = $('#calCard');
-  if (!card) return;
-  if (card.scrollIntoView) {
-    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+/** 当天数据：单日缓存优先，其次复用周/月网格里同一天 —— 同一份数据不发第二次请求 */
+function dayData(date) {
+  const d = date || dayOf();
+  const ck = dayCacheKey(d);
+  if (S.dayCache && S.dayCache.has(ck)) return S.dayCache.get(ck);
+  if (S.cal && S.calKey === calRange().key) {
+    const hit = S.cal.find((x) => x.date === d);
+    if (hit) return hit;
   }
+  return null;
+}
+
+let dayTok = 0;
+
+async function dayFetch(date, force) {
+  const ck = dayCacheKey(date);
+  if (force) S.dayCache.delete(ck);
+  else if (S.dayCache.has(ck)) { paintDay(); return; }
+  const tok = ++dayTok;
+  let got;
+  try {
+    const r = await invoke('stats_calendar', { start: date, end: date, tab: statsTabKey() });
+    got = (r && r[0]) || { date, secs: 0, items: [] };
+  } catch (e) {
+    got = { date, secs: 0, items: [] };
+  }
+  S.dayCache.set(ck, got);
+  // 期间又切到别的天了：这次结果只进缓存，不抢当前画面
+  if (tok === dayTok) paintDay();
+}
+
+/** 保证当天有数据可画：已有就直接画，否则单独取那一天 */
+function dayEnsure(force) {
+  const d = dayOf();
+  if (force) S.dayCache.delete(dayCacheKey(d));
+  if (dayData(d)) { paintDay(); return; }
+  // 周/月网格正在取、而且窗口里就有这天：等它回来，别为同一份数据发两个请求
+  if (S.calPending && !force) return;
+  dayFetch(d, force);
+}
+
+/** 这一项最该看的是哪一天：用时最长的那天（并列时取较近的一天） */
+function bestDayOf(it) {
+  const m = new Map();
+  for (const sp of (it && it.spans) || []) {
+    if (!sp || !sp.date) continue;
+    m.set(sp.date, (m.get(sp.date) || 0) + Math.max(0, (sp.t || 0) - (sp.f || 0)));
+  }
+  if (!m.size) return '';
+  const arr = [...m.entries()].sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? 1 : -1));
+  return arr[0][0];
+}
+
+/** 聚焦某个分类（'' = 取消）：饼图描边、当日日历、周/月网格三处一起变 */
+function statsFocus(key, date) {
+  const moved = !!date && date !== dayOf();
+  S.calHit = key || '';
+  if (date) {
+    // 三处日期一起走：当日日历、网格选中日、网格窗口锚点
+    S.dayDate = date;
+    S.calSel = date;
+    S.calAnchor = date;
+  }
+  if (S.calKey !== calRange().key) calLoad();   // 窗口变了才重取
+  else paintCal();
+  dayEnsure();
+  paintPieFocus();
+  // 只是把面板收起来（没换分类也没换天）就别闪了 —— 那一侧其实什么都没变
+  if (!S.calHit && !moved) return;
+  const card = $('#dayCard');
+  if (!card) return;
   card.classList.remove('cal-flash');
-  // 强制回流，保证连点两次也能重新播一次高亮
-  void card.offsetWidth;
+  void card.offsetWidth;      // 强制回流：连点两次也要重播一次高亮
   card.classList.add('cal-flash');
-  clearTimeout(pieFocusCal._t);
-  pieFocusCal._t = setTimeout(() => {
-    card.classList.remove('cal-flash');
-    // 高亮保留得比卡片光晕久一点，方便对上是哪几块
-    S.calHitAt = 0;
-  }, 4200);
+  clearTimeout(statsFocus._t);
+  statsFocus._t = setTimeout(() => card.classList.remove('cal-flash'), 2000);
+}
+
+/** 只重画扇图的"聚焦"描边：不重新布局，扇区位置一动不动 */
+function paintPieFocus() {
+  const cv = $('#pie');
+  if (!cv || !cv.__pie) return;
+  const items = cv.__pie.items || [];
+  cv.__pie.focus = S.calHit ? items.findIndex((it) => it.key === S.calHit) : -1;
+  drawPieFrame(cv);
+}
+
+/** 一天里所有有记录的段：按开始时间排好，越界的先夹进 00:00–24:00 */
+function dcBlocks(d, colors) {
+  const out = [];
+  for (const it of (d && d.items) || []) {
+    const c = colors.get(it.key) || 'var(--line-2)';
+    for (const sp of it.spans || []) {
+      // 跨天/脏数据（t > 1440、t < f）一律夹住：宁可少画一段，也不把块画到轨道外面
+      const f = Math.max(0, Math.min(1440, Number(sp.f) || 0));
+      const t = Math.max(f, Math.min(1440, Number(sp.t) || 0));
+      if (t - f < 1) continue;
+      out.push({ key: it.key, label: it.label || '', c, f, t });
+    }
+  }
+  out.sort((a, b) => (a.f - b.f) || (a.t - b.t));
+  return out;
+}
+
+/** 空档：铺一层很淡的斜纹，让人分得清"没记录"和"这一段是别的软件" */
+function dcGap(f, t) {
+  const px = ((t - f) / 1440) * DC_H;
+  return `<i class="dc-gap" style="top:${(f / 1440) * 100}%;height:${((t - f) / 1440) * 100}%">${
+    px >= 40 ? '<span>空闲</span>' : ''}</i>`;
+}
+
+/** 聚焦项的名字：今天的数据里有就用它，否则退回总览里的名字，再不行用 key 的尾巴 */
+function focusName(key, d) {
+  const it = d ? (d.items || []).find((x) => x.key === key) : null;
+  if (it) return it.label;
+  let found = null;
+  if (S.stats) {
+    const tab = statsTabKey();
+    const pool = tab === 'on' ? S.stats.on : (tab === 'off' ? S.stats.off : mergeSlices(S.stats.on, S.stats.off));
+    found = pool.find((x) => x.key === key) || null;
+  }
+  if (found) return found.label;
+  return String(key || '').split('|').slice(1).join('|') || String(key || '');
+}
+
+/** 时长文案：英文界面用 1h30m，中文用 1 小时 30 分（不发明"共…项"这种复合句去查词典） */
+function dcDur(secs) {
+  return I18N.getLang() === 'en' ? fmtDurShort(secs) : fmtDur(secs);
+}
+
+/** 当日日历的整块内容（标题行 + 时间轴 + 图例） */
+function dayHtml() {
+  const en = I18N.getLang() === 'en';
+  const date = dayOf();
+  const dt = parseYmd(date);
+  const wd = DAYS[(dt.getDay() + 6) % 7];
+  const d = dayData(date);
+  const days = (S.cal && S.cal.length) ? S.cal : (d ? [d] : []);
+  const colors = calColors(days);
+  const blocks = d ? dcBlocks(d, colors) : [];
+  const total = (d && d.secs) || 0;
+  const nItems = d && d.items ? d.items.length : 0;
+  // 聚焦的那一项在今天到底有没有：没有就别把别的块压暗（否则满屏发灰，像坏了）
+  const hasHit = !!(S.calHit && blocks.some((b) => b.key === S.calHit));
+  const today = date === todayStr();
+
+  // 读数行："共 2 小时 30 分 · 6 项"。复合句在 JS 里拼，不指望词典认得出来
+  const sumTxt = en ? `${fmtDurShort(total)} · ${nItems} items` : `共 ${fmtDur(total)} · ${nItems} 项`;
+  const head = `<div class="dc-hd">
+    <b class="dc-title">当日日历</b>
+    <button class="btn btn-sm dc-ar" data-act="day-move" data-d="-1" title="${en ? 'Previous day' : '前一天'}">‹</button>
+    <button class="btn btn-sm dc-ar" data-act="day-move" data-d="1" title="${en ? 'Next day' : '后一天'}">›</button>
+  </div>
+  <div class="dc-sub">
+    <b class="dc-date${today ? ' today' : ''}">${date.slice(5)} <span>${wd}</span></b>
+    <span class="dc-sum" id="dcSum" data-def="${sumTxt}">${sumTxt}</span>
+    ${today ? '' : '<button class="dc-today" data-act="day-today">今天</button>'}
+  </div>`;
+
+  const chip = S.calHit ? `<div class="dc-chip${hasHit ? '' : ' off'}">
+      <i style="background:${colors.get(S.calHit) || 'var(--text-3)'}"></i>
+      <span>${esc(focusName(S.calHit, d))}${hasHit ? '' : (en ? ' · none today' : ' · 这天没有')}</span>
+      <button class="dc-x" data-act="focus-clear" title="${en ? 'Clear focus' : '取消聚焦'}">×</button>
+    </div>` : '';
+
+  if (!d) return `${head}${chip}<div class="dc-loading">正在载入…</div>`;
+  if (!blocks.length) {
+    return `${head}${chip}<div class="empty dc-empty"><span class="ico">▤</span>这一天没有使用记录。</div>`;
+  }
+
+  let gaps = '';
+  let cur = 0;
+  for (const b of blocks) {
+    if (b.f - cur >= 30) gaps += dcGap(cur, b.f);
+    cur = Math.max(cur, b.t);
+  }
+  if (1440 - cur >= 30) gaps += dcGap(cur, 1440);
+
+  const evs = blocks.map((b) => {
+    const px = ((b.t - b.f) / 1440) * DC_H;
+    const hPct = ((b.t - b.f) / 1440) * 100;
+    const on = hasHit && b.key === S.calHit;
+    const off = hasHit && !on;
+    const tm = hhmmOfMin(b.f) + '–' + hhmmOfMin(b.t);
+    const tip = `${b.label} · ${tm} · ${dcDur((b.t - b.f) * 60)}`;
+    return `<button class="dc-ev${on ? ' hit' : ''}${off ? ' off' : ''}" data-act="day-ev"
+      data-key="${esc(b.key)}" data-tip="${esc(tip)}"
+      style="top:${(b.f / 1440) * 100}%;height:${Math.max(hPct, (DC_MIN / DC_H) * 100)}%;background:${b.c}">
+      ${px >= 18 ? `<span class="dc-n">${esc(b.label)}</span>` : ''}
+      ${px >= 36 ? `<span class="dc-t">${tm}</span>` : ''}
+    </button>`;
+  }).join('');
+
+  const nowMin = dt.getHours() * 60 + dt.getMinutes();
+  const nowLine = today ? `<i class="dc-now" style="top:${(nowMin / 1440) * 100}%"></i>` : '';
+  const axis = [0, 6, 12, 18, 24]
+    .map((h) => `<span style="top:${(h / 24) * 100}%">${pad(h)}:00</span>`).join('');
+
+  // 图例就是"颜色 → 名字"的对照：色块太薄写不下字时靠它认
+  const items = d.items || [];
+  const legend = `<div class="dc-lg">${items.slice(0, 6).map((it) => `<button
+      class="dc-lg-i${it.key === S.calHit ? ' on' : ''}" data-act="day-ev" data-key="${esc(it.key)}"
+      title="${esc(it.label)} · ${dcDur(it.secs)}">
+      <i style="background:${colors.get(it.key) || 'var(--line-2)'}"></i>${esc(it.label)}</button>`).join('')
+    }${items.length > 6 ? `<span class="dc-lg-more">+${items.length - 6}</span>` : ''}</div>`;
+
+  return `${head}${chip}
+  <div class="dc-body">
+    <div class="dc-axis"><div class="dc-axis-in">${axis}</div></div>
+    <div class="dc-track">${gaps}${evs}${nowLine}</div>
+  </div>${legend}`;
+}
+
+/** 只重画当日日历（不整页重建：卡片右侧这一块独立更新，点一下不会带着整页闪） */
+function paintDay() {
+  const body = $('#dayBody');
+  if (!body) return;
+  body.innerHTML = dayHtml();
+  if (window.I18N && I18N.apply) I18N.apply(body);
+  // 默认读数（"共 X · N 项"）翻译后再记下来：悬停结束后原样还原
+  const sum = body.querySelector('#dcSum');
+  if (sum) sum.dataset.def = sum.textContent;
+}
+
+/** 悬停读数：把具体时刻写到标题行 —— 不占轨道、也不会让块跳动 */
+function dcRead(tip) {
+  const el = $('#dcSum');
+  if (!el) return;
+  const v = tip || el.dataset.def || '';
+  if (el.textContent !== v) el.textContent = v;
 }
 
 /** 时间范围变了，日历跟着落到同一个周期。
@@ -3243,6 +3422,12 @@ function calFollowRange() {
   else if (S.range === 'month') S.calAnchor = dateStr(new Date(now.getFullYear(), now.getMonth(), 1));
   else if (S.range === 'year') S.calAnchor = dateStr(new Date(now.getFullYear(), 0, 1));
   else if (S.range === 'custom') S.calAnchor = S.customStart || todayStr();
+  // 当日日历落到同一周期的"今天"：区间里没有今天就退到区间的最后一天
+  // （否则切到「本月」还盯着上个月某一天，看起来就是两边对不上）
+  const bd = boundsOf(S.range);
+  const t = todayStr();
+  S.dayDate = (t >= bd[0] && t <= bd[1]) ? t : bd[1];
+  S.calSel = S.dayDate;
   S.calKey = '';   // 强制重取
 }
 
@@ -3251,8 +3436,9 @@ function calHtml() {
   if (!days) return '<div class="cal-loading">正在载入…</div>';
   if (!days.length) return '<div class="empty"><span class="ico">▤</span>这段时间还没有数据。</div>';
   const colors = calColors(days);
-  const grid = S.calMode === 'month' ? calMonthHtml(days, colors) : calWeekHtml(days, colors);
-  return grid + calDetailHtml(days, colors);
+  // 只画网格：选中那天的细则已经搬到饼图右侧的「当日日历」里，
+  // 这里再放一份就是同一份数据看两遍（而且会把卡片撑很高）。
+  return S.calMode === 'month' ? calMonthHtml(days, colors) : calWeekHtml(days, colors);
 }
 
 /** 只重画日历卡片（不整页重建，滚动位置和焦点都不动） */
@@ -3277,13 +3463,18 @@ async function calLoad() {
   const r = calRange();
   S.calKey = r.key;             // 先记指纹：失败也不会被每帧重试打爆
   S.cal = null;
+  S.calPending = true;          // 当日日历据此等待，不为同一天再发一个请求
   paintCal();
+  paintDay();
   try {
     S.cal = await invoke('stats_calendar', { start: r.start, end: r.end, tab: r.tab });
   } catch (e) {
     S.cal = [];
   }
+  S.calPending = false;
   paintCal();
+  // 网格回来了，当天那份数据大概率就在里面：不用再单独请求
+  paintDay();
 }
 
 /** 进入统计页时保证有数据（区间没变就不重复请求） */
@@ -3305,42 +3496,6 @@ function viewStats() {
     ['off', '自律模式未开启', ''],
     ['all', '两种状态汇总', ''],
   ];
-
-  // 明细清单：**全部条目**，每项都给出时长、占比，以及具体在哪些分钟用过。
-  // 以前只列前 30 项、而且没有"使用时间"这一列 —— 看得见用时，看不见它发生在什么时候。
-  const spanCell = (sl) => {
-    const list = sl.spans || [];
-    if (!list.length) return '<span class="muted">—</span>';
-    const byDate = new Map();
-    for (const sp of list) {
-      const d = String(sp.date || '').slice(5);
-      if (!byDate.has(d)) byDate.set(d, []);
-      byDate.get(d).push(hhmmOfMin(sp.f) + '–' + hhmmOfMin(sp.t));
-    }
-    let html = '';
-    for (const [d, arr] of byDate) {
-      html += `<span class="tsg"><b>${esc(d)}</b> ${esc(arr.join(' · '))}</span>`;
-    }
-    const total = sl.spanCount || list.length;
-    if (total > list.length) html += `<span class="muted">…${total - list.length}</span>`;
-    return html;
-  };
-
-  const rows = cur.slices.length
-    ? cur.slices.map((sl) => `<tr>
-        <td><span class="badge ${sl.category === 'site' ? 'blue' : 'gold'}">${sl.category === 'site' ? '网页' : '软件'}</span></td>
-        <td>
-          <div>${esc(sl.label)}${sl.category === 'site' && sl.browser
-    ? ` <span class="st-browser" title="打开这个网站用的浏览器">（${esc(sl.browser)}）</span>` : ''}${sl.category === 'site' && sl.pages > 1
-    ? ` <span class="muted" style="font-size:11px">· 共 ${sl.pages} 个页面</span>` : ''}</div>
-          ${sl.category === 'site' && String(sl.key || '').indexOf('site|') === 0
-    ? `<div class="muted" style="font-size:10.5px;line-height:1.4">${esc(String(sl.key).slice(5))}</div>` : ''}
-        </td>
-        <td class="tnum">${fmtDur(sl.secs)}</td>
-        <td class="tnum muted">${cur.total ? ((sl.secs / cur.total) * 100).toFixed(1) : '0.0'}%</td>
-        <td class="ts-cell">${spanCell(sl)}</td>
-      </tr>`).join('')
-    : '';
 
   return `
   <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
@@ -3373,11 +3528,16 @@ function viewStats() {
           ? '这里<b>只统计自律模式未生效时段</b>内的前台使用时长，与"已开启"的数据完全隔离。'
           : '汇总口径：把「已开启」与「未开启」两个数据集里同一个应用 / 同一个域名的秒数直接相加，不做任何加权；扇区大小 = 该项在所选时间段内的前台使用总时长占比。'}
     </div>
-    ${cur.slices.length ? `
-    <div class="chart-wrap">
-      <canvas id="pie" width="620" height="360"></canvas>
+    <div class="stats-split">
+      <div class="stats-pie">
+        ${cur.slices.length ? `<div class="chart-wrap"><canvas id="pie" width="620" height="360"></canvas></div>
+          <div id="pieDetail" class="pie-detail-host" data-key=""></div>`
+    : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
+      </div>
+      <div class="stats-day" id="dayCard">
+        <div id="dayBody">${dayHtml()}</div>
+      </div>
     </div>
-    <div id="pieDetail" class="pie-detail-host" data-key=""></div>` : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
   </div>
 
   <div class="card" id="calCard">
@@ -3393,7 +3553,7 @@ function viewStats() {
       <span class="cal-label">${calRangeLabel()}</span>
       <button class="btn btn-sm" data-act="cal-move" data-d="1" title="下一页">›</button>
       <button class="btn btn-sm" data-act="cal-today">今天</button>
-      <span class="hint" style="margin-left:auto">每个色块就是一种软件；点任意一天看当天明细。</span>
+      <span class="hint" style="margin-left:auto">每个色块就是一种软件；点任意一天，右边「当日日历」就跟着换到那天。</span>
     </div>
     <div id="calBody">${calHtml()}</div>
   </div>
@@ -3406,28 +3566,6 @@ function viewStats() {
       ${hourly.map((v) => `<div class="hbar ${v === 0 ? 'zero' : ''}" style="height:${Math.max(1, (v / maxH) * 100)}%" title="${Math.round(v / 60)} 分钟"></div>`).join('')}
     </div>
     <div class="hlabels">${Array.from({ length: 24 }, (_, i) => `<span>${i}</span>`).join('')}</div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">
-      明细清单
-      <span class="badge">${cur.slices.length}</span>
-    </div>
-    <div class="card-sub">每一项的名称、时长、占比，以及具体在哪些时间段使用（精确到分钟）。</div>
-    <table class="tbl ts-tbl">
-      <thead><tr>
-        <th style="width:62px">类型</th>
-        <th>名称</th>
-        <th style="width:104px">时长</th>
-        <th style="width:66px">占比</th>
-        <th class="ts-th">使用时间</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot>
-        <tr><td></td><td>合计</td><td class="tnum">${fmtDur(cur.total)}</td>
-          <td class="tnum muted">${cur.total ? '100.0' : '0.0'}%</td><td></td></tr>
-      </tfoot>
-    </table>
   </div>` : ''}
 
   <div class="note" style="margin-top:14px">
@@ -4661,8 +4799,11 @@ function drawPieFrame(cv) {
     for (let i = 0; i < arcs.length; i++) {
       const a = arcs[i];
       const on = hover === i;
+      const fo = d.focus === i;   // 被选中的那一项（点过扇区/日历色块）
       const grow = on ? 5 * t : 0;
-      ctx.globalAlpha = hover < 0 || on ? 1 : dim;
+      // 悬停优先：没悬停时按"聚焦"把其余项压暗，选中状态一眼可见
+      ctx.globalAlpha = (hover < 0 || on) ? 1 : dim;
+      if (hover < 0 && d.focus >= 0 && !fo) ctx.globalAlpha = 0.42;
       ctx.beginPath();
       ctx.arc(cx, cy, rOut + grow, a.a0, a.a1);
       ctx.arc(cx, cy, rIn, a.a1, a.a0, true);
@@ -4672,6 +4813,15 @@ function drawPieFrame(cv) {
       ctx.strokeStyle = cStroke;
       ctx.lineWidth = 2;
       ctx.stroke();
+      if (fo && hover < 0) {
+        // 聚焦项压一道"字色"描边（深色下亮边、浅色下暗边）—— 不动几何，只加一圈
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOut + 2, a.a0, a.a1);
+        ctx.strokeStyle = cText;
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
       if (on && t > 0.02) {
         // 外沿再压一道淡亮边：高亮的扇区轮廓更清楚
         ctx.beginPath();
@@ -4713,7 +4863,8 @@ function drawPieFrame(cv) {
   ctx.lineCap = 'round';
   for (const lb of labels) {
     const on = hover === lb.idx;
-    const alpha = hover < 0 ? 0.82 : (on ? 1 : 0.16);
+    const fo = d.focus === lb.idx;
+    const alpha = hover < 0 ? (d.focus >= 0 ? (fo ? 1 : 0.3) : 0.82) : (on ? 1 : 0.16);
 
     ctx.beginPath();
     ctx.moveTo(lb.pts[0][0], lb.pts[0][1]);
@@ -4889,6 +5040,9 @@ function drawPie(canvas, slices, total, opts) {
     && prev.items.every((it, i) => it.key === lay.items[i].key);
   const keep = same ? prev.hover : -1;
 
+  // 选中哪一项由外部状态（S.calHit）决定：重画不能把"选中"丢掉
+  const fk = opts && opts.focusKey;
+  const focus = fk ? lay.items.findIndex((it) => it.key === fk) : -1;
   canvas.__pie = {
     ...lay,
     center: opts && opts.center ? opts.center
@@ -4896,6 +5050,7 @@ function drawPie(canvas, slices, total, opts) {
         : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分')),
     sub: I18N.t((opts && opts.sub) || '合计'),
     hover: keep,
+    focus,
     t: keep >= 0 ? 1 : 0,
     target: keep >= 0 ? 1 : 0,
     raf: 0,
@@ -4929,20 +5084,25 @@ function drawPie(canvas, slices, total, opts) {
   canvas.addEventListener('pointerdown', (ev) => {
     const idx = pieHit(canvas, ev);
     if (idx < 0) return;
+    if (ev.pointerType === 'touch') setHover(-1);   // 触屏点完不留悬停态
     const it = canvas.__pie.items[idx];
+    // 「其他」是聚合块，没有单一分类可指：面板照开，但不做逐块聚焦
+    const key = it.key && it.key !== '__rest' ? it.key : '';
     const host = document.querySelector('#pieDetail');
-    if (!host) return;
-    const key = it.key || ('i' + idx);
-    // 再点同一项 = 收起（"其他"以前没有 key，永远收不起来，这里给个兜底 key）
-    if (host.dataset.key === key) {
-      host.dataset.key = '';
-      host.innerHTML = '';
-      return;
+    const dk = key || ('i' + idx);
+    const again = !!host && host.dataset.key === dk;
+    if (host) {
+      if (again) {
+        host.dataset.key = '';
+        host.innerHTML = '';
+      } else {
+        host.dataset.key = dk;
+        host.innerHTML = pieDetailHtml(it, canvas.__pie.sum);
+        if (window.I18N && I18N.apply) I18N.apply(host);   // 面板是点击后才生成的，得单独翻一次
+      }
     }
-    host.dataset.key = key;
-    host.innerHTML = pieDetailHtml(it, canvas.__pie.sum);
-    // 同时跳到「时间日历」并高亮这个软件（点击的反馈要看得见）
-    pieFocusCal(it);
+    // 关键联动：右侧「当日日历」立刻切到这一项用时最多的那天，并高亮它的所有时段
+    statsFocus(again ? '' : key, again ? '' : bestDayOf(it));
   });
 }
 
@@ -5032,8 +5192,10 @@ function render() {
 
   if (S.view === 'stats') {
     const cur = currentSlices();
-    drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
+    // focusKey：重画时把"选中哪一项"带过去，否则一刷新选中状态就丢了
+    drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长', focusKey: S.calHit });
     calEnsure();      // 周/月日历：区间没变就不重复请求
+    dayEnsure();      // 当日日历：网格里已有这天就直接复用，不额外请求
   }
 
   // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
@@ -5520,7 +5682,12 @@ const Act = window.Act = {
     await loadStats();
     render();
   },
-  async refreshStats() { await loadStats(); render(); },
+  async refreshStats() {
+    await loadStats();
+    S.dayCache.clear();
+    S.calKey = '';      // 手动刷新 = 两边都重取，不当成"区间没变"跳过
+    render();
+  },
 
   /* ---- 时间日历 ---- */
   /** 切周/月：**选中日期保持不变**，切到月视图就显示它所在的那个月 */
@@ -5544,14 +5711,56 @@ const Act = window.Act = {
   async calToday() {
     S.calAnchor = todayStr();
     S.calSel = todayStr();
+    S.dayDate = todayStr();
     await calLoad();
+    dayEnsure();
   },
   async calPick(date) {
     if (!date) return;
+    // 选一天 = 网格选中日 + 右侧当日日历同时换到这天；饼图仍保持"区间聚合"不动
     S.calSel = date;
     S.calAnchor = date;
-    if (S.calKey === calRange().key && S.cal) { paintCal(); return; }
+    S.dayDate = date;
+    if (S.calKey === calRange().key && S.cal) paintCal();
+    else await calLoad();
+    dayEnsure();
+    paintPieFocus();   // 换天后这个分类可能不在当天：扇图的聚焦描边要跟着更新
+  },
+
+  /* ---- 当日日历 ---- */
+  /** 上下翻一天；跨出网格窗口时窗口一起跟过去，选中日永远看得见 */
+  async dayMove(d) {
+    const nt = dateStr(addDays(parseYmd(dayOf()), d));
+    S.dayDate = nt;
+    S.calSel = nt;
+    const win = calWindow();
+    if (nt < win.start || nt > win.end) S.calAnchor = nt;
+    if (S.calKey !== calRange().key) await calLoad();
+    else paintCal();
+    dayEnsure();
+    paintPieFocus();
+  },
+  async dayToday() {
+    S.dayDate = todayStr();
+    S.calSel = todayStr();
+    S.calAnchor = todayStr();
     await calLoad();
+    dayEnsure();
+    paintPieFocus();
+  },
+  /** 点色块/图例 = 聚焦这个分类（再点一次取消）：饼图、日历、当日日历同时响应 */
+  focusPick(key) {
+    if (!key) return;
+    S.calHit = S.calHit === key ? '' : key;
+    paintDay();
+    paintCal();
+    paintPieFocus();
+  },
+  focusClear() {
+    S.calHit = '';
+    paintDay();
+    paintCal();
+    paintPieFocus();
   },
 
   async genReport() {
@@ -7785,6 +7994,17 @@ function renderReportModal() {
 }
 
 /* ---------------- 事件绑定 ---------------- */
+// 当日日历的悬停读数：色块太薄写不下字时，靠这一行把"几点到几点、多少分钟"读出来。
+// 用事件委托挂在 document 上 —— 日历每换一天都整块重画，绑在块上会越绑越多。
+document.addEventListener('pointerover', (e) => {
+  const ev = e.target && e.target.closest ? e.target.closest('.dc-ev') : null;
+  if (ev) dcRead(ev.dataset.tip || '');
+});
+document.addEventListener('pointerout', (e) => {
+  const ev = e.target && e.target.closest ? e.target.closest('.dc-ev') : null;
+  if (ev) dcRead('');
+});
+
 document.addEventListener('click', async (e) => {
   const nav = e.target.closest('.nav-item');
   if (nav) { await Act.nav(nav.dataset.view); return; }
@@ -7978,12 +8198,15 @@ document.addEventListener('click', async (e) => {
   if (act === 'cal-move') { await Act.calMove(+el.dataset.d); return; }
   if (act === 'cal-today') { await Act.calToday(); return; }
   if (act === 'cal-pick') { await Act.calPick(el.dataset.date); return; }
-  if (act === 'cal-clear') { S.calSel = ''; paintCal(); return; }
+  if (act === 'day-move') { await Act.dayMove(+el.dataset.d); return; }
+  if (act === 'day-today') { await Act.dayToday(); return; }
+  if (act === 'day-ev') { Act.focusPick(el.dataset.key); return; }
+  if (act === 'focus-clear') { Act.focusClear(); return; }
   if (act === 'pie-close') {
     const host = document.querySelector('#pieDetail');
     if (host) { host.dataset.key = ''; host.innerHTML = ''; }
-    // 收起饼图明细 = 不再"聚焦"某个软件，日历那边的描边也一起撤掉
-    if (S.calHit) { S.calHit = ''; paintCal(); }
+    // 收起饼图明细 = 不再"聚焦"某个分类：当日日历和日历上的描边一起撤掉
+    if (S.calHit) Act.focusClear();
     return;
   }
   if (act === 'lang') { await Act.setLang(el.dataset.v); return; }

@@ -2504,7 +2504,9 @@ window.__itest = async () => {
     await clearAll();
   }
 
-  // ---- 26h4. 统计页：软件名 / 网址标题 / 同域名多标题归并 ----
+  // ---- 26h4. 统计页口径：软件名 / 网址标题 / 同域名多标题归并 ----
+  // 明细清单已经撤掉（这些信息搬到扇图标签和当日日历里），所以这里直接验数据口径：
+  // 合并后该有的 label / pages / browser 一个都不能丢。
   {
     S.stats = {
       start: '2026-10-01', end: '2026-10-29',
@@ -2521,34 +2523,23 @@ window.__itest = async () => {
     S.statsTab = 'all';
     await Act.nav('stats');
     await wait(320);
-    const trs = [...document.querySelectorAll('#content table.tbl tbody tr')];
-    const cell = (i, n) => (trs[i] ? trs[i].children[n].textContent.replace(/\s+/g, ' ').trim() : '-');
-    out.push(['明细里有两条', trs.length, 2]);
-    // 第 1 行：软件显示"软件名"而不是 exe 文件名
-    out.push(['软件行显示软件名', cell(0, 1), 'Google Chrome']);
-    out.push(['软件行不是 exe 文件名（chrome.exe）', /chrome\.exe/i.test(cell(0, 1)), false]);
-    // 第 2 行：网址显示标题 + 页面数 + 域名副标题
-    out.push(['网址行显示的是标题', cell(1, 1).indexOf('十分钟看懂 Rust') === 0, true]);
-    out.push(['网址行不再把域名当主名字', cell(1, 1).indexOf('b23.tv') > 5, true]);
-    out.push(['同一网址多个标题会提示页面数', /共 3 个页面/.test(cell(1, 1)), true]);
-    out.push(['域名作为副标题保留（聚合口径看得见）', /b23\.tv/.test(cell(1, 1)), true]);
-    // 汇总：同一域名只占一行（on 600 + off 300）
-    out.push(['同一网址在两档数据里仍然只有一行', trs.length, 2]);
-    out.push(['两档秒数相加', cell(1, 2), fmtDur(900)]);
-    // 切到「只看已开启」也不丢标题
+    const cur0 = currentSlices();
+    const appRow = cur0.slices.find((x) => x.key === 'app|c:/x/chrome.exe');
+    const siteRow = cur0.slices.find((x) => x.key === 'site|b23.tv');
+    out.push(['汇总后仍是两条', cur0.slices.length, 2]);
+    out.push(['软件显示软件名', appRow ? appRow.label : '-', 'Google Chrome']);
+    out.push(['软件名不是 exe 文件名（chrome.exe）', appRow ? /chrome\.exe/i.test(appRow.label) : false, false]);
+    out.push(['网址显示的是标题而不是域名', siteRow ? siteRow.label : '-', '十分钟看懂 Rust']);
+    out.push(['同一网址在两档数据里只出现一次', cur0.slices.filter((x) => x.key === 'site|b23.tv').length, 1]);
+    out.push(['两档秒数相加', siteRow ? fmtDur(siteRow.secs) : '-', fmtDur(900)]);
+    out.push(['合并后不丢浏览器', siteRow ? siteRow.browser : '', 'Google Chrome']);
+    out.push(['合并后不丢页面数', siteRow ? siteRow.pages : 0, 3]);
     S.statsTab = 'on';
-    render();
-    await wait(220);
-    const trs2 = [...document.querySelectorAll('#content table.tbl tbody tr')];
-    out.push(['单独看已开启时也保留标题', trs2[1].children[1].textContent.indexOf('十分钟看懂 Rust') >= 0, true]);
-    // 网页条目要在名称后写明"用哪个浏览器打开"
-    {
-      const rows2 = [...document.querySelectorAll('#content table tr')];
-      const siteRow = rows2.find((tr) => tr.textContent.indexOf('十分钟看懂 Rust') >= 0);
-      out.push(['名称后带浏览器括号', !!siteRow && /（Google Chrome）/.test(siteRow.textContent), true]);
-      out.push(['括号里的浏览器不抢标题', !!siteRow
-        && siteRow.querySelector('.st-browser').textContent.trim(), '（Google Chrome）']);
-    }
+    const cur1 = currentSlices();
+    out.push(['单独看已开启时也保留标题',
+      (cur1.slices.find((x) => x.key === 'site|b23.tv') || {}).label, '十分钟看懂 Rust']);
+    // 扇图确实按这套口径画：两条扇区、标签带时长
+    out.push(['扇图按合并后的口径画', (document.querySelector('#pie').__pie || {}).items.length, 2]);
     S.stats = null;
     S.statsTab = 'all';
     await Act.nav('overview');
@@ -3959,6 +3950,9 @@ window.__itest = async () => {
           // 语录正文、作者出处都是**数据**（用户自己写的句子 / 接口给的作品名），
           // 不该被当成"界面文案残留"；来源标签属于界面，仍然要翻。
           if (pe.closest('.qrow') || pe.closest('.qtext') || pe.closest('.qfrom')) continue;
+          // 当日日历色块/图例上的名字同样是**数据**（软件名、网页标题），不该被翻；
+          // 界面文案（「当日日历」「空闲」「今天」）另算，仍然要能翻。
+          if (pe.closest('.dc-ev') || pe.closest('.dc-lg-i')) continue;
           const tx = (n.nodeValue || '').trim();
           if (tx && /[\u4e00-\u9fa5]/.test(tx)) {
             left.push(v + ':' + tx.slice(0, 22));
@@ -4187,34 +4181,33 @@ window.__itest = async () => {
       out.push(['明细里写着总时长', /1 小时 30 分/.test(det.textContent), true]);
       out.push(['展开不会改动扇图布局（不跳动）', cv2.__pie.labels.length, d2.labels.length]);
 
-      // 点扇区 → 跳到「时间日历」并高亮对应色块
-      cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
-      await wait(520);
-      const card = document.querySelector('#calCard');
-      out.push(['点扇区后日历被滚到视野里（卡片顶部贴近视口顶部）',
-        Math.abs(card.getBoundingClientRect().top) < 120, true]);
-      out.push(['日历卡片闪一下（高亮状态可见）', card.classList.contains('cal-flash'), true]);
-      out.push(['日历里对应软件的色块被描边高亮',
-        document.querySelectorAll('#calCard [data-key].hit').length > 0, true]);
-      out.push(['高亮只落在被点的那一项',
-        [...document.querySelectorAll('#calCard [data-key].hit')]
-          .every((e) => e.dataset.key === d2.items[0].key), true]);
-      // 明细里那一行也要点亮：色块 + 行，两处一起指认
-      const hiRow = document.querySelector('#calCard .cd-list li.hit');
-      out.push(['日历明细里命中的那一行被点亮', hiRow != null, true]);
-      out.push(['点亮的就是被点的那一项', hiRow ? /Visual Studio Code/.test(hiRow.textContent) : false, true]);
-      out.push(['明细行高亮没有连坐别的行',
-        document.querySelectorAll('#calCard .cd-list li.hit').length, 1]);
-
-      // 跳转把页面滚下去了，后面的几何断言要按滚动前的坐标算 —— 先滚回去
-      const sc = document.querySelector('#content');
-      if (sc) sc.scrollTop = 0;
-      window.scrollTo(0, 0);
+      // 点扇区 → 右侧「当日日历」立刻切到这一项用得最多的那天，并高亮它的所有时段
+      // 面板刚才是点开的那一下打开的，联动也是那一下触发的 —— 这里直接验结果
+      const st0 = (document.querySelector('#content') || {}).scrollTop || 0;
       await wait(220);
+      const dayCard = document.querySelector('#dayCard');
+      out.push(['点扇区后右侧当日日历闪一下', dayCard.classList.contains('cal-flash'), true]);
+      out.push(['日历切到这一项用得最多的那天', S.dayDate, '2026-10-30']);
+      out.push(['标题上写着这一天', /10-30/.test(document.querySelector('.dc-date').textContent), true]);
+      const hits = [...document.querySelectorAll('#dayCard .dc-ev.hit')];
+      out.push(['对应分类的所有时段都被高亮', hits.length, 2]);
+      out.push(['高亮只落在被点的那一项',
+        hits.every((e) => e.dataset.key === d2.items[0].key), true]);
+      out.push(['其余时段被压暗（对比一眼看得出）',
+        [...document.querySelectorAll('#dayCard .dc-ev')].some((e) => e.classList.contains('off')), true]);
+      out.push(['扇图本身没有被这次点击改掉（还能继续点）', cv2.__pie.items.length, d2.items.length]);
+      out.push(['聚焦项在扇图上也有描边（两侧指向同一项）', cv2.__pie.focus, 0]);
+      out.push(['页面没有被滚走（日历就在旁边，不用跳）',
+        Math.abs(((document.querySelector('#content') || {}).scrollTop || 0) - st0) < 4, true]);
 
+      // 再点同一项 = 收起面板 + 取消聚焦
       cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
-      await wait(160);
+      await wait(260);
       out.push(['再点同一项收起', document.querySelector('#pieDetail').textContent.trim(), '']);
+      out.push(['收起后不再聚焦', S.calHit, '']);
+      out.push(['当日日历里没有高亮块了', document.querySelectorAll('#dayCard .dc-ev.hit').length, 0]);
+      out.push(['扇图也不再压暗', cv2.__pie.focus, -1]);
+
 
       /* ---- ⑤ 引导线：正交折线的两条不变式 ----
        * 同侧标签"行序 == 扇区角序"，且竖直段按行序依次外扩 —— 这两条同时成立，
@@ -4426,30 +4419,33 @@ window.__itest = async () => {
         out.push(['触屏抬手后没有高亮项', cv2.__pie.hover, -1]);
       }
 
-      /* ---- ⑩ 明细清单：全部条目 + 每项的使用时间（不遗漏） ---- */
+      /* ---- ⑩ 当日日历：越界段、空档、无数据日、聚焦取哪天 ---- */
       {
-        const many = Array.from({ length: 35 }, (_, i) => mk('P' + i, 900 - i * 10, {
-          spans: [{ date: '2026-10-30', f: 540 + (i % 9) * 30, t: 560 + (i % 9) * 30 }],
-          spanCount: 1,
-        }));
-        S.stats.on = many;
-        S.stats.onSecs = many.reduce((a, b) => a + b.secs, 0);
-        render();
-        await wait(320);
-        const tbl = document.querySelector('.ts-tbl');
-        out.push(['明细表有「使用时间」列',
-          [...tbl.querySelectorAll('th')].some((th) => th.textContent.trim() === '使用时间'), true]);
-        out.push(['明细列出全部条目（不再只列前 30）', tbl.querySelectorAll('tbody tr').length, 35]);
-        out.push(['每个条目都带具体时刻', /10-30 09:00–09:20/.test(tbl.textContent), true]);
-        out.push(['明细有合计行', /合计/.test(tbl.querySelector('tfoot').textContent), true]);
-
-        // 段数被后端裁剪时要如实写「共 N 段（列出 M 段）」
-        const cut = pieDetailHtml({
-          key: 'k', label: 'X', secs: 600, hours: new Array(24).fill(0),
-          spans: [{ date: '2026-10-30', f: 600, t: 660 }], spanCount: 7,
-        }, 600).replace(/<[^>]+>/g, ' ');
-        out.push(['段数被裁剪时如实标注', /共 7 段（列出 1 段）/.test(cut), true]);
+        // 越界（t > 24:00）/ 倒挂（t < f）/ 空段：一律夹进轨道，绝不画到轨道外面
+        const b = dcBlocks({
+          items: [{ key: 'k', label: 'X', spans: [
+            { f: 1400, t: 1500 }, { f: 600, t: 300 }, { f: 540, t: 540 },
+          ] }],
+        }, new Map());
+        out.push(['越界段被夹到 24:00', b.length ? b[0].t : -1, 1440]);
+        out.push(['倒挂/空段被丢掉（不画负高度）', b.length, 1]);
+        out.push(['保留下来的段都是正的', b.every((x) => x.t > x.f), true]);
+        // 空档：短空隙不刷屏，长空档画斜纹并写"空闲"
+        out.push(['短空隙不写「空闲」（空间不够，写了反而挤）', /空闲/.test(dcGap(0, 20)), false]);
+        out.push(['4 小时的空档写「空闲」', /空闲/.test(dcGap(0, 240)), true]);
+        out.push(['空档本身仍铺斜纹（空着也是信息）', /dc-gap/.test(dcGap(0, 20)), true]);
+        // 聚焦项跳哪一天：取用时最长的那天
+        out.push(['bestDayOf 取用时最长的一天', bestDayOf({ spans: [
+          { date: '2026-10-28', f: 0, t: 10 }, { date: '2026-10-30', f: 0, t: 60 },
+        ] }), '2026-10-30']);
+        out.push(['没有分段时返回空（不乱跳日期）', bestDayOf({ spans: [] }), '']);
+        // 同一天两段同一项：加起来比一比
+        out.push(['同一项多段按天累加再比（30+40 > 60）', bestDayOf({ spans: [
+          { date: '2026-10-28', f: 0, t: 30 }, { date: '2026-10-28', f: 60, t: 100 },
+          { date: '2026-10-30', f: 0, t: 60 },
+        ] }), '2026-10-28']);
       }
+
 
       // 复原统计假数据，后面的用例还要用
       S.stats.on = [mk('Visual Studio Code', 5400, {
@@ -4462,7 +4458,7 @@ window.__itest = async () => {
     }
   }
 
-  // 0c3. 时间日历：默认周视图 / 切月视图 / 点某天展开明细 / 选中状态保留
+  // 0c3. 时间日历 + 当日日历：默认周视图 / 切月视图 / 点某天两边同时换 / 选中状态保留
   {
     await Act.nav('stats');
     await wait(420);
@@ -4510,30 +4506,68 @@ window.__itest = async () => {
       };
       out.push(['日历与饼图对同一软件用同一种颜色',
         seg && it0 ? seg.style.background : '(无)', it0 ? hex2rgb(it0.color) : '(无)']);
+      // 当日日历里也必须是同一种颜色：三处颜色一致才不会"每次换图都要重新对"
+      const dv = it0 ? document.querySelector(`#dayCard .dc-ev[data-key="${it0.key}"]`) : null;
+      out.push(['当日日历与饼图同色',
+        dv && it0 ? dv.style.background : '(无)', it0 ? hex2rgb(it0.color) : '(无)']);
     }
 
-    // 点一天 → 当天明细
+    /* ---- 当日日历：位置、结构、时间轴 ---- */
+    const dayEl = document.querySelector('#dayCard');
+    out.push(['饼图右侧有当日日历', !!dayEl, true]);
+    {
+      const pr = document.querySelector('#pie').getBoundingClientRect();
+      const dr = dayEl.getBoundingClientRect();
+      out.push(['当日日历站在饼图右边（并排而不是上下）', dr.left > pr.left + pr.width * 0.55, true]);
+    }
+    out.push(['一条 24 小时时间轴', document.querySelectorAll('#dayCard .dc-track').length, 1]);
+    out.push(['左侧 5 个整点刻度', document.querySelectorAll('#dayCard .dc-axis span').length, 5]);
+    out.push(['轴上有当天的时段色块', document.querySelectorAll('#dayCard .dc-ev').length, 3]);
+    out.push(['色块按时间从早到晚排',
+      [...document.querySelectorAll('#dayCard .dc-ev')]
+        .map((e) => parseFloat(e.style.top))
+        .every((v, i, a) => i === 0 || v >= a[i - 1]), true]);
+    {
+      // 09:00 那一段必须正好落在 9/24 的高度上（位置就是"什么时候"，错一点就全错）
+      const tr = document.querySelector('#dayCard .dc-track').getBoundingClientRect();
+      const e0 = document.querySelector('#dayCard .dc-ev').getBoundingClientRect();
+      out.push(['09:00 的块落在 9/24 的高度上',
+        Math.abs(e0.top - (tr.top + tr.height * (540 / 1440))) <= 2, true]);
+    }
+    out.push(['空档画成斜纹（分得清"没记录"和"别的软件"）',
+      document.querySelectorAll('#dayCard .dc-gap').length > 0, true]);
+    out.push(['图例给出颜色对照', document.querySelectorAll('#dayCard .dc-lg-i').length, 2]);
+    // 并排不能把任何一边挤扁：轨道要留得住色块，整页不能横向溢出
+    {
+      const tr = document.querySelector('#dayCard .dc-track').getBoundingClientRect();
+      out.push(['右侧轨道宽度够放色块', tr.width >= 170, true]);
+      // 轨道高度 = 480px（DC_H）。塌成 0 的时候所有"位置断言"都会假通过，所以这条必须单列
+      out.push(['时间轴高度是 480px（没有塌成一条线）', Math.round(tr.height), 480]);
+      const cr = document.querySelector('#content');
+      out.push(['并排后页面没有横向溢出', cr.scrollWidth <= cr.clientWidth + 1, true]);
+      const dr = document.getElementById('dayCard').getBoundingClientRect();
+      out.push(['当日日历没有超出内容区右边界', dr.right <= cr.getBoundingClientRect().right + 1, true]);
+    }
+
+    // 点一天 → 网格选中 + 右侧当日日历一起换；日历下面不再有明细列表
     const col = document.querySelector('.cw-col[data-date]');
     const day = col.dataset.date;
     col.click();
-    await wait(360);
+    await wait(420);
     out.push(['点一天后选中它', S.calSel, day]);
-    const det = document.querySelector('.cal-detail');
-    out.push(['展开当天明细', !!det, true]);
-    out.push(['明细里有累计时长', /共 /.test(det.textContent), true]);
-    out.push(['明细里有具体时段', /[0-9]{2}:[0-9]{2}–[0-9]{2}:[0-9]{2}/.test(det.textContent), true]);
-    out.push(['明细里有占比', /\d+\.\d%/.test(det.textContent), true]);
-    out.push(['明细里列出软件名', /Visual Studio Code/.test(det.textContent), true]);
-    out.push(['明细行数与当天软件数一致', det.querySelectorAll('.cd-list li').length, 2]);
+    out.push(['当日日历跟着换到那天', S.dayDate, day]);
+    out.push(['标题上写着这一天', document.querySelector('.dc-date').textContent.indexOf(day.slice(5)) >= 0, true]);
+    out.push(['日历下面已经没有当日明细列表', document.querySelector('.cal-detail'), null]);
+    out.push(['当日日历里数得出当天的段数', document.querySelectorAll('#dayCard .dc-ev').length, 3]);
 
-    // 切到月视图：选中日期必须保留
+    // 切到月视图：选中日期必须保留，当日日历也不许跟着漂
     modeBtn('month').click();
     await wait(420);
     out.push(['切到月视图', S.calMode, 'month']);
     out.push(['月视图是 7 的倍数个格子', document.querySelectorAll('.cm-cell').length % 7, 0]);
     out.push(['月视图也有时间块', document.querySelectorAll('.cm-bar i').length > 0, true]);
     out.push(['切视图后选中日期保留', S.calSel, day]);
-    out.push(['切视图后明细仍在', !!document.querySelector('.cal-detail'), true]);
+    out.push(['切视图后当日日历还是那天', S.dayDate, day]);
     out.push(['月视图里那一天被高亮',
       document.querySelector(`.cm-cell.on[data-date="${day}"]`) != null, true]);
 
@@ -4551,23 +4585,126 @@ window.__itest = async () => {
     out.push(['翻到下一周（标签变化）',
       document.querySelector('.cal-label').textContent !== lab0, true]);
     out.push(['翻页后选中日不变', S.calSel, day]);
-    out.push(['翻页后明细还能看到', !!document.querySelector('.cal-detail'), true]);
+    out.push(['翻页后当日日历还在那天', S.dayDate, day]);
 
     // 时间范围切换后，日历要跟着落到同一个周期（否则上下面不同期，数字对不上）
     if (document.querySelector('[data-act="range"][data-r="month"]')) {
       document.querySelector('[data-act="range"][data-r="month"]').click();
       await wait(500);
       out.push(['切到「本月」后日历跟着落到本月', String(S.calAnchor).slice(0, 7), todayStr().slice(0, 7)]);
+      out.push(['当日日历也落在本月（区间里有今天就用今天）',
+        String(S.dayDate).slice(0, 7), todayStr().slice(0, 7)]);
       document.querySelector('[data-act="range"][data-r="today"]').click();
       await wait(500);
       out.push(['切回「今日」后日历回到今天', S.calAnchor, todayStr()]);
+      out.push(['当日日历也回到今天', S.dayDate, todayStr()]);
     }
 
-    // 收起明细
-    document.querySelector('[data-act="cal-clear"]').click();
-    await wait(200);
-    out.push(['可以收起明细', document.querySelector('.cal-detail'), null]);
+    // 上面两次切区间会让 loadStats 把 S.stats 换成假后端的空值；补一份最小数据，
+    // 后面的"翻一天不动扇图"才有图可验
+    S.stats = {
+      start: '2026-10-27', end: '2026-10-30',
+      on: [{
+        key: 'app|Visual Studio Code', label: 'Visual Studio Code', category: 'app', secs: 5400,
+        hours: new Array(24).fill(0), pages: 0, browser: '',
+        spans: [{ date: '2026-10-30', f: 540, t: 600 }], spanCount: 1,
+      }],
+      off: [], offSecs: 0, onSecs: 5400,
+      onHourly: new Array(24).fill(0), offHourly: new Array(24).fill(0),
+    };
+    S.statsTab = 'on';
+    render();
+    await wait(280);
+
+    /* ---- 当日日历自己的翻页：只动那一侧 ---- */
+    {
+      const d0 = S.dayDate;
+      const r0 = S.range;
+      const pie0 = document.querySelector('#pie').__pie.items.length;
+      document.querySelector('[data-act="day-move"][data-d="1"]').click();
+      await wait(460);
+      out.push(['能往后翻一天', S.dayDate > d0, true]);
+      out.push(['翻天后网格选中日跟着走（三处一致）', S.calSel, S.dayDate]);
+      out.push(['翻一天不动顶部统计区间', S.range, r0]);
+      out.push(['翻一天不动扇图（区间聚合没变）', document.querySelector('#pie').__pie.items.length, pie0]);
+      const tBtn = document.querySelector('[data-act="day-today"]');
+      out.push(['不在今天时给出「今天」入口', tBtn != null, true]);
+      if (tBtn) {
+        tBtn.click();
+        await wait(460);
+        out.push(['点「今天」回到今天', S.dayDate, todayStr()]);
+      }
+      await wait(60);
+    }
+
+    /* ---- 无数据日：给空状态，不留空白也不报错 ---- */
+    {
+      const d = S.dayDate;
+      const ck = statsTabKey() + '|' + d;
+      const keep = S.dayCache.get(ck);
+      S.dayCache.set(ck, { date: d, secs: 0, items: [] });
+      paintDay();
+      await wait(120);
+      out.push(['没有记录的那天有明确空状态',
+        document.querySelector('#dayCard .dc-empty') != null, true]);
+      out.push(['空状态下不画任何色块', document.querySelectorAll('#dayCard .dc-ev').length, 0]);
+      if (keep) S.dayCache.set(ck, keep); else S.dayCache.delete(ck);
+      dayEnsure();
+      await wait(120);
+    }
+
+    /* ---- 反向联动：点当日日历里的色块 → 扇图描边同一项 ---- */
+    {
+      const pick = () => document.querySelector('#dayCard .dc-ev[data-key="app|Visual Studio Code"]');
+      Act.focusClear();
+      await wait(80);
+      pick().click();
+      await wait(200);
+      out.push(['点日历色块会聚焦该分类', S.calHit, 'app|Visual Studio Code']);
+      out.push(['扇图同步描边同一项', document.querySelector('#pie').__pie.focus, 0]);
+      out.push(['聚焦提示条出现', document.querySelector('#dayCard .dc-chip') != null, true]);
+      out.push(['该项当天所有段一起高亮',
+        document.querySelectorAll('#dayCard .dc-ev.hit').length, 2]);
+
+      // 悬停读数：色块太薄认不出时，标题行给出"几点到几点、多久"
+      const sum0 = document.querySelector('#dcSum').textContent;
+      pick().dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      await wait(60);
+      out.push(['悬停色块时标题行给出具体时刻',
+        /[0-9]{2}:[0-9]{2}–[0-9]{2}:[0-9]{2}/.test(document.querySelector('#dcSum').textContent), true]);
+      pick().dispatchEvent(new PointerEvent('pointerout', { bubbles: true }));
+      await wait(60);
+      out.push(['移开后读数还原成当天合计', document.querySelector('#dcSum').textContent, sum0]);
+
+      pick().click();
+      await wait(150);
+      out.push(['再点一次取消聚焦', S.calHit, '']);
+      out.push(['取消后提示条消失', document.querySelector('#dayCard .dc-chip'), null]);
+      out.push(['取消后色块不再被压暗',
+        document.querySelectorAll('#dayCard .dc-ev.off').length, 0]);
+    }
+
+    /* ---- 切状态筛选：三处一起换口径，日期不漂 ---- */
+    {
+      const d0 = S.dayDate;
+      document.querySelector('[data-act="stats-tab"][data-tab="all"]').click();
+      await wait(520);
+      out.push(['切筛选后日期不漂', S.dayDate, d0]);
+      out.push(['切筛选后当日日历还在那天',
+        document.querySelector('.dc-date').textContent.indexOf(d0.slice(5)) >= 0, true]);
+      out.push(['切筛选后网格也还在那周', S.calSel, d0]);
+      document.querySelector('[data-act="stats-tab"][data-tab="on"]').click();
+      await wait(420);
+      out.push(['切回来后仍在那天', S.dayDate, d0]);
+    }
+
+    /* ---- 删除项：明细清单 / 当日明细列表 / 旧的收起按钮 ---- */
+    out.push(['明细清单模块已彻底移除', document.querySelector('#content .ts-tbl'), null]);
+    out.push(['当日明细列表（.cal-detail）已移除', document.querySelector('#content .cal-detail'), null]);
+    out.push(['旧的「收起明细」按钮也一起没了', document.querySelector('[data-act="cal-clear"]'), null]);
+    out.push(['页面上不再有"明细清单"字样', /明细清单/.test(document.querySelector('#content').textContent), false]);
   }
+
 
   // 0c2. 切主题不能"卡一下"：老实现是 落盘 → pull()（第二个 IPC + 可能重绘）→ render()
   //      三步串起来，点一次「跟随系统」要等两个来回并重建整页 DOM。

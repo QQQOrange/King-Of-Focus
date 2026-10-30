@@ -649,15 +649,12 @@
    * 拼接后读起来仍是一句通顺的英文。
    */
   var EXTRA = {
-    /* —— 统计页：明细清单 / 扇图展开面板 —— */
+    /* —— 统计页：扇图展开面板 / 日历 —— */
     '类型': 'Type',
     '占比': 'Share',
     '时长': 'Duration',
-    '明细清单': 'Full breakdown',
     '使用时间': 'When',
     '使用时段': 'Time ranges',
-    '每一项的名称、时长、占比，以及具体在哪些时间段使用（精确到分钟）。':
-      'Name, duration, share and the exact time ranges of every item, to the minute.',
     '这一版开始才有分段记录，更早的数据只有小时分布。':
       'Minute-level ranges are recorded from this version on; older data only has hourly totals.',
     '统计口径：只计入你在电脑前的时间；离开超过 1 分钟（无键鼠输入）的那段不计入。':
@@ -669,8 +666,15 @@
     '周': 'Week',
     '月': 'Month',
     '今天': 'Today',
-    '每个色块就是一种软件；点任意一天看当天明细。':
-      'Each colour is one app; click any day for its breakdown.',
+    '每个色块就是一种软件；点任意一天，右边「当日日历」就跟着换到那天。':
+      'Each colour is one app; clicking a day moves the day view on the right to it.',
+    /* —— 当日日历（饼图右侧的单日时间轴） —— */
+    '当日日历': 'Day view',
+    '空闲': 'Idle',
+    '前一天': 'Previous day',
+    '后一天': 'Next day',
+    '取消聚焦': 'Clear focus',
+    '按时间轴看这一天做了什么': 'What you did today, on a timeline',
     '正在载入…': 'Loading…',
     '这段时间还没有数据。': 'No data in this period.',
     '这一天没有使用记录。': 'No activity on this day.',
