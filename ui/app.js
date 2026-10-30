@@ -58,6 +58,12 @@ const S = {
   customStart: '',
   customEnd: '',
   stats: null,
+  // 时间日历：默认周视图；calSel 是"选中的那一天"，切视图时保持不变
+  calMode: 'week',
+  calAnchor: '',
+  calSel: '',
+  cal: null,
+  calKey: '',
   reports: [],
   reportView: null,
   picker: null,
@@ -2963,6 +2969,234 @@ function currentSlices() {
   return { slices: m, total: st.onSecs + st.offSecs, label: '两种状态汇总' };
 }
 
+/* ---------------- 时间日历（周 / 月） ---------------- */
+
+/** 一周从周一开始（与时段表一致） */
+function weekStartOf(dt) {
+  const d = new Date(dt.getTime());
+  const back = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - back);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function parseYmd(t) {
+  const p = String(t || '').split('-').map(Number);
+  if (p.length !== 3 || !p[0]) return new Date();
+  return new Date(p[0], p[1] - 1, p[2]);
+}
+
+/** 当前要加载的区间：周 = 7 天，月 = 覆盖整月的 7 的倍数天 */
+function calRange() {
+  const base = parseYmd(S.calAnchor || S.calSel || todayStr());
+  let start;
+  let end;
+  if (S.calMode === 'month') {
+    const first = new Date(base.getFullYear(), base.getMonth(), 1);
+    const last = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    start = weekStartOf(first);
+    end = addDays(weekStartOf(last), 6);
+  } else {
+    start = weekStartOf(base);
+    end = addDays(start, 6);
+  }
+  let lo = dateStr(start);
+  let hi = dateStr(end);
+  // 选中日不在窗口里时把区间扩到它：切换视图/翻页后明细仍然读得到数据
+  const sel = S.calSel || lo;
+  if (sel < lo) lo = sel;
+  if (sel > hi) hi = sel;
+  const tab = S.statsTab === 'off' ? 'off' : (S.statsTab === 'on' ? 'on' : 'all');
+  return { start: lo, end: hi, tab, key: lo + '|' + hi + '|' + tab };
+}
+
+/** 当前视图自己的窗口（不含"为选中日扩出来"的那几天） */
+function calWindow() {
+  const base = parseYmd(S.calAnchor || S.calSel || todayStr());
+  if (S.calMode === 'month') {
+    const first = new Date(base.getFullYear(), base.getMonth(), 1);
+    const last = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    return { start: dateStr(weekStartOf(first)), end: dateStr(addDays(weekStartOf(last), 6)) };
+  }
+  const w0 = weekStartOf(base);
+  return { start: dateStr(w0), end: dateStr(addDays(w0, 6)) };
+}
+
+/** 只保留窗口内的天：区间可能为了"选中日"被扩过，网格不能被撑成 8 列 */
+function calWindowDays(days) {
+  const w = calWindow();
+  return days.filter((d) => d.date >= w.start && d.date <= w.end);
+}
+
+function calRangeLabel() {
+  const r = calRange();
+  if (S.calMode === 'month') {
+    const b = parseYmd(S.calAnchor || S.calSel || todayStr());
+    return I18N.getLang() === 'en'
+      ? `${b.getFullYear()}-${pad(b.getMonth() + 1)}`
+      : `${b.getFullYear()} 年 ${b.getMonth() + 1} 月`;
+  }
+  return `${r.start.slice(5)} ~ ${r.end.slice(5)}`;
+}
+
+/** 颜色按"整个窗口内的累计时长"分配：同一个软件在每天都是同一种颜色 */
+function calColors(days) {
+  const tot = new Map();
+  for (const d of days) {
+    for (const it of d.items || []) tot.set(it.key, (tot.get(it.key) || 0) + it.secs);
+  }
+  const arr = [...tot.entries()].sort((a, b) => b[1] - a[1]);
+  const m = new Map();
+  arr.forEach(([k], i) => m.set(k, PALETTE[i % PALETTE.length]));
+  return m;
+}
+
+function calSegs(items, colors, cls) {
+  let out = '';
+  for (const it of items) {
+    const c = colors.get(it.key) || 'var(--line-2)';
+    for (const sp of it.spans || []) {
+      const h = Math.max(0.7, ((sp.t - sp.f) / 1440) * 100);
+      out += `<i class="${cls}" style="top:${(sp.f / 1440) * 100}%;height:${h}%;background:${c}"`
+        + ` title="${esc(it.label)} ${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}"></i>`;
+    }
+  }
+  return out;
+}
+
+/** 周视图：7 列，每列一条 24 小时时间轴 */
+function calWeekHtml(days, colors) {
+  const cells = calWindowDays(days).map((d) => {
+    const dt = parseYmd(d.date);
+    const wd = DAYS[(dt.getDay() + 6) % 7];
+    const on = d.date === S.calSel;
+    const today = d.date === todayStr();
+    return `<button class="cw-col${on ? ' on' : ''}${today ? ' today' : ''}"
+      data-act="cal-pick" data-date="${d.date}" title="${d.date}">
+      <span class="cw-hd"><b>${wd}</b><em>${dt.getDate()}</em></span>
+      <span class="cw-track">${calSegs(d.items || [], colors, 'cb')}</span>
+      <span class="cw-tot">${d.secs ? fmtDurShort(d.secs) : ''}</span>
+    </button>`;
+  }).join('');
+  // 左侧刻度和 7 列放在同一个 grid 里，刻度才能和格子对齐
+  const axis = [0, 6, 12, 18, 24]
+    .map((h) => `<span style="top:${(h / 24) * 100}%">${pad(h)}</span>`).join('');
+  return `<div class="cal-week"><div class="cw-axis">${axis}</div>${cells}</div>`;
+}
+
+/** 月视图：7 × N 网格，每格一条横的 24 小时条 */
+function calMonthHtml(days, colors) {
+  const base = parseYmd(S.calAnchor || S.calSel || todayStr());
+  const mon = base.getMonth();
+  const cells = calWindowDays(days).map((d) => {
+    const dt = parseYmd(d.date);
+    const out = dt.getMonth() !== mon;
+    const on = d.date === S.calSel;
+    const today = d.date === todayStr();
+    let segs = '';
+    for (const it of d.items || []) {
+      const c = colors.get(it.key) || 'var(--line-2)';
+      for (const sp of it.spans || []) {
+        segs += `<i style="left:${(sp.f / 1440) * 100}%;width:${Math.max(0.4, ((sp.t - sp.f) / 1440) * 100)}%;background:${c}"`
+          + ` title="${esc(it.label)} ${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}"></i>`;
+      }
+    }
+    return `<button class="cm-cell${out ? ' out' : ''}${on ? ' on' : ''}${today ? ' today' : ''}"
+      data-act="cal-pick" data-date="${d.date}" title="${d.date}">
+      <span class="cm-top"><b>${dt.getDate()}</b><em>${d.secs ? fmtDurShort(d.secs) : ''}</em></span>
+      <span class="cm-bar">${segs}</span>
+    </button>`;
+  }).join('');
+  return `<div class="cm-wd">${DAYS.map((w) => `<span>${w}</span>`).join('')}</div>
+    <div class="cal-month">${cells}</div>`;
+}
+
+/** 选中那一天的明细：每个软件的时段、累计时长、占比 */
+function calDetailHtml(days, colors) {
+  const d = (days || []).find((x) => x.date === S.calSel);
+  if (!d) return '';
+  const dt = parseYmd(d.date);
+  const wd = DAYS[(dt.getDay() + 6) % 7];
+  const total = d.secs || 0;
+  const rows = (d.items || []).length
+    ? d.items.map((it) => {
+      const pct = total ? ((it.secs / total) * 100).toFixed(1) : '0.0';
+      const spans = (it.spans || []).map((sp) => `${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}`).join(' · ');
+      return `<li>
+        <span class="sw" style="background:${colors.get(it.key) || 'var(--line-2)'}"></span>
+        <b class="cd-n">${esc(it.label)}${it.category === 'site'
+    ? ' <span class="badge blue">网页</span>' : ''}</b>
+        <span class="cd-m">${fmtDur(it.secs)}</span>
+        <span class="cd-p">${pct}%</span>
+        <span class="cd-sp">${spans || '—'}</span>
+      </li>`;
+    }).join('')
+    : '<li class="cd-none">这一天没有使用记录。</li>';
+  let bar = '';
+  for (const it of d.items || []) {
+    const c = colors.get(it.key) || 'var(--line-2)';
+    for (const sp of it.spans || []) {
+      bar += `<i style="left:${(sp.f / 1440) * 100}%;width:${Math.max(0.4, ((sp.t - sp.f) / 1440) * 100)}%;background:${c}"></i>`;
+    }
+  }
+  return `<div class="cal-detail">
+    <div class="cd-hd">
+      <b>${d.date.slice(5)} ${wd}</b>
+      <span class="cd-sum">共 ${fmtDur(total)}</span>
+      <button class="pd-x" data-act="cal-clear" title="收起">×</button>
+    </div>
+    <div class="cd-track">${bar}</div>
+    <div class="cd-ticks">${[0, 6, 12, 18, 24].map((h) => `<span>${pad(h === 24 ? 24 : h)}:00</span>`).join('')}</div>
+    <ul class="cd-list">${rows}</ul>
+  </div>`;
+}
+
+function calHtml() {
+  const days = S.cal;
+  if (!days) return '<div class="cal-loading">正在载入…</div>';
+  if (!days.length) return '<div class="empty"><span class="ico">▤</span>这段时间还没有数据。</div>';
+  const colors = calColors(days);
+  const grid = S.calMode === 'month' ? calMonthHtml(days, colors) : calWeekHtml(days, colors);
+  return grid + calDetailHtml(days, colors);
+}
+
+/** 只重画日历卡片（不整页重建，滚动位置和焦点都不动） */
+function paintCal() {
+  const body = $('#calBody');
+  if (body) {
+    body.innerHTML = calHtml();
+    // render() 里的翻译是在这一块**之前**跑的；日历数据是异步到的，
+    // 这里换完 innerHTML 必须再翻一次，否则英文界面下会露出中文。
+    if (window.I18N && I18N.apply) I18N.apply(body);
+  }
+  const lab = $('.cal-label');
+  if (lab) lab.textContent = calRangeLabel();
+  document.querySelectorAll('[data-act="cal-mode"]').forEach((b) => {
+    const on = b.dataset.m === S.calMode;
+    b.classList.toggle('active', on);
+    b.classList.toggle('gold', on);
+  });
+}
+
+async function calLoad() {
+  const r = calRange();
+  S.calKey = r.key;             // 先记指纹：失败也不会被每帧重试打爆
+  S.cal = null;
+  paintCal();
+  try {
+    S.cal = await invoke('stats_calendar', { start: r.start, end: r.end, tab: r.tab });
+  } catch (e) {
+    S.cal = [];
+  }
+  paintCal();
+}
+
+/** 进入统计页时保证有数据（区间没变就不重复请求） */
+function calEnsure() {
+  if (S.calKey === calRange().key && S.cal) return;
+  calLoad();
+}
+
 function viewStats() {
   const st = S.stats;
   const cur = currentSlices();
@@ -3049,6 +3283,24 @@ function viewStats() {
       <canvas id="pie" width="620" height="360"></canvas>
     </div>
     <div id="pieDetail" class="pie-detail-host" data-key=""></div>` : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      时间日历
+      <div class="seg cal-seg">
+        <button class="${S.calMode === 'week' ? 'active gold' : ''}" data-act="cal-mode" data-m="week">周</button>
+        <button class="${S.calMode === 'month' ? 'active gold' : ''}" data-act="cal-mode" data-m="month">月</button>
+      </div>
+    </div>
+    <div class="cal-nav">
+      <button class="btn btn-sm" data-act="cal-move" data-d="-1" title="上一页">‹</button>
+      <span class="cal-label">${calRangeLabel()}</span>
+      <button class="btn btn-sm" data-act="cal-move" data-d="1" title="下一页">›</button>
+      <button class="btn btn-sm" data-act="cal-today">今天</button>
+      <span class="hint" style="margin-left:auto">每个色块就是一种软件；点任意一天看当天明细。</span>
+    </div>
+    <div id="calBody">${calHtml()}</div>
   </div>
 
   ${cur.slices.length ? `
@@ -4126,9 +4378,16 @@ function pieDur(secs) {
   return I18N.getLang() === 'en' ? fmtDurShort(secs) : fmtDur(secs);
 }
 
-const PIE_W = 620;
+const PIE_W = 660;
 /** 一行两排字（名称 + 时长）的最小行距 */
 const PIE_ROW = 34;
+/** 画布上下留白。
+ *
+ *  这就是"折线"的根源：以前上下只留 24px，标签被压在最上/最下一行，
+ *  而顶部扇区的弧点本来就在 cy - rOut 附近 —— 标签比弧点还高一截，
+ *  连线只能先折出去再折回来，看着就是"中途突兀一拐"。
+ *  留 72px 之后，最高/最低的标签与扇区顶部基本同高，线几乎是直的。 */
+const PIE_PAD = 72;
 const PIE_NAME_FONT = '600 11.5px "Microsoft YaHei UI", sans-serif';
 const PIE_DUR_FONT = '10.5px "Microsoft YaHei UI", sans-serif';
 const PIE_NAME_FONT_ON = '700 13px "Microsoft YaHei UI", sans-serif';
@@ -4170,8 +4429,9 @@ function pieLayout(slices, total) {
 
   const sum = items.reduce((a, b) => a + b.secs, 0);
   const cx = PIE_W / 2;
-  const rOut = 96;
-  const rIn = 62;
+  // 画布加宽到 660、环也放大一点：左右各留 190px 放标签，两侧对称
+  const rOut = 104;
+  const rIn = 66;
 
   const arcs = [];
   let ang = -Math.PI / 2;
@@ -4189,24 +4449,30 @@ function pieLayout(slices, total) {
     sides[cos >= 0 ? 'right' : 'left'].push({ arc, cos, sin });
   }
   const rows = Math.max(sides.left.length, sides.right.length, 1);
-  // 条目多就把画布**加高**，而不是把行距压扁 —— 压到 20px 以下两行字就叠在一起了。
-  const H = Math.max(360, 46 + rows * PIE_ROW);
+  // 高度同时满足两件事：
+  //   · 圆环本身要放得下（2 × (rOut + 留白)）；
+  //   · 行数多时按行加起来，而不是把行距压扁。
+  // 这样无论 1 项还是 9 项，顶部/底部都有 PIE_PAD 的呼吸空间，
+  // 标签的"理想高度"就是扇区弧点的高度 —— 不需要绕行。
+  const H = Math.max(2 * (rOut + PIE_PAD), PIE_PAD * 2 + rows * PIE_ROW);
   const cy = H / 2;
-  const TOP = 24;
-  const BOT = H - 24;
+  const TOP = PIE_PAD;
+  const BOT = H - PIE_PAD;
 
   const labels = [];
   for (const side of ['left', 'right']) {
     const list = sides[side];
     if (!list.length) continue;
     const right = side === 'right';
-    const ys = packLabels(list.map((x) => cy + x.sin * (rOut + 12)), TOP, BOT, PIE_ROW);
+    // 理想高度直接用**弧点所在的高度**（rOut + 3，与 p0y 同一个半径）：
+    // 以前这里多加了 9px，标签天生就比弧点低一截，再叠加挤动，线就必须折一下。
+    const ys = packLabels(list.map((x) => cy + x.sin * (rOut + 3)), TOP, BOT, PIE_ROW);
     list.forEach((x, i) => { x.y = ys[i]; });
 
     // 行序 = 角序（同一侧 sin 单调），按 y 排序拿到的就是"从上到下"；
     // 让每条线的竖直段按这个顺序依次外扩，就保证了任意两条线都不相交。
     const ordered = list.slice().sort((a, b) => a.y - b.y);
-    const anchorX = right ? cx + rOut + 46 : cx - rOut - 46;
+    const anchorX = right ? cx + rOut + 48 : cx - rOut - 48;
     const room = right ? (PIE_W - 10) - (anchorX + 8) : (anchorX - 8) - 10;
     // 悬停时字号大一档（11.5 → 13，10.5 → 11），预留余量，
     // 这样"放大"不会让文字突然被截断成另一句。
@@ -4223,9 +4489,17 @@ function pieLayout(slices, total) {
         right,
         y: x.y,
         anchorX,
-        colX: right ? cx + rOut + 12 + i * 2.4 : cx - rOut - 12 - i * 2.4,
+        colX: right ? cx + rOut + 14 + i * 2.4 : cx - rOut - 14 - i * 2.4,
         p0x: cx + x.cos * (rOut + 3),
         p0y: cy + x.sin * (rOut + 3),
+        straight: Math.abs(x.y - (cy + x.sin * (rOut + 3))) <= 14,
+        pts: pieLeadPts(
+          cx + x.cos * (rOut + 3),
+          cy + x.sin * (rOut + 3),
+          right ? 1 : -1,
+          anchorX,
+          x.y,
+        ),
         nameTxt,
         durTxt,
         textW: Math.max(pieMeasure(nameTxt, PIE_NAME_FONT), pieMeasure(durTxt, PIE_DUR_FONT)),
@@ -4234,6 +4508,48 @@ function pieLayout(slices, total) {
   }
 
   return { items, arcs, labels, sum, cx, cy, rOut, rIn, W: PIE_W, H, total };
+}
+
+/** 一条引导线的路径点（采样成折线，绘制和命中用同一份数据）。
+ *
+ *  两种形状：
+ *   · 标签与弧点几乎同高（|dy| ≤ 14）→ 一条**直线**，中途没有任何拐点；
+ *   · 被别的标签挤开了 → 一条**两端都是水平切线**的三次贝塞尔（S 形）。
+ *
+ *  为什么不再用"斜线 + 直角/圆角 + 水平"：那种折法在落差大时会出现一个
+ *  看得见的尖角，也就是用户说的"中途突兀的弯折"。S 形曲线两端都与水平相切，
+ *  视觉上是从圆周"顺出去"，再平滑地贴到标签那一行，没有折角。
+ */
+function pieLeadPts(p0x, p0y, dir, anchorX, y) {
+  if (Math.abs(y - p0y) <= 14) {
+    return [[p0x, p0y], [anchorX, y]];
+  }
+  // 控制点距离随落差增大，但有上限：太长会在标签附近鼓起一个包
+  const k = Math.min(72, Math.abs(y - p0y) * 1.4);
+  const c1x = p0x + dir * k;
+  const c2x = anchorX - dir * k;
+  const out = [[p0x, p0y]];
+  const N = 12;
+  for (let i = 1; i <= N; i++) {
+    const u = i / N;
+    const a = (1 - u) * (1 - u) * (1 - u);
+    const b = 3 * (1 - u) * (1 - u) * u;
+    const c = 3 * (1 - u) * u * u;
+    const d = u * u * u;
+    out.push([a * p0x + b * c1x + c * c2x + d * anchorX, a * p0y + b * p0y + c * y + d * y]);
+  }
+  return out;
+}
+
+/** 点到线段距离（命中测试用） */
+function distToSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
 /** 画一帧。`hover` = 高亮项索引（-1 无），`t` = 高亮强度 0..1。 */
@@ -4316,21 +4632,10 @@ function drawPieFrame(cv) {
   for (const lb of labels) {
     const on = hover === lb.idx;
     const alpha = hover < 0 ? 0.82 : (on ? 1 : 0.16);
-    const dir = lb.right ? 1 : -1;
-    const R = 9;
-    const dy = lb.y - lb.p0y;
 
     ctx.beginPath();
-    ctx.moveTo(lb.p0x, lb.p0y);
-    if (Math.abs(dy) < 2) {
-      // 几乎同高：一条直线到底
-      ctx.lineTo(lb.anchorX, lb.y);
-    } else {
-      const sy = dy > 0 ? 1 : -1;
-      ctx.lineTo(lb.colX, lb.y - sy * R);
-      ctx.quadraticCurveTo(lb.colX, lb.y, lb.colX + dir * R, lb.y);
-      ctx.lineTo(lb.anchorX, lb.y);
-    }
+    ctx.moveTo(lb.pts[0][0], lb.pts[0][1]);
+    for (let i = 1; i < lb.pts.length; i++) ctx.lineTo(lb.pts[i][0], lb.pts[i][1]);
     // 先描一层底色再压本色：并行的段也能分辨（同地图路线）
     ctx.strokeStyle = cStroke;
     ctx.globalAlpha = alpha * (on ? 0.95 : 0.72);
@@ -4342,10 +4647,13 @@ function drawPieFrame(cv) {
     ctx.stroke();
     ctx.globalAlpha = 1;
 
+    // 两端各一个小圆点：靠标签那头表示"这一行"，靠扇区那头表示"指的就是这块"
+    const dot = hover < 0 || on ? 1 : 0.3;
     ctx.beginPath();
     ctx.arc(lb.anchorX, lb.y, on ? 3.2 : 2, 0, Math.PI * 2);
+    ctx.arc(lb.p0x, lb.p0y, on ? 2.4 : 1.6, 0, Math.PI * 2);
     ctx.fillStyle = lb.it.color;
-    ctx.globalAlpha = hover < 0 || on ? 1 : 0.3;
+    ctx.globalAlpha = dot;
     ctx.fill();
     ctx.globalAlpha = 1;
   }
@@ -4407,15 +4715,11 @@ function pieHit(cv, ev) {
     const xb = Math.max(tx, x1) + 4;
     // ① 两行文字（±16 覆盖 13px 名称 + 11px 时长）
     if (y >= lb.y - 17 && y <= lb.y + 16 && x >= xa && x <= xb) return lb.idx;
-    // ② 水平段（colX → anchorX）
-    if (Math.abs(y - lb.y) <= 5
-      && x >= Math.min(lb.colX, lb.anchorX) - 4 && x <= Math.max(lb.colX, lb.anchorX) + 4) {
-      return lb.idx;
-    }
-    // ③ 竖直段（p0y → y），线只有 1.4px，给 ±5 的容差才点得着
-    if (Math.abs(x - lb.colX) <= 5
-      && y >= Math.min(lb.p0y, lb.y) - 4 && y <= Math.max(lb.p0y, lb.y) + 4) {
-      return lb.idx;
+    // ② 引导线：线只有 1.4px 宽，按到各段折线的距离给 6px 容差才点得着
+    for (let i = 1; i < lb.pts.length; i++) {
+      const a0 = lb.pts[i - 1];
+      const b0 = lb.pts[i];
+      if (distToSeg(x, y, a0[0], a0[1], b0[0], b0[1]) <= 6) return lb.idx;
     }
   }
 
@@ -4645,6 +4949,7 @@ function render() {
   if (S.view === 'stats') {
     const cur = currentSlices();
     drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长' });
+    calEnsure();      // 周/月日历：区间没变就不重复请求
   }
 
   // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
@@ -5130,6 +5435,38 @@ const Act = window.Act = {
     render();
   },
   async refreshStats() { await loadStats(); render(); },
+
+  /* ---- 时间日历 ---- */
+  /** 切周/月：**选中日期保持不变**，切到月视图就显示它所在的那个月 */
+  async calMode(m) {
+    if (m !== 'week' && m !== 'month') return;
+    if (S.calMode === m) return;
+    S.calMode = m;
+    if (S.calSel) S.calAnchor = S.calSel;
+    await calLoad();
+  },
+  /** 翻页：周 ±7 天、月 ±1 月；选中日不动（区间会自动把它包进来） */
+  async calMove(d) {
+    const base = parseYmd(S.calAnchor || S.calSel || todayStr());
+    if (S.calMode === 'month') {
+      S.calAnchor = dateStr(new Date(base.getFullYear(), base.getMonth() + d, 1));
+    } else {
+      S.calAnchor = dateStr(addDays(base, d * 7));
+    }
+    await calLoad();
+  },
+  async calToday() {
+    S.calAnchor = todayStr();
+    S.calSel = todayStr();
+    await calLoad();
+  },
+  async calPick(date) {
+    if (!date) return;
+    S.calSel = date;
+    S.calAnchor = date;
+    if (S.calKey === calRange().key && S.cal) { paintCal(); return; }
+    await calLoad();
+  },
 
   async genReport() {
     const period = S.genPeriod || 'daily';
@@ -7551,6 +7888,11 @@ document.addEventListener('click', async (e) => {
   if (act === 'backup-dir') { await invoke('backup_open_dir'); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
   if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
+  if (act === 'cal-mode') { await Act.calMode(el.dataset.m); return; }
+  if (act === 'cal-move') { await Act.calMove(+el.dataset.d); return; }
+  if (act === 'cal-today') { await Act.calToday(); return; }
+  if (act === 'cal-pick') { await Act.calPick(el.dataset.date); return; }
+  if (act === 'cal-clear') { S.calSel = ''; paintCal(); return; }
   if (act === 'pie-close') {
     const host = document.querySelector('#pieDetail');
     if (host) { host.dataset.key = ''; host.innerHTML = ''; }

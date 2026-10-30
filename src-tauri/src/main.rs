@@ -446,6 +446,7 @@ fn main() {
             cmds::backup_cloud_upload,
             cmds::backup_cloud_restore,
             cmds::stats_range,
+            cmds::stats_calendar,
             cmds::stats_flush,
             cmds::stats_dir_path,
             cmds::report_list,

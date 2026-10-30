@@ -598,6 +598,109 @@ pub fn flush(shared: &Shared) {
     }
 }
 
+/* ---------------- 日历（周 / 月） ---------------- */
+
+/// 日历里的一天：某个条目的当天明细
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CalItem {
+    pub key: String,
+    pub label: String,
+    pub category: String,
+    pub secs: u64,
+    /// 当天的连续使用段（分钟，`t` 不含）
+    pub spans: Vec<Span>,
+}
+
+/// 日历里的一天
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CalDay {
+    pub date: String,
+    pub secs: u64,
+    pub items: Vec<CalItem>,
+}
+
+fn push_cal(map: &mut BTreeMap<String, CalItem>, key: &str, acc: &Acc) {
+    let e = map.entry(key.to_string()).or_insert_with(|| CalItem {
+        key: key.to_string(),
+        label: acc.label.clone(),
+        category: acc.category.clone(),
+        secs: 0,
+        spans: Vec::new(),
+    });
+    e.secs += acc.secs;
+    e.spans.extend(acc.spans.iter().copied());
+}
+
+/// 把当天同一个条目的段排序、合并相邻段（on/off 两套数据合到一起时会出现）。
+fn tidy_spans(v: &mut Vec<Span>) {
+    v.sort_by_key(|s| s.f);
+    let mut out: Vec<Span> = Vec::with_capacity(v.len());
+    for sp in v.drain(..) {
+        if let Some(last) = out.last_mut() {
+            if sp.f <= last.t.saturating_add(1) {
+                last.t = last.t.max(sp.t);
+                continue;
+            }
+        }
+        out.push(sp);
+    }
+    *v = out;
+}
+
+/// 逐日明细：周日历 / 月日历用。
+///
+/// 为什么不复用 `aggregate`：它把整个区间合成一行行 `Slice`，
+/// 而日历要的是"**每天**分别用了哪些软件、各在几点到几点"。
+/// 日文件本来就是按天存的，直接逐日读最准，也不会被聚合的裁剪逻辑影响。
+///
+/// `tab`：`on` / `off` / 其它（两个数据集按条目相加）。
+pub fn calendar(start: &str, end: &str, tab: &str) -> Vec<CalDay> {
+    let mut d0 = match NaiveDate::parse_from_str(start, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut d1 = match NaiveDate::parse_from_str(end, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    if d1 < d0 {
+        std::mem::swap(&mut d0, &mut d1);
+    }
+    // 上限一年：防止误传一个巨大区间，把界面拖死
+    if (d1 - d0).num_days() > 366 {
+        d1 = d0 + CDur::days(366);
+    }
+
+    let mut out = Vec::new();
+    let mut cur = d0;
+    while cur <= d1 {
+        let date = cur.format("%Y-%m-%d").to_string();
+        let file = load_day(&date);
+        let mut map: BTreeMap<String, CalItem> = BTreeMap::new();
+        if tab != "off" {
+            for (k, a) in file.on.iter() {
+                push_cal(&mut map, k, a);
+            }
+        }
+        if tab != "on" {
+            for (k, a) in file.off.iter() {
+                push_cal(&mut map, k, a);
+            }
+        }
+        let mut items: Vec<CalItem> = map.into_values().collect();
+        for it in items.iter_mut() {
+            tidy_spans(&mut it.spans);
+        }
+        items.sort_by(|a, b| b.secs.cmp(&a.secs).then(a.label.cmp(&b.label)));
+        let secs = items.iter().map(|i| i.secs).sum();
+        out.push(CalDay { date, secs, items });
+        cur += CDur::days(1);
+    }
+    out
+}
+
 fn merge(
     dst: &mut BTreeMap<String, Slice>,
     src: &BTreeMap<String, Acc>,
@@ -1199,6 +1302,37 @@ mod tests {
         let mut s2 = 7u64;
         assert_eq!(take_back(&mut empty, &mut s2, 3, 5), 0);
         assert_eq!(s2, 7);
+    }
+
+    /// 日历：相邻段要合并，倒序区间要能自动纠正
+    #[test]
+    fn calendar_merges_adjacent_spans_and_fixes_order() {
+        // 直接测纯函数，避免碰磁盘
+        let mut v = vec![
+            Span { f: 600, t: 660 },
+            Span { f: 660, t: 700 },
+            Span { f: 720, t: 730 },
+        ];
+        tidy_spans(&mut v);
+        assert_eq!(v, vec![Span { f: 600, t: 700 }, Span { f: 720, t: 730 }]);
+
+        // 完全相同的段也不能重复
+        let mut v2 = vec![Span { f: 540, t: 600 }, Span { f: 540, t: 600 }];
+        tidy_spans(&mut v2);
+        assert_eq!(v2, vec![Span { f: 540, t: 600 }]);
+    }
+
+    /// 没人用过的那天也要出现在日历里（否则前端得自己补日期）
+    #[test]
+    fn calendar_returns_every_day_in_range() {
+        let days = calendar("2026-10-26", "2026-11-01", "on");
+        assert_eq!(days.len(), 7, "跨月也要一天不少");
+        assert_eq!(days[0].date, "2026-10-26");
+        assert_eq!(days[6].date, "2026-11-01");
+        // 倒序传入等价于正序
+        let rev = calendar("2026-11-01", "2026-10-26", "all");
+        assert_eq!(rev.len(), 7);
+        assert_eq!(rev[0].date, "2026-10-26");
     }
 
     /// 段长就是 end - start，边界不能出现负数

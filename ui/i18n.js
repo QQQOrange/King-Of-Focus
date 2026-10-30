@@ -664,6 +664,23 @@
       'Counting only time you were at the computer: any gap over 1 minute without keyboard or mouse input is excluded.',
     '其他': 'Others',
     '累计前台时长': 'Cumulative foreground time',
+    /* —— 时间日历 —— */
+    '时间日历': 'Activity calendar',
+    '周': 'Week',
+    '月': 'Month',
+    '今天': 'Today',
+    '每个色块就是一种软件；点任意一天看当天明细。':
+      'Each colour is one app; click any day for its breakdown.',
+    '正在载入…': 'Loading…',
+    '这段时间还没有数据。': 'No data in this period.',
+    '这一天没有使用记录。': 'No activity on this day.',
+    '周一': 'Mon',
+    '周二': 'Tue',
+    '周三': 'Wed',
+    '周四': 'Thu',
+    '周五': 'Fri',
+    '周六': 'Sat',
+    '周日': 'Sun',
     '+ 新建': '+ New',
     '5 秒内': 'within 5 s',
     '= 一份软件 / 网站名单 + 一张周时间表。': '= one app/site list + one weekly schedule.',
@@ -1357,7 +1374,9 @@
     [/^还有 (\d+) 分 (\d+) 秒$/, '$1 min $2 s left'],
     [/^还有 (\d+) 分$/, '$1 min left'],
     [/^还有 (\d+) 秒$/, '$1 s left'],
-    [/^(.+) 分钟后$/, 'in $1 min']
+    [/^(.+) 分钟后$/, 'in $1 min'],
+    /* 日历明细的「共 5 小时 12 分」 */
+    [/^共 (.+)$/, 'Total $1'],
   ];
 
   /* ---------- 语言状态与译文查表 ---------- */

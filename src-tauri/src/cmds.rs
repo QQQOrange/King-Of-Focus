@@ -1401,6 +1401,12 @@ pub fn hide_window(app: AppHandle) {
 
 // ---------------- 使用时长统计 ----------------
 
+/// 日历（周 / 月）：逐日给出「这一天各软件用了多久、哪几段」
+#[tauri::command]
+pub fn stats_calendar(start: String, end: String, tab: String) -> Vec<crate::stats::CalDay> {
+    crate::stats::calendar(&start, &end, &tab)
+}
+
 #[tauri::command]
 pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -> Value {
     let agg = crate::stats::aggregate(&shared, &start, &end);
