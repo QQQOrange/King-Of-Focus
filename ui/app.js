@@ -64,6 +64,8 @@ const S = {
   calSel: '',
   cal: null,
   calKey: '',
+  calHit: '',      // 从饼图跳过来时要高亮的软件 key
+  calHitAt: 0,     // 高亮开始时间（到点自动褪掉）
   reports: [],
   reportView: null,
   picker: null,
@@ -3055,9 +3057,11 @@ function calSegs(items, colors, cls) {
   let out = '';
   for (const it of items) {
     const c = colors.get(it.key) || 'var(--line-2)';
+    const hit = it.key && it.key === S.calHit ? ' hit' : '';
     for (const sp of it.spans || []) {
       const h = Math.max(0.7, ((sp.t - sp.f) / 1440) * 100);
-      out += `<i class="${cls}" style="top:${(sp.f / 1440) * 100}%;height:${h}%;background:${c}"`
+      out += `<i class="${cls}${hit}" data-key="${esc(it.key)}"`
+        + ` style="top:${(sp.f / 1440) * 100}%;height:${h}%;background:${c}"`
         + ` title="${esc(it.label)} ${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}"></i>`;
     }
   }
@@ -3096,12 +3100,15 @@ function calMonthHtml(days, colors) {
     let segs = '';
     for (const it of d.items || []) {
       const c = colors.get(it.key) || 'var(--line-2)';
+      const hit = it.key && it.key === S.calHit ? ' hit' : '';
       for (const sp of it.spans || []) {
-        segs += `<i style="left:${(sp.f / 1440) * 100}%;width:${Math.max(0.4, ((sp.t - sp.f) / 1440) * 100)}%;background:${c}"`
+        segs += `<i class="${hit ? 'hit' : ''}" data-key="${esc(it.key)}"`
+          + ` style="left:${(sp.f / 1440) * 100}%;width:${Math.max(0.4, ((sp.t - sp.f) / 1440) * 100)}%;background:${c}"`
           + ` title="${esc(it.label)} ${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}"></i>`;
       }
     }
-    return `<button class="cm-cell${out ? ' out' : ''}${on ? ' on' : ''}${today ? ' today' : ''}"
+    const hasHit = S.calHit && (d.items || []).some((it) => it.key === S.calHit);
+    return `<button class="cm-cell${out ? ' out' : ''}${on ? ' on' : ''}${today ? ' today' : ''}${hasHit ? ' has-hit' : ''}"
       data-act="cal-pick" data-date="${d.date}" title="${d.date}">
       <span class="cm-top"><b>${dt.getDate()}</b><em>${d.secs ? fmtDurShort(d.secs) : ''}</em></span>
       <span class="cm-bar">${segs}</span>
@@ -3122,7 +3129,8 @@ function calDetailHtml(days, colors) {
     ? d.items.map((it) => {
       const pct = total ? ((it.secs / total) * 100).toFixed(1) : '0.0';
       const spans = (it.spans || []).map((sp) => `${hhmmOfMin(sp.f)}–${hhmmOfMin(sp.t)}`).join(' · ');
-      return `<li>
+      const hit = it.key && it.key === S.calHit ? ' class="hit"' : '';
+      return `<li${hit}>
         <span class="sw" style="background:${colors.get(it.key) || 'var(--line-2)'}"></span>
         <b class="cd-n">${esc(it.label)}${it.category === 'site'
     ? ' <span class="badge blue">网页</span>' : ''}</b>
@@ -3149,6 +3157,51 @@ function calDetailHtml(days, colors) {
     <div class="cd-ticks">${[0, 6, 12, 18, 24].map((h) => `<span>${pad(h === 24 ? 24 : h)}:00</span>`).join('')}</div>
     <ul class="cd-list">${rows}</ul>
   </div>`;
+}
+
+/** 从饼图点进来的联动：滚到「时间日历」，并高亮这个软件在那里的色块。
+ *
+ *  为什么还要调一次 calLoad：饼图按"时间段"统计，而日历按"某一周/某一月"显示，
+ *  两者窗口可能完全不重叠。这里取该软件**最近有记录的那一天**做锚点，
+ *  保证跳过去以后真的能看到它、而不是跳到一个空白周。
+ */
+function pieFocusCal(it) {
+  const key = it && it.key ? it.key : '';
+  if (key === '__rest') {
+    // 「其他」是聚合出来的，没有单一软件可指：只做定位，不做逐块高亮
+    S.calHit = '';
+  } else {
+    S.calHit = key;
+  }
+  S.calHitAt = Date.now();
+  const dates = (it && it.spans ? it.spans : [])
+    .map((sp) => sp && sp.date)
+    .filter(Boolean)
+    .sort();
+  if (dates.length) {
+    const day = dates[dates.length - 1];
+    S.calSel = day;
+    S.calAnchor = day;
+  }
+  // 数据没变时 paintCal 就够；窗口变了则重新取
+  if (S.calKey !== calRange().key) calLoad();
+  else paintCal();
+
+  const card = $('#calCard');
+  if (!card) return;
+  if (card.scrollIntoView) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  card.classList.remove('cal-flash');
+  // 强制回流，保证连点两次也能重新播一次高亮
+  void card.offsetWidth;
+  card.classList.add('cal-flash');
+  clearTimeout(pieFocusCal._t);
+  pieFocusCal._t = setTimeout(() => {
+    card.classList.remove('cal-flash');
+    // 高亮保留得比卡片光晕久一点，方便对上是哪几块
+    S.calHitAt = 0;
+  }, 4200);
 }
 
 function calHtml() {
@@ -3285,7 +3338,7 @@ function viewStats() {
     <div id="pieDetail" class="pie-detail-host" data-key=""></div>` : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
   </div>
 
-  <div class="card">
+  <div class="card" id="calCard">
     <div class="card-title">
       时间日历
       <div class="seg cal-seg">
@@ -4521,24 +4574,11 @@ function pieLayout(slices, total) {
  *  视觉上是从圆周"顺出去"，再平滑地贴到标签那一行，没有折角。
  */
 function pieLeadPts(p0x, p0y, dir, anchorX, y) {
-  if (Math.abs(y - p0y) <= 14) {
-    return [[p0x, p0y], [anchorX, y]];
-  }
-  // 控制点距离随落差增大，但有上限：太长会在标签附近鼓起一个包
-  const k = Math.min(72, Math.abs(y - p0y) * 1.4);
-  const c1x = p0x + dir * k;
-  const c2x = anchorX - dir * k;
-  const out = [[p0x, p0y]];
-  const N = 12;
-  for (let i = 1; i <= N; i++) {
-    const u = i / N;
-    const a = (1 - u) * (1 - u) * (1 - u);
-    const b = 3 * (1 - u) * (1 - u) * u;
-    const c = 3 * (1 - u) * u * u;
-    const d = u * u * u;
-    out.push([a * p0x + b * c1x + c * c2x + d * anchorX, a * p0y + b * p0y + c * y + d * y]);
-  }
-  return out;
+  // **一律直线**：从扇区外缘直接连到标签的锚点，中途不拐弯、不带弧度。
+  // 上下留白（PIE_PAD）已经把标签的高度对齐到弧点，所以直线基本都是水平或微斜的；
+  // 只有被同侧标签挤开时才会略微倾斜 —— 但仍然是**一条直线**，不会出现"弯"。
+  // （dir 保留在签名里，调用方不用改；命中测试和绘制共用这份点。）
+  return [[p0x, p0y], [anchorX, y]];
 }
 
 /** 点到线段距离（命中测试用） */
@@ -4859,6 +4899,8 @@ function drawPie(canvas, slices, total, opts) {
     }
     host.dataset.key = key;
     host.innerHTML = pieDetailHtml(it, canvas.__pie.sum);
+    // 同时跳到「时间日历」并高亮这个软件（点击的反馈要看得见）
+    pieFocusCal(it);
   });
 }
 
@@ -7896,6 +7938,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'pie-close') {
     const host = document.querySelector('#pieDetail');
     if (host) { host.dataset.key = ''; host.innerHTML = ''; }
+    // 收起饼图明细 = 不再"聚焦"某个软件，日历那边的描边也一起撤掉
+    if (S.calHit) { S.calHit = ''; paintCal(); }
     return;
   }
   if (act === 'lang') { await Act.setLang(el.dataset.v); return; }

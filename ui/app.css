@@ -1663,6 +1663,25 @@ html[data-motion="low"] .pie-detail { animation: none; }
 .cm-bar { position: relative; height: 9px; border-radius: 5px; background: var(--line); overflow: hidden; }
 .cm-bar i { position: absolute; top: 0; bottom: 0; }
 
+/* —— 从饼图跳过来的联动高亮 ——
+ * 卡片外圈脉冲（一眼看到"跳到了这里"）+ 对应软件的色块加白边（一眼看到"是哪几块"）。 */
+@keyframes calFlash {
+  0% { box-shadow: 0 0 0 0 rgba(77, 141, 255, .55); }
+  70% { box-shadow: 0 0 0 12px rgba(77, 141, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(77, 141, 255, 0); }
+}
+.card.cal-flash { animation: calFlash .95s var(--mo-ease) 2; border-color: var(--gold); }
+html[data-motion="low"] .card.cal-flash { animation: none; border-color: var(--gold); }
+
+/* 命中的色块：用"字色"做一圈描边（深色下是浅边、浅色下是深边，两边都清楚） */
+.cw-track .cb.hit,
+.cm-bar i.hit {
+  box-shadow: 0 0 0 2px var(--text), 0 0 0 3px var(--panel-a);
+  z-index: 2;
+}
+.cw-col .cw-track .cb.hit { left: 1px; right: 1px; }
+.cm-cell.has-hit { border-color: var(--gold); }
+
 /* —— 选中那天的明细 —— */
 .cal-detail {
   margin-top: 14px; padding: 12px 14px 10px;
@@ -1690,6 +1709,12 @@ html[data-motion="low"] .cal-detail { animation: none; }
   border-top: 1px solid var(--line); font-size: 12px;
 }
 .cd-list li:first-child { border-top: 0; }
+/* 从饼图跳过来时，命中的那一行也点亮：色块 + 行，两处一起指认 */
+.cd-list li.hit {
+  background: var(--on-bg);
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+.cd-list li.hit .cd-n { color: var(--gold); }
 .cd-list .sw { width: 10px; height: 10px; border-radius: 3px; }
 .cd-n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-m { color: var(--text-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }

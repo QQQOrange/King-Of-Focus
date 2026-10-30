@@ -145,7 +145,7 @@ window.__TAURI__ = {
           date: ds,
           secs: 3600 + extra,
           items: [
-            { key: 'app|Code', label: 'Visual Studio Code', category: 'app', secs: 3600,
+            { key: 'app|Visual Studio Code', label: 'Visual Studio Code', category: 'app', secs: 3600,
               spans: [{ f: 540, t: 600 }, { f: 780, t: 840 }] },
             { key: 'site|b23.tv', label: '哔哩哔哩', category: 'site', secs: extra,
               spans: [{ f: 1200, t: 1230 }] },
@@ -4187,6 +4187,31 @@ window.__itest = async () => {
       out.push(['明细里写着总时长', /1 小时 30 分/.test(det.textContent), true]);
       out.push(['展开不会改动扇图布局（不跳动）', cv2.__pie.labels.length, d2.labels.length]);
 
+      // 点扇区 → 跳到「时间日历」并高亮对应色块
+      cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
+      await wait(520);
+      const card = document.querySelector('#calCard');
+      out.push(['点扇区后日历被滚到视野里（卡片顶部贴近视口顶部）',
+        Math.abs(card.getBoundingClientRect().top) < 120, true]);
+      out.push(['日历卡片闪一下（高亮状态可见）', card.classList.contains('cal-flash'), true]);
+      out.push(['日历里对应软件的色块被描边高亮',
+        document.querySelectorAll('#calCard [data-key].hit').length > 0, true]);
+      out.push(['高亮只落在被点的那一项',
+        [...document.querySelectorAll('#calCard [data-key].hit')]
+          .every((e) => e.dataset.key === d2.items[0].key), true]);
+      // 明细里那一行也要点亮：色块 + 行，两处一起指认
+      const hiRow = document.querySelector('#calCard .cd-list li.hit');
+      out.push(['日历明细里命中的那一行被点亮', hiRow != null, true]);
+      out.push(['点亮的就是被点的那一项', hiRow ? /Visual Studio Code/.test(hiRow.textContent) : false, true]);
+      out.push(['明细行高亮没有连坐别的行',
+        document.querySelectorAll('#calCard .cd-list li.hit').length, 1]);
+
+      // 跳转把页面滚下去了，后面的几何断言要按滚动前的坐标算 —— 先滚回去
+      const sc = document.querySelector('#content');
+      if (sc) sc.scrollTop = 0;
+      window.scrollTo(0, 0);
+      await wait(220);
+
       cv2.dispatchEvent(new PointerEvent('pointerdown', { clientX: px, clientY: py, bubbles: true }));
       await wait(160);
       out.push(['再点同一项收起', document.querySelector('#pieDetail').textContent.trim(), '']);
@@ -4278,8 +4303,10 @@ window.__itest = async () => {
           }), true]);
         out.push(['标签与扇区同一高度（落差 ≤ 一行，不需要绕行）',
           d2.labels.every((l) => Math.abs(l.y - l.p0y) <= 40), true]);
-        out.push(['落差小的项走直线（没有多余拐点）',
-          d2.labels.every((l) => !l.straight || Math.abs(l.y - l.p0y) <= 14), true]);
+        out.push(['所有引导线都是直线（只有起止两点，没有拐点/弧度）',
+          d2.labels.every((l) => l.pts.length === 2), true]);
+        out.push(['直线精确指向标签锚点',
+          d2.labels.every((l) => l.pts[1][0] === l.anchorX && l.pts[1][1] === l.y), true]);
         // 左右两侧标签区宽度必须一样，否则一侧会被压扁
         {
           const rs = d2.labels.filter((l) => l.right)[0];
