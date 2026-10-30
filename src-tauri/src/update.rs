@@ -278,10 +278,26 @@ fn release_json(v: &Value, cfg: &UpdateCfg, remaining: i64, limit: i64) -> Value
     })
 }
 
+/// 把远端的资产名净化成**一个纯文件名**。
+///
+/// 资产名来自 GitHub API / 用户填的地址，不能直接 `dir.join(name)`：
+///   · `/` 和 `\` 必须干掉，否则 `../../x.exe` 会写到目标目录外面；
+///   · `.` 是允许的（文件名要用），但**全是点**的名字（`.`、`..`）要挡掉，
+///     否则 `dir.join("..")` 直接指到父目录，后面 `File::create` 会撞目录；
+///   · 清洗完是空串时退回一个固定名字，保证永远能落盘。
 fn safe_name(name: &str) -> String {
-    name.chars()
+    let cleaned: String = name
+        .chars()
         .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
-        .collect()
+        .collect();
+    // 清洗完是空、或者**全是点**（`.` / `..`）时才回退。
+    // 不能简单 trim 首尾的点：`../../evil.exe` 会被清成 `.._.._evil.exe`，
+    // 那个名字虽然安全（没有分隔符），但它是"真实可用的文件名"，不该被改写。
+    if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
+        "update.bin".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// 下载安装包，过程中通过 update-progress 事件回报进度
@@ -437,5 +453,91 @@ pub fn cleanup() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ucfg() -> UpdateCfg {
+        UpdateCfg::default()
+    }
+
+    /// 版本比较必须按**数字**比，不能按字符串。
+    /// `1.0.10` vs `1.0.9` 按字符串比会得出"更旧"，用户会收不到更新。
+    #[test]
+    fn version_compare_is_numeric() {
+        assert_eq!(cmp_ver("1.0.10", "1.0.9"), 1);
+        assert_eq!(cmp_ver("1.0.9", "1.0.10"), -1);
+        assert_eq!(cmp_ver("v1.2.3", "1.2.3"), 0, "v 前缀不影响结果");
+        assert_eq!(cmp_ver("1.2", "1.2.0"), 0, "缺的段按 0 补");
+        assert_eq!(cmp_ver("0.1.29", "0.1.28"), 1);
+        assert_eq!(cmp_ver("", "0.0.0"), 0, "空串不能 panic");
+        assert_eq!(cmp_ver("1.2.3-beta.1", "1.2.3"), 0, "预发布按主版本比");
+    }
+
+    /// 资产优先级：Setup 安装包 > 任意 exe > msi
+    #[test]
+    fn release_prefers_setup_then_exe_then_msi() {
+        let v = json!({
+            "tag_name": "9.9.9",
+            "body": "notes",
+            "published_at": "2026-10-30T00:00:00Z",
+            "assets": [
+                { "name": "readme.txt", "browser_download_url": "https://x/readme.txt", "size": 1 },
+                { "name": "app.msi", "browser_download_url": "https://x/app.msi", "size": 2 },
+                { "name": "King.Of.Focus-9.9.9.exe", "browser_download_url": "https://x/a.exe", "size": 3 },
+                { "name": "KingOfFocus-Setup-9.9.9.exe", "browser_download_url": "https://x/setup.exe", "size": 4 },
+            ],
+        });
+        let out = release_json(&v, &ucfg(), 10, 60);
+        assert_eq!(out["latest"], "9.9.9");
+        assert_eq!(out["hasUpdate"], true);
+        assert_eq!(out["asset"]["name"], "KingOfFocus-Setup-9.9.9.exe", "有 Setup 就选 Setup");
+    }
+
+    /// 没有安装包时要给出"手动下载"的说明，而不是给个空链接
+    #[test]
+    fn release_without_assets_asks_for_manual_download() {
+        let v = json!({ "tag_name": "9.9.9", "assets": [] });
+        let out = release_json(&v, &ucfg(), 0, 60);
+        assert_eq!(out["asset"], serde_json::Value::Null);
+        assert!(out["note"].as_str().unwrap_or("").contains("手动下载"));
+        assert_eq!(out["hasUpdate"], true, "没有包也仍然提示有新版本");
+    }
+
+    /// 已经"跳过"的版本不再提示
+    #[test]
+    fn skipped_version_is_not_offered() {
+        let v = json!({ "tag_name": "9.9.9", "assets": [] });
+        let mut c = ucfg();
+        c.skipped_version = "9.9.9".into();
+        assert_eq!(release_json(&v, &c, 0, 60)["hasUpdate"], false);
+
+        // 换一个更新的版本，跳过标记不应该继续挡住
+        c.skipped_version = "9.9.8".into();
+        assert_eq!(release_json(&v, &c, 0, 60)["hasUpdate"], true);
+    }
+
+    /// 不比当前版本新的，不算更新
+    #[test]
+    fn older_or_same_tag_has_no_update() {
+        let v = json!({ "tag_name": "0.0.1", "assets": [] });
+        let out = release_json(&v, &ucfg(), 0, 60);
+        assert_eq!(out["newer"], false);
+        assert_eq!(out["hasUpdate"], false);
+    }
+
+    /// 资产名不能带出目录：路径分隔符要变成下划线，纯点名要挡掉
+    #[test]
+    fn download_name_cannot_escape_target_dir() {
+        assert_eq!(safe_name("../../evil.exe"), ".._.._evil.exe");
+        assert_eq!(safe_name("a/b\\c.exe"), "a_b_c.exe");
+        assert_eq!(safe_name(".."), "update.bin", "纯点名会指到父目录");
+        assert_eq!(safe_name("."), "update.bin");
+        assert_eq!(safe_name(""), "update.bin");
+        assert_eq!(safe_name("King.Of.Focus-0.1.29.exe"), "King.Of.Focus-0.1.29.exe");
     }
 }

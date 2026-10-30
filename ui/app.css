@@ -498,7 +498,15 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .empty {
   text-align: center; color: var(--text-3); font-size: 12.5px;
   padding: 38px 12px; line-height: 2;
+  /* 空状态往往是"切页/删完最后一条"之后才出现的，
+   * 硬切进来会显得突兀。给一次很短的淡入 + 上浮，落位就安静了。 */
+  animation: emptyIn .22s var(--mo-ease);
 }
+@keyframes emptyIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+html[data-motion="low"] .empty { animation: none; }
 
 /* ══════════ 总览 ══════════ */
 .hero { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-bottom: 16px; }

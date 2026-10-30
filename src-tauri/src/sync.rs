@@ -17,7 +17,10 @@ fn join_url(base: &str, file: &str) -> String {
     if !b.ends_with('/') {
         b.push('/');
     }
-    format!("{}{}", b, file.trim_start_matches('/'))
+    // 文件名也要 trim：用户在设置里填 " kof.json " 是很常见的，
+    // 以前只去了前导斜杠，空格会原样拼进 URL —— 服务端直接 400/404，
+    // 而界面上只会显示"同步失败"，几乎没法自查。
+    format!("{}{}", b, file.trim().trim_start_matches('/'))
 }
 
 pub fn remote_url(c: &SyncCfg) -> String {
@@ -169,4 +172,77 @@ pub fn start_auto(shared: Arc<Shared>) {
             thread::sleep(Duration::from_secs(mins * 60));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SyncCfg;
+
+    /// 网盘地址与文件名的拼接：末尾有没有斜杠、文件名带不带前导斜杠都要对。
+    /// 拼错一个 `/` 就是 404，而界面上只会显示"同步失败"，很难查。
+    #[test]
+    fn join_url_handles_slashes() {
+        assert_eq!(
+            join_url("https://dav.example.com/x", "a.json"),
+            "https://dav.example.com/x/a.json"
+        );
+        assert_eq!(
+            join_url("https://dav.example.com/x/", "a.json"),
+            "https://dav.example.com/x/a.json"
+        );
+        assert_eq!(
+            join_url("https://dav.example.com/x/", "/a.json"),
+            "https://dav.example.com/x/a.json",
+            "文件名带前导斜杠不能拼出双斜杠"
+        );
+        assert_eq!(
+            join_url("https://dav.example.com/x/", "sub/a.json"),
+            "https://dav.example.com/x/sub/a.json",
+            "子目录要保留"
+        );
+        assert_eq!(
+            join_url("  https://dav.example.com/x  ", " a.json "),
+            "https://dav.example.com/x/a.json",
+            "地址和文件名两端的空格都要去掉，否则拼出来的 URL 是错的"
+        );
+    }
+
+    /// 没填文件名时用固定名，填了就用填的
+    #[test]
+    fn remote_url_defaults_and_keeps_custom_name() {
+        let mut c = SyncCfg::default();
+        c.url = "https://dav.example.com/dav".into();
+        c.remote_file = "   ".into();
+        assert_eq!(remote_url(&c), "https://dav.example.com/dav/king-of-focus.json");
+
+        c.remote_file = "my/kof.json".into();
+        assert_eq!(remote_url(&c), "https://dav.example.com/dav/my/kof.json");
+    }
+
+    /// 只有真的填了账号或密码才发 Authorization，否则匿名访问
+    #[test]
+    fn auth_only_when_credentials_present() {
+        let mut c = SyncCfg::default();
+        c.username = "".into();
+        c.password = "".into();
+        assert!(auth_of(&c).is_none(), "空账号密码不该发 Authorization");
+
+        c.username = "u".into();
+        assert!(auth_of(&c).is_some(), "只填账号也要带上");
+    }
+
+    /// 上传体的契约：对端（另一台机器）靠这些字段判断"要不要覆盖"
+    #[test]
+    fn payload_carries_schema_device_and_time() {
+        let mut cfg = Config::default();
+        cfg.updated_at = 1234567890;
+        let v: serde_json::Value = serde_json::from_str(&payload(&cfg, "PC-A")).unwrap();
+        assert_eq!(v["app"], "king-of-focus");
+        assert_eq!(v["schema"], 1);
+        assert_eq!(v["device"], "PC-A");
+        assert_eq!(v["updatedAt"], 1234567890);
+        assert!(v["config"].is_object(), "整份配置要随包上传");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    }
 }

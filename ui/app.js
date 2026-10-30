@@ -418,7 +418,7 @@ function viewOverview() {
         <span class="n" title="${esc(e.target)}">${esc(e.target)}</span>
         <span class="muted" style="font-size:11px">${esc(e.rule)}</span>
       </div>`).join('')
-    : '<div class="empty">还没有拦截记录。等你设置的时段到了，这里会出现被拦下的应用和网页。</div>';
+    : '<div class="empty"><span class="ico">◷</span>还没有拦截记录。等你设置的时段到了，这里会出现被拦下的应用和网页。</div>';
 
   const maskOn = d.mask.on;
 
@@ -690,7 +690,7 @@ function viewRules() {
 
   const body = rules.length
     ? groups.join('')
-    : '<div class="empty">还没有自律规则。点右上角「新建自律规则」开始。</div>';
+    : '<div class="empty"><span class="ico">⚑</span>还没有自律规则。点右上角「新建自律规则」开始。</div>';
 
   const banner = hardLocked
     ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.22);margin-bottom:16px">
@@ -3026,7 +3026,7 @@ function viewStats() {
     <div class="chart-wrap">
       <canvas id="pie" width="280" height="280"></canvas>
       <div class="legend" id="legend"></div>
-    </div>` : `<div class="empty">这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
+    </div>` : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
   </div>
 
   ${cur.slices.length ? `
@@ -3224,7 +3224,7 @@ function viewSync() {
         <span class="grow muted" style="font-size:10.5px">${new Date((f.mtime || 0) * 1000).toLocaleString()} · ${Math.round((f.size || 0) / 1024)} KB</span>
         <button class="btn btn-sm" data-act="backup-restore" data-path="${esc(f.path)}">恢复</button>
         <button class="x" data-act="backup-del" data-path="${esc(f.path)}">×</button>
-      </div>`).join('') : '<div class="empty">还没有本地备份。点「立即备份」生成第一份。</div>'}
+      </div>`).join('') : '<div class="empty"><span class="ico">⛁</span>还没有本地备份。点「立即备份」生成第一份。</div>'}
   </div>
 
   <div class="card">
@@ -3658,7 +3658,7 @@ function viewBrowsers() {
         <div class="brow-act">${act}</div>
       </div>`;
     }).join('')
-    : '<div class="empty">还没检测。点右上角「重新检测」。</div>';
+    : '<div class="empty"><span class="ico">◉</span>还没检测。点右上角「重新检测」。</div>';
 
   const sum = !list.length
     ? '正在检测…'
@@ -6587,7 +6587,7 @@ function renderCloudModal() {
             <span class="badge gold">${esc(f.name)}</span>
             <span class="grow muted" style="font-size:10.5px">${esc(f.url || '')}</span>
             <button class="btn btn-sm" data-act="cloud-restore" data-name="${esc(f.name)}">恢复</button>
-          </div>`).join('') : '<div class="empty">云端还没有备份。<br>先点「上传当前配置」。</div>'}
+          </div>`).join('') : '<div class="empty"><span class="ico">☁</span>云端还没有备份。<br>先点「上传当前配置」。</div>'}
         <div class="hint" style="margin-top:14px">
           只保留最近 ${10} 份、且 7 天内的备份；超出范围的会在上传时自动清理。
         </div>
