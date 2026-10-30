@@ -1417,9 +1417,26 @@ function ccRenderRuns(root, override, only) {
   const grid = host.querySelector('#ccGrid') || document.getElementById('ccGrid');
   if (!grid) return;
   const allow = only ? new Set(only) : null;
-  grid.querySelectorAll('.cc-run, .cc-drag').forEach((el) => {
-    if (!allow) { el.remove(); return; }
-    if (el.dataset.d == null || allow.has(+el.dataset.d)) el.remove();
+  // **复用池**：按 data-key 收好现有块，能复用就复用，只有真不该存在的才删。
+  //
+  // 这里以前是"先把所有块 remove 掉再重建"，每帧一次。而 `.cc-run.carry`
+  // 带一段 0.13s 的落格动画（ccCarry：opacity .55 → .72、scale 1.015 → 1），
+  // 于是被拖的那一块**每帧都从头重播一遍**——拖动时 mousemove 远快于 130ms，
+  // 动画永远播不完，看起来就是持续闪烁。其它段虽然没动画，也跟着每帧重建重排。
+  // 复用之后，同一段在整个拖动过程中始终是同一个 DOM 节点，只改 grid-row 和文字，
+  // 动画不会重播，闪烁从根上消失。
+  const pool = new Map();
+  grid.querySelectorAll('.cc-drag').forEach((el) => el.remove());
+  grid.querySelectorAll('.cc-run').forEach((el) => {
+    const d = el.dataset.d == null ? null : +el.dataset.d;
+    // 只重画某几天时，范围外的块原样留着，不参与本帧
+    if (allow && d != null && !allow.has(d)) return;
+    const k = el.dataset.key;
+    if (!k) {
+      el.remove();
+      return;
+    }
+    pool.set(k, el);
   });
   const fc = clockProfile();
   // `override(d,h)` 让拖拽预览可以临时替换某天的窗口，而不去改配置：
@@ -1526,7 +1543,7 @@ function ccRenderRuns(root, override, only) {
   //    直角——看起来像两块被硬粘在一起，也分不清哪块是周几。
   //    现在一天一块、各自四角圆润，日历的列感也回来了。
 
-  const addBlock = (d0, h0, h1, f0, t1) => {
+  const addBlock = (d0, h0, h1, f0, t1, seg) => {
     const t1Min = t1;   // 尾小时的结束分钟，用于色块上的时长文字
     const n = h1 - h0 + 1;
     // 块内统一按「分钟」切片，但**每格只发一条同色带**：
@@ -1563,8 +1580,25 @@ function ccRenderRuns(root, override, only) {
       ? `<i class="cc-gap" style="flex:0 0 ${b.pct.toFixed(3)}%"></i>`
       : `<i class="f${b.first ? ' first' : ''}${b.last ? ' last' : ''}"`
         + ` style="flex:0 0 ${b.pct.toFixed(3)}%;border-radius:${b.radius}"></i>`)).join('');
-    const run = document.createElement('div');
-    run.className = 'cc-run';
+    // 同一段在拖动过程中位置会变，但 seg 不变 —— 用它当 key 就能一直复用同一个节点。
+    // 老配置没有 seg 时退化成"位置 key"，那种数据移动时会重建一次（只发生在
+    // 从未保存过的旧数据上；保存过一次就会写入 seg）。
+    const key = seg ? `s:${seg}@${d0}` : `p:${d0}:${h0}-${h1}:${f0}-${t1}`;
+    let run = pool.get(key);
+    if (run) {
+      pool.delete(key);          // 标记"这一帧用到了"，别在收尾时被清掉
+    } else {
+      run = document.createElement('div');
+      run.className = 'cc-run';
+      // 只有"真的新出现一块"才播入场；拖动过程中的块是移动，不是新生。
+      // `S.ccDrag` 存在 = 正在拖，这时候加入场动画等于每帧闪一次（就是原来那个 bug）。
+      if (!S.ccDrag) {
+        run.classList.add('cc-in');
+        run.addEventListener('animationend', () => run.classList.remove('cc-in'), { once: true });
+      }
+    }
+    run.dataset.key = key;
+    run.dataset.seg = seg || '';
     run.dataset.d = String(d0);
     run.dataset.d1 = String(d0);
     run.dataset.h0 = String(h0);
@@ -1600,12 +1634,21 @@ function ccRenderRuns(root, override, only) {
     const label = `<span class="cc-run-txt${tight ? ' tight' : ''}${twoLine ? ' two' : ''}"`
       + ` style="top:calc(${labTop}% + ${tight ? 2 : 3}px)">`
       + `<b>${labStart} – ${labEnd}</b><em>${ccDurText(spanMin)}</em></span>`;
-    run.innerHTML = label + bands;
-    grid.appendChild(run);
+    // 只有内容真的变了才重写：无谓赋值会把子节点（色带 + 文字）整批重建，
+    // 那是"闪"的另一半来源。
+    const html = label + bands;
+    if (run.dataset.html !== html) {
+      run.innerHTML = html;
+      run.dataset.html = html;
+    }
+    if (!run.isConnected) grid.appendChild(run);
   };
 
   // 一天一段：直接铺，不做跨天/跨段合并
-  for (const s of segs) addBlock(s.d, s.h0, s.h1, s.f0, s.t1);
+  for (const s of segs) addBlock(s.d, s.h0, s.h1, s.f0, s.t1, s.seg);
+
+  // 池里剩下的 = 这一帧不该再有的块（被删掉、被合并、或换了位置的老数据），统一清掉
+  pool.forEach((el) => el.remove());
 
 }
 
@@ -7528,26 +7571,31 @@ function ccLiveTotals(winsBy) {
     ? ccWinsMinutes(winsBy.get(i))
     : ccDayMinutes(day)));
   const total = per.reduce((a, b) => a + b, 0);
+  // 拖动时这个函数每帧都会被调一次：**值没变就一个字符都不写**。
+  // `textContent = 同一个字符串` 也会把文本节点整个换掉，配合入场动画就是
+  // "数字在抖"的观感；宽度同理。
+  const setTxt = (el, t) => {
+    if (el && el.textContent !== t) el.textContent = t;
+  };
   const hd = document.querySelector('.cc-days-hd');
-  if (hd && hd.lastElementChild) hd.lastElementChild.textContent = ccTotalText(total);
+  if (hd && hd.lastElementChild) setTxt(hd.lastElementChild, ccTotalText(total));
   const rows = document.querySelectorAll('.cc-days .cc-day');
   per.forEach((m, d) => {
     const row = rows[d];
     if (!row) return;
     const bar = row.querySelector('.bar i');
-    if (bar) bar.style.width = `${(m / 1440 * 100).toFixed(1)}%`;
-    const v = row.querySelector('.v');
-    if (v) v.textContent = m ? ccDurText(m) : '—';
+    if (bar) {
+      const w = `${(m / 1440 * 100).toFixed(1)}%`;
+      if (bar.style.width !== w) bar.style.width = w;
+    }
+    setTxt(row.querySelector('.v'), m ? ccDurText(m) : '—');
     // 段数也跟着变：新建时可能把两段并成一段（并集），这里必须如实反映。
     // 没有预览数据时（撤回 / 提交后）就用配置里的真实值，别留着旧的段数。
-    const segEl = row.querySelector('.s');
-    if (segEl) {
-      const day = winsBy && winsBy.has(d)
-        ? ccDayOfWins(winsBy.get(d))
-        : prof.days[d];
-      const n = ccSegs(day).length;
-      segEl.textContent = n ? `${n} 段` : '';
-    }
+    const day = winsBy && winsBy.has(d)
+      ? ccDayOfWins(winsBy.get(d))
+      : prof.days[d];
+    const n = ccSegs(day).length;
+    setTxt(row.querySelector('.s'), n ? `${n} 段` : '');
   });
 }
 
@@ -7611,17 +7659,29 @@ function paintCcDrag() {
     r.classList.toggle('carry', dg.mode === 'move' && !dg.resize && hit);
   });
   // 4) 原位留一条虚线占位：告诉用户它原本在哪，松手前不"凭空消失"
-  grid.querySelectorAll('.cc-slot').forEach((el) => el.remove());
+  // 占位虚线也**复用同一个节点**：以前每帧 remove + 新建，而 `.cc-slot` 带
+  // `ccSlotIn` 淡入动画，于是虚线每帧闪一下。现在只更新位置与百分比，
+  // 它的出现动画只在真正开始拖动时播一次。
+  let slot = grid.querySelector('.cc-slot');
   if (dg.mode === 'move' && !dg.resize) {
     const s0 = Math.floor(dg.segFrom / 60), s1 = Math.floor((dg.segTo - 1) / 60);
     const span = (s1 - s0 + 1) * 60;
-    const slot = document.createElement('div');
-    slot.className = 'cc-slot';
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'cc-slot';
+      grid.appendChild(slot);
+    }
     slot.style.gridColumn = `${dg.d + 2}`;
     slot.style.gridRow = `${ccRow(s0)} / ${ccRow(s1) + 1}`;
-    slot.innerHTML = `<i style="top:${(((dg.segFrom - s0 * 60) / span) * 100).toFixed(2)}%;`
-      + `height:${(((dg.segTo - dg.segFrom) / span) * 100).toFixed(2)}%"></i>`;
-    grid.appendChild(slot);
+    let bar = slot.firstElementChild;
+    if (!bar) {
+      bar = document.createElement('i');
+      slot.appendChild(bar);
+    }
+    bar.style.top = `${(((dg.segFrom - s0 * 60) / span) * 100).toFixed(2)}%`;
+    bar.style.height = `${(((dg.segTo - dg.segFrom) / span) * 100).toFixed(2)}%`;
+  } else if (slot) {
+    slot.remove();
   }
   // 5) 每日时长 / 合计 / 段数
   ccLiveTotals(winsBy);
@@ -7648,9 +7708,15 @@ function paintCcDrag() {
     ? (isEn ? ' · next window blocks it (untouched)' : ' · 已贴住相邻时段（没有移动它）') : '';
   const lab = $('#clockLive');
   if (lab) {
-    lab.innerHTML = isEn
+    const html = isEn
       ? `${verb} <b>${dayTxt} ${rg}</b> · ${durTxt}${edgeY}${edgeX}${edgeB}`
       : `${verb} <b>${dayTxt} ${rg}</b> · 共 ${durTxt}${edgeY}${edgeX}${edgeB}`;
+    // 每帧都赋一次 innerHTML 会把 <b> 连同文本反复重建，拖动时那行字会轻微抖。
+    // 内容没变就不碰它。
+    if (lab.__html !== html) {
+      lab.innerHTML = html;
+      lab.__html = html;
+    }
   }
   // 7) 跟随指针的浮层（同一格内的小位移由 ccFlushDrag 单独更新，不重排）
   ccGhostSet(`${verb} ${dayTxt} ${rg} · ${durTxt}`,

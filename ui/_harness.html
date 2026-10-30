@@ -2903,6 +2903,46 @@ window.__itest = async () => {
     out.push(['段数没变（2 段）', segsOf(4).length, 2]);
     out.push(['同一天没有重叠', overlapped(), []]);
 
+    // ③ 拖动**全程不重建块节点** —— 这是"被拖的段闪烁"的根因。
+    //    以前每帧 `ccRenderRuns` 都把 .cc-run 全删了重建，而 .cc-run.carry
+    //    带 0.13s 落格动画，于是每帧重播一次动画，看起来就是持续闪烁。
+    await clearAll();
+    await Act.clockCommitRange(2, 9 * 60, 12 * 60, 'add');
+    await wait(200);
+    await Act.clockCommitRange(2, 14 * 60, 15 * 60, 'add');
+    await wait(240);
+    const nodes0 = [...document.querySelectorAll('.cc-run[data-d="2"]')];
+    const keys0 = nodes0.map((r) => r.dataset.key).sort();
+    out.push(['拖动前：周二两块', nodes0.length, 2]);
+
+    await drag(2, 9, 1, 2, 16, 1);   // 抓 09:15 往下拖到 16:15（会撞上 14:00 那段）
+    const nodes1 = [...document.querySelectorAll('.cc-run[data-d="2"]')];
+    out.push(['拖动中：块被原地复用，没有重建（不闪的根因）',
+      nodes1.length === nodes0.length && nodes0.every((n) => nodes1.indexOf(n) >= 0), true]);
+    out.push(['拖动中：块 key 稳定（同一段始终是同一块）',
+      nodes1.map((r) => r.dataset.key).sort(), keys0]);
+    out.push(['拖动中：手上那块有 carry 标记',
+      nodes1.filter((r) => r.classList.contains('carry')).length, 1]);
+
+    // 再挪两格：仍是同一批节点，且没有动画在重播
+    document.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true, clientY: gY(2, 17, 1), clientX: colCenter(2),
+    }));
+    await wait(240);
+    const nodes2 = [...document.querySelectorAll('.cc-run[data-d="2"]')];
+    out.push(['连续移动后仍是同一批节点', nodes2.every((n) => nodes0.indexOf(n) >= 0), true]);
+    out.push(['拖动中：没有动画在反复重播',
+      nodes2.every((r) => r.getAnimations().length === 0), true]);
+    out.push(['拖动中：块数始终等于段数', nodes2.length, segsOf(2).length]);
+    // 入场动画只能在"真的新生一块"时播；拖动中播就等于每帧闪一次
+    out.push(['拖动中：没有块在播入场动画',
+      nodes2.every((r) => !r.classList.contains('cc-in')), true]);
+    out.push(['占位虚线也只有一条', document.querySelectorAll('.cc-slot').length, 1]);
+
+    await drop();
+    out.push(['落位后：段数不变', segsOf(2).length, 2]);
+    out.push(['落位后：占位虚线已清除', document.querySelectorAll('.cc-slot').length, 0]);
+
     // ③ 边缘缩放撞到邻居：只能贴边，不许把邻居压短
     await clearAll();
     await Act.clockCommitRange(3, 9 * 60, 10 * 60, 'add');

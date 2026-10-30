@@ -894,6 +894,17 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
 .cc-run {
   transition: transform .14s var(--mo-ease), filter .14s linear, opacity .12s linear;
 }
+/* 新出现的时段块：很短的一次淡入 + 上浮。
+ * 只在"真的新增一块"时播（拖动中的块是移动，不是新生 —— 那种情况下加动画
+ * 就等于每帧闪一次，正是之前那个 bug）。`.carry` 的落格动画排在后面，
+ * 两者同时命中时以 carry 为准。 */
+.cc-run.cc-in { animation: ccRunIn .18s var(--mo-ease); }
+@keyframes ccRunIn {
+  from { opacity: 0; transform: translateY(3px) scaleY(.985); }
+  to { opacity: 1; transform: none; }
+}
+html[data-motion="low"] .cc-run.cc-in { animation: none; }
+
 .cc-run.over { transform: scale(1.02); filter: brightness(1.08); }
 .cc-run.carry {
   opacity: .72; z-index: 4;
@@ -1257,7 +1268,13 @@ body.cc-dragging { user-select: none; -webkit-user-select: none; }
 .cc-day .d { color: var(--text-2); }
 .cc-day.today .d { color: var(--gold); font-weight: 700; }
 .cc-day .bar { height: 6px; border-radius: 3px; background: rgba(125, 176, 255, .12); overflow: hidden; }
-.cc-day .bar i { display: block; height: 100%; background: linear-gradient(90deg, #4d8dff, #3b74e8); }
+/* 拖动时这个宽度每帧都在变：给一段短过渡，条子平滑跟着走，
+ * 而不是一格一格地"跳"。只有 6px 高的小条，重排代价可以忽略。 */
+.cc-day .bar i {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #4d8dff, #3b74e8);
+  transition: width .18s var(--mo-ease);
+}
 .cc-day .v { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .cc-day .s { text-align: right; color: var(--text-3); font-size: 11px; }
 
