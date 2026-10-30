@@ -338,6 +338,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             pending.retain(|_, (t, _)| t.elapsed().as_secs() < 45);
             logged.retain(|_, t| t.elapsed().as_secs() < 20);
 
+            // 休息收尾时发出的 WM_CLOSE 要跨拍确认：这里只做"还活着吗"的判断，
+            // 不 sleep、不阻塞 —— 这条线程每秒还要写心跳、跑拦截、发布遮罩状态。
+            crate::sweep::tick_pending(&shared);
+
             // 自律模式是否正在生效：规则生效中 / 时段专注中 / 固化锁定中
             let discipline_on = !active.is_empty() || lock.locked || clock_on;
 

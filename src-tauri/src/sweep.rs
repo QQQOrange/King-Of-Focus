@@ -33,6 +33,8 @@
 use crate::model::{Config, Rule};
 use crate::proc::WinApp;
 use crate::shared::Shared;
+use std::sync::Mutex;
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -97,6 +99,67 @@ fn label(a: &WinApp) -> String {
     } else {
         format!("{} — {}", a.name, a.title)
     }
+}
+
+/// 已经发出 WM_CLOSE、还在等目标自己退出的进程。
+///
+/// 为什么放在模块级而不是 `run` 的局部变量：`run` 只在"休息 → 学习"那一拍
+/// 被调用一次，而"发出去到底关没关"必须跨拍继续确认。
+/// 只有两条路可选——当场 sleep（把监控线程拖住）或跨拍确认（这里）。
+struct PendingClose {
+    pid: u32,
+    /// 进程创建时间：PID 会在退出后被复用，靠它确认还是同一个进程
+    created: i64,
+    txt: String,
+    rule: String,
+    at: Instant,
+}
+
+/// 宽限期：发出 WM_CLOSE 后等这么久，仍存活就升级为强杀
+const CLOSE_GRACE_MS: u128 = 800;
+
+static PENDING: Mutex<Vec<PendingClose>> = Mutex::new(Vec::new());
+
+/// 每个主循环拍调用一次（**不做任何等待**）：确认上一拍发出的关闭请求有没有生效。
+///
+/// · 进程已经不在 / PID 被复用给了别的进程 → 认定已关闭，记一条；
+/// · 还活着但没超过宽限期 → 留着下一拍再看；
+/// · 超过宽限期还活着 → 升级为强杀（与常规拦截同一套两段式）。
+pub fn tick_pending(shared: &Shared) {
+    let mut list = match PENDING.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if list.is_empty() {
+        return;
+    }
+    let now = Instant::now();
+    let mut keep: Vec<PendingClose> = Vec::with_capacity(list.len());
+    for p in list.drain(..) {
+        let same_proc = crate::proc::creation_time(p.pid)
+            .map(|c| c == p.created)
+            .unwrap_or(false);
+        if !same_proc {
+            shared.log("app", p.txt, p.rule, "休息结束：已关闭（强制模式）".into());
+            continue;
+        }
+        if now.duration_since(p.at).as_millis() < CLOSE_GRACE_MS {
+            keep.push(p);
+            continue;
+        }
+        let ok = crate::proc::terminate(p.pid);
+        shared.log(
+            "app",
+            p.txt,
+            p.rule,
+            if ok {
+                "休息结束：忽略关闭请求，已强制结束".into()
+            } else {
+                "休息结束：关闭失败（权限不足或窗口已失效）".into()
+            },
+        );
+    }
+    *list = keep;
 }
 
 /// 执行一次收尾。
@@ -188,22 +251,25 @@ pub fn run(
             rep.closed.push(txt);
             continue;
         }
-        let ok = if cfg.settings.soft_close && crate::proc::soft_close(a.hwnd) {
-            // 发出去 ≠ 关掉：播放器 / Electron 应用在播放时经常忽略 WM_CLOSE。
-            // 等 400ms，还活着就升级成强杀 —— 与常规拦截同一套两段式。
-            // 以前这里把"消息投递成功"直接当成"已关闭"，报告里写"已关闭"、
-            // 实际窗口还开着，用户以为收尾了。
-            let mut gone = false;
-            for _ in 0..10 {
-                std::thread::sleep(std::time::Duration::from_millis(40));
-                if !crate::proc::is_alive(a.pid) {
-                    gone = true;
-                    break;
-                }
+        // 能软关就先软关，软关不成 / 没开软关就强杀。
+        // 软关只算"已请求"：真正的关闭与否由 tick_pending 在后续几拍确认。
+        let (ok, soft) = if cfg.settings.soft_close && crate::proc::soft_close(a.hwnd) {
+            // 发出去 ≠ 关掉：播放器 / Electron 在播放时经常忽略 WM_CLOSE。
+            // 但确认动作**不能在这里等** —— 这里是监控线程，它每秒还要写心跳、
+            // 跑拦截、发布遮罩状态，蹲几百毫秒会让守护误判主进程失联。
+            match PENDING.lock() {
+                Ok(mut g) => g.push(PendingClose {
+                    pid: a.pid,
+                    created: crate::proc::creation_time(a.pid).unwrap_or(0),
+                    txt: txt.clone(),
+                    rule: r.name.clone(),
+                    at: Instant::now(),
+                }),
+                Err(_) => {}
             }
-            gone || crate::proc::terminate(a.pid)
+            (true, true)
         } else {
-            crate::proc::terminate(a.pid)
+            (crate::proc::terminate(a.pid), false)
         };
         if ok {
             rep.closed.push(txt.clone());
@@ -211,7 +277,11 @@ pub fn run(
                 "app",
                 txt,
                 r.name.clone(),
-                "休息结束：已关闭（强制模式）".into(),
+                if soft {
+                    "休息结束：已请求关闭，等待目标自行退出".into()
+                } else {
+                    "休息结束：已关闭（强制模式）".into()
+                },
             );
         } else {
             rep.skipped += 1;
