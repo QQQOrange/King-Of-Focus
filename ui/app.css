@@ -1632,17 +1632,29 @@ html[data-motion="low"] .stats-day.cal-flash { animation: none; }
   width: 24px; height: 22px; padding: 0; font-size: 13px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
 }
+/* 这一行同时放"日期 + 合计/悬停读数 + 今天"。
+ * 悬停读数是一句可变长的文字（名称 · 09:00–10:00 · 53 分），
+ * 以前日期会被挤到换行：行高 17 → 34，整张卡长高 17px、轨道整体下移，
+ * 指针脱离色块 → 读数还原 → 又落回去 → 来回抖（就是那个"拉长-回缩"的闪烁）。
+ * 现在：日期与「今天」不许收缩也不许换行，多出来的宽度全给读数并省略号截断，
+ * 行高恒定，悬停再久也不会改变任何一块的尺寸。 */
 .dc-sub {
   display: flex; align-items: center; gap: 7px; margin-top: 5px;
   font-size: 11px; color: var(--text-3);
+  min-height: 18px; overflow: hidden;
 }
-.dc-date { font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.dc-date {
+  flex: 0 0 auto; white-space: nowrap;
+  font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums;
+}
 .dc-date.today { color: var(--gold); }
 .dc-sum {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .dc-today {
+  flex: 0 0 auto; white-space: nowrap;
   margin-left: auto; border: 0; background: none; padding: 0; cursor: pointer;
   font: inherit; font-size: 10.5px; color: var(--gold);
 }

@@ -3374,7 +3374,9 @@ function dayHtml() {
     const on = hasHit && b.key === S.calHit;
     const off = hasHit && !on;
     const tm = hhmmOfMin(b.f) + '–' + hhmmOfMin(b.t);
-    const tip = `${b.label} · ${tm} · ${dcDur((b.t - b.f) * 60)}`;
+    // 读数只留"时段 · 名称"：时长本来就由色块高度表达；时刻放最前面，
+    // 窄列里被省略号截掉的是名字尾巴，而不是"几点到几点"。
+    const tip = `${tm} · ${b.label}`;
     return `<button class="dc-ev${on ? ' hit' : ''}${off ? ' off' : ''}" data-act="day-ev"
       data-key="${esc(b.key)}" data-tip="${esc(tip)}"
       style="top:${(b.f / 1440) * 100}%;height:${Math.max(hPct, (DC_MIN / DC_H) * 100)}%;background:${b.c}">

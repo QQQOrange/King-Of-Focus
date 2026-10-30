@@ -4554,6 +4554,47 @@ window.__itest = async () => {
       out.push(['当日日历没有超出内容区右边界', dr.right <= cr.getBoundingClientRect().right + 1, true]);
     }
 
+    /* ---- 悬停读数不许改变任何尺寸（"拉长-回缩"闪烁的根因就在这里） ----
+     * 读数变长 → 同一行的日期被挤到第二行 → 行高 17→34 → 整张卡长高 17px、
+     * 轨道整体下移 → 指针脱离色块 → 读数还原 → 指针又落回去 → 无限来回。 */
+    {
+      // 必须复刻"窄窗口"：窗口 1240 时右列只有 240px，读数才真的超宽。
+      // 宽屏下读数放得下，这条用例就抓不住回归了。
+      const split = document.querySelector('.stats-split');
+      const keepCols = split.style.gridTemplateColumns;
+      split.style.gridTemplateColumns = 'minmax(0, 1fr) 240px';
+      await wait(90);
+      const sub = document.querySelector('#dayCard .dc-sub');
+      const dateEl = document.querySelector('#dayCard .dc-date');
+      const relTrack = () => Math.round(
+        document.querySelector('#dayCard .dc-track').getBoundingClientRect().top
+        - document.querySelector('#dayCard').getBoundingClientRect().top);
+      const cardH = () => Math.round(document.querySelector('#dayCard').getBoundingClientRect().height);
+      const subH = () => Math.round(sub.getBoundingClientRect().height);
+      const txt0 = document.querySelector('#dcSum').textContent;
+      const h0 = cardH();
+      const s0 = subH();
+      const t0 = relTrack();
+      const ev = document.querySelector('#dayCard .dc-ev');
+      ev.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      await wait(150);
+      out.push(['悬停后读数行高度不变', subH(), s0]);
+      out.push(['悬停后整张当日日历不长高', cardH(), h0]);
+      out.push(['悬停后时间轴位置不动（指针不会来回脱离色块）', relTrack(), t0]);
+      out.push(['日期没有被挤到第二行',
+        Math.round(dateEl.getBoundingClientRect().height) <= 20, true]);
+      out.push(['读数里能看到这一段的具体时刻',
+        /[0-9]{2}:[0-9]{2}–[0-9]{2}:[0-9]{2}/.test(document.querySelector('#dcSum').textContent), true]);
+      out.push(['（窄列下读数确实超出可用宽度，才是在考验截断）',
+        document.querySelector('#dcSum').scrollWidth > document.querySelector('#dcSum').clientWidth + 1, true]);
+      ev.dispatchEvent(new PointerEvent('pointerout', { bubbles: true }));
+      await wait(120);
+      out.push(['移开后读数还原', document.querySelector('#dcSum').textContent, txt0]);
+      out.push(['移开后尺寸依旧不变', subH(), s0]);
+      split.style.gridTemplateColumns = keepCols;
+      await wait(90);
+    }
+
     // 点一天 → 网格选中 + 右侧当日日历一起换；日历下面不再有明细列表
     const col = document.querySelector('.cw-col[data-date]');
     const day = col.dataset.date;
