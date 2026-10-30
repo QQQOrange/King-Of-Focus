@@ -1516,7 +1516,10 @@ html[data-motion="low"] .cc-run.cc-in { animation: none; }
   color: var(--gold);
 }
 
-.chart-wrap { display: grid; grid-template-columns: 300px 1fr; gap: 26px; align-items: center; }
+/* 扇图现在自带外侧引导线标签，不再需要右边那一列清单：单列居中。
+ * 窄屏时按容器等比缩小（canvas 的 width/height 属性决定比例，别写死 px）。 */
+.chart-wrap { display: flex; justify-content: center; padding: 6px 0 2px; }
+.chart-wrap canvas { max-width: 100%; height: auto; }
 canvas { display: block; }
 .legend { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; padding-right: 4px; }
 .leg {

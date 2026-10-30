@@ -3025,8 +3025,7 @@ function viewStats() {
     </div>
     ${cur.slices.length ? `
     <div class="chart-wrap">
-      <canvas id="pie" width="280" height="280"></canvas>
-      <div class="legend" id="legend"></div>
+      <canvas id="pie" width="620" height="360"></canvas>
     </div>` : `<div class="empty"><span class="ico">▤</span>这个时间段还没有数据。<br>统计每秒采样一次前台窗口，用一会儿就会有了。</div>`}
   </div>
 
@@ -4022,29 +4021,161 @@ function viewSettings() {
 }
 
 /* ---------------- 饼图 ---------------- */
+/** 把一侧的标签按"理想位置"推挤成互不重叠的一列，返回新的 y（与输入同序）。
+ *
+ *  三步，和绘图库里那套一样：
+ *   1. 按理想 y 排序，从上往下保证最小间距；
+ *   2. 再从下往上兜住底边（否则最后几条会出画布）；
+ *   3. 条目多到连底边都兜不住时，按可用高度均分压缩——宁可挤一点，也不能越界。
+ *
+ *  抽成纯函数是为了能单测：布局算错的表现是"标签叠在一起"，肉眼很难发现，
+ *  但用几个极端输入一跑就出来了。
+ */
+function packLabels(wantY, top, bottom, gap) {
+  const n = wantY.length;
+  if (!n) return [];
+  const order = wantY.map((y, i) => ({ y, i })).sort((a, b) => a.y - b.y);
+
+  let cursor = top;
+  for (const x of order) {
+    x.y = Math.max(x.y, cursor);
+    cursor = x.y + gap;
+  }
+  let limit = bottom;
+  for (let k = n - 1; k >= 0; k--) {
+    if (order[k].y > limit) order[k].y = limit;
+    limit = order[k].y - gap;
+  }
+  if (order[0].y < top) {
+    const step = n > 1 ? Math.min(gap, (bottom - top) / (n - 1)) : 0;
+    order.forEach((x, k) => { x.y = top + k * step; });
+  }
+
+  const out = new Array(n);
+  order.forEach((x) => { out[x.i] = x.y; });
+  return out;
+}
+
+/** 文字超宽就截断加省略号（canvas 不会自动省略，会直接画出画布） */
+function clipText(ctx, str, maxW) {
+  if (!str) return '';
+  if (ctx.measureText(str).width <= maxW) return str;
+  let t = str;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
+/** 扇区外侧的引导线 + 名称/时长/占比标签。
+ *
+ *  为什么要有它：以前只在右边列一张清单，扇区和名字之间没有任何连线，
+ *  七八项的时候根本对不上"这块是哪项"。现在每块都从外沿拉一条折线到自己的标签。
+ *
+ *  排布规则：
+ *   · 按扇区中点角度的余弦分左右两列（右半圆 → 右列，左半圆 → 左列）；
+ *   · 每列的理想 y 就是扇区中点的高度，再用 packLabels 推成不重叠的一列；
+ *   · 引导线是"斜线 + 一小段水平线"，末端画个小圆点，落在哪一行一目了然。
+ */
+function ccPieCallouts(ctx, arcs, g) {
+  const { cx, cy, rOut, W, H, sum } = g;
+  const TOP = 20;
+  const BOT = H - 20;
+  const GAP = 32;
+  const isEn = I18N.getLang() === 'en';
+  const cText = cssVar('--text');
+  const cDim = cssVar('--text-3');
+
+  const sides = { left: [], right: [] };
+  for (const arc of arcs) {
+    const mid = (arc.a0 + arc.a1) / 2;
+    const cos = Math.cos(mid);
+    const sin = Math.sin(mid);
+    sides[cos >= 0 ? 'right' : 'left'].push({
+      it: arc.it,
+      cos,
+      sin,
+      wantY: cy + sin * (rOut + 10),
+    });
+  }
+
+  for (const key of ['left', 'right']) {
+    const list = sides[key];
+    if (!list.length) continue;
+    const ys = packLabels(list.map((x) => x.wantY), TOP, BOT, GAP);
+    list.forEach((x, i) => { x.y = ys[i]; });
+
+    const right = key === 'right';
+    const anchorX = right ? cx + rOut + 42 : cx - rOut - 42;
+    const maxW = right ? W - anchorX - 14 : anchorX - 14;
+    const elbowX = right ? cx + rOut + 22 : cx - rOut - 22;
+
+    for (const x of list) {
+      const p0x = cx + x.cos * (rOut + 3);
+      const p0y = cy + x.sin * (rOut + 3);
+      ctx.beginPath();
+      ctx.moveTo(p0x, p0y);
+      ctx.lineTo(elbowX, x.y);
+      ctx.lineTo(anchorX, x.y);
+      ctx.strokeStyle = x.it.color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // 末端小圆点：线头和标签对上，扫一眼就知道这条线指哪一行
+      ctx.beginPath();
+      ctx.arc(anchorX, x.y, 2, 0, Math.PI * 2);
+      ctx.fillStyle = x.it.color;
+      ctx.fill();
+
+      const tx = right ? anchorX + 8 : anchorX - 8;
+      ctx.textAlign = right ? 'left' : 'right';
+      ctx.textBaseline = 'middle';
+      ctx.font = '600 11.5px "Microsoft YaHei UI", sans-serif';
+      ctx.fillStyle = cText;
+      ctx.fillText(clipText(ctx, x.it.label || '', maxW), tx, x.y - 7);
+
+      ctx.font = '10.5px "Microsoft YaHei UI", sans-serif';
+      ctx.fillStyle = cDim;
+      const dur = isEn ? fmtDurShort(x.it.secs) : fmtDur(x.it.secs);
+      const pct = sum ? ((x.it.secs / sum) * 100).toFixed(1) : '0.0';
+      ctx.fillText(clipText(ctx, dur + ' · ' + pct + '%', maxW), tx, x.y + 7);
+    }
+  }
+}
+
+/** 时长扇图：甜甜圈 + 外侧引导线标签。
+ *
+ *  画布从 280x280 加宽到 620x360 —— 两侧各留 160px 给标签，
+ *  这样 9 项（Top 8 + 其他）每条两行也放得下，不会叠。
+ */
 function drawPie(canvas, slices, total, opts) {
   if (!canvas) return;
-  const size = 280;
+  const W = 620;
+  const H = 360;
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = size * dpr;
-  canvas.height = size * dpr;
-  canvas.style.width = size + 'px';
-  canvas.style.height = size + 'px';
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, size, size);
+  ctx.clearRect(0, 0, W, H);
 
   // 只画前 8 项，其余合并
-  let items = slices.slice(0, 8).map((s, i) => ({ ...s, color: PALETTE[i % PALETTE.length] }));
+  const items = slices.slice(0, 8).map((s, i) => ({ ...s, color: PALETTE[i % PALETTE.length] }));
   const rest = slices.slice(8).reduce((a, b) => a + b.secs, 0);
-  if (rest > 0) items.push({ label: '其他', secs: rest, color: '#4a5468' });
+  if (rest > 0) items.push({ label: '其他', secs: rest, color: '#4a5468', category: 'rest' });
 
   const sum = items.reduce((a, b) => a + b.secs, 0);
-  const cx = size / 2, cy = size / 2, rOut = 118, rIn = 74;
+  const cx = W / 2;
+  const cy = H / 2;
+  const rOut = 96;
+  const rIn = 62;
   const cText = cssVar('--text');
   const cDim = cssVar('--text-3');
   const cStroke = cssVar('--panel-a');
 
+  const arcs = [];
   if (sum <= 0) {
     ctx.beginPath();
     ctx.arc(cx, cy, rOut, 0, Math.PI * 2);
@@ -4064,28 +4195,22 @@ function drawPie(canvas, slices, total, opts) {
       ctx.strokeStyle = cStroke;
       ctx.lineWidth = 2;
       ctx.stroke();
+      arcs.push({ it, a0: ang, a1: ang + a });
       ang += a;
     }
   }
 
   ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   ctx.fillStyle = cText;
   ctx.font = '600 19px "Microsoft YaHei UI", sans-serif';
-  ctx.fillText(opts && opts.center ? opts.center : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分'), cx, cy + 2);
+  ctx.fillText(opts && opts.center ? opts.center
+    : fmtDurShort(total).replace('h', ' 小时 ').replace('m', ' 分'), cx, cy - 7);
   ctx.fillStyle = cDim;
   ctx.font = '11px "Microsoft YaHei UI", sans-serif';
-  ctx.fillText(opts && opts.sub ? opts.sub : '合计', cx, cy + 22);
+  ctx.fillText(opts && opts.sub ? opts.sub : '合计', cx, cy + 13);
 
-  // HTML 图例
-  const legend = $('#legend');
-  if (legend) {
-    legend.innerHTML = items.map((it) => `<div class="leg">
-      <span class="sw" style="background:${it.color}"></span>
-      <span class="nm" title="${esc(it.label)}">${esc(it.label)}${it.category === 'site' ? ' <span class="badge blue" style="font-size:9px;padding:1px 4px">网页</span>' : ''}</span>
-      <span class="vv">${fmtDurShort(it.secs)}</span>
-      <span class="pp">${sum ? ((it.secs / sum) * 100).toFixed(1) : 0}%</span>
-    </div>`).join('');
-  }
+  if (sum > 0) ccPieCallouts(ctx, arcs, { cx, cy, rOut, W, H, sum });
 }
 
 /* ---------------- 渲染调度 ---------------- */
