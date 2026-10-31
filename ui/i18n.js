@@ -160,6 +160,10 @@
     '新建自律时段': 'New hours set',
     '星期时段': 'Weekly hours',
     '通用时长': 'Default rhythm',
+    '休息上限': 'Break cap',
+    '一小时里累计能给多少休息；0 = 不限。到上限后剩下的休息整段跳过，继续保持专注':
+      'How much break is allowed within one hour in total; 0 = unlimited. '
+      + 'Once the cap is reached the remaining breaks are skipped and focus continues',
     '每次选择的时长': 'Rhythm for new selections',
     '再排一套星期时段': 'Add another set',
     '切换到「周末轻松」': 'Switch to Weekend light',

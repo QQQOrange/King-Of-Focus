@@ -77,18 +77,30 @@ class LockActivity : ComponentActivity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
-        // 返回键无效：按一下就能退出的话，这个遮罩没有任何意义
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                // 什么都不做
-            }
-        })
-
         val kind = intent?.getStringExtra(EXTRA_KIND) ?: KIND_FOCUS
+        // 返回键无效：按一下就能退出的话，这个遮罩没有任何意义。
+        // 但「锁机结束」那一页只是报信，拦返回键就成了"被一句结束语困住"，所以不拦。
+        if (kind != KIND_END) {
+            onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    // 什么都不做
+                }
+            })
+        }
+        val title = intent?.getStringExtra(EXTRA_END_TITLE).orEmpty()
+        val body = intent?.getStringExtra(EXTRA_END_BODY).orEmpty()
         setContent {
             KofTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF12151B)) {
-                    LockScreen(kind = kind, onDone = { finish() })
+                    if (kind == KIND_END) {
+                        LockEndScreen(
+                            title = title.ifBlank { "锁机结束" },
+                            body = body.ifBlank { "这一段时间走完了。" },
+                            onDone = { finish() },
+                        )
+                    } else {
+                        LockScreen(kind = kind, onDone = { finish() })
+                    }
                 }
             }
         }
@@ -98,6 +110,49 @@ class LockActivity : ComponentActivity() {
         const val EXTRA_KIND = "kof.lock.kind"
         const val KIND_FOCUS = "focus"
         const val KIND_SLEEP = "sleep"
+        /** 锁机结束的提示页：只报个信，不拦任何东西，点一下就退 */
+        const val KIND_END = "end"
+        const val EXTRA_END_TITLE = "kof.lock.end.title"
+        const val EXTRA_END_BODY = "kof.lock.end.body"
+    }
+}
+
+/**
+ * 「锁机结束」页。
+ *
+ * 和锁机遮罩是两个东西：遮罩拦人，这一页只报信。所以它**不**拦返回键、
+ * 不盖住白名单应用、10 秒后自己退场——用户可能正忙着，不该被一句"结束了"困住。
+ * 之所以还要一个页面而不是只发通知：通知容易被划掉或没看见，
+ * 而结束这件事（尤其睡眠结束）在早上是重要信息。
+ */
+@Composable
+private fun LockEndScreen(title: String, body: String, onDone: () -> Unit) {
+    // 10 秒自动退场：这是提示，不是界面
+    LaunchedEffect(Unit) {
+        delay(10_000)
+        onDone()
+    }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("✓", fontSize = 40.sp, color = Color(0xFF34C759))
+            Spacer(Modifier.height(12.dp))
+            Text(title, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFF2F4F8))
+            Spacer(Modifier.height(8.dp))
+            Text(
+                body,
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
+                textAlign = TextAlign.Center,
+                color = Color(0xFFA8B0BE),
+            )
+            Spacer(Modifier.height(22.dp))
+            Button(onClick = onDone, colors = ButtonDefaults.buttonColors()) {
+                Text("知道了")
+            }
+        }
     }
 }
 

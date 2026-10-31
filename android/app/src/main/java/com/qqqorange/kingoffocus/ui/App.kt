@@ -273,16 +273,22 @@ private fun HomeScreen(cfg: Config) {
                 horizontalArrangement = Arrangement.spacedBy(1.5.dp),
             ) {
                 (0 until 24).forEach { h ->
-                    val on = day?.getOrNull(h)?.on == true
+                    // 一格 = 一小时。10 / 15 分钟刻度下，这一小时可能只选了 15 分钟，
+                    // 那就画浅一点——和网格里的"半格"是同一句话，不然两处看着不一样。
+                    val mins = day?.getOrNull(h)?.let { Slots.hourMinutes(it) } ?: 0
+                    val color = when {
+                        mins <= 0 -> MaterialTheme.colorScheme.surfaceVariant
+                        mins >= 60 -> MaterialTheme.colorScheme.primary
+                        // 比例映射到 30%–85%：只选 10 分钟也看得见，但一眼能分出"不满"
+                        else -> MaterialTheme.colorScheme.primary.copy(
+                            alpha = 0.3f + 0.55f * (mins / 60f),
+                        )
+                    }
                     Box(
                         Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            .background(
-                                if (on) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.surfaceVariant,
-                                androidx.compose.foundation.shape.RoundedCornerShape(3.dp),
-                            ),
+                            .background(color, androidx.compose.foundation.shape.RoundedCornerShape(3.dp)),
                     )
                 }
             }
@@ -298,19 +304,33 @@ private fun HomeScreen(cfg: Config) {
             Spacer(Modifier.height(10.dp))
             HLine()
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                KV(
-                    "今日自律总时长",
+            // 主指标占一整行：它是这一块的主角，和下面两个次要指标抢宽会挤到换行，
+            // 三列等宽在 320dp 的小屏上会把"1 小时 30 分"折成两行，看着像两张卡。
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("今日自律总时长", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text(
                     Slots.fmtMinutes(todayPlanMin),
-                    MaterialTheme.colorScheme.primary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
-                KV("共几段", if (todaySegs > 0) "$todaySegs 段" else "—")
-                KV("最长一段", if (todayLongest > 0) Slots.fmtMinutes(todayLongest) else "—")
             }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                if (todayPlanMin > 0) {
+                    "共 $todaySegs 段" +
+                        (if (todayLongest > 0) " · 最长一段 " + Slots.fmtMinutes(todayLongest) else "")
+                } else {
+                    "今天还没有排班"
+                },
+                fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (todayPlanMin == 0) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "今天还没排自律时段。去「时段」点一格定起点，长按后拖动就是框选。",
+                    "今天还没排自律时段。去「时段」点一格就选中；按住空白处拖动可以一次刷好几格。",
                     fontSize = 10.sp,
                     lineHeight = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

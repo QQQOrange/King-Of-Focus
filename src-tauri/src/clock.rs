@@ -89,6 +89,55 @@ pub fn plan_wins(cfg: &Config, weekday: u32, hour: u32) -> Option<Vec<(u32, u32,
     if out.is_empty() { None } else { Some(out) }
 }
 
+/// 番茄相位：`(是否休息, 这一阶段还剩多少分钟)`。
+///
+/// **与手机端 `ScheduleEngine.phase` 是同一份算法**，改一边必须改另一边，
+/// 否则同一个人同一天在两端会看到不同的"还剩几分钟"。
+///
+/// 相位锚点是整点：`off = 这一小时的第几分钟 % (work + brk)`。
+/// `cap` 是一小时内累计休息上限（0 = 不限）：
+///  · 第 k 轮休息之前已经休掉 `min(k×brk, cap)` 分钟；
+///  · 这轮实际长度 = `min(brk, cap - 已休)`；
+///  · 额度用尽后整轮跳过（`in_break = false`），锁机因此不解除。
+pub fn phase_at(work: u32, brk: u32, cap: u32, minute: i64) -> (bool, i64) {
+    let w = work.min(60) as i64;
+    let b = brk.min(60) as i64;
+    let c = cap.min(60) as i64;
+    let rest_of_hour = 60 - minute;
+
+    // 不设休息 / 专注占满整小时 → 整段专注
+    if b == 0 || w == 0 || w >= 60 {
+        return (false, rest_of_hour);
+    }
+
+    let cyc = w + b;
+    let k = minute / cyc;
+    let off = minute % cyc;
+    let dur_at = |i: i64| -> i64 {
+        if c <= 0 {
+            b
+        } else {
+            (c - (i * b).min(c)).clamp(0, b)
+        }
+    };
+
+    let dur = dur_at(k);
+    if off < w {
+        // 专注中：本轮休息若已被额度吃掉，就一直专注到整点
+        return if dur > 0 { (false, w - off) } else { (false, rest_of_hour) };
+    }
+    if off < w + dur {
+        return (true, w + dur - off);
+    }
+    // 这一轮休息已经走完（含被截断）：额度用完 → 到整点；否则等下一轮
+    let next_start = (k + 1) * cyc + w;
+    if dur_at(k + 1) > 0 && next_start < 60 {
+        (false, next_start - minute)
+    } else {
+        (false, rest_of_hour)
+    }
+}
+
 /// 当前时刻的状态。未启用 / 当前小时没选中 / 分钟落在窗口外 → None
 pub fn state(cfg: &Config) -> Option<ClockState> {
     state_at(cfg, now_local())
@@ -131,12 +180,18 @@ pub fn state_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<ClockState> 
     // 以前这里只判一次 `minute < work + brk`，25/5 到 09:30 之后
     // 剩余被算成 25 - 35 = -10 → 倒计时卡 0、阶段提醒整段不发、
     // 依赖 clock_left 的固化判定还会静默失效。
-    let cyc = (work + brk) as i64;
+    //
     // 相位锚点是**整点**，不是窗口起点：窗口的 from/to 只决定"这一小时的哪几分钟
     // 在范围内"，不改变节奏。这样 08:15 进来的那一段和 09:00 那一段节奏一致。
-    let off = minute.rem_euclid(cyc);
-    let in_break = off >= work as i64;
-    let phase_left = if in_break { cyc - off } else { work as i64 - off };
+    // 累计休息上限（`def_cap`）也在 phase_at 里结算：额度用完就跳过休息，
+    // 于是 `in_break = false`，锁机与拦截继续保持。
+    let cap = cfg
+        .settings
+        .focus_clock
+        .active_profile()
+        .map(|p| p.def_cap)
+        .unwrap_or(0);
+    let (in_break, phase_left) = phase_at(work, brk, cap, minute);
     Some(ClockState {
         weekday,
         hour,
@@ -348,6 +403,60 @@ mod tests {
             Some(s) => assert_eq!(s.weekday, 0, "只有周一选中，能命中就说明今天是周一"),
             None => assert!(now_local().weekday().num_days_from_monday() != 0),
         }
+    }
+
+    #[test]
+    fn phase_at_without_cap_keeps_old_behaviour() {
+        // 25/5：一小时两轮，25–30 与 55–60 各休 5 分钟
+        assert_eq!(phase_at(25, 5, 0, 0), (false, 25));
+        assert_eq!(phase_at(25, 5, 0, 20), (false, 5));
+        assert_eq!(phase_at(25, 5, 0, 25), (true, 5));
+        assert_eq!(phase_at(25, 5, 0, 30), (false, 25));
+        assert_eq!(phase_at(25, 5, 0, 55), (true, 5));
+    }
+
+    #[test]
+    fn phase_at_cuts_then_skips_break_at_cap() {
+        // 上限 6 分钟：第一轮休满 5，第二轮只剩 1，之后整段专注
+        assert_eq!(phase_at(25, 5, 6, 25), (true, 5), "第一轮照常");
+        assert_eq!(phase_at(25, 5, 6, 50), (false, 5), "第二轮开头专注到 55");
+        assert_eq!(phase_at(25, 5, 6, 55), (true, 1), "第二轮只剩 1 分钟");
+        assert_eq!(phase_at(25, 5, 6, 56), (false, 4), "之后整段专注到整点");
+    }
+
+    #[test]
+    fn phase_at_cap_shorter_than_break() {
+        // 45/15 上限 3：每次休息都被截到 3 分钟，剩下 12 分钟继续专注
+        assert_eq!(phase_at(45, 15, 3, 45), (true, 3));
+        assert_eq!(phase_at(45, 15, 3, 48), (false, 12));
+    }
+
+    #[test]
+    fn phase_at_left_is_always_sane() {
+        for cap in [0u32, 3, 6, 10, 60] {
+            for m in 0..60i64 {
+                let (brk, left) = phase_at(25, 5, cap, m);
+                assert!(left >= 1 && left <= 60 - m, "cap={cap} m={m} left={left} brk={brk}");
+            }
+        }
+    }
+
+    #[test]
+    fn state_respects_break_cap() {
+        // 09:00–10:00 选中，25/5，上限 6：09:55 只剩 1 分钟休息，09:57 已经是专注
+        let mut days = all_off();
+        for h in 9..10 {
+            days[0][h] = HourPlan { on: true, work: 25, brk: 5, from: 0, to: 60, seg: String::new(), wins: Vec::new() };
+        }
+        let mut c = cfg_with(days, true);
+        c.settings.focus_clock.profiles[0].def_cap = 6;
+
+        let s = state_at(&c, monday(9, 55)).expect("应命中");
+        assert!(s.in_break);
+        assert_eq!(s.left, 60);
+
+        let s2 = state_at(&c, monday(9, 57)).expect("应命中");
+        assert!(!s2.in_break, "额度用完 → 跳过休息，继续保持专注（锁机不解除）");
     }
 
     #[test]

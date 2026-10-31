@@ -42,6 +42,48 @@ object NotifyPlan {
     }
 
     /**
+     * 锁机开始前要不要提醒。
+     *
+     * 三个条件：提前量开着、已经在提前窗口里、**这一段**还没提醒过。
+     * 用段标识去重而不是时间戳：同一次锁机只要有 5 分钟提前量，就会连续 300 拍
+     * 都满足"到点了"，只有记住"这一段已经说过"才不会刷出 300 条通知。
+     *
+     * [secondsToStart] 为 null = 未来 12 小时内不会再锁机（排班空着 / 锁机关着），不发。
+     * 已经锁着（0 秒）也不发：那时候该说的是"锁机开始"，而不是"还有 0 分钟"。
+     */
+    fun shouldPreAlert(
+        beforeMin: Int,
+        secondsToStart: Long?,
+        segKey: String,
+        sentSeg: String,
+    ): Boolean {
+        if (beforeMin <= 0) return false
+        if (secondsToStart == null || secondsToStart <= 0) return false
+        if (segKey.isEmpty() || segKey == sentSeg) return false
+        return secondsToStart <= beforeMin * 60L
+    }
+
+    /** 提前提醒的正文："还有 3 分钟"（不足 1 分钟按 1 分钟说，不要出现"还有 0 分钟"） */
+    fun preAlertText(secondsToStart: Long, sleep: Boolean = false): String {
+        val mins = ((secondsToStart.coerceAtLeast(0) + 59) / 60).coerceAtLeast(1)
+        return if (sleep) {
+            "还有 $mins 分钟进入睡眠时段，整台手机会先锁上。"
+        } else {
+            "还有 $mins 分钟进入锁机时段，先把手上的事收个尾。"
+        }
+    }
+
+    /**
+     * 锁机结束时怎么提醒。
+     *
+     * 弹窗要能盖住当前应用（后台拉起界面需要悬浮窗或 Shizuku），所以分成两个开关：
+     * 通知永远发得出去，弹窗要看能力。能力不够时由服务降级成通知——**不假装弹过**。
+     */
+    fun endNotify(mode: String): Boolean = mode == "notify" || mode == "both"
+
+    fun endDialog(mode: String): Boolean = mode == "dialog" || mode == "both"
+
+    /**
      * 常驻通知的进度百分比。
      *
      * `plan <= 0`（今天没排时段）时返回 0：界面上会据此不显示进度，
