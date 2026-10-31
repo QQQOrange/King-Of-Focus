@@ -114,31 +114,41 @@ fun Stepper(
     max: Int,
     unit: String,
     step: Int = 1,
+    enabled: Boolean = true,
     onChange: (Int) -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, Modifier.weight(1f), fontSize = 14.sp)
-        StepBtn("−") { onChange((value - step).coerceIn(min, max)) }
+        Text(
+            title,
+            Modifier.weight(1f),
+            fontSize = 14.sp,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+        )
+        StepBtn("−", enabled) { onChange((value - step).coerceIn(min, max)) }
         Text(
             "$value$unit",
             fontSize = 13.sp,
             modifier = Modifier.width(64.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
-        StepBtn("+") { onChange((value + step).coerceIn(min, max)) }
+        StepBtn("+", enabled) { onChange((value + step).coerceIn(min, max)) }
     }
 }
 
 @Composable
-private fun StepBtn(label: String, onClick: () -> Unit) {
+private fun StepBtn(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         Modifier
             .size(30.dp)
-            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-            .clickable { onClick() },
+            .background(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 1f else 0.45f),
+                CircleShape,
+            )
+            .clickable(enabled = enabled) { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         Text(label, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

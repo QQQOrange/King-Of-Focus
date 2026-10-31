@@ -6,6 +6,7 @@ import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.defaultDays
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -59,8 +60,11 @@ class SlotsTest {
         day = Slots.paintSlot(day, 56, 10, true, 45, 15)
         val h = hourOf(day, 9)
         assertEquals(2, h.wins.size)
-        assertEquals(HourWin(0, 10), h.wins[0])
-        assertEquals(HourWin(20, 30), h.wins[1])
+        assertEquals(0 to 10, h.wins[0].from to h.wins[0].to)
+        assertEquals(20 to 30, h.wins[1].from to h.wins[1].to)
+        // 两段各有自己的段 id（"相邻/同小时"都不等于同一段）
+        assertTrue(h.wins[0].seg.isNotEmpty())
+        assertNotEquals(h.wins[0].seg, h.wins[1].seg)
         // 外包区间仍然是 0..30（给老代码看的），但中间那 10 分钟不算选中
         assertEquals(0, h.from)
         assertEquals(30, h.to)
@@ -69,14 +73,24 @@ class SlotsTest {
     }
 
     @Test
-    fun `相邻格子会合并成一段`() {
-        var day = emptyDay()
-        for (slot in 54..56) day = Slots.paintSlot(day, slot, 10, true, 45, 15) // 09:00-09:30
+    fun `一次拖出来的相邻格子合并成一段`() {
+        // 界面在拖选开始时算一个 seg，整段复用 —— 和桌面端"一次涂抹一段"一致
+        val day = Slots.paintRange(emptyDay(), 54..56, 10, true, 45, 15) // 09:00-09:30
         val h = hourOf(day, 9)
         assertEquals("只有一段时不写 wins，序列化形状和以前一样", 0, h.wins.size)
         assertEquals(0, h.from)
         assertEquals(30, h.to)
         assertTrue(h.on)
+        assertTrue("段 id 要落到 hour 上", h.seg.isNotEmpty())
+    }
+
+    @Test
+    fun `分别点出来的相邻格子是两段`() {
+        var day = Slots.paintSlot(emptyDay(), 54, 10, true, 45, 15) // 09:00-09:10
+        day = Slots.paintSlot(day, 55, 10, true, 45, 15)            // 09:10-09:20（另一次点击）
+        val h = hourOf(day, 9)
+        assertEquals("相邻但不同段，不许合并", 2, h.wins.size)
+        assertNotEquals(h.wins[0].seg, h.wins[1].seg)
     }
 
     @Test
@@ -86,8 +100,7 @@ class SlotsTest {
         day = Slots.paintSlot(day, 56, 10, false, 45, 15)
         val h = hourOf(day, 9)
         assertEquals(2, h.wins.size)
-        assertEquals(HourWin(0, 20), h.wins[0])
-        assertEquals(HourWin(30, 60), h.wins[1])
+        assertEquals(listOf(0 to 20, 30 to 60), h.wins.map { it.from to it.to })
         assertEquals("全天 24 小时减掉这 10 分钟", 1440 - 10, Slots.dayMinutes(day))
     }
 
@@ -128,13 +141,44 @@ class SlotsTest {
         assertEquals(0, Slots.dayMinutes(listOf(bad)))
     }
 
+    /**
+     * `pack` 只做"裁剪 + 排序"，不合并——桌面端 `ccSetHourWins` 就是这样。
+     * 合并只发生在 `add`（一次涂抹），这样"两条各自设的窗口"不会被悄悄并掉。
+     */
     @Test
-    fun `重叠的窗口会合并`() {
-        val p = Slots.pack(listOf(HourWin(0, 20), HourWin(10, 30), HourWin(25, 40)), 45, 15)
+    fun `pack 只排序不合并`() {
+        val p = Slots.pack(listOf(HourWin(25, 40, "a"), HourWin(0, 20, "b")), 45, 15)
         assertTrue(p.on)
-        assertEquals("合并成一段后 wins 应当为空", 0, p.wins.size)
-        assertEquals(0, p.from)
-        assertEquals(40, p.to)
+        assertEquals(2, p.wins.size)
+        assertEquals(0, p.wins[0].from)
+        assertEquals("b", p.wins[0].seg)
+        assertEquals(25, p.wins[1].from)
+        assertEquals("a", p.wins[1].seg)
+    }
+
+    @Test
+    fun `同段的相接窗口才会合并`() {
+        val merged = Slots.add(listOf(HourWin(0, 20, "a")), 20, 40, "a")
+        assertEquals("同一段相接 → 连成一条", 1, merged.size)
+        assertEquals(0 to 40, merged[0].from to merged[0].to)
+
+        val kept = Slots.add(listOf(HourWin(0, 20, "a")), 20, 40, "b")
+        assertEquals("不同段相接 → 各留各的", 2, kept.size)
+        assertEquals(listOf("a", "b"), kept.map { it.seg })
+
+        val cut = Slots.add(listOf(HourWin(0, 60, "a")), 20, 40, "b")
+        assertEquals("不同段重叠 → 新段覆盖中间，旧段两侧截断", 3, cut.size)
+        assertEquals(listOf(0 to 20, 20 to 40, 40 to 60), cut.map { it.from to it.to })
+        assertEquals(listOf("a", "b", "a"), cut.map { it.seg })
+    }
+
+    @Test
+    fun `to 缺失（0）按整点结束，不是只选一分钟`() {
+        // 桌面端 `hour_end()` 就是这个语义：老配置没有 to 字段时落成 0，
+        // 当成"到整点"；当成"到第 1 分钟"会把排班整片清空。
+        val p = HourPlan(on = true, work = 50, brk = 10, from = 0, to = 0)
+        assertEquals(listOf(0 to 60), Slots.windowsOf(p).map { it.from to it.to })
+        assertTrue(Slots.covers(p, 30))
     }
 
     @Test

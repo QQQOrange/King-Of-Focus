@@ -73,53 +73,39 @@ object Portable {
                 // 手机端的刻度（10/15）原样带出去：桌面端读同一份清单，
                 // 打开网格时用的就是手机这边设的刻度
                 put("granularity", cfg.granularity)
-                put("active", PHONE_PROFILE_ID)
+                // 多套方案原样带出去：桌面端 `clock.profiles` 本来就是数组，
+                // 只导当前这一套等于把用户在手机上排的其它方案丢掉。
+                val exportPlans = cfg.plans.ifEmpty {
+                    listOf(
+                        SchedulePlan(
+                            id = PHONE_PROFILE_ID,
+                            name = "手机时段",
+                            days = cfg.days,
+                            defWork = cfg.defWork,
+                            defBrk = cfg.defBrk,
+                        ),
+                    )
+                }
+                val activeId = exportPlans.firstOrNull { it.id == cfg.activePlan }?.id
+                    ?: exportPlans.first().id
+                put("active", activeId)
                 put(
                     "profiles",
                     JsonArray(
-                        listOf(
+                        exportPlans.map { plan ->
+                            // `cfg.days / defWork / defBrk` 是"当前方案"的权威数据
+                            // （用户刚在网格上改完，还没经过 normalize 回填）
+                            val isActive = plan.id == activeId
                             buildJsonObject {
-                                put("id", PHONE_PROFILE_ID)
-                                put("name", "手机时段")
-                                put("defWork", cfg.defWork)
-                                put("defBrk", cfg.defBrk)
-                                put(
-                                    "days",
-                                    JsonArray(
-                                        cfg.days.map { day ->
-                                            JsonArray(
-                                                day.map { h ->
-                                                    buildJsonObject {
-                                                        put("on", h.on)
-                                                        put("work", h.work)
-                                                        put("brk", h.brk)
-                                                        put("from", h.from)
-                                                        put("to", h.to)
-                                                        // 一小时里有多段时才写 wins（单段用 from/to 就够了，
-                                                        // 这样和桌面端的序列化形状保持一致）
-                                                        val w = Slots.windowsOf(h)
-                                                        if (w.size > 1) {
-                                                            put(
-                                                                "wins",
-                                                                JsonArray(
-                                                                    w.map { one ->
-                                                                        buildJsonObject {
-                                                                            put("from", one.from)
-                                                                            put("to", one.to)
-                                                                        }
-                                                                    },
-                                                                ),
-                                                            )
-                                                        }
-                                                    }
-                                                },
-                                            )
-                                        },
-                                    ),
-                                )
-                                put("bound", JsonArray(emptyList()))
-                            },
-                        ),
+                                put("id", plan.id)
+                                put("name", plan.name)
+                                put("defWork", if (isActive) cfg.defWork else plan.defWork)
+                                put("defBrk", if (isActive) cfg.defBrk else plan.defBrk)
+                                // 这套时段绑定的规则 id（空 = 全部），桌面端 ClockProfile.bound
+                                put("bound", JsonArray(plan.bound.map { JsonPrimitive(it) }))
+                                put("days", daysToDoc(if (isActive) cfg.days else plan.days))
+                            }
+                        },
                     ),
                 )
             },
@@ -210,13 +196,44 @@ object Portable {
         val notify = st?.obj("notify")
         val days = docDays(doc) ?: base.days
         val prof = activeProfile(doc)
+        val (docPlans, docActive) = docPlans(doc)
+        // 文档带了方案数组 → 整套换掉（桌面端的"覆盖"就是这个意思）；
+        // 老格式没有 profiles 数组 → 只换当前这套的排班，别把本机其它方案删掉。
+        val plans = if (docPlans.isEmpty()) {
+            base.plans.map { p ->
+                if (p.id != base.activePlan) p
+                else p.copy(
+                    days = days,
+                    defWork = prof?.int("defWork", p.defWork)?.coerceIn(1, 59) ?: p.defWork,
+                    defBrk = prof?.int("defBrk", p.defBrk)?.coerceIn(0, 59) ?: p.defBrk,
+                    bound = if (prof == null) p.bound else docBound(prof),
+                )
+            }.ifEmpty {
+                listOf(
+                    SchedulePlan(
+                        id = base.activePlan.ifBlank { "plan-default" },
+                        name = "默认方案",
+                        days = days,
+                        defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
+                        defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(0, 59) ?: base.defBrk,
+                        bound = if (prof == null) emptyList() else docBound(prof),
+                    ),
+                )
+            }
+        } else {
+            docPlans
+        }
         val next = base.copy(
             enabled = clock?.bool("enabled", base.enabled) ?: base.enabled,
             // 粒度是"怎么画"，不是"怎么判定"：跟文档走，但只认 10/15
             granularity = Slots.stepOf(clock?.int("granularity", base.granularity) ?: base.granularity),
             days = days,
             defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
-            defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(1, 59) ?: base.defBrk,
+            // 休息可以是 0（= 整段不休息），别夹成 1——那会凭空多出一次休息
+            defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(0, 59) ?: base.defBrk,
+            // 方案级 bound 也带回来：只在"覆盖"时整体接受（合并时不动本机分组）
+            plans = plans,
+            activePlan = if (docPlans.isEmpty()) base.activePlan.ifBlank { "plan-default" } else docActive,
             rules = normalizeRules(docRules(doc)),
             points = (points?.int("balance", base.points) ?: base.points).coerceAtLeast(0),
             unlockUntil = points?.long("unlockUntil", base.unlockUntil) ?: base.unlockUntil,
@@ -512,6 +529,11 @@ object Portable {
     /** 文档里的 7×24 排班（取当前生效的方案） */
     fun docDays(doc: JsonObject): List<List<HourPlan>>? {
         val prof = activeProfile(doc) ?: return null
+        return profileDays(prof)
+    }
+
+    /** 某一套方案里的 7×24 排班 */
+    private fun profileDays(prof: JsonObject): List<List<HourPlan>>? {
         val days = prof.arr("days")
         if (days.isEmpty()) return null
         return (0 until 7).map { d ->
@@ -520,28 +542,105 @@ object Portable {
         }
     }
 
+    /** 一套方案绑定的规则 id（空 = 全部） */
+    private fun docBound(prof: JsonObject): List<String> =
+        prof.arr("bound").mapNotNull { (it as? JsonPrimitive)?.content }
+            .filter { it.isNotBlank() }.distinct()
+
+    /**
+     * 文档里的**全部**方案与其生效 id。
+     *
+     * 返回空列表 = 文档没有 `profiles` 数组（很老的格式）：调用方只换当前这套的排班，
+     * 不能因为"文档里没有方案"就把本机其它方案删掉。
+     */
+    private fun docPlans(doc: JsonObject): Pair<List<SchedulePlan>, String> {
+        val clock = doc.obj("clock") ?: return emptyList<SchedulePlan>() to ""
+        val raw = clock.arr("profiles").mapNotNull { it as? JsonObject }
+        val list = raw.mapIndexedNotNull { i, o ->
+            val days = profileDays(o) ?: return@mapIndexedNotNull null
+            SchedulePlan(
+                id = o.str("id").ifBlank { "plan-" + (i + 1) },
+                name = o.str("name").ifBlank { "方案 " + (i + 1) },
+                days = days,
+                defWork = o.int("defWork", 50).coerceIn(1, 59),
+                defBrk = o.int("defBrk", 10).let { b ->
+                    if (b > 0) b.coerceIn(0, 59).coerceAtMost(60 - o.int("defWork", 50).coerceIn(1, 59)) else 0
+                },
+                bound = docBound(o),
+            )
+        }.distinctBy { it.id }
+        if (list.isEmpty()) return emptyList<SchedulePlan>() to ""
+        val want = clock.str("active")
+        val active = list.firstOrNull { it.id == want }?.id ?: list.first().id
+        return list to active
+    }
+
+    /**
+     * 7×24 排班 → 文档形状。
+     *
+     * 形状必须和桌面端的序列化一致：单段只写 `from/to/seg`，一小时多段才写 `wins`。
+     * 多写一个空 `wins` 不影响对方读，但"单段带 seg"必须写——段标识丢了之后，
+     * 相邻的两段在桌面端会退回"一条连续段"，用户分开排的东西就被并掉了。
+     */
+    private fun daysToDoc(days: List<List<HourPlan>>): JsonArray =
+        JsonArray(
+            days.map { day ->
+                JsonArray(
+                    day.map { h ->
+                        buildJsonObject {
+                            put("on", h.on)
+                            put("work", h.work)
+                            put("brk", h.brk)
+                            put("from", h.from)
+                            put("to", h.to)
+                            if (h.seg.isNotEmpty()) put("seg", h.seg)
+                            val w = Slots.windowsOf(h)
+                            if (w.size > 1) {
+                                put(
+                                    "wins",
+                                    JsonArray(
+                                        w.map { one ->
+                                            buildJsonObject {
+                                                put("from", one.from)
+                                                put("to", one.to)
+                                                if (one.seg.isNotEmpty()) put("seg", one.seg)
+                                            }
+                                        },
+                                    ),
+                                )
+                            }
+                        }
+                    },
+                )
+            },
+        )
+
     private fun hourFrom(o: JsonObject?): HourPlan {
         if (o == null) return HourPlan()
         val on = o.bool("on", false)
         var from = o.int("from", 0).coerceIn(0, 59)
-        var to = o.int("to", 60).coerceIn(1, 60)
+        // `to = 0` 是"老配置缺这个字段"的落值，桌面端当整点结束（`hour_end()`）
+        val rawTo = o.int("to", 60)
+        var to = if (rawTo == 0) 60 else rawTo.coerceIn(1, 60)
         if (from >= to) {
             from = 0
             to = 60
         }
         // 桌面端的 `wins`（一小时多段）现在也收下来——手机端自己也会产生多段，
         // 以前退化成"外包区间"等于把中间的休息时间也锁上
+        val seg = o.str("seg")
         val wins = o.arr("wins").mapNotNull { it as? JsonObject }
-            .map { HourWin(it.int("from", 0), it.int("to", 60)) }
+            .map { HourWin(it.int("from", 0), it.int("to", 60), it.str("seg").ifEmpty { seg }) }
         val all = when {
             wins.isNotEmpty() -> wins
-            on -> listOf(HourWin(from, to))
+            on -> listOf(HourWin(from, to, seg))
             else -> emptyList()
         }
         return Slots.pack(
             all,
-            o.int("work", 45).coerceIn(0, 60),
-            o.int("brk", 15).coerceIn(0, 60),
+            // 默认值是桌面端 `HourPlan::default()` 的 50/10，不是老的 45/15
+            o.int("work", 50).coerceIn(0, 60),
+            o.int("brk", 10).coerceIn(0, 60),
         )
     }
 

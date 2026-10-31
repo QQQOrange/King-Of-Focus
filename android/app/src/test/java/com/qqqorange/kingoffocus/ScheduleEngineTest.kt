@@ -32,6 +32,36 @@ class ScheduleEngineTest {
         return Config(enabled = true, days = days)
     }
 
+    private fun epoch(t: LocalDateTime): Long = t.atZone(ZoneId.systemDefault()).toEpochSecond()
+
+    @Test
+    fun `专注段生效中不许改时段`() {
+        // 与桌面端 settingsFrozen 一致：能改表就等于能把自律关掉
+        val c = cfg(work = 45, brk = 15)
+        assertTrue("09:10 在专注段", ScheduleEngine.frozen(c, monday(9, 10)))
+        assertFalse("09:50 是休息段，不冻", ScheduleEngine.frozen(c, monday(9, 50)))
+        assertFalse("10:10 不在时段内", ScheduleEngine.frozen(c, monday(10, 10)))
+        assertFalse("总开关关了就不冻", ScheduleEngine.frozen(c.copy(enabled = false), monday(9, 10)))
+    }
+
+    @Test
+    fun `积分解锁、暂停、停止本段都会解除冻结`() {
+        val c = cfg(work = 45, brk = 15)
+        val at = monday(9, 10)
+        assertFalse(
+            "积分解锁窗口内",
+            ScheduleEngine.frozen(c.copy(unlockUntil = epoch(at) + 60), at),
+        )
+        assertFalse(
+            "锁机暂停期间",
+            ScheduleEngine.frozen(c.copy(lockPausedUntil = epoch(at) + 60), at),
+        )
+        assertFalse(
+            "已经停止本段",
+            ScheduleEngine.frozen(c.copy(lockStoppedSeg = "任何 id"), at),
+        )
+    }
+
     @Test
     fun `未启用时没有状态`() {
         val c = cfg().copy(enabled = false)

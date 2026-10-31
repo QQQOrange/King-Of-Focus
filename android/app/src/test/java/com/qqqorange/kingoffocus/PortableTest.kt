@@ -6,6 +6,8 @@ import com.qqqorange.kingoffocus.data.HourWin
 import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Portable
 import com.qqqorange.kingoffocus.data.Rule
+import com.qqqorange.kingoffocus.data.SchedulePlan
+import com.qqqorange.kingoffocus.data.defaultDays
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -383,5 +385,44 @@ class PortableTest {
         val cfg = Portable.overwrite(doc, blank())
         assertEquals(0, cfg.rules.size)
         assertEquals(7, cfg.days.size)
+    }
+
+    @Test
+    fun `多套方案、规则绑定与段标识都能原样走一圈`() {
+        val days = defaultDays().map { it.toMutableList() }.toMutableList()
+        // 09:00–09:30 单独一段，带自己的段 id
+        days[0][9] = HourPlan(on = true, work = 50, brk = 10, from = 0, to = 30, seg = "seg-1")
+        // cfg.days / defWork / defBrk 是"当前生效方案"的镜像，生产环境由 normalize
+        // 维持一致；这里要造一份自洽的配置，否则导出会优先用镜像值
+        val src = Config(
+            enabled = true,
+            days = days,
+            defWork = 25,
+            defBrk = 5,
+            plans = listOf(
+                SchedulePlan(
+                    id = "p-a", name = "工作日", days = defaultDays(),
+                    defWork = 50, defBrk = 10, bound = listOf("r1"),
+                ),
+                SchedulePlan(
+                    id = "p-b", name = "周末", days = days,
+                    defWork = 25, defBrk = 5, bound = listOf("r2"),
+                ),
+            ),
+            activePlan = "p-b",
+        )
+        val back = Portable.overwrite(Portable.toDoc(src, "Pixel", "0.1.0"), blank())
+        assertEquals("方案数量要原样回来", 2, back.plans.size)
+        assertEquals("生效的那套要原样回来", "p-b", back.activePlan)
+        val b = back.plans.first { it.id == "p-b" }
+        assertEquals(listOf("r2"), b.bound)
+        assertEquals(25, b.defWork)
+        assertEquals(5, b.defBrk)
+        assertEquals(
+            "段标识丢了，相邻两段在桌面端会被并成一段",
+            "seg-1",
+            back.days[0][9].seg,
+        )
+        assertEquals(listOf("r1"), back.plans.first { it.id == "p-a" }.bound)
     }
 }

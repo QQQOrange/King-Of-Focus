@@ -13,6 +13,13 @@ import kotlinx.serialization.Serializable
 data class HourWin(
     val from: Int = 0,
     val to: Int = 60,
+    /**
+     * 段标识：同一次拖出来的连续窗口共用一个 id。
+     *
+     * 有了它，"相邻"不再等于"同一段"——09:00–10:00 与 10:00–11:00 是两个独立安排，
+     * 锁机里"停止本段"只该停掉一个。空 id 是老数据，退回"按连续性合并"。
+     */
+    val seg: String = "",
 )
 
 /**
@@ -27,11 +34,13 @@ data class HourWin(
 @Serializable
 data class HourPlan(
     val on: Boolean = false,
-    val work: Int = 45,
-    val brk: Int = 15,
+    val work: Int = 50,
+    val brk: Int = 10,
     val from: Int = 0,
     val to: Int = 60,
     val wins: List<HourWin> = emptyList(),
+    /** 单窗口时的段标识（`wins` 非空时以 `wins` 里的为准） */
+    val seg: String = "",
 )
 
 /**
@@ -162,8 +171,16 @@ data class SchedulePlan(
     val id: String = "",
     val name: String = "方案",
     val days: List<List<HourPlan>> = defaultDays(),
-    val defWork: Int = 45,
-    val defBrk: Int = 15,
+    val defWork: Int = 50,
+    val defBrk: Int = 10,
+    /**
+     * 这套时段生效时，启用**哪些**自律规则（`Rule.id`）。
+     *
+     * 空 = 全部（老配置没有这个字段，语义必须保持原样：所有已启用规则都生效）。
+     * 非空 = 只启用列出的那几条，其余即使开着也不参与拦截。
+     * 桌面端 `ClockProfile.bound` 就是这个，手机端对齐。
+     */
+    val bound: List<String> = emptyList(),
 )
 
 /** 一段睡眠窗口。`to <= from` 表示跨夜（23:00 → 07:00） */
@@ -229,8 +246,8 @@ data class Config(
      * 不会让已排好的时段失效——旧边界会跨在新格子中间，界面上画成半格，重涂即对齐。
      */
     val granularity: Int = 15,
-    val defWork: Int = 45,
-    val defBrk: Int = 15,
+    val defWork: Int = 50,
+    val defBrk: Int = 10,
     val rules: List<Rule> = emptyList(),
     val points: Int = 0,
     /** 积分解锁到什么时候（unix 秒）；解锁期间所有拦截暂停 */
@@ -284,11 +301,16 @@ fun normalizeDays(raw: List<List<HourPlan>>): List<List<HourPlan>> =
                 if (work + brk > 60) brk = 60 - work
             }
             // 窗口统一走 Slots.pack：老配置只有 from/to 的会补成单窗口，
-            // 手改坏的（from ≥ to）会被丢掉，多段的重叠会被合并
+            // 手改坏的（from ≥ to）会被丢掉。**不合并**——桌面端 `ccSetHourWins`
+            // 也只裁剪排序，合并只发生在"一次涂抹"里（同 seg 相接），
+            // 否则用户分开设的两段会被悄悄并成一段。
+            //
+            // `p.seg` 必须带过去：单窗口时它就是这一段的身份，丢了之后
+            // "相邻两段"在下次保存时会退回按连续性合并，段标识等于白存。
             val wins = if (p.wins.isNotEmpty()) {
                 p.wins
             } else if (p.on) {
-                listOf(HourWin(p.from.coerceIn(0, 59), p.to.coerceIn(1, 60)))
+                listOf(HourWin(p.from.coerceIn(0, 59), p.to.coerceIn(1, 60), p.seg))
             } else {
                 emptyList()
             }
@@ -339,7 +361,11 @@ fun normalize(cfg: Config): Config {
             name = p.name.ifBlank { "方案" },
             days = normalizeDays(p.days),
             defWork = p.defWork.coerceIn(1, 59),
-            defBrk = p.defBrk.coerceIn(0, 59),
+            // 桌面端 sanitize 的同一条约束：一轮番茄不能超过一小时
+            defBrk = p.defBrk.coerceIn(0, 59).let { b ->
+                if (b > 0) b.coerceAtMost(60 - p.defWork.coerceIn(1, 59)) else b
+            },
+            bound = p.bound.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
         )
     }.ifEmpty {
         listOf(
@@ -367,8 +393,17 @@ fun normalize(cfg: Config): Config {
         }
     }
 
+    // 顶层 defWork / defBrk 是"当前方案"的镜像，网格涂格子时直接拿它当新段的默认值，
+    // 所以它也得守同一条约束：一轮番茄不能超过一小时。
+    val defW = cfg.defWork.coerceIn(1, 59)
+    val defB = cfg.defBrk.coerceIn(0, 59).let { b ->
+        if (b > 0) b.coerceAtMost(60 - defW) else b
+    }
+
     return cfg.copy(
         days = days,
+        defWork = defW,
+        defBrk = defB,
         granularity = Slots.stepOf(cfg.granularity),
         // 老的两份名单并成一份；迁移完 lockAllow 就永远是空的
         rules = migrateLockAllow(cfg.rules, cfg.lockAllow),

@@ -69,6 +69,36 @@ class GuardEngineTest {
     }
 
     @Test
+    fun `方案绑定只让挑中的规则生效`() {
+        val a = white("com.tencent.mm")
+        val b = Rule(id = "b", name = "游戏", mode = "blacklist", packages = listOf("com.example.game"))
+        val base = cfg(listOf(a, b)).copy(
+            plans = listOf(
+                com.qqqorange.kingoffocus.data.SchedulePlan(
+                    id = "p1", name = "工作日", days = cfg().days, bound = listOf("b"),
+                ),
+            ),
+            activePlan = "p1",
+        )
+        val now = at(9, 10)
+        assertEquals("只绑了 b，白名单那条不该生效", listOf("b"), GuardEngine.activeRules(base, now).map { it.id })
+        assertNull("名单外的应用不再被拦", GuardEngine.blockedRule(base, now, "com.example.other", "self"))
+        assertNotNull("绑定的那条照拦", GuardEngine.blockedRule(base, now, "com.example.game", "self"))
+    }
+
+    @Test
+    fun `方案没绑任何规则等于全部生效`() {
+        val a = white("com.tencent.mm")
+        val b = Rule(id = "b", name = "游戏", mode = "blacklist", packages = listOf("com.example.game"))
+        val c = cfg(listOf(a, b))
+        assertEquals(
+            "老配置没有 bound 字段，语义必须保持原样",
+            listOf("w", "b"),
+            GuardEngine.activeRules(c, at(9, 10)).map { it.id },
+        )
+    }
+
+    @Test
     fun `允许名单是多条白名单规则的并集`() {
         val c = cfg(
             listOf(
