@@ -35,6 +35,8 @@ object Store {
         val dir = File(ctx.applicationContext.filesDir, "kof").apply { mkdirs() }
         file = File(dir, "config.json")
         _state.value = normalize(load())
+        // 统计目录也在这里初始化：服务、界面、报告都从 StatsStore 读同一份
+        com.qqqorange.kingoffocus.core.StatsStore.init(ctx.applicationContext)
     }
 
     private fun load(): Config {
@@ -50,7 +52,10 @@ object Store {
 
     @Synchronized
     fun save(cfg: Config) {
-        val text = json.encodeToString(Config.serializer(), normalize(cfg))
+        val stamped = normalize(cfg).copy(
+            updatedAt = System.currentTimeMillis() / 1000,
+        )
+        val text = json.encodeToString(Config.serializer(), stamped)
         val tmp = File(file.parentFile, "config.json.tmp")
         tmp.writeText(text)
         if (!tmp.renameTo(file)) {
@@ -58,6 +63,7 @@ object Store {
             file.writeText(text)
             tmp.delete()
         }
+        _state.value = stamped
     }
 
     @Synchronized

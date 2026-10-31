@@ -135,6 +135,71 @@ data class LockCfg(
     val stopCost: Int = 30,
 )
 
+/**
+ * 一套自律时段方案（7×24 的排班 + 默认番茄参数）。
+ *
+ * 桌面端早就是"多套方案"，手机端之前只有一套。现在对齐：
+ * `plans` 存全部方案，`Config.days / defWork / defBrk` 是**当前生效那一套**的镜像，
+ * 这样引擎、备份、统计这些地方一行都不用改。
+ */
+@Serializable
+data class SchedulePlan(
+    val id: String = "",
+    val name: String = "方案",
+    val days: List<List<HourPlan>> = defaultDays(),
+    val defWork: Int = 45,
+    val defBrk: Int = 15,
+)
+
+/** 一段睡眠窗口。`to <= from` 表示跨夜（23:00 → 07:00） */
+@Serializable
+data class SleepSegment(
+    /** 起点：一天里的第几分钟 0..1439 */
+    val from: Int = 1380,
+    /** 终点：0..1440（1440 = 当天 24:00） */
+    val to: Int = 420,
+)
+
+/**
+ * 睡眠时段。
+ *
+ * 桌面端的语义是"到点关机"；Android 杀不掉别的应用也关不了机，所以这里落地成
+ * **睡眠期间整机锁住**（回桌面 + 遮罩），并且可以用积分换一小段（比如起夜看时间）。
+ * 「关机」这个动作不承诺——那是骗人。
+ */
+@Serializable
+data class SleepCfg(
+    val enabled: Boolean = false,
+    val segments: List<SleepSegment> = listOf(SleepSegment()),
+    val lockScreen: Boolean = true,
+    /** 积分解锁一次能买多少分钟 */
+    val unlockMin: Int = 10,
+    /** 每分钟多少分；0 = 这段睡眠不许用积分解锁 */
+    val unlockPrice: Int = 1,
+)
+
+/**
+ * WebDAV 云同步（与桌面端同一个目录、同一份 config 语义）。
+ *
+ * 冲突策略和桌面端一致：比 `updatedAt`，新的覆盖旧的。
+ * 密码只存本机配置文件里，**不随配置上传**。
+ */
+@Serializable
+data class CloudCfg(
+    val enabled: Boolean = false,
+    val url: String = "",
+    val user: String = "",
+    val pass: String = "",
+    val lastSync: Long = 0L,
+    val lastStatus: String = "",
+)
+
+@Serializable
+data class StatsCfg(
+    /** 关掉就完全不采样（不写盘、不算）*/
+    val enabled: Boolean = true,
+)
+
 @Serializable
 data class Config(
     val version: Int = 1,
@@ -162,14 +227,25 @@ data class Config(
      * 用段标识而不是时间戳：这样"停止"只作用于这一段，下一段专注自动恢复锁机。
      */
     val lockStoppedSeg: String = "",
+    /** 多套时段方案 */
+    val plans: List<SchedulePlan> = emptyList(),
+    /** 当前生效方案的 id；空 = 用第一套 */
+    val activePlan: String = "",
+    val sleep: SleepCfg = SleepCfg(),
+    val cloud: CloudCfg = CloudCfg(),
+    val stats: StatsCfg = StatsCfg(),
+    /** 睡眠时段用积分解锁到什么时候（unix 秒） */
+    val sleepUnlockUntil: Long = 0L,
+    /** 整份配置的最后修改时间（unix 秒）；云同步靠它判断谁新 */
+    val updatedAt: Long = 0L,
 )
 
 fun defaultDays(): List<List<HourPlan>> = List(7) { List(24) { HourPlan() } }
 
 /** 补齐 7×24 的形状：老配置、手工改坏的文件都不至于让界面崩掉 */
-fun normalize(cfg: Config): Config {
-    val days = (0 until 7).map { d ->
-        val row = cfg.days.getOrNull(d).orEmpty()
+fun normalizeDays(raw: List<List<HourPlan>>): List<List<HourPlan>> =
+    (0 until 7).map { d ->
+        val row = raw.getOrNull(d).orEmpty()
         (0 until 24).map { h ->
             val p = row.getOrNull(h) ?: HourPlan()
             var from = p.from.coerceIn(0, 59)
@@ -187,8 +263,58 @@ fun normalize(cfg: Config): Config {
             HourPlan(p.on, work, brk, from, to)
         }
     }
+
+fun normalize(cfg: Config): Config {
+    val days = normalizeDays(cfg.days)
+    // ---- 多套方案：老配置只有一套 days，迁移成 plans[0] ----
+    val oldPlans = cfg.plans.map { p ->
+        p.copy(
+            id = p.id.ifBlank { "plan-" + p.name.hashCode().toString(16) },
+            name = p.name.ifBlank { "方案" },
+            days = normalizeDays(p.days),
+            defWork = p.defWork.coerceIn(1, 59),
+            defBrk = p.defBrk.coerceIn(0, 59),
+        )
+    }.ifEmpty {
+        listOf(
+            SchedulePlan(
+                id = "plan-default",
+                name = "默认方案",
+                days = days,
+                defWork = cfg.defWork.coerceIn(1, 59),
+                defBrk = cfg.defBrk.coerceIn(0, 59),
+            ),
+        )
+    }.distinctBy { it.id }
+
+    val activeId = oldPlans.firstOrNull { it.id == cfg.activePlan }?.id ?: oldPlans.first().id
+    // days 是"当前方案"的权威数据：用户刚在网格上改完，以它为准回填进 plans
+    val plans = oldPlans.map { p ->
+        if (p.id == activeId) {
+            p.copy(
+                days = days,
+                defWork = cfg.defWork.coerceIn(1, 59),
+                defBrk = cfg.defBrk.coerceIn(0, 59),
+            )
+        } else {
+            p
+        }
+    }
+
     return cfg.copy(
         days = days,
+        plans = plans,
+        activePlan = activeId,
+        sleep = cfg.sleep.copy(
+            segments = cfg.sleep.segments.ifEmpty { listOf(SleepSegment()) }.map {
+                SleepSegment(it.from.coerceIn(0, 1439), it.to.coerceIn(0, 1440))
+            },
+            unlockMin = cfg.sleep.unlockMin.coerceIn(1, 240),
+            unlockPrice = cfg.sleep.unlockPrice.coerceIn(0, 100),
+        ),
+        cloud = cfg.cloud.copy(
+            url = cfg.cloud.url.trim().let { u -> if (u.isNotEmpty() && !u.endsWith("/")) "$u/" else u },
+        ),
         points = cfg.points.coerceAtLeast(0),
         update = cfg.update.copy(
             intervalHours = cfg.update.intervalHours.coerceIn(1, 168),

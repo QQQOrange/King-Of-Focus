@@ -89,11 +89,23 @@ object GuardEngine {
      * 用近 10 秒的事件流取最后一次"进入前台"，比 queryUsageStats 的最后使用时间可靠：
      * 后者在同一应用内切换页面时不会变。
      */
+    /**
+     * 上一次读到的前台包名。
+     *
+     * 为什么需要它：UsageEvents 里**只有"切换那一刻"才有事件**。用户一直停在同一个
+     * 应用里时，10 秒窗口内一个 RESUMED 都没有，queryEvents 返回空——如果直接返回 null，
+     * 统计会在"没换应用"的时候停住（实测：切到通讯录后只记了 15 秒就再无增长）。
+     * 所以窗口放宽到 3 分钟，并且查不到时沿用上一次的结果。
+     * 真正"用户不在了"由采样侧（屏幕熄灭）判断，不靠这里猜。
+     */
+    @Volatile
+    private var lastForeground: String? = null
+
     fun foregroundPackage(ctx: Context): String? {
         if (!hasUsageAccess(ctx)) return null
         val usm = ctx.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
         val end = System.currentTimeMillis()
-        val events = usm.queryEvents(end - 10_000, end)
+        val events = usm.queryEvents(end - 180_000, end)
         val e = UsageEvents.Event()
         var last: String? = null
         while (events.hasNextEvent()) {
@@ -101,6 +113,7 @@ object GuardEngine {
             // ACTIVITY_RESUMED = 1（旧常量 MOVE_TO_FOREGROUND 同值）
             if (e.eventType == 1) last = e.packageName
         }
-        return last
+        if (last != null) lastForeground = last
+        return last ?: lastForeground
     }
 }

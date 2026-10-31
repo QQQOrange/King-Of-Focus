@@ -19,10 +19,11 @@ import com.qqqorange.kingoffocus.core.Caps
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.ScheduleEngine
+import com.qqqorange.kingoffocus.core.SleepEngine
+import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.core.ShizukuBridge
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
-import com.qqqorange.kingoffocus.ui.BlockActivity
 import com.qqqorange.kingoffocus.ui.LockActivity
 import java.time.LocalDateTime
 
@@ -59,6 +60,10 @@ class GuardService : Service() {
 
     private var started = false
     private var lastHardenAt = 0L
+    /** 统计采样：每 15 拍（约 15 秒）记一笔，每分钟落一次盘 */
+    private var statsTick = 0
+    private var statsFlushAt = 0L
+    private var lastStatsPkg: String? = null
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
     private var lastLeft = -1L
@@ -106,7 +111,7 @@ class GuardService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(FOREGROUND_ID, buildOngoing(Store.current.enabled, null, false))
+        startForeground(FOREGROUND_ID, buildOngoing(Store.current.enabled, null, false, false))
         if (!started) {
             started = true
             handler.post(ticker)
@@ -117,6 +122,7 @@ class GuardService : Service() {
     override fun onDestroy() {
         started = false
         handler.removeCallbacksAndMessages(null)
+        StatsStore.flush()
         super.onDestroy()
     }
 
@@ -127,16 +133,29 @@ class GuardService : Service() {
     private fun tick() {
         val cfg = Store.current
         val now = LocalDateTime.now()
+
+        // 统计先采：它不依赖自律是否生效（自由时间用手机一样该被记录）
+        sampleStats(cfg, now)
+
         val st = ScheduleEngine.stateAt(cfg, now)
         val locked = LockEngine.isLockActive(cfg, now)
+        val sleeping = SleepEngine.isSleeping(cfg, now)
 
-        updateOngoing(cfg.enabled && st != null, st, locked)
+        updateOngoing(cfg.enabled && st != null, st, locked, sleeping)
 
-        // 锁机优先：开着锁机时，"拦截某个应用"这件事被更彻底的"整台手机先别用"取代
+        // 睡眠优先：晚上这段整机先别用，和白天那套自律独立
+        if (sleeping) {
+            lastLeft = -1
+            notifiedPhase = false
+            enforceMask(cfg, now, LockActivity.KIND_SLEEP)
+            return
+        }
+
+        // 锁机其次：开着锁机时，"拦截某个应用"被更彻底的"整台手机先别用"取代
         if (locked) {
             lastLeft = -1
             notifiedPhase = false
-            enforceLock(cfg, now)
+            enforceMask(cfg, now, LockActivity.KIND_FOCUS)
             hardenIfStrict(cfg, now)
             return
         }
@@ -149,6 +168,31 @@ class GuardService : Service() {
 
         maybeNotify(cfg, st)
         enforce(cfg, now)
+    }
+
+    /**
+     * 使用时长采样：每 15 拍（≈15 秒）给"当前前台应用"记 15 秒。
+     *
+     * 为什么不是每拍都记：写盘和加锁的成本要摊薄；15 秒的粒度对"今天用了多久"
+     * 完全够用，误差最多 15 秒。
+     */
+    private fun sampleStats(cfg: Config, now: LocalDateTime) {
+        if (!cfg.stats.enabled) return
+        statsTick += 1
+        if (statsTick % 15 != 0) return
+        // 熄屏不算"在用"：否则一整晚的待机都会被算进最后一个应用
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm != null && !pm.isInteractive) return
+        val fg = foreground() ?: return
+        if (fg == packageName) return
+        if (fg in SYSTEM_PKGS) return
+        StatsStore.add(now, fg, 15)
+        lastStatsPkg = fg
+        val t = SystemClock.elapsedRealtime()
+        if (t - statsFlushAt > 60_000) {
+            statsFlushAt = t
+            StatsStore.flush()
+        }
     }
 
     /** 阶段提醒：每个阶段只响一次，剩余时间跳大即视为进入新阶段 */
@@ -169,32 +213,32 @@ class GuardService : Service() {
         alert("阶段提醒", text)
     }
 
-    /** 拦截：命中名单就拉起全屏拦截页（同一个包 3 秒内不重复拉） */
+    /**
+     * 拦截：命中名单就**把用户送回桌面**，并发一条说明。
+     *
+     * 这里刻意不再拉起全屏拦截页：那层"专注遮罩"是从桌面端照搬过来的，
+     * 在手机上既盖不严（系统随时能把它顶掉），又容易让人以为应用卡死。
+     * 回桌面 + 通知同样能挡住，而且更诚实：你随时能看到自己在哪、能做什么。
+     */
     private fun enforce(cfg: Config, now: LocalDateTime) {
         if (!cfg.overlay.blockEnabled) return
         val pkg = foreground() ?: return
+        if (pkg == packageName) return
         val rule = GuardEngine.blockedRule(cfg, now, pkg, packageName) ?: return
         val nowMs = SystemClock.elapsedRealtime()
-        if (pkg == lastBlockPkg && nowMs - lastBlockAt < 3000) return
+        if (pkg == lastBlockPkg && nowMs - lastBlockAt < 5000) return
         lastBlockPkg = pkg
         lastBlockAt = nowMs
-        val i = Intent(this, BlockActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            .putExtra(BlockActivity.EXTRA_PKG, pkg)
-            .putExtra(BlockActivity.EXTRA_RULE, rule.name)
-        // 拦截页也一样：有 Shizuku 就不受后台启动限制，没有就直接 startActivity
-        if (ShizukuBridge.ready()) {
-            val comp = "$packageName/${BlockActivity::class.java.name}"
-            val safeRule = rule.name.replace("\"", "")
-            bg.execute {
-                if (!ShizukuBridge.startActivity(comp, "--es ${BlockActivity.EXTRA_PKG} $pkg --es ${BlockActivity.EXTRA_RULE} \"$safeRule\"")) {
-                    handler.post { runCatching { startActivity(i) } }
-                }
-            }
-            return
-        }
-        startActivity(i)
+
+        val label = appLabel(pkg)
+        goHome()
+        alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
     }
+
+    private fun appLabel(pkg: String): String = runCatching {
+        val pm = packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
 
     /** 当前这一刻的能力矩阵（界面上的"当前等级"读的也是它） */
     private fun caps(): Caps = Caps(
@@ -215,7 +259,7 @@ class GuardService : Service() {
      * 先回桌面，遮罩就是"从桌面上盖上来"，用户一眼明白"我现在被关在外面"。
      * 这里不杀进程、不关机——Android 也不允许，而且那样会毁掉用户手上的东西。
      */
-    private fun enforceLock(cfg: Config, now: LocalDateTime) {
+    private fun enforceMask(cfg: Config, now: LocalDateTime, kind: String) {
         val caps = caps()
         // 没有任何一条路能把遮罩盖上来时，必须说出来——
         // 用户以为锁机生效了，其实手机随便用，那比没有这个功能更糟。
@@ -232,13 +276,16 @@ class GuardService : Service() {
             return
         }
         val fg = foreground()
-        if (!LockEngine.shouldMask(cfg, now, fg, packageName, imePkgs)) return
-        if (fg != null && fg !in homePkgs) {
+        // 睡眠时段没有白名单：只留紧急通道和输入法，其它一概不盖不到
+        if (fg.isNullOrEmpty() || fg == packageName) return
+        if (kind == LockActivity.KIND_FOCUS && fg in cfg.lockAllow) return
+        if (LockEngine.isAlwaysAllowed(fg, imePkgs)) return
+        if (fg !in homePkgs) {
             goHome()
             // 给桌面一点时间完成切换，再压上遮罩；否则遮罩会盖在旧应用上
-            handler.postDelayed({ showLock() }, 260)
+            handler.postDelayed({ showLock(kind) }, 260)
         } else {
-            showLock()
+            showLock(kind)
         }
     }
 
@@ -269,11 +316,11 @@ class GuardService : Service() {
      * "后台启动 Activity"限制，连悬浮窗权限都不需要。
      * 没有就只能直接 startActivity——这条路要求悬浮窗权限，否则会被 BAL 拦掉。
      */
-    private fun showLock() {
+    private fun showLock(kind: String) {
         val nowMs = SystemClock.elapsedRealtime()
         if (nowMs - lockShownAt < 800) return
         lockShownAt = nowMs
-        val intent = Intent(this, LockActivity::class.java).addFlags(
+        val intent = Intent(this, LockActivity::class.java).putExtra(LockActivity.EXTRA_KIND, kind).addFlags(
             Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
@@ -282,7 +329,7 @@ class GuardService : Service() {
             val comp = "$packageName/${LockActivity::class.java.name}"
             bg.execute {
                 // 失败不能闷着：退回到直接 startActivity（有悬浮窗时它是通的）
-                if (!ShizukuBridge.startActivity(comp)) {
+                if (!ShizukuBridge.startActivity(comp, "--es ${LockActivity.EXTRA_KIND} $kind")) {
                     handler.post { runCatching { startActivity(intent) } }
                 }
             }
@@ -355,21 +402,39 @@ class GuardService : Service() {
         )
     }
 
-    private fun buildOngoing(active: Boolean, st: ScheduleEngine.State?, locked: Boolean): Notification {
-        // 锁机期间点通知回的是遮罩页，而不是主界面：
+    private fun buildOngoing(
+        active: Boolean,
+        st: ScheduleEngine.State?,
+        locked: Boolean,
+        sleeping: Boolean = false,
+    ): Notification {
+        // 锁机 / 睡眠期间点通知回的是遮罩页，而不是主界面：
         // 主界面上有个"启用自律"开关，那等于给遮罩配了一把钥匙。
+        val kind = when {
+            sleeping -> LockActivity.KIND_SLEEP
+            locked -> LockActivity.KIND_FOCUS
+            else -> ""
+        }
         val open = PendingIntent.getActivity(
             this, 0,
-            if (locked) Intent(this, LockActivity::class.java) else Intent(this, MainActivity::class.java),
+            if (locked || sleeping) {
+                Intent(this, LockActivity::class.java).putExtra(LockActivity.EXTRA_KIND, kind)
+            } else {
+                Intent(this, MainActivity::class.java)
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val now = LocalDateTime.now()
         val text = when {
-            locked -> "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, LocalDateTime.now()))}"
+            sleeping -> "睡眠时段 · 还有 " +
+                ScheduleEngine.fmtLeft(SleepEngine.active(Store.current, now)?.leftSeconds ?: 0)
+            locked -> "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
             st == null -> "当前不在自律时段"
             st.inBreak -> "休息中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
             else -> "专注中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
         }
         val title = when {
+            sleeping -> "King Of Focus · 睡眠中"
             locked -> "King Of Focus · 锁机中"
             active -> "King Of Focus · 自律中"
             else -> "King Of Focus"
@@ -385,9 +450,14 @@ class GuardService : Service() {
             .build()
     }
 
-    private fun updateOngoing(active: Boolean, st: ScheduleEngine.State?, locked: Boolean) {
+    private fun updateOngoing(
+        active: Boolean,
+        st: ScheduleEngine.State?,
+        locked: Boolean,
+        sleeping: Boolean = false,
+    ) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(FOREGROUND_ID, buildOngoing(active, st, locked))
+        nm.notify(FOREGROUND_ID, buildOngoing(active, st, locked, sleeping))
     }
 
     private fun alert(title: String, body: String, openOverlaySettings: Boolean = false) {
@@ -416,6 +486,14 @@ class GuardService : Service() {
         private const val TAG = "KofGuard"
         private const val CH_ONGOING = "kof_ongoing"
         private const val CH_ALERT = "kof_alert"
+        /** 采样式统计里忽略的进程：它们不是"用户在用某个应用" */
+        private val SYSTEM_PKGS = setOf(
+            "com.android.systemui",
+            "com.android.launcher3",
+            "com.google.android.apps.nexuslauncher",
+        )
+
+        internal const val SETTINGS_PKG = "com.android.settings"
         private const val FOREGROUND_ID = 1001
         private const val ALERT_ID = 1002
 

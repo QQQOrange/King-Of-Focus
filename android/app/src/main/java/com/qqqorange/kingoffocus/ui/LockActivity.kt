@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.core.LockEngine
+import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.data.AppInfo
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.loadLaunchableApps
@@ -82,19 +83,27 @@ class LockActivity : ComponentActivity() {
             }
         })
 
+        val kind = intent?.getStringExtra(EXTRA_KIND) ?: KIND_FOCUS
         setContent {
             KofTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF12151B)) {
-                    LockScreen(onDone = { finish() })
+                    LockScreen(kind = kind, onDone = { finish() })
                 }
             }
         }
     }
+
+    companion object {
+        const val EXTRA_KIND = "kof.lock.kind"
+        const val KIND_FOCUS = "focus"
+        const val KIND_SLEEP = "sleep"
+    }
 }
 
 @Composable
-private fun LockScreen(onDone: () -> Unit) {
+private fun LockScreen(kind: String, onDone: () -> Unit) {
     val ctx = LocalContext.current
+    val sleep = kind == LockActivity.KIND_SLEEP
     val cfg by Store.state.collectAsState()
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     var showAllow by remember { mutableStateOf(false) }
@@ -108,7 +117,12 @@ private fun LockScreen(onDone: () -> Unit) {
         while (true) {
             delay(1000)
             now = LocalDateTime.now()
-            if (!LockEngine.isLockActive(Store.current, now) && !done) {
+            val still = if (sleep) {
+                SleepEngine.isSleeping(Store.current, now)
+            } else {
+                LockEngine.isLockActive(Store.current, now)
+            }
+            if (!still && !done) {
                 done = true
                 onDone()
                 return@LaunchedEffect
@@ -132,30 +146,52 @@ private fun LockScreen(onDone: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("🔒", fontSize = 34.sp)
-        Spacer(Modifier.height(6.dp))
-        Text("锁机中", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF2F4F8))
+        Text(if (sleep) "🌙" else "🔒", fontSize = 34.sp)
         Spacer(Modifier.height(6.dp))
         Text(
-            if (strict) "强制模式 · 不可暂停 / 不可跳过" else "温和模式 · 可用积分暂停或提前结束",
+            if (sleep) "睡眠中" else "锁机中",
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFF2F4F8),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            when {
+                sleep -> "现在是睡眠时段 · 手机放一边"
+                strict -> "强制模式 · 不可暂停 / 不可跳过"
+                else -> "温和模式 · 可用积分暂停或提前结束"
+            },
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
-            color = if (strict) Color(0xFFFF8A65) else Color(0xFF7FB4FF),
+            color = when {
+                sleep -> Color(0xFF9C8CFF)
+                strict -> Color(0xFFFF8A65)
+                else -> Color(0xFF7FB4FF)
+            },
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            if (strict) {
-                "这一段必须完整走完。没有暂停、没有跳过，也没有积分可以买时间。"
-            } else {
-                "现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。"
+            when {
+                sleep -> "这个时段是留给你睡觉的。真要看时间或处理急事，可以用积分解锁一小段。"
+                strict -> "这一段必须完整走完。没有暂停、没有跳过，也没有积分可以买时间。"
+                else -> "现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。"
             },
             fontSize = 13.sp,
             textAlign = TextAlign.Center,
             color = Color(0xFF9AA4B2),
         )
         Spacer(Modifier.height(26.dp))
-        Text(left, fontSize = 46.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFF7C948))
-        Text("本段剩余", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        Text(
+            if (sleep) {
+                fmtLeft(SleepEngine.active(cfg, now)?.leftSeconds ?: 0)
+            } else {
+                left
+            },
+            fontSize = 46.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFFF7C948),
+        )
+        Text(if (sleep) "距离起床" else "本段剩余", fontSize = 12.sp, color = Color(0xFF9AA4B2))
         Spacer(Modifier.height(22.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("积分 ", fontSize = 13.sp, color = Color(0xFF9AA4B2))
@@ -172,10 +208,47 @@ private fun LockScreen(onDone: () -> Unit) {
         }
         Spacer(Modifier.height(24.dp))
 
-        // —— 两个出口，价格写在按钮上，点之前就知道要付多少 ——
+        // —— 出口：价格写在按钮上，点之前就知道要付多少 ——
         // 强制模式下这两个按钮**不存在**（不是置灰）：承诺是"没有任何提前结束的方式"，
         // 留一个灰按钮只会让人反复去点，以为是自己积分不够。
-        if (!strict) {
+        // 睡眠时段只有"积分解锁一小段"：睡眠本身不该被"停止"。
+        if (sleep) {
+            val price = SleepEngine.unlockPrice(cfg)
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = {
+                    if (price <= 0) {
+                        toast(ctx, "睡眠时段没有开放积分解锁")
+                        return@Button
+                    }
+                    if (cfg.points < price) {
+                        toast(ctx, "积分不足：解锁需要 $price 分，当前 ${cfg.points} 分")
+                        return@Button
+                    }
+                    val until = SleepEngine.unlockUntil(Store.current, LocalDateTime.now())
+                    Store.update {
+                        it.copy(
+                            points = (it.points - price).coerceAtLeast(0),
+                            sleepUnlockUntil = until,
+                        )
+                    }
+                    toast(ctx, "已解锁 ${cfg.sleep.unlockMin} 分钟，扣 $price 分")
+                    if (!done) { done = true; onDone() }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2A3240),
+                    contentColor = Color(0xFFF2F4F8),
+                ),
+            ) {
+                Text(
+                    if (price > 0) "解锁 ${cfg.sleep.unlockMin} 分钟 · $price 分"
+                    else "睡眠时段不开放解锁",
+                )
+            }
+        }
+
+        if (!strict && !sleep) {
         OutlinedButton(
             onClick = {
                 if (!LockEngine.canAfford(cfg, price.cost)) {
@@ -221,8 +294,8 @@ private fun LockScreen(onDone: () -> Unit) {
         ) { Text("停止锁机 · $stopCost 分") }
         }
 
-        // —— 白名单：允许的应用，点了直接打开 ——
-        if (cfg.lockAllow.isNotEmpty()) {
+        // —— 白名单：允许的应用，点了直接打开（睡眠时段不给） ——
+        if (!sleep && cfg.lockAllow.isNotEmpty()) {
             Spacer(Modifier.height(18.dp))
             OutlinedButton(
                 onClick = { showAllow = !showAllow },
@@ -251,7 +324,7 @@ private fun LockScreen(onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(20.dp))
-        if (strict) {
+        if (!sleep && strict) {
             Text(
                 if (shizukuReady) {
                     "有 Shizuku：你一进设置就会被弹出来；但卸载本应用仍然拦不住（那需要设备管理员）"
@@ -264,16 +337,24 @@ private fun LockScreen(onDone: () -> Unit) {
             )
         } else {
             Text(
-                "长按这行可强制解除（不计分，仅限紧急）",
+                if (sleep) "长按这行可紧急解除（不计分，仅限急事）" else "长按这行可强制解除（不计分，仅限紧急）",
                 fontSize = 11.sp,
                 color = Color(0xFF5A6472),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .pointerInput(Unit) {
+                    .pointerInput(sleep) {
                         detectTapGestures(onLongPress = {
-                            val seg = LockEngine.segmentKey(Store.current, LocalDateTime.now())
-                            Store.update { it.copy(lockStoppedSeg = seg) }
-                            toast(ctx, "已强制解除本次锁机")
+                            if (sleep) {
+                                val until = SleepEngine.active(Store.current, LocalDateTime.now())
+                                    ?.let { it.end.atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }
+                                    ?: 0L
+                                Store.update { it.copy(sleepUnlockUntil = until) }
+                                toast(ctx, "已紧急解除本次睡眠锁定")
+                            } else {
+                                val seg = LockEngine.segmentKey(Store.current, LocalDateTime.now())
+                                Store.update { it.copy(lockStoppedSeg = seg) }
+                                toast(ctx, "已强制解除本次锁机")
+                            }
                             if (!done) { done = true; onDone() }
                         })
                     }
