@@ -286,15 +286,22 @@ object StatsStore {
     /**
      * 某个条目在区间内的连续使用段（带日期），按时间排序。
      *
-     * 双轨合并：同一个应用可能"自律时段内用了 20 分钟、时段外用了 10 分钟"，
-     * 明细要给的是"这个应用在这段时间里哪几段在用"，不该被轨切开。
+     * [onTrack] 必须和页面上选的那一档一致：
+     *  · `null`（汇总）= 两轨合并——同一个应用"自律时段内 20 分钟 + 时段外 10 分钟"
+     *    是一段连续的使用历史，不该被轨切开；
+     *  · `true/false` = 只看那一轨。曾经这里无条件合并，于是在「自律时段内」点开某一项，
+     *    明细列出的却包含时段外的段，和上面的总时长对不上。
      */
-    fun spansOf(key: String, days: List<Pair<LocalDate, StatsDay>>): List<Pair<LocalDate, Span>> {
+    fun spansOf(
+        key: String,
+        days: List<Pair<LocalDate, StatsDay>>,
+        onTrack: Boolean? = null,
+    ): List<Pair<LocalDate, Span>> {
         val out = ArrayList<Pair<LocalDate, Span>>()
         for ((d, day) in days) {
             val all = ArrayList<Span>()
-            day.on[key]?.spans?.let { all.addAll(it) }
-            day.off[key]?.spans?.let { all.addAll(it) }
+            if (onTrack != false) day.on[key]?.spans?.let { all.addAll(it) }
+            if (onTrack != true) day.off[key]?.spans?.let { all.addAll(it) }
             if (all.isEmpty()) continue
             all.sortBy { it.f }
             out.addAll(StatsMath.mergeSpans(all).map { d to it })

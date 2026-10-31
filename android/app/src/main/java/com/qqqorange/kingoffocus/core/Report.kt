@@ -38,10 +38,11 @@ object Report {
         lines.add("")
         lines.add("累计 ${fmtDuration(total)}，日均 ${fmtDuration(total / days.size)}")
 
-        // 双轨对比：这是报表里最有用的一段，单看总数看不出"自律有没有起作用"
+        // 双轨对比：这是报表里最有用的一段，单看总数看不出"自律有没有起作用"。
+        // 只在「汇总」时写——已经选了单轨的报表再来一句"其余 X"会让人以为统计口径不一致。
         val on = StatsMath.total(days, true)
         val off = StatsMath.total(days, false)
-        if (on + off > 0) {
+        if (onTrack == null && on + off > 0) {
             val pct = on * 100 / (on + off)
             lines.add("自律生效中 ${fmtDuration(on)}（占 $pct%），其余 ${fmtDuration(off)}")
         }

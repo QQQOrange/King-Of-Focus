@@ -1,6 +1,6 @@
 [package]
 name = "king-of-focus"
-version = "0.1.58"
+version = "0.1.59"
 description = "King of Focus - 专注与自律守护工具"
 authors = ["QQQOrange"]
 edition = "2021"
