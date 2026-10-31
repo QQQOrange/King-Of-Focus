@@ -243,6 +243,16 @@ data class StatsCfg(
     val countIdle: Boolean = true,
     /** 原始数据保留天数；桌面端同名字段默认 400 */
     val retentionDays: Int = 400,
+    /**
+     * 是否**曾经**拿到过「使用情况访问」。
+     *
+     * 为什么要记这个：`hasUsageAccess()` 只能回答"现在有没有"，分不出
+     * "用户从没给过"和"给过又被系统/用户回收了"。前者只需要引导一次，
+     * 后者说明用户可能是被清理软件关掉的，要明确提示"统计已暂停"。
+     */
+    val usageGrantedOnce: Boolean = false,
+    /** 已经向用户解释过并跳转过系统设置（避免每次进前台都弹一次） */
+    val usageAsked: Boolean = false,
 )
 
 @Serializable

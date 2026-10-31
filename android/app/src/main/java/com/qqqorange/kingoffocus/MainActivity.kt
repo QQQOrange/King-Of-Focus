@@ -69,6 +69,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.qqqorange.kingoffocus.core.Caps
+import com.qqqorange.kingoffocus.core.KeepAlive
+import com.qqqorange.kingoffocus.core.UsageAccess
 import com.qqqorange.kingoffocus.core.UpdateClient
 import com.qqqorange.kingoffocus.core.Updater
 import com.qqqorange.kingoffocus.core.UpdateHub
@@ -135,6 +137,12 @@ class MainActivity : ComponentActivity() {
         // 用户可能刚从 Shizuku 授权页 / 无障碍设置回来：
         // 已经授权的话这里补一次连接，界面上的等级立刻跟着变
         runCatching { ShizukuBridge.connect(this) }
+
+        // 保活自愈：该常驻却没在跑（被清理软件清掉了），回来的这一刻就拉起来。
+        // 心跳最密也是 15 分钟一次，而用户点开应用的这一秒就该恢复。
+        runCatching { KeepAlive.ensureService(this, Store.current) }
+        // 顺带刷新权限状态：授权页回来之后横幅/卡片要立刻变
+        runCatching { UsageAccess.probe(this, Store.current) }
     }
 }
 

@@ -55,6 +55,8 @@ import com.qqqorange.kingoffocus.core.Span
 import com.qqqorange.kingoffocus.core.StatsCal
 import com.qqqorange.kingoffocus.core.StatsDay
 import com.qqqorange.kingoffocus.core.StatsMath
+import com.qqqorange.kingoffocus.core.StatsMetrics
+import com.qqqorange.kingoffocus.core.UsageAccess
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.core.fmtDuration
 import com.qqqorange.kingoffocus.data.Config
@@ -126,11 +128,24 @@ fun StatsScreen(cfg: Config) {
         }
     }
 
+    // 权限状态（只读判定，不写盘）：决定顶部横幅与空态文案
+    val access = remember(cfg.stats.usageGrantedOnce, cfg.stats.usageAsked, cfg.enabled) {
+        UsageAccess.read(ctx, cfg)
+    }
+
     val labels = remember { loadLaunchableApps(ctx).associate { it.pkg to it.label } }
     fun labelOf(key: String): String = when (key) {
         "__rest" -> "其他"
         else -> labels[key] ?: key.ifBlank { "未知应用" }
     }
+
+    // 三项指标（时长 / 次数 / 时段）：当前档位一份，两档各一份用于对比
+    val metrics = remember(days, tab) { StatsMetrics.scope(days, tab) }
+    val onScope = remember(days) { StatsMetrics.scope(days, true) }
+    val offScope = remember(days) { StatsMetrics.scope(days, false) }
+    val hourlyBoth = remember(days) { StatsMetrics.hourlyBoth(days) }
+    // 点了 24 小时分布里的某一根柱子 → 看那个小时的明细
+    var hourPick by remember { mutableStateOf<Int?>(null) }
 
     val slices = remember(days, tab) { StatsCal.slices(days, tab, 8) { labelOf(it) } }
     val slotOf = remember(slices, calDays) {
@@ -153,6 +168,64 @@ fun StatsScreen(cfg: Config) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         PageHeader("使用统计", "只算你在用的时间：熄屏、锁屏、停在桌面都不计")
+
+        // — 权限横幅 —
+        //
+        // 三种"没有"要三句话（见 UsageAccess 的注释）：从没给过 / 被回收 / 只靠无障碍。
+        // 这里不弹窗、不挡内容：统计页本身还要能看历史数据，只是把"现在记不了"
+        // 或者"现在记得不准"写在最上面。
+        if (access.needsAttention || access.source != UsageAccess.Source.FULL) {
+            val danger = !access.canRecord || access.state == UsageAccess.State.REVOKED
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (danger) MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    when (access.state) {
+                        UsageAccess.State.REVOKED -> "「使用情况访问」被收回了"
+                        UsageAccess.State.DENIED -> "还没有「使用情况访问」"
+                        UsageAccess.State.NOT_ASKED -> "需要「使用情况访问」才能统计"
+                        UsageAccess.State.GRANTED -> "统计精度可以更高"
+                    },
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (danger) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    access.summary(),
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    color = if (danger) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!access.usageGranted) {
+                        TextButton(
+                            contentPadding = PAD0,
+                            onClick = {
+                                UsageAccess.markAsked(cfg.stats)
+                                runCatching { ctx.startActivity(UsageAccess.settingsIntent()) }
+                            },
+                        ) { Text("去授予使用情况访问", fontSize = 11.5.sp) }
+                    }
+                    if (!access.accAlive) {
+                        TextButton(
+                            contentPadding = PAD0,
+                            onClick = {
+                                runCatching { ctx.startActivity(UsageAccess.accessibilityIntent()) }
+                            },
+                        ) { Text("开启无障碍（更准）", fontSize = 11.5.sp) }
+                    }
+                }
+            }
+        }
 
         // —— 双轨 ——
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -196,6 +269,77 @@ fun StatsScreen(cfg: Config) {
                 TextButton(onClick = { anchor = today; picked = null }, contentPadding = PAD0) {
                     Text("今天", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                 }
+            }
+        }
+
+        // —— 三项指标 ——
+        //
+        // 时长、次数、时段：三个数字回答三个不同的问题。只报时长会看不出
+        // "一次看了两小时"和"一天翻四十次"的区别，而那两种行为对自律的意义完全相反。
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricCard(
+                Modifier.weight(1f),
+                "时长",
+                fmtDuration(metrics.secs),
+                "日均 " + fmtDuration(metrics.secs / (metrics.days.coerceAtLeast(1))),
+                MaterialTheme.colorScheme.primary,
+            )
+            MetricCard(
+                Modifier.weight(1f),
+                "次数",
+                if (metrics.sessions > 0) "${metrics.sessions} 次" else "—",
+                if (metrics.sessions > 0) {
+                    "平均 " + fmtDuration(metrics.avgSec) + " · 最长 " + fmtDuration(metrics.longestSec)
+                } else {
+                    "没有分段数据"
+                },
+                MaterialTheme.colorScheme.secondary,
+            )
+            MetricCard(
+                Modifier.weight(1f),
+                "时段",
+                if (metrics.peakHour >= 0) "${metrics.peakHour} 点" else "—",
+                if (metrics.firstMin >= 0) {
+                    StatsMath.hhmm(metrics.firstMin) + "–" + StatsMath.hhmm(metrics.lastMin)
+                } else {
+                    "没有记录"
+                },
+                MaterialTheme.colorScheme.tertiary,
+            )
+        }
+
+        // —— 时段对比 ——
+        //
+        // 双轨的意义就在这里：同一个范围里，"自律时段内"和"时段外"各占多少。
+        // 单档视图下这一块仍然显示两档——那正是判断"自律有没有起作用"的依据。
+        if (onScope.secs > 0 || offScope.secs > 0) {
+            SectionTitle("自律时段内 vs 时段外")
+            Panel {
+                val sum = (onScope.secs + offScope.secs).coerceAtLeast(1)
+                CompareRow(
+                    label = "自律时段内",
+                    color = MaterialTheme.colorScheme.primary,
+                    secs = onScope.secs,
+                    sessions = onScope.sessions,
+                    share = onScope.secs * 100 / sum,
+                    highlight = tab == true,
+                )
+                Spacer(Modifier.height(8.dp))
+                CompareRow(
+                    label = "时段外",
+                    color = MaterialTheme.colorScheme.outline,
+                    secs = offScope.secs,
+                    sessions = offScope.sessions,
+                    share = offScope.secs * 100 / sum,
+                    highlight = tab == false,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "两者合计 " + fmtDuration(onScope.secs + offScope.secs) +
+                        "，其中自律时段内占 " + (onScope.secs * 100 / sum) + "%",
+                    fontSize = 10.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -305,23 +449,115 @@ fun StatsScreen(cfg: Config) {
             }
         }
 
-        // —— 明细列表 ——
-        SectionTitle("耗时明细")
+        // —— 24 小时分布 ——
+        //
+        // 桌面端统计页的第三张卡。手机上的差别：两档叠在同一根柱子里
+        // （深色 = 自律时段内，浅色 = 时段外），一眼能看出"晚上这段是自由时间还是自律时间"。
+        SectionTitle("24 小时分布 · " + trackName(tab))
         Panel {
-            if (slices.isEmpty()) {
+            if (metrics.secs <= 0) {
                 EmptyHint("这段时间没有记录")
             } else {
-                slices.forEach { s ->
+                HourBars(
+                    hourly = metrics.hourly,
+                    onHourly = hourlyBoth.first,
+                    offHourly = hourlyBoth.second,
+                    single = tab,
+                    picked = hourPick,
+                    onPick = { h -> hourPick = if (hourPick == h) null else h },
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (tab == null) {
+                        "按小时累加。深色 = 自律时段内，浅色 = 时段外；点一根柱子看那个小时的明细。"
+                    } else {
+                        "按小时累加。点一根柱子看那个小时的明细。"
+                    },
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 15.sp,
+                )
+                // 点中某个小时 → 就地列出这一小时里各应用占了多少
+                val hp = hourPick
+                if (hp != null) {
+                    Spacer(Modifier.height(8.dp))
+                    val atHour = StatsMetrics.atHour(days, tab, hp)
+                    Text(
+                        "%02d:00–%02d:59 · %s".format(hp, hp, fmtDuration(metrics.hourly[hp])),
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (atHour.isEmpty()) {
+                        Text("这一小时没有记录", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        atHour.take(6).forEach { it ->
+                            Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Dot(colorOf(it.key))
+                                Text(
+                                    it.label,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(fmtDuration(it.secs), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        if (atHour.size > 6) {
+                            Text("…… 还有 ${atHour.size - 6} 项", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+
+        // —— 耗时明细 ——
+        //
+        // 列**全部**条目（不只饼图那 8 项）：饼图超过 8 项会合成「其他」，
+        // 而明细的职责恰恰是"把每一行都列清楚"。每行带三项指标里的时长与次数，
+        // 点开再看这一项的连续使用段。
+        SectionTitle("耗时明细 · ${metrics.items.size} 项")
+        Panel {
+            if (metrics.items.isEmpty()) {
+                EmptyHint("这段时间没有记录")
+            } else {
+                metrics.items.forEach { it ->
                     DetailRow(
-                        slice = s,
-                        total = total,
-                        color = colorOf(s.key),
-                        expanded = picked == s.key,
-                        onClick = { picked = if (picked == s.key) null else s.key },
-                        spans = if (picked == s.key) StatsStore.spansOf(s.key, days, tab) else emptyList(),
+                        item = it,
+                        total = metrics.secs,
+                        color = colorOf(it.key),
+                        expanded = picked == it.key,
+                        onClick = { picked = if (picked == it.key) null else it.key },
+                        spans = if (picked == it.key) {
+                            StatsStore.spansOf(it.key, days, tab)
+                        } else {
+                            emptyList()
+                        },
                     )
                 }
             }
+        }
+
+        // —— 汇总 ——
+        SectionTitle("汇总")
+        Panel {
+            Row(Modifier.fillMaxWidth()) {
+                KV("时长", fmtDuration(onScope.secs + offScope.secs))
+                KV("次数", if (onScope.sessions + offScope.sessions > 0) "${onScope.sessions + offScope.sessions} 次" else "—")
+                KV("活跃整点", "${metrics.activeHours} 个")
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "日均 " + fmtDuration((onScope.secs + offScope.secs) / avgBase) +
+                    " · 峰值 " + (if (metrics.peakHour >= 0) "${metrics.peakHour} 点（${fmtDuration(metrics.peakSecs)}）" else "—") +
+                    " · 平均一次 " + (
+                        if (onScope.sessions + offScope.sessions > 0)
+                            fmtDuration((onScope.secs + offScope.secs) / (onScope.sessions + offScope.sessions))
+                        else "—"
+                        ),
+                fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // —— 报告 ——
@@ -751,6 +987,183 @@ private fun MonthCalendar(
     Text("点某一天看当日时间轴", fontSize = 10.sp, color = cs.onSurfaceVariant)
 }
 
+/** 三项指标的小卡：大数字 + 一行说明 */
+@Composable
+private fun MetricCard(
+    modifier: Modifier,
+    title: String,
+    value: String,
+    sub: String,
+    accent: Color,
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(cs.surface)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
+            Spacer(Modifier.width(5.dp))
+            Text(title, fontSize = 10.5.sp, color = cs.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            value,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = cs.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            sub,
+            fontSize = 9.5.sp,
+            color = cs.onSurfaceVariant,
+            maxLines = 2,
+            lineHeight = 13.sp,
+        )
+    }
+}
+
+/** 时段对比的一行：名称 + 时长 + 次数 + 占比条 */
+@Composable
+private fun CompareRow(
+    label: String,
+    color: Color,
+    secs: Int,
+    sessions: Int,
+    share: Int,
+    highlight: Boolean,
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Dot(color)
+            Text(
+                label,
+                fontSize = 12.sp,
+                fontWeight = if (highlight) FontWeight.SemiBold else FontWeight.Normal,
+                modifier = Modifier.weight(1f),
+            )
+            Text(fmtDuration(secs), fontSize = 12.sp, color = cs.onSurface)
+            Text(
+                "  · " + (if (sessions > 0) "$sessions 次" else "—") + "  · $share%",
+                fontSize = 10.sp,
+                color = cs.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .background(cs.surfaceVariant, RoundedCornerShape(3.dp)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth((share / 100f).coerceIn(0.004f, 1f))
+                    .fillMaxHeight()
+                    .background(color, RoundedCornerShape(3.dp)),
+            )
+        }
+    }
+}
+
+/**
+ * 24 小时分布：24 根柱，两档叠在一起。
+ *
+ * 单档视图只显示那一档；「汇总」把两档叠起来（深色在上、浅色在下），
+ * 这样一根柱子就能回答"这一小时里有多少是自律时间"。
+ */
+@Composable
+private fun HourBars(
+    hourly: IntArray,
+    onHourly: IntArray,
+    offHourly: IntArray,
+    single: Boolean?,
+    picked: Int?,
+    onPick: (Int) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    val max = hourly.maxOrNull()?.coerceAtLeast(1) ?: 1
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().height(96.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            for (h in 0 until 24) {
+                val total = hourly.getOrElse(h) { 0 }
+                val onFrac = onHourly.getOrElse(h) { 0 }.toFloat() / max
+                val offFrac = offHourly.getOrElse(h) { 0 }.toFloat() / max
+                val singleFrac = total.toFloat() / max
+                val sel = picked == h
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable { onPick(h) },
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 0.5.dp),
+                        verticalArrangement = Arrangement.Bottom,
+                    ) {
+                        if (single == null) {
+                            // 汇总：自律时段内（深）叠在时段外（浅）上面
+                            val onH = (onFrac * 96f).dp
+                            val offH = (offFrac * 96f).dp
+                            if (onFrac > 0) {
+                                Box(
+                                    Modifier.fillMaxWidth().height(onH.coerceAtLeast(1.5.dp))
+                                        .background(
+                                            if (sel) cs.primary else cs.primary.copy(alpha = 0.9f),
+                                            RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                                        ),
+                                )
+                            }
+                            if (offFrac > 0) {
+                                Box(
+                                    Modifier.fillMaxWidth().height(offH.coerceAtLeast(1.5.dp))
+                                        .background(
+                                            cs.outline.copy(alpha = if (sel) 0.55f else 0.32f),
+                                            if (onFrac <= 0) RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp)
+                                            else RoundedCornerShape(0.dp),
+                                        ),
+                                )
+                            }
+                        } else {
+                            if (singleFrac > 0) {
+                                Box(
+                                    Modifier.fillMaxWidth()
+                                        .height((singleFrac * 96f).dp.coerceAtLeast(1.5.dp))
+                                        .background(
+                                            if (single) cs.primary else cs.outline.copy(alpha = 0.55f),
+                                            RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    if (sel) {
+                        Box(
+                            Modifier.fillMaxWidth().height(2.dp).background(cs.primary),
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(3.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            listOf(0, 6, 12, 18, 23).forEach {
+                Text("$it", fontSize = 8.5.sp, color = cs.onSurfaceVariant)
+            }
+        }
+    }
+}
+
 /**
  * 明细一行：色点 · 名称 · 时长 · 占比 + 占比条；点开看连续使用段。
  *
@@ -759,7 +1172,7 @@ private fun MonthCalendar(
  */
 @Composable
 private fun DetailRow(
-    slice: Slice,
+    item: StatsMetrics.Item,
     total: Int,
     color: Color,
     expanded: Boolean,
@@ -767,7 +1180,7 @@ private fun DetailRow(
     spans: List<Pair<LocalDate, Span>>,
 ) {
     val cs = MaterialTheme.colorScheme
-    val share = if (total > 0) slice.secs.toFloat() / total else 0f
+    val share = if (total > 0) item.secs.toFloat() / total else 0f
     Column(
         Modifier
             .fillMaxWidth()
@@ -777,20 +1190,42 @@ private fun DetailRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Dot(color)
             Text(
-                slice.label,
+                item.label,
                 fontSize = 12.5.sp,
                 fontWeight = if (expanded) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(fmtDuration(slice.secs), fontSize = 12.sp, color = cs.onSurface)
+            Text(fmtDuration(item.secs), fontSize = 12.sp, color = cs.onSurface)
             Text(
-                "  " + pct(slice.secs, total) + "%",
+                "  " + pct(item.secs, total) + "%",
                 fontSize = 10.5.sp,
                 color = cs.onSurfaceVariant,
             )
         }
+        // 第二行：次数 / 平均 / 首末时刻——三项指标里除时长以外的部分
+        Text(
+            buildString {
+                if (item.sessions > 0) {
+                    append("${item.sessions} 次 · 平均 ")
+                    append(fmtDuration(item.avgSec))
+                    append(" · 最长 ")
+                    append(fmtDuration(item.longestSec))
+                    if (item.firstMin >= 0) {
+                        append(" · ")
+                        append(StatsMath.hhmm(item.firstMin))
+                        append("–")
+                        append(StatsMath.hhmm(item.lastMin))
+                    }
+                } else {
+                    append("没有分段数据（只有小时桶）")
+                }
+            },
+            fontSize = 10.sp,
+            color = cs.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp),
+        )
         Spacer(Modifier.height(4.dp))
         Box(
             Modifier
