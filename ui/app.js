@@ -663,7 +663,6 @@ function viewRules() {
         <div class="sl-item-name">${esc(l.name)}
           ${ruleBadge(l)}
           ${l.hard ? '<span class="badge red">固化</span>' : ''}
-          ${l.brk && l.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${l.brk.workMin}/${l.brk.breakMin}</span>` : ''}
           ${activeNames.has(l.name) ? '<span class="badge green">生效中</span>' : ''}
         </div>
         <div class="sl-item-meta">
@@ -771,7 +770,6 @@ function renderSlotModal() {
         <h3>${esc(r.name || '自律规则')}
           ${ruleBadge(r)}
           ${r.hard ? '<span class="badge red">固化</span>' : ''}
-          ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
           ${r.enabled ? '<span class="badge green">已启用</span>' : '<span class="badge">未启用</span>'}
         </h3>
         <button class="close-x" data-act="close-editor">×</button>
@@ -852,7 +850,6 @@ function renderFullEditor() {
     ['apps', `软件 (${r.apps.length})`],
     ['sites', `网站 (${r.sites.length})`],
     ['exceptions', `网站例外 (${r.exceptions.length})`],
-    ['break', '休息'],
     ['lock', '固化'],
   ];
 
@@ -870,7 +867,6 @@ function renderFullEditor() {
         <h3>${S.editingNew ? '新建自律时段' : esc(r.name)}
           ${ruleBadge(r)}
           ${r.hard ? '<span class="badge red">固化</span>' : ''}
-          ${r.brk && r.brk.kind === 'pomodoro' ? `<span class="badge blue">番茄 ${r.brk.workMin}/${r.brk.breakMin}</span>` : ''}
         </h3>
         <button class="close-x" data-act="close-editor">×</button>
       </div>
@@ -4023,7 +4019,8 @@ function showUpdateModal(info, manual) {
         ${manual ? '' : `<button class="btn" data-act="skip-version" data-v="${esc(info.latest)}">跳过这个版本</button>`}
         <button class="btn" data-act="close-modal">稍后提醒</button>
         <button class="btn btn-primary" data-act="do-update"
-          data-url="${esc(a.url || '')}" data-name="${esc(a.name || 'KingOfFocus-Setup.exe')}">
+          data-url="${esc(a.url || '')}" data-name="${esc(a.name || 'KingOfFocus-Setup.exe')}"
+          data-size="${Number(a.size) || 0}">
           下载并安装
         </button>
       </div>
@@ -5454,7 +5451,6 @@ const Act = window.Act = {
   async toggleRule(id) {
     const l = S.data.config.rules.find((x) => x.id === id);
     if (!l) return;
-    if (l.lock && l.lock.kind !== 'none' && l.enabled) { toast('这条自律规则已锁定，不能直接关闭', 'err'); render(); return; }
     // 时段进行中（含休息段）：自律规则开关整体锁死，开、关都不许动
     if (settingsFrozen()) { guardDiscipline('切换自律规则开关'); render(); return; }
     l.enabled = !l.enabled;
@@ -5465,7 +5461,6 @@ const Act = window.Act = {
   async delRule(id) {
     const l = S.data.config.rules.find((x) => x.id === id);
     if (!l) return;
-    if (l.lock && l.lock.kind !== 'none') { toast('已锁定的自律规则不能删除', 'err'); return; }
     if (settingsFrozen()) { guardDiscipline('删除自律规则'); return; }
     if (!confirm(`确定删除自律规则「${l.name}」？`)) return;
     S.data.config.rules = S.data.config.rules.filter((x) => x.id !== id);
@@ -5478,14 +5473,6 @@ const Act = window.Act = {
     syncEditorInputs();
     const nameEl = $('#ruleName');
     if (nameEl) r.name = nameEl.value.trim() || '未命名自律规则';
-    if (S.editorTab === 'lock') {
-      if (r.lock.kind === 'timer') {
-        const m = +(($('#lockMins') || {}).value || 60);
-        r.lock.until = Math.floor(Date.now() / 1000) + m * 60;
-      }
-      if (r.lock.kind === 'password') r.lock.password = ($('#lockPwd') || {}).value || '';
-      if (r.lock.kind === 'text') r.lock.chars = +(($('#lockChars') || {}).value || 20);
-    }
     const rules = S.data.config.rules;
     const i = rules.findIndex((x) => x.id === r.id);
     if (i >= 0) rules[i] = r; else rules.push(r);
@@ -7723,11 +7710,13 @@ const Act = window.Act = {
     await pull(); render();
     toast('已取消跳过');
   },
-  async doUpdate(url, name) {
+  async doUpdate(url, name, size) {
     if (!url) { toast('这个版本没有可下载的安装包', 'err'); return; }
     try {
       setProgress(2, '开始下载…');
-      const path = await invoke('update_download', { url, name });
+      // size 来自 Release 资产清单：服务器不回 Content-Length（chunked）时，
+      // 这是唯一能判断"下载完整"的依据。
+      const path = await invoke('update_download', { url, name, size: size || 0 });
       setProgress(100, '下载完成，正在退出并安装…');
       await new Promise((r) => setTimeout(r, 900));
       await invoke('update_apply', { installer: path });
@@ -8197,7 +8186,6 @@ document.addEventListener('click', async (e) => {
     renderEditor();
     return;
   }
-  if (act === 'lock-kind') { S.editing.lock.kind = el.dataset.k; renderEditor(); return; }
   if (act === 'pick-item') {
     const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
     if (!w) return;
@@ -8370,7 +8358,10 @@ document.addEventListener('click', async (e) => {
   if (act === 'update-enabled') { await Act.updateEnabled(); return; }
   if (act === 'skip-version') { await Act.skipVersion(el.dataset.v); return; }
   if (act === 'clear-skip') { await Act.clearSkip(); return; }
-  if (act === 'do-update') { await Act.doUpdate(el.dataset.url, el.dataset.name); return; }
+  if (act === 'do-update') {
+    await Act.doUpdate(el.dataset.url, el.dataset.name, Number(el.dataset.size) || 0);
+    return;
+  }
 });
 
 /* 自律时段：7 列 × 24 小时柱状图，二维矩形拖选

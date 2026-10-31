@@ -301,7 +301,7 @@ fn safe_name(name: &str) -> String {
 }
 
 /// 下载安装包，过程中通过 update-progress 事件回报进度
-pub fn download(app: &AppHandle, url: &str, name: &str) -> Result<String, String> {
+pub fn download(app: &AppHandle, url: &str, name: &str, expected: u64) -> Result<String, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("下载地址不合法".into());
     }
@@ -351,6 +351,17 @@ pub fn download(app: &AppHandle, url: &str, name: &str) -> Result<String, String
             "下载不完整（{} / {} KB），请重试",
             done / 1024,
             total / 1024
+        ));
+    }
+    // 服务器不回 Content-Length（chunked）时 total 是 0，上面那条检查整段被跳过 ——
+    // 截断的安装包照样能通过 MZ 校验（PE 头就在开头）。所以再用 Release 资产清单里的
+    // 大小核对一次：这是唯一与"服务器怎么说"无关的权威值。
+    if expected > 0 && done != expected {
+        let _ = fs::remove_file(&file);
+        return Err(format!(
+            "下载的文件大小不符（{} / {} KB），请重试",
+            done / 1024,
+            expected / 1024
         ));
     }
     if done < 100 * 1024 {
@@ -410,9 +421,17 @@ pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
         format!("start \"\" /wait \"{}\" /S\r\n", p.display())
     };
     script.push_str(&silent);
-    script.push_str("timeout /t 2 /nobreak >nul\r\n");
-    script.push_str(&format!("del /f /q \"{}\" >nul 2>&1\r\n", p.display()));
-    script.push_str(&format!("start \"\" \"{}\"\r\n", exe.display()));
+    // 安装失败必须能被发现：以前不管 ERRORLEVEL，删包、起旧版本、界面显示"更新完成"，
+    // 用户看到版本号没变却没有任何提示。这里写一个 marker，下次启动读出来告诉他。
+    let marker = crate::cfg::data_dir().join("update-failed.txt");
+    script.push_str("if errorlevel 1 (\r\n");
+    script.push_str(&format!("  > \"{}\" echo 1\r\n", marker.display()));
+    script.push_str(&format!("  del /f /q \"{}\" >nul 2>&1\r\n", p.display()));
+    script.push_str(&format!("  start \"\" \"{}\"\r\n", exe.display()));
+    script.push_str(") else (\r\n");
+    script.push_str(&format!("  del /f /q \"{}\" >nul 2>&1\r\n", p.display()));
+    script.push_str(&format!("  start \"\" \"{}\"\r\n", exe.display()));
+    script.push_str(")\r\n");
     script.push_str("del /f /q \"%~f0\" >nul 2>&1\r\n");
 
     let script_path = dir.join("apply-update.cmd");
@@ -438,6 +457,17 @@ pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
 }
 
 /// 清理本次会话之外的残留安装包
+/// 上次安装是否失败（marker 由安装脚本在 ERRORLEVEL 非 0 时写下）
+pub fn take_update_failed() -> bool {
+    let p = crate::cfg::data_dir().join("update-failed.txt");
+    if p.exists() {
+        let _ = fs::remove_file(&p);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn cleanup() {
     let dir = update_dir();
     if let Ok(rd) = fs::read_dir(&dir) {

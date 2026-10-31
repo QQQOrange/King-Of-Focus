@@ -1732,9 +1732,15 @@ pub fn update_save(
 }
 
 #[tauri::command]
-pub async fn update_download(app: AppHandle, url: String, name: String) -> Result<String, String> {
+pub async fn update_download(
+    app: AppHandle,
+    url: String,
+    name: String,
+    size: Option<u64>,
+) -> Result<String, String> {
     // 下载是阻塞 IO，放阻塞线程池，别占着异步运行时
-    tauri::async_runtime::spawn_blocking(move || crate::update::download(&app, &url, &name))
+    let expected = size.unwrap_or(0);
+    tauri::async_runtime::spawn_blocking(move || crate::update::download(&app, &url, &name, expected))
         .await
         .map_err(|_| "下载线程异常退出".to_string())?
 }

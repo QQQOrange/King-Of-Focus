@@ -211,6 +211,10 @@ fn main() {
     if let Some(e) = autostart_err {
         shared.say(format!("开机自启设置失败：{e}"));
     }
+    // 上次更新装了但没成功（UAC 被拒 / 安装包被拦）：必须说清楚，否则用户以为已是最新
+    if update::take_update_failed() {
+        shared.say("上次更新没有安装成功（可能取消了 UAC 授权或安装包被拦截），当前仍是旧版本，可以重试");
+    }
     let shared_exit = shared.clone();
 
     // 把配置里的遮罩参数灌进运行态
@@ -430,6 +434,13 @@ fn main() {
             cmds::set_always_on_top,
             cmds::test_mode_enter,
             cmds::test_mode_exit,
+            // 下面几条命令是"当前界面没有入口"的（审查报告里点过名）。保留是因为
+            // 它们各自有明确用途，且都有更强的替代入口 —— 不是忘了接：
+            //   · test_mode_status：与 test_mode_enter/exit 成对，供排查用
+            //   · hide_window / show_main：托盘单击已经覆盖，留给未来的快捷方式
+            //   · stats_flush：退出流程会自动落盘，需手动催一次时用
+            //   · browser_check_path：browser_set_path 会自己校验，留着给外部脚本
+            //   · quit_app：设置页已有更强的「立即强制退出」（不受自律拦截）
             cmds::test_mode_status,
             cmds::browsers_scan,
             cmds::browser_open_ext,
