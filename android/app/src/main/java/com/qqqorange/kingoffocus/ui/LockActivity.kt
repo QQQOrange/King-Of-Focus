@@ -1,11 +1,16 @@
 package com.qqqorange.kingoffocus.ui
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,6 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
@@ -70,6 +79,16 @@ import java.time.LocalDateTime
  */
 class LockActivity : ComponentActivity() {
 
+    /** 轻档提示页剩余秒数（Compose 直接读它，改了就会重组） */
+    private val pageLeft = mutableIntStateOf(PageTimer.SECONDS)
+    private var pageRemainMs = PageTimer.SECONDS * 1000L
+    private var pageResumeAt = 0L
+    private var pageActive = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val pageTicker = object : Runnable {
+        override fun run() = tickPage()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 锁屏之上也要显示：否则熄屏再亮就是系统锁屏，遮罩被藏到后面
@@ -78,32 +97,98 @@ class LockActivity : ComponentActivity() {
             setTurnScreenOn(true)
         }
         val kind = intent?.getStringExtra(EXTRA_KIND) ?: KIND_FOCUS
-        // 返回键无效：按一下就能退出的话，这个遮罩没有任何意义。
-        // 但「锁机结束」那一页只是报信，拦返回键就成了"被一句结束语困住"，所以不拦。
-        if (kind != KIND_END) {
+        val title = intent?.getStringExtra(EXTRA_END_TITLE).orEmpty()
+        val body = intent?.getStringExtra(EXTRA_END_BODY).orEmpty()
+        val rule = intent?.getStringExtra(EXTRA_RULE).orEmpty()
+
+        // 返回键：
+        //  · 锁机/睡眠遮罩 → 彻底无效（按一下就能退出，遮罩没有意义）；
+        //  · 轻档提示页 → **直接回桌面**：这一页本来就不拦人，退回到底下的黑名单应用才更糟；
+        //  · 结束页 → 不拦（那只是报信，不该被一句结束语困住）。
+        if (kind == KIND_FOCUS || kind == KIND_SLEEP) {
             onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     // 什么都不做
                 }
             })
+        } else if (kind == KIND_PAGE) {
+            onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() = goHomeAndFinish()
+            })
         }
-        val title = intent?.getStringExtra(EXTRA_END_TITLE).orEmpty()
-        val body = intent?.getStringExtra(EXTRA_END_BODY).orEmpty()
+
+        pageActive = kind == KIND_PAGE
         setContent {
             KofTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF12151B)) {
-                    if (kind == KIND_END) {
-                        LockEndScreen(
+                    when {
+                        kind == KIND_END -> LockEndScreen(
                             title = title.ifBlank { "锁机结束" },
                             body = body.ifBlank { "这一段时间走完了。" },
                             onDone = { finish() },
                         )
-                    } else {
-                        LockScreen(kind = kind, onDone = { finish() })
+                        kind == KIND_PAGE -> PageScreen(
+                            left = pageLeft.intValue,
+                            rule = rule,
+                            onHome = { goHomeAndFinish() },
+                        )
+                        else -> LockScreen(kind = kind, onDone = { finish() })
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 轻档提示页的计时。
+     *
+     * 规则：**只在前台计时**。切后台（按 Home、来通知、下拉状态栏）就停下，
+     * 回到前台继续用剩下的时间——否则"切个后台再回来，倒计时已经跑完了"，
+     * 用户根本没看到那 5 秒，等于没提醒。
+     */
+    private fun tickPage() {
+        if (!pageActive) return
+        val elapsed = SystemClock.elapsedRealtime() - pageResumeAt
+        val left = pageRemainMs - elapsed
+        pageLeft.intValue = PageTimer.leftSeconds(left)
+        if (left <= 0) {
+            goHomeAndFinish()
+        } else {
+            handler.postDelayed(pageTicker, 120)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!pageActive) return
+        pageResumeAt = SystemClock.elapsedRealtime()
+        handler.removeCallbacks(pageTicker)
+        handler.post(pageTicker)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (!pageActive) return
+        // 结算已经用掉的时间，剩下的留给下一次回到前台
+        pageRemainMs = (pageRemainMs - (SystemClock.elapsedRealtime() - pageResumeAt)).coerceAtLeast(0)
+        handler.removeCallbacks(pageTicker)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    /** 回桌面并退出：轻档提示页的所有出口都走这里（超时、按返回、点按钮） */
+    private fun goHomeAndFinish() {
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_HOME)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+        finish()
     }
 
     companion object {
@@ -112,6 +197,13 @@ class LockActivity : ComponentActivity() {
         const val KIND_SLEEP = "sleep"
         /** 锁机结束的提示页：只报个信，不拦任何东西，点一下就退 */
         const val KIND_END = "end"
+        /**
+         * 轻档提示页：配置里关掉「展示锁机页面」时用它。
+         * 不是遮罩——不整机锁，只在点开黑名单应用时盖 5 秒，然后自己回桌面。
+         */
+        const val KIND_PAGE = "page"
+        /** 命中的规则名（只用于提示页上那句"命中规则「…」"） */
+        const val EXTRA_RULE = "kof.lock.rule"
         const val EXTRA_END_TITLE = "kof.lock.end.title"
         const val EXTRA_END_BODY = "kof.lock.end.body"
     }
@@ -190,10 +282,21 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
     val price = LockEngine.pausePrice(cfg)
     val stopCost = LockEngine.stopPrice(cfg)
     val left = fmtLeft(LockEngine.segmentLeftSeconds(cfg, now))
-    // 允许名单的唯一来源：白名单规则（锁机这边不再有自己的副本）
+    // 允许名单的唯一来源：白名单规则（锁机这边不再有自己的副本）。
+    // 展示时补上"显示名 + 能不能启动"：白名单里可能有卸载了 / 没有界面的包，
+    // 那也要如实列出来（只读地说明"不能启动"），而不是悄悄从列表里消失。
     val allowPkgs = GuardEngine.allowedPackages(cfg)
-    val allowed = remember(allowPkgs) {
-        loadLaunchableApps(ctx).filter { it.pkg in allowPkgs }
+    val allowItems = remember(allowPkgs) {
+        val launchable = loadLaunchableApps(ctx).associateBy { it.pkg }
+        allowPkgs
+            .map { pkg ->
+                WhitelistItem(
+                    pkg = pkg,
+                    label = launchable[pkg]?.label ?: appLabelOf(ctx, pkg),
+                    canLaunch = launchable.containsKey(pkg),
+                )
+            }
+            .sortedWith(compareBy({ it.label.lowercase() }, { it.pkg }))
     }
 
     Column(
@@ -351,22 +454,26 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         ) { Text("停止锁机 · $stopCost 分") }
         }
 
-        // —— 白名单：允许的应用，点了直接打开（睡眠时段不给） ——
-        if (!sleep && allowed.isNotEmpty()) {
-            Spacer(Modifier.height(18.dp))
-            OutlinedButton(
-                onClick = { showAllow = !showAllow },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF9AA4B2)),
-            ) {
-                Text(if (showAllow) "收起允许的应用" else "允许的应用（${allowed.size}）")
-            }
-            if (showAllow) {
-                Spacer(Modifier.height(10.dp))
-                AllowGrid(
-                    apps = allowed,
-                    onPick = { pkg ->
-                        val launch = ctx.packageManager.getLaunchIntentForPackage(pkg)
+        // —— 白名单应用入口 ——
+        //
+        // 只读：这一页回答"我现在能用什么"，不是"我要改什么"。
+        // 锁机页如果能改名单，它自己就成了绕过的钥匙（加一个游戏进去就解锁了）。
+        // 增删一律在「自律规则」里，且那里在自律时段内是只读的（见 RulesScreen）。
+        Spacer(Modifier.height(16.dp))
+        WhitelistEntry(
+            count = allowItems.size,
+            onClick = { showAllow = true },
+        )
+        if (showAllow) {
+            WhitelistDialog(
+                items = allowItems,
+                onPick = { item ->
+                    showAllow = false
+                    if (!item.canLaunch) {
+                        toast(ctx, "「${item.label}」没有可打开的界面")
+                    } else {
+                        // 先把列表收掉再跳：否则从应用返回时它还开着，像"没关上"
+                        val launch = ctx.packageManager.getLaunchIntentForPackage(item.pkg)
                         if (launch == null) {
                             toast(ctx, "这个应用打不开")
                         } else {
@@ -375,9 +482,10 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                             runCatching { ctx.startActivity(launch) }
                                 .onFailure { toast(ctx, "这个应用打不开") }
                         }
-                    },
-                )
-            }
+                    }
+                },
+                onDismiss = { showAllow = false },
+            )
         }
 
         Spacer(Modifier.height(20.dp))
@@ -422,58 +530,260 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
     }
 }
 
-/** 白名单应用的小格子：点一下直接跳过去 */
+/** 白名单列表里的一项（只读展示用） */
+private data class WhitelistItem(val pkg: String, val label: String, val canLaunch: Boolean)
+
+/**
+ * 白名单应用入口。
+ *
+ * 样式：整宽描边按钮，左侧 2×2 圆点图标（应用格子的隐喻），右侧计数徽标。
+ * 状态：
+ *  · 可用：描边与文字用次级色，徽标用主色数字；
+ *  · 禁用（白名单为空）：整体降透明度、`enabled=false`，右侧写「暂无」，
+ *    点不动——点了弹一个空列表比点不动更让人困惑。
+ */
 @Composable
-private fun AllowGrid(apps: List<AppInfo>, onPick: (String) -> Unit) {
-    if (apps.isEmpty()) {
-        Text(
-            "白名单里的应用都没装上（或都不可启动）",
-            fontSize = 11.sp,
-            color = Color(0xFF9AA4B2),
-        )
-        return
-    }
-    Box(Modifier.fillMaxWidth().height(220.dp)) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(apps, key = { it.pkg }) { a ->
-                Column(
-                    Modifier
-                        .background(Color(0xFF1B2029), RoundedCornerShape(12.dp))
-                        .padding(vertical = 10.dp, horizontal = 6.dp)
-                        .pointerInput(a.pkg) { detectTapGestures(onTap = { onPick(a.pkg) }) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Box(
-                        Modifier
-                            .size(34.dp)
-                            .background(Color(0xFF2A3240), CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            a.label.take(1),
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFCFE3FF),
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        a.label,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        color = Color(0xFFE6EAF2),
+private fun WhitelistEntry(count: Int, onClick: () -> Unit) {
+    val enabled = count > 0
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth().height(46.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = Color(0xFFCFE3FF),
+            disabledContentColor = Color(0xFF5A6472),
+        ),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        // 2×2 圆点：不引 material-icons（那会给包体加一个图标库，只为一个按钮不值）
+        Canvas(Modifier.size(16.dp)) {
+            val r = size.minDimension * 0.19f
+            val gap = size.minDimension * 0.16f
+            val step = r * 2 + gap
+            val x0 = (size.width - step) / 2
+            val y0 = (size.height - step) / 2
+            for (i in 0..1) {
+                for (j in 0..1) {
+                    drawCircle(
+                        color = if (enabled) Color(0xFFCFE3FF) else Color(0xFF5A6472),
+                        radius = r,
+                        center = androidx.compose.ui.geometry.Offset(
+                            x0 + r + i * step,
+                            y0 + r + j * step,
+                        ),
                     )
                 }
             }
         }
+        Spacer(Modifier.width(10.dp))
+        Text("白名单应用", fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.weight(1f))
+        Text(
+            if (enabled) "$count 个 ›" else "暂无",
+            fontSize = 12.sp,
+            color = if (enabled) Color(0xFF7FB4FF) else Color(0xFF5A6472),
+        )
     }
 }
 
-/** 倒计时格式：不足一小时显示 mm:ss，超过就 h:mm:ss */
+/**
+ * 白名单列表（只读弹窗）。
+ *
+ * 数据来源：`GuardEngine.allowedPackages(cfg)`——启用中、且被当前时段方案绑定的
+ * 白名单规则并集。排序：显示名（忽略大小写）升序，同名再按包名，保证每次打开顺序一样。
+ * 空状态：入口按钮本身就是禁用的，正常进不来；这里仍然写清楚"去哪儿加"。
+ */
+@Composable
+private fun WhitelistDialog(
+    items: List<WhitelistItem>,
+    onPick: (WhitelistItem) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp)
+                .background(Color(0xFF151A22), RoundedCornerShape(18.dp))
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "白名单应用",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFF2F4F8),
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        if (items.isEmpty()) "还没有任何应用在白名单里"
+                        else "共 ${items.size} 个 · 点一个直接打开",
+                        fontSize = 11.sp,
+                        color = Color(0xFF9AA4B2),
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "只读：要增删白名单应用，请到「自律规则」里改；自律时段内那边也是只读的。",
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                color = Color(0xFF7C8798),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            if (items.isEmpty()) {
+                // 正常路径进不来（入口是禁用的），但万一名单在这一页打开期间被清空，
+                // 也要说清楚"去哪儿加"，而不是给一片空白
+                Column(
+                    Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("白名单是空的", fontSize = 13.sp, color = Color(0xFFE6EAF2))
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "去「自律规则」建一条白名单规则，把锁机时允许用的应用加进去。",
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        textAlign = TextAlign.Center,
+                        color = Color(0xFF9AA4B2),
+                    )
+                }
+            } else {
+                Box(Modifier.fillMaxWidth().heightIn(max = 380.dp)) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(items, key = { it.pkg }) { a ->
+                            Column(
+                                Modifier
+                                    .background(
+                                        if (a.canLaunch) Color(0xFF1B2029) else Color(0xFF171B22),
+                                        RoundedCornerShape(12.dp),
+                                    )
+                                    .padding(vertical = 10.dp, horizontal = 6.dp)
+                                    .pointerInput(a.pkg, a.canLaunch) {
+                                        detectTapGestures(onTap = { onPick(a) })
+                                    },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(34.dp)
+                                        .background(Color(0xFF2A3240), CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        a.label.take(1),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (a.canLaunch) Color(0xFFCFE3FF) else Color(0xFF7C8798),
+                                    )
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    a.label,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    color = if (a.canLaunch) Color(0xFFE6EAF2) else Color(0xFF8A94A4),
+                                )
+                                if (!a.canLaunch) {
+                                    Text(
+                                        "不可启动",
+                                        fontSize = 9.sp,
+                                        color = Color(0xFF7C8798),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
+            ) { Text("关闭") }
+        }
+    }
+}
+
+/** 包名 → 显示名；查不到就退回包名，别让列表里出现空字符串 */
+private fun appLabelOf(ctx: Context, pkg: String): String = runCatching {
+    val pm = ctx.packageManager
+    pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+}.getOrDefault(pkg)
+
+/**
+ * 轻档提示页的计时口径（纯函数，可单测）。
+ *
+ * 为什么抽出来：5 秒这件事写在 UI 里就只能靠手点着表验证；抽出来之后
+ * "4999ms 显示几秒""到 0 算不算结束"这些都是断言。
+ */
+internal object PageTimer {
+    /** 停留秒数：需求写死 5 秒，不做成可配（可配就会有人设成 1 秒，等于没提醒） */
+    const val SECONDS = 5
+
+    /** 剩余毫秒 → 显示的秒数（向上取整：还剩 1ms 也显示 1 秒，不会突然跳到 0） */
+    fun leftSeconds(remainingMs: Long): Int =
+        ((remainingMs.coerceAtLeast(0) + 999) / 1000).toInt()
+}
+
+/** 轻档提示页：不拦人，只把"这个应用现在不能用"说清楚，5 秒后自己回桌面 */
+@Composable
+private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 28.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("🔒", fontSize = 34.sp)
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "这个应用现在不能用",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color(0xFFF2F4F8),
+            textAlign = TextAlign.Center,
+        )
+        if (rule.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("命中规则「$rule」", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                "$left",
+                fontSize = 44.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFFF7C948),
+            )
+            Text(" 秒后返回桌面", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "整机没有被锁：桌面和其它应用都能正常用。",
+            fontSize = 11.sp,
+            color = Color(0xFF7C8798),
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(22.dp))
+        OutlinedButton(
+            onClick = onHome,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
+        ) { Text("立即返回桌面") }
+    }
+}
+
+/** 倒计时格式：不足一小时显示 mm:ss，超过就 h:mm:ss *//** 倒计时格式：不足一小时显示 mm:ss，超过就 h:mm:ss */
 private fun fmtLeft(seconds: Long): String {
     val s = seconds.coerceAtLeast(0)
     val m = s / 60

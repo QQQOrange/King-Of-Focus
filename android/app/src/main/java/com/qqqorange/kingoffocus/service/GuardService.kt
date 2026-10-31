@@ -96,6 +96,10 @@ class GuardService : Service() {
     /** 上一拍是否在锁机 / 睡眠中：用来抓"进入"与"结束"这两个瞬间 */
     private var prevLocked = false
     private var prevSleeping = false
+    /** 轻档拦截：上一次弹过哪个应用、什么时候（3 秒内不重复弹） */
+    private var lastPagePkg: String? = null
+    private var lastPageAt = 0L
+
     /** 已经为哪一次锁机发过"提前提醒"（键 = 类型 + 开始时刻），同一段只提醒一次 */
     private var preSentKey = ""
     private var preCalcAt = 0L
@@ -196,12 +200,18 @@ class GuardService : Service() {
             return
         }
 
-        // 锁机其次：开着锁机时，"拦截某个应用"被更彻底的"整台手机先别用"取代
+        // 锁机其次：开着锁机时，"拦截某个应用"被更彻底的"整台手机先别用"取代。
+        // 但用户可以把「展示锁机页面」关掉——那样退成"只拦黑名单应用"的轻档：
+        // 桌面随便用，点开黑名单应用才会跳一页 5 秒的提示。
         if (locked) {
             lastLeft = -1
             notifiedPhase = false
             prevInBreak = null
-            enforceMask(cfg, now, LockActivity.KIND_FOCUS)
+            if (cfg.lock.showPage) {
+                enforceMask(cfg, now, LockActivity.KIND_FOCUS)
+            } else {
+                enforcePage(cfg, now)
+            }
             hardenIfStrict(cfg, now)
             return
         }
@@ -686,22 +696,33 @@ class GuardService : Service() {
      */
     private fun enforceMask(cfg: Config, now: LocalDateTime, kind: String) {
         val caps = caps()
-        // 没有任何一条路能把遮罩盖上来时，必须说出来——
-        // 用户以为锁机生效了，其实手机随便用，那比没有这个功能更糟。
+        // 没有任何一条路能把遮罩盖上来时：
+        //   · 必须说清楚为什么（否则用户以为锁机生效了，其实手机随便用）；
+        //   · 但**不能什么都不做**——以前这里直接 return，于是"锁机开着、应用随便开"，
+        //     这正是"白名单模式下仍能进入未加白名单应用"的一个真实成因。
+        //     现在降级成"回桌面 + 通知"：盖不住屏幕，但至少把人从那个应用里拽出来。
         if (!caps.canShowMask()) {
             val seg = LockEngine.segmentKey(cfg, now)
             if (warnedSeg != seg) {
                 warnedSeg = seg
                 alert(
                     "锁机没生效：缺「悬浮窗」或 Shizuku",
-                    "系统不允许后台拉起遮罩页。请授予「悬浮窗」，或安装 Shizuku 并授权。",
+                    "系统不允许后台拉起遮罩页，已改成回桌面 + 通知。请授予「悬浮窗」，或安装 Shizuku 并授权。",
                     openOverlaySettings = true,
                 )
             }
+            goHome()
             return
         }
         val fg = foreground()
-        if (fg.isNullOrEmpty() || fg == packageName) return
+        // 读不到前台：不知道用户在哪个应用里，但锁机是生效的。
+        // 这时**宁可把遮罩盖上**（fail-closed）——盖上之后至少白名单入口还在，
+        // 比"因为看不见所以放行"安全得多。
+        if (fg.isNullOrEmpty()) {
+            showLock(kind)
+            return
+        }
+        if (fg == packageName) return
         // 判定只有一个出口：LockEngine.decision。
         // 睡眠恒为"整机锁"（白名单应用仍可用），锁机按 cfg.lock.scope 走
         // 「整机锁 / 只允许白名单 / 只禁黑名单」三种之一。
@@ -720,6 +741,43 @@ class GuardService : Service() {
         } else {
             showLock(kind)
         }
+    }
+
+    /**
+     * 轻档拦截：「展示锁机页面」关掉时用它。
+     *
+     * 与 [enforceMask] 的区别是**不整机锁**：桌面、通知栏、别的应用都能正常用，
+     * 只有点开黑名单里的应用，才盖一页「这个应用现在不能用」，5 秒后自己回桌面。
+     *
+     * 拉不起界面时（没有悬浮窗 / Shizuku）退回"回桌面 + 通知"——
+     * 这是同一件事的弱化版，比什么都不做强，也比假装拦住了诚实。
+     */
+    private fun enforcePage(cfg: Config, now: LocalDateTime) {
+        val fg = foreground() ?: return
+        if (!LockEngine.pageBlocked(cfg, fg, packageName, imePkgs)) return
+        val nowMs = SystemClock.elapsedRealtime()
+        // 3 秒内同一个应用只弹一次：否则一开就"弹→回来→又被弹"，像坏了
+        if (fg == lastPagePkg && nowMs - lastPageAt < PAGE_GAP_MS) return
+        lastPagePkg = fg
+        lastPageAt = nowMs
+
+        val rule = GuardEngine.lockRules(cfg)
+            .firstOrNull { it.mode != "whitelist" && fg in it.packages }
+            ?.name.orEmpty()
+        if (!caps().canShowMask()) {
+            goHome()
+            val seg = LockEngine.segmentKey(cfg, now)
+            if (warnedSeg != "page|$seg") {
+                warnedSeg = "page|$seg"
+                alert(
+                    "锁机页弹不出来：缺「悬浮窗」或 Shizuku",
+                    "系统不允许后台拉起界面，已改成回桌面 + 通知。请在总览页授予悬浮窗，或装 Shizuku 并授权。",
+                    openOverlaySettings = true,
+                )
+            }
+            return
+        }
+        showLock(LockActivity.KIND_PAGE, rule)
     }
 
     /**
@@ -749,20 +807,36 @@ class GuardService : Service() {
      * "后台启动 Activity"限制，连悬浮窗权限都不需要。
      * 没有就只能直接 startActivity——这条路要求悬浮窗权限，否则会被 BAL 拦掉。
      */
-    private fun showLock(kind: String) {
+    private fun showLock(kind: String, rule: String = "") {
+        // 800ms 内的重复请求**排到窗口之后**，而不是丢掉。
+        // 丢掉的那个很可能正是 goHome() 之后 260ms 补的那一发 ——
+        // 结果是"回了桌面但没盖遮罩"，用户看起来就是"锁机没生效"。
         val nowMs = SystemClock.elapsedRealtime()
-        if (nowMs - lockShownAt < 800) return
-        lockShownAt = nowMs
-        val intent = Intent(this, LockActivity::class.java).putExtra(LockActivity.EXTRA_KIND, kind).addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
-        )
+        val wait = 800 - (nowMs - lockShownAt)
+        if (wait > 0) {
+            handler.postDelayed({ showLockNow(kind, rule) }, wait + 20)
+            return
+        }
+        showLockNow(kind, rule)
+    }
+
+    private fun showLockNow(kind: String, rule: String) {
+        lockShownAt = SystemClock.elapsedRealtime()
+        val intent = Intent(this, LockActivity::class.java)
+            .putExtra(LockActivity.EXTRA_KIND, kind)
+            .putExtra(LockActivity.EXTRA_RULE, rule)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+            )
         if (ShizukuBridge.ready()) {
             val comp = "$packageName/${LockActivity::class.java.name}"
             bg.execute {
                 // 失败不能闷着：退回到直接 startActivity（有悬浮窗时它是通的）
-                if (!ShizukuBridge.startActivity(comp, "--es ${LockActivity.EXTRA_KIND} $kind")) {
+                val args = "--es ${LockActivity.EXTRA_KIND} $kind" +
+                    if (rule.isEmpty()) "" else " --es ${LockActivity.EXTRA_RULE} $rule"
+                if (!ShizukuBridge.startActivity(comp, args)) {
                     handler.post { runCatching { startActivity(intent) } }
                 }
             }
@@ -868,9 +942,11 @@ class GuardService : Service() {
             locked -> LockActivity.KIND_FOCUS
             else -> ""
         }
+        // 轻档（不展示整机锁机页）时点通知回主界面：这时候本来就没锁整机，
+        // 把人带到全屏遮罩反而比他自己设置的更狠
         val open = PendingIntent.getActivity(
             this, 0,
-            if (locked || sleeping) {
+            if (sleeping || (locked && Store.current.lock.showPage)) {
                 Intent(this, LockActivity::class.java).putExtra(LockActivity.EXTRA_KIND, kind)
             } else {
                 Intent(this, MainActivity::class.java)
@@ -881,7 +957,12 @@ class GuardService : Service() {
         val text = when {
             sleeping -> "睡眠时段 · 还有 " +
                 ScheduleEngine.fmtLeft(SleepEngine.active(Store.current, now)?.leftSeconds ?: 0)
-            locked -> "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
+            locked -> if (Store.current.lock.showPage) {
+                "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
+            } else {
+                // 轻档如实说：整机没锁，只是黑名单应用会被弹回去
+                "锁机中 · 仅拦黑名单应用"
+            }
             // 自律关着、只在记录时长：如实说，别让常驻通知看起来像"自律在跑"
             st == null && !Store.current.enabled -> "自律已关闭 · 正在记录使用时长"
             st == null -> "当前不在自律时段"
@@ -955,6 +1036,8 @@ class GuardService : Service() {
         /** 锁机提醒两个 id：提醒是"事件"，同一类只留最新一条 */
         private const val LOCK_PRE_ID = 4104
         private const val LOCK_END_ID = 4105
+        /** 同一个应用两次轻档拦截的最小间隔 */
+        private const val PAGE_GAP_MS = 3_000L
         /** 完成通知与汇总通知的固定 id：同一类只留最新一条，不刷屏 */
         private const val DONE_ID = 4102
         private const val DAILY_ID = 4103

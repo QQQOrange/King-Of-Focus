@@ -112,16 +112,19 @@ object ScheduleEngine {
     }
 
     /**
-     * 现在能不能改时段 —— **与桌面端 `settingsFrozen()` 同义**。
+     * 现在能不能改**时段与自律规则**——**与桌面端 `settingsFrozen()` 同义**。
      *
      * 为什么要有：自律工具最大的漏洞是"正在专注时顺手把时段改掉"。
-     * 一旦允许，锁机和拦截都形同建议。所以专注段生效期间时段页是只读的。
+     * 一旦允许，锁机和拦截都形同建议。
+     *
+     * **判定是"在不在自律时段里"，不是"是不是专注阶段"**：
+     * 番茄休息也是这套排班的一部分，允许在休息时改，等于允许"趁休息把后面全改了"。
+     * 所以休息段同样冻结（这条与"休息时不拦截应用"是两件事，别混）。
      *
      * 三种情况会解除冻结，因为它们都是用户**明确付过代价**的：
      *   · 积分解锁窗口内（`unlockUntil`）；
      *   · 锁机暂停期间（`lockPausedUntil`）；
      *   · 已经"停止本段"（`lockStoppedSeg`）——本段都停了，没必要再挡。
-     * 休息段也不冻结：那本来就是自由时间。
      */
     fun frozen(cfg: Config, now: LocalDateTime): Boolean {
         if (!cfg.enabled) return false
@@ -129,7 +132,8 @@ object ScheduleEngine {
         if (ts < cfg.unlockUntil) return false
         if (ts < cfg.lockPausedUntil) return false
         if (cfg.lockStoppedSeg.isNotEmpty()) return false
-        return stateAt(cfg, now)?.focusing == true
+        // 在时段内就冻结——**含番茄休息**（见上面的说明）
+        return stateAt(cfg, now) != null
     }
 
     /** 今天还有哪些小时被选中（用于界面概览） */
