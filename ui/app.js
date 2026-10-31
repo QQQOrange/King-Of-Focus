@@ -7929,12 +7929,14 @@ function renderCloudModal() {
       </div>
       <div class="modal-bd">
         ${list.length ? list.map((f) => `<div class="list-row">
-            <span class="badge gold">${esc(f.name)}</span>
-            <span class="grow muted" style="font-size:10.5px">${esc(f.url || '')}</span>
+            <span class="badge ${f.source === 'android' ? 'blue' : 'gold'}">${f.source === 'android' ? '手机' : '桌面'}</span>
+            <span class="grow" style="font-size:11.5px">${esc(f.name)}${f.auto ? ' <span class="muted">（自动）</span>' : ''}</span>
             <button class="btn btn-sm" data-act="cloud-restore" data-name="${esc(f.name)}">恢复</button>
-          </div>`).join('') : '<div class="empty"><span class="ico">☁</span>云端还没有备份。<br>先点「上传当前配置」。</div>'}
+          </div>`).join('') : '<div class="empty"><span class="ico">☁</span>云端还没有备份。<br>先点「上传当前配置」，或者在手机端「设置 → 云同步」里上传。</div>'}
         <div class="hint" style="margin-top:14px">
-          只保留最近 ${10} 份、且 7 天内的备份；超出范围的会在上传时自动清理。
+          标「手机」的是手机端传的跨设备备份：直接点「恢复」就能把手机上排的规则和时段搬过来
+          （两端的备份密码要一样）。本机只保留最近 ${10} 份、7 天内的备份，
+          <b>手机的备份不在这里清理</b>——它由手机自己管理。
         </div>
       </div>
       <div class="modal-ft"><button class="btn" data-act="close-modal">关闭</button></div>

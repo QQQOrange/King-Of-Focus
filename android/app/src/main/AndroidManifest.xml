@@ -34,7 +34,14 @@
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <!--
+        允许明文 HTTP：局域网 NAS / 自建 WebDAV 大量是 http://，
+        而 Android 9+ 默认拒绝（会在同步时抛 "Cleartext HTTP traffic not permitted"）。
+        桌面端没有这条限制，所以默认拒绝会造成"电脑能同步、手机不能"。
+        安全靠界面提示：填 http:// 时明确写出"明文传输，建议用 https"。
+    -->
     <application
+        android:usesCleartextTraffic="true"
         android:name=".KofApp"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

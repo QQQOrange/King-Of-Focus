@@ -565,6 +565,38 @@ fn hrefs(xml: &str) -> Vec<String> {
     out
 }
 
+/// 把 207 响应变成列表项。
+///
+/// 来源（`source` / `fromPhone`）在这里判：
+/// **手机端传的备份都带 `-android` 标记**（Android `CloudSync.TAG_ANDROID`）。
+/// 界面上要能一眼分出"这份是手机排的"还是"这台电脑备份的"——
+/// 否则两份同名同时间的东西摆在一起，用户只能靠猜，猜错就覆盖掉另一端的配置。
+fn entries_from_xml(xml: &str, base: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    for h in hrefs(xml) {
+        let name = h.rsplit('/').next().unwrap_or("").to_string();
+        let name = name.replace("%20", " ");
+        if !name.ends_with(EXT) {
+            continue;
+        }
+        // 手机端「测试连接」会 PUT 一个探针再删；删不掉（账号只能写不能删）时
+        // 会留下一个 `kof-<时间>-probe.kofbak`。它不是备份，别列出来让用户去恢复。
+        if name.contains("-probe") {
+            continue;
+        }
+        let from_phone = name.contains("-android");
+        out.push(json!({
+            "name": name,
+            "href": h,
+            "url": format!("{}{}", base, name),
+            "source": if from_phone { "android" } else { "desktop" },
+            "fromPhone": from_phone,
+            "auto": name.starts_with("kof-auto-"),
+        }));
+    }
+    out
+}
+
 /// 列出云端所有备份（按时间倒序）
 pub fn cloud_list(shared: &Shared) -> Result<Vec<Value>, String> {
     let c = shared.config();
@@ -582,21 +614,44 @@ pub fn cloud_list(shared: &Shared) -> Result<Vec<Value>, String> {
         Ok(r) => r.into_string().map_err(|e| e.to_string())?,
         Err(e) => return Err(net::describe(e)),
     };
-    let mut out = Vec::new();
-    for h in hrefs(&xml) {
-        let name = h.rsplit('/').next().unwrap_or("").to_string();
-        let name = name.replace("%20", " ");
-        if !name.ends_with(EXT) {
-            continue;
-        }
-        out.push(json!({
-            "name": name,
-            "href": h,
-            "url": format!("{}{}", base, name),
-        }));
-    }
+    let mut out = entries_from_xml(&xml, &base);
     out.sort_by(|a, b| b["name"].as_str().unwrap_or("").cmp(a["name"].as_str().unwrap_or("")));
     Ok(out)
+}
+
+/// 云端该删哪些文件。
+///
+/// 三条规则，都是踩过坑之后定的：
+///
+/// 1. **只清理本机来源的备份**。手机端传的（名字带 `-android`）由手机自己管理；
+///    以前按整个列表的序号清理，手机多传两份就把电脑的旧备份挤掉了，
+///    更糟的是两端互相删对方的文件，用户只会看到"另一台的备份丢了"。
+/// 2. 本机来源只保留最近 `KEEP_COUNT` 份。
+/// 3. 超过 `KEEP_DAYS` 天的一律删（`KEEP_COUNT` 之外的老包留着没意义）。
+fn prune_targets(list: &[Value], now: chrono::NaiveDateTime) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut kept = 0usize;
+    for f in list {
+        let n = f["name"].as_str().unwrap_or("");
+        if n.is_empty() {
+            continue;
+        }
+        if f["source"].as_str() == Some("android") || n.contains("-android") {
+            continue;
+        }
+        let old = chrono::NaiveDateTime::parse_from_str(
+            n.trim_start_matches("kof-").trim_end_matches(EXT),
+            "%Y%m%d-%H%M%S",
+        )
+        .map(|d| (now - d).num_days() > KEEP_DAYS)
+        .unwrap_or(false);
+        if kept >= KEEP_COUNT || old {
+            out.push(n.to_string());
+        } else {
+            kept += 1;
+        }
+    }
+    out
 }
 
 /// 备份 → 加密 → 上传 → 按策略清理云端旧包
@@ -609,22 +664,12 @@ pub fn cloud_upload(shared: &Shared) -> Result<String, String> {
     let env = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     net::put_text(&format!("{base}{name}"), auth.as_deref(), &env)?;
 
-    // 云端保留策略
+    // 云端保留策略（规则见 `prune_targets`）
     let mut removed = 0;
     if let Ok(list) = cloud_list(shared) {
-        let now = chrono::Local::now();
-        for (i, f) in list.iter().enumerate() {
-            let n = f["name"].as_str().unwrap_or("");
-            let old = chrono::NaiveDateTime::parse_from_str(
-                n.trim_start_matches("kof-").trim_end_matches(EXT),
-                "%Y%m%d-%H%M%S",
-            )
-            .map(|d| (now.naive_local() - d).num_days() > KEEP_DAYS)
-            .unwrap_or(false);
-            if i >= KEEP_COUNT || old {
-                let _ = net::delete(&format!("{base}{n}"), auth.as_deref());
-                removed += 1;
-            }
+        for n in prune_targets(&list, chrono::Local::now().naive_local()) {
+            let _ = net::delete(&format!("{base}{n}"), auth.as_deref());
+            removed += 1;
         }
     }
     Ok(format!("已上传 {name}（清理旧备份 {removed} 份）"))
@@ -776,6 +821,85 @@ mod tests {
         assert_eq!(unlock(doc, "").unwrap(), doc, "明文要能原样回到解析层");
         let env = seal_portable_with(doc, "pw", 10_000).unwrap();
         assert!(env.starts_with('{') && env.contains("kofEnc"));
+    }
+
+    /// 桌面端要能从 207 响应里分清"手机传的"和"本机备份"。
+    #[test]
+    fn entries_mark_phone_backups() {
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response><d:href>/dav/kof/</d:href></d:response>
+  <d:response><d:href>/dav/kof/kof-20261031-210000.kofbak</d:href></d:response>
+  <d:response><d:href>/dav/kof/kof-20261031-211500-android.kofbak</d:href></d:response>
+  <d:response><d:href>/dav/kof/kof-auto-android.kofbak</d:href></d:response>
+  <d:response><d:href>/dav/kof/kof-20261031-212000-probe.kofbak</d:href></d:response>
+  <d:response><d:href>/dav/kof/readme.txt</d:href></d:response>
+</d:multistatus>"#;
+        let list = entries_from_xml(xml, "https://dav.example/kof/");
+        assert_eq!(list.len(), 3, "目录、txt、探针都不算备份：{:?}", list);
+        let desk = list.iter().find(|v| v["name"] == "kof-20261031-210000.kofbak").unwrap();
+        assert_eq!(desk["source"], "desktop");
+        assert_eq!(desk["fromPhone"], false);
+        let phone = list.iter().find(|v| v["name"] == "kof-20261031-211500-android.kofbak").unwrap();
+        assert_eq!(phone["source"], "android", "手机传的要标成 android");
+        assert_eq!(phone["fromPhone"], true);
+        let auto = list.iter().find(|v| v["name"] == "kof-auto-android.kofbak").unwrap();
+        assert_eq!(auto["auto"], true, "自动备份要标出来，别混在普通备份里");
+    }
+
+    fn stamp(s: &str) -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    /// 云端清理不能碰手机传上来的备份。
+    ///
+    /// 这一条不是"洁癖"：以前按整个列表的序号清理，手机多传两份就把电脑的旧备份挤掉；
+    /// 更糟的是两端会互相删对方的文件，用户只会看到"另一台的备份丢了"。
+    #[test]
+    fn prune_never_deletes_phone_backups() {
+        let now = stamp("2026-10-31 21:00:00");
+        let mut list = Vec::new();
+        // 新的在前（cloud_list 就是这么排的）：12 份本机备份
+        for i in (0..12).rev() {
+            list.push(json!({
+                "name": format!("kof-20261030-{:02}0000.kofbak", i),
+                "source": "desktop",
+            }));
+        }
+        // 手机传的：哪怕有 5 份、哪怕都很旧，也不该由电脑来删
+        for i in (0..5).rev() {
+            list.push(json!({
+                "name": format!("kof-202609{:02}-120000-android.kofbak", 10 + i),
+                "source": "android",
+            }));
+        }
+        let targets = prune_targets(&list, now);
+        assert!(
+            targets.iter().all(|n| !n.contains("-android")),
+            "手机的备份不该被本机清理：{:?}",
+            targets
+        );
+        assert_eq!(targets.len(), 2, "本机只留最近 {KEEP_COUNT} 份，多余的才删");
+        assert_eq!(targets[0], "kof-20261030-010000.kofbak", "删的是最旧的两份");
+    }
+
+    /// 超过 7 天的本机备份直接删（它们已经不在"最近 10 份"的意义里了）
+    #[test]
+    fn prune_drops_old_local_backups() {
+        let now = stamp("2026-10-31 21:00:00");
+        let list = vec![
+            json!({"name": "kof-20261030-120000.kofbak", "source": "desktop"}),
+            json!({"name": "kof-20261020-120000.kofbak", "source": "desktop"}),
+        ];
+        assert_eq!(prune_targets(&list, now), vec!["kof-20261020-120000.kofbak"]);
+    }
+
+    /// 没有 `source` 字段的旧响应（老版本桌面端）也要按本机备份处理
+    #[test]
+    fn prune_treats_missing_source_as_local() {
+        let now = stamp("2026-10-31 21:00:00");
+        let list = vec![json!({"name": "kof-20250101-120000.kofbak"})];
+        assert_eq!(prune_targets(&list, now), vec!["kof-20250101-120000.kofbak"]);
     }
 
 }
