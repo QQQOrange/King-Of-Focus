@@ -1,5 +1,6 @@
 package com.qqqorange.kingoffocus.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -8,6 +9,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,17 +28,19 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.core.LockEngine
@@ -44,56 +48,104 @@ import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
 import com.qqqorange.kingoffocus.data.SchedulePlan
+import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Store
 import java.time.LocalDateTime
 import java.util.UUID
+import kotlinx.coroutines.flow.first
 
+/** 星期表头（横轴）；索引 = 周一 .. 周日 */
 private val DAY_NAMES = listOf("一", "二", "三", "四", "五", "六", "日")
 
+/** 左侧时间轴宽度：刚好放得下 "23:00" */
+private val AXIS_W = 42.dp
+
+/** 网格可视区高度：约 9 小时，其余靠滚动 */
+private val GRID_H = 420.dp
+
 /**
- * 自律时段：多套方案 + 拖滑多选。
+ * 自律时段：多套方案 + 十分钟/十五分钟刻度 + 拖滑多选。
  *
- * 拖滑的实现要点：不能给每个格子单独挂点击——那样拖过去只会命中第一个格子。
- * 这里把整块网格当一个画布，用指针坐标反算 (天, 小时)，按下那一刻决定"这次是选还是取消"，
- * 之后划过的格子全部跟随同一个值。松手才写盘（拖动过程中只改草稿），
- * 否则一次长拖会触发几十次磁盘写入。
+ * ## 坐标方向
+ *
+ * **时间是纵轴、星期是横轴**：时间从上往下走，7 天从左往右排。
+ * 和课程表、日历一致——一天有 24 小时，纵向排得下；横向只放 7 列，
+ * 每列都点得准。反过来（7 行 × 24 列）一格只有几毫米宽，根本点不住。
+ *
+ * ## 拖滑为什么不能一格一个点击
+ *
+ * 给每个格子单独挂点击，拖过去只会命中按下那一个。所以整块网格当成一个画布：
+ * 用指针坐标反算 (星期, 格号)，按下那一刻决定"这次是选还是取消"，
+ * 之后划过的格子跟随同一个值。松手才写盘——否则一次长拖会触发几十次磁盘写入。
+ *
+ * ## 滚动与涂抹的冲突
+ *
+ * 竖着拖 = 涂抹（这个页面最常用的动作），所以格子区域吃掉手势；
+ * 想上下滚动就在**左侧时间刻度条**上滑——那里不接涂抹，交给滚动容器。
  */
 @Composable
 fun ScheduleScreen(cfg: Config) {
-    val plans = cfg.plans.ifEmpty { listOf(SchedulePlan(id = "plan-default", name = "默认方案", days = cfg.days)) }
+    val step = Slots.stepOf(cfg.granularity)
+    val rows = Slots.slotsPerDay(step)
+    // 一格多高：一小时固定占 44dp（15 分钟 4 格）或 48dp（10 分钟 6 格），
+    // 两种刻度下"一小时"看着一样长，切换不会让整块高度乱跳
+    val rowH = if (step == 15) 11.dp else 8.dp
+    val hourH = rowH * (60 / step)
+
+    val plans = cfg.plans.ifEmpty {
+        listOf(SchedulePlan(id = "plan-default", name = "默认方案", days = cfg.days))
+    }
     val active = plans.firstOrNull { it.id == cfg.activePlan } ?: plans.first()
 
-    var draft by remember(cfg.days) { mutableStateOf(cfg.days) }
-    var gridSize by remember { mutableStateOf(IntSize.Zero) }
-    var paintTo by remember { mutableStateOf<Boolean?>(null) }
+    // 草稿用稳定的 state 持有：pointerInput 里捕获的是这个对象。
+    // 如果每次 cfg.days 变了就换一个新 state，正在拖的手势会写进旧对象。
+    val draftState = remember { mutableStateOf(cfg.days) }
+    LaunchedEffect(cfg.days) {
+        if (draftState.value != cfg.days) draftState.value = cfg.days
+    }
 
+    val vScroll = rememberScrollState()
     var renameTarget by remember { mutableStateOf<SchedulePlan?>(null) }
     var renameText by remember { mutableStateOf("") }
 
+    val density = LocalDensity.current
+    val rowPx = with(density) { rowH.toPx() }
+    val hourPx = with(density) { hourH.toPx() }
+
     fun commit() {
-        Store.update { it.copy(days = draft, defWork = it.defWork, defBrk = it.defBrk) }
+        val next = draftState.value
+        Store.update { it.copy(days = next) }
     }
 
-    fun applyCell(day: Int, hour: Int, on: Boolean) {
-        val rows = draft.map { it.toMutableList() }.toMutableList()
-        val old = rows[day][hour]
-        rows[day][hour] = if (on) HourPlan(true, cfg.defWork, cfg.defBrk, old.from, old.to) else old.copy(on = false)
-        draft = rows
+    fun planAt(day: Int, hour: Int): HourPlan =
+        draftState.value.getOrNull(day)?.getOrNull(hour) ?: HourPlan()
+
+    /** 这一格现在算不算"已选"（半格也算选着，再点一下才是取消） */
+    fun isOn(day: Int, slot: Int): Boolean {
+        val h = Slots.hourOfSlot(slot, step)
+        val off = Slots.offsetOfSlot(slot, step)
+        return Slots.covers(planAt(day, h), off)
     }
 
-    // 左边那列"一二三…"占掉 18dp，算小时时必须先减掉，否则整块会偏一个多小时
-    val labelPx = with(androidx.compose.ui.platform.LocalDensity.current) { 18.dp.toPx() }
+    fun applySlot(day: Int, slot: Int, on: Boolean) {
+        val cur = draftState.value
+        val dayPlan = cur.getOrNull(day) ?: return
+        val painted = Slots.paintSlot(dayPlan, slot, step, on, cfg.defWork, cfg.defBrk)
+        draftState.value = cur.toMutableList().also { it[day] = painted }
+    }
 
-    fun cellAt(p: Offset): Pair<Int, Int>? {
-        if (gridSize.width <= 0 || gridSize.height <= 0) return null
-        val day = (p.y / (gridSize.height / 7f)).toInt().coerceIn(0, 6)
-        val usable = (gridSize.width - labelPx).coerceAtLeast(1f)
-        val hour = ((p.x - labelPx) / (usable / 24f)).toInt().coerceIn(0, 23)
-        return day to hour
+    // 开局滚到 06:00 附近：凌晨那段绝大多数人是空的，先看有用的部分
+    LaunchedEffect(step) {
+        val target = (6 * hourPx).toInt()
+        // 等第一次布局完成——maxValue 还是 0 时 scrollTo 会被夹回顶部
+        snapshotFlow { vScroll.maxValue }.first { it > 0 }
+        vScroll.scrollTo(target.coerceIn(0, vScroll.maxValue))
     }
 
     val todayIdx = LocalDateTime.now().dayOfWeek.value - 1
-    val selectedToday = draft.getOrNull(todayIdx)?.count { it.on } ?: 0
+    val nowMinute = LocalDateTime.now().let { it.hour * 60 + it.minute }
+    val draft = draftState.value
+    val selectedToday = Slots.dayMinutes(draft.getOrNull(todayIdx).orEmpty())
 
     Column(
         Modifier
@@ -102,7 +154,10 @@ fun ScheduleScreen(cfg: Config) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        PageHeader("自律时段", "按住并拖动可以一次框选多个格子；再划一次就取消")
+        PageHeader(
+            "自律时段",
+            "纵向是时间、横向是星期；在格子上拖动即框选，在左侧刻度条上滑动可滚动",
+        )
 
         // —— 方案 ——
         Row(
@@ -154,7 +209,7 @@ fun ScheduleScreen(cfg: Config) {
                     )
                     Store.update { it.copy(plans = plans + p, activePlan = p.id) }
                 },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
             ) { Text("+ 新建", fontSize = 12.sp) }
         }
 
@@ -180,86 +235,221 @@ fun ScheduleScreen(cfg: Config) {
             ) { Text("删除这套", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
         }
 
-        // —— 网格 ——
+        // —— 刻度 ——
         Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("刻度", fontSize = 14.sp)
+                    Text(
+                        "一格代表多久。只是画得细，已经排好的时段不会因此失效。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(15, 10).forEach { v ->
+                        val on = step == v
+                        Box(
+                            Modifier
+                                .background(
+                                    if (on) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(999.dp),
+                                )
+                                .clickable { if (!on) Store.update { it.copy(granularity = v) } }
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                "$v 分钟",
+                                fontSize = 12.sp,
+                                color = if (on) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // —— 网格 ——
+        val cs = MaterialTheme.colorScheme
+        Panel {
+            // 表头：星期（横轴）
             Row(Modifier.fillMaxWidth()) {
-                Spacer(Modifier.width(18.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    listOf("0", "6", "12", "18", "23").forEach {
-                        Text(it, fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(AXIS_W))
+                for (d in 0 until 7) {
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        Text(
+                            DAY_NAMES[d],
+                            fontSize = 11.sp,
+                            fontWeight = if (d == todayIdx) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (d == todayIdx) cs.primary else cs.onSurfaceVariant,
+                        )
                     }
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(232.dp)
-                    .onSizeChanged { gridSize = it }
-                    .pointerInput(cfg.activePlan, cfg.defWork, cfg.defBrk) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown()
-                            val cell = cellAt(down.position) ?: return@awaitEachGesture
-                            val on = !(draft.getOrNull(cell.first)?.getOrNull(cell.second)?.on ?: false)
-                            paintTo = on
-                            applyCell(cell.first, cell.second, on)
-                            down.consume()
 
-                            var last = cell
-                            while (true) {
-                                val ev = awaitPointerEvent()
-                                val ch = ev.changes.firstOrNull() ?: break
-                                if (!ch.pressed) break
-                                val c = cellAt(ch.position)
-                                if (c != null && c != last) {
-                                    last = c
-                                    applyCell(c.first, c.second, on)
-                                }
-                                ch.consume()
-                            }
-                            paintTo = null
-                            // 松手才落盘：拖动过程中一次都不写
-                            commit()
-                        }
-                    },
-            ) {
-                Column(Modifier.fillMaxSize()) {
-                    for (d in 0 until 7) {
-                        Row(Modifier.weight(1f).fillMaxWidth()) {
-                            Box(Modifier.width(18.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().height(GRID_H)) {
+                Row(Modifier.fillMaxWidth().verticalScroll(vScroll)) {
+                    // 时间轴（纵轴）：自己不吃手势，在这里滑就是滚动
+                    Column(Modifier.width(AXIS_W)) {
+                        for (h in 0 until 24) {
+                            Box(
+                                Modifier.fillMaxWidth().height(hourH),
+                                contentAlignment = Alignment.TopStart,
+                            ) {
                                 Text(
-                                    DAY_NAMES[d],
-                                    fontSize = 9.sp,
-                                    color = if (d == todayIdx) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    "%02d:00".format(h),
+                                    fontSize = 8.5.sp,
+                                    color = cs.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 1.dp, start = 1.dp),
                                 )
                             }
-                            Row(Modifier.weight(1f).fillMaxSize()) {
-                                for (h in 0 until 24) {
-                                    val on = draft.getOrNull(d)?.getOrNull(h)?.on == true
-                                    Box(
-                                        Modifier
-                                            .weight(1f)
-                                            .fillMaxSize()
-                                            .padding(1.dp)
-                                            .background(
-                                                if (on) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.surfaceVariant,
-                                                RoundedCornerShape(2.5.dp),
-                                            ),
-                                    )
+                        }
+                    }
+                    // 格子区：整块一个画布，手势在这里涂抹
+                    Canvas(
+                        Modifier
+                            .weight(1f)
+                            .height(rowH * rows)
+                            .pointerInput(step, cfg.defWork, cfg.defBrk) {
+                                awaitEachGesture {
+                                    val w = size.width.toFloat()
+                                    val hPx = size.height.toFloat()
+                                    if (w <= 0f || hPx <= 0f) return@awaitEachGesture
+
+                                    fun cellAt(p: Offset): Pair<Int, Int> {
+                                        val day = (p.x / (w / 7f)).toInt().coerceIn(0, 6)
+                                        val slot = (p.y / rowPx).toInt().coerceIn(0, rows - 1)
+                                        return day to slot
+                                    }
+
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    val first = cellAt(down.position)
+                                    val on = !isOn(first.first, first.second)
+                                    applySlot(first.first, first.second, on)
+                                    down.consume()
+
+                                    var lastDay = first.first
+                                    var lastSlot = first.second
+                                    while (true) {
+                                        val ev = awaitPointerEvent()
+                                        val ch = ev.changes.firstOrNull() ?: break
+                                        if (!ch.pressed) break
+                                        val (d, s) = cellAt(ch.position)
+                                        if (d != lastDay || s != lastSlot) {
+                                            // 拖得快会跳过中间几格：同一列就把中间补齐，
+                                            // 否则 6:00 拉到 18:00 会变成一串断点
+                                            if (d == lastDay) {
+                                                for (k in minOf(lastSlot, s)..maxOf(lastSlot, s)) {
+                                                    applySlot(d, k, on)
+                                                }
+                                            } else {
+                                                applySlot(d, s, on)
+                                            }
+                                            lastDay = d
+                                            lastSlot = s
+                                        }
+                                        ch.consume()
+                                    }
+                                    // 松手才落盘：拖动过程中一次都不写
+                                    commit()
                                 }
+                            },
+                    ) {
+                        val cellsW = size.width
+                        val colW = cellsW / 7f
+                        val gap = 1.dp.toPx()
+                        val grid = draftState.value
+
+                        // 1) 底轨：每一天一条淡淡的竖带，没有它空白一片看不出格子
+                        for (d in 0 until 7) {
+                            drawRect(
+                                color = if (d == todayIdx) cs.primary.copy(alpha = 0.07f)
+                                else cs.surfaceVariant.copy(alpha = 0.75f),
+                                topLeft = Offset(d * colW + gap, 0f),
+                                size = Size(colW - gap * 2, size.height),
+                            )
+                        }
+
+                        // 2) 已选：一格一格画。半格（旧边界跨在格子中间）画浅一点，
+                        //    而不是四舍五入——那等于偷偷改用户的时段
+                        for (d in 0 until 7) {
+                            val row = grid.getOrNull(d).orEmpty()
+                            for (slot in 0 until rows) {
+                                val h = Slots.hourOfSlot(slot, step)
+                                val off = Slots.offsetOfSlot(slot, step)
+                                val p = row.getOrNull(h) ?: continue
+                                val hit = Slots.windowsOf(p).sumOf {
+                                    maxOf(0, minOf(it.to, off + step) - maxOf(it.from, off))
+                                }
+                                if (hit <= 0) continue
+                                drawRect(
+                                    color = cs.primary.copy(alpha = if (hit >= step) 1f else 0.45f),
+                                    topLeft = Offset(d * colW + gap, slot * rowPx),
+                                    size = Size(colW - gap * 2, rowPx - gap * 0.5f),
+                                )
                             }
+                        }
+
+                        // 3) 小时线与星期分隔线
+                        for (h in 0..24) {
+                            val y = h * hourPx
+                            if (y > size.height) break
+                            drawLine(
+                                color = cs.outlineVariant.copy(alpha = if (h % 6 == 0) 0.55f else 0.25f),
+                                start = Offset(0f, y),
+                                end = Offset(size.width, y),
+                                strokeWidth = if (h % 6 == 0) 1f else 0.6f,
+                            )
+                        }
+                        for (d in 0..7) {
+                            val x = d * colW
+                            drawLine(
+                                color = cs.outlineVariant.copy(alpha = 0.18f),
+                                start = Offset(x, 0f),
+                                end = Offset(x, size.height),
+                                strokeWidth = 0.6f,
+                            )
+                        }
+
+                        // 4) 现在几点：今天那一列里的一条横线
+                        val yNow = nowMinute * rowPx / step
+                        if (yNow <= size.height) {
+                            drawLine(
+                                color = cs.primary.copy(alpha = 0.85f),
+                                start = Offset(todayIdx * colW, yNow),
+                                end = Offset((todayIdx + 1) * colW, yNow),
+                                strokeWidth = 1.6f,
+                            )
                         }
                     }
                 }
             }
+
             Spacer(Modifier.height(8.dp))
             Text(
-                "拖动选择 · 松手保存。今天已选 $selectedToday 小时。",
+                "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) +
+                    "；浅色格表示旧边界跨在格子中间，重涂一下就会对齐。",
                 fontSize = 10.5.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = cs.onSurfaceVariant,
             )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val rows2 = draftState.value.toMutableList()
+                rows2[todayIdx] = Slots.paintDay(rows2[todayIdx], true, cfg.defWork, cfg.defBrk)
+                draftState.value = rows2
+                commit()
+            }) { Text("今天全选", fontSize = 12.sp) }
+            OutlinedButton(onClick = {
+                val rows2 = draftState.value.toMutableList()
+                rows2[todayIdx] = Slots.paintDay(rows2[todayIdx], false, cfg.defWork, cfg.defBrk)
+                draftState.value = rows2
+                commit()
+            }) { Text("今天清空", fontSize = 12.sp) }
         }
 
         // —— 番茄参数 ——
@@ -272,39 +462,22 @@ fun ScheduleScreen(cfg: Config) {
                 Store.update { c -> c.copy(defBrk = v, days = applyBulk(c.days) { it.copy(brk = v) }) }
             }
             Text(
-                "改这里会重排整份方案的番茄；只想调某几小时，先选中再改。",
+                "改这里会重排整份方案的番茄；只想调某几格，先在网格上选中再改。",
                 fontSize = 10.5.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = cs.onSurfaceVariant,
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                val rows = draft.mapIndexed { d, row ->
-                    if (d != todayIdx) row else row.map { it.copy(on = true, work = cfg.defWork, brk = cfg.defBrk) }
-                }
-                draft = rows
-                commit()
-            }) { Text("今天全选", fontSize = 12.sp) }
-            OutlinedButton(onClick = {
-                val rows = draft.mapIndexed { d, row ->
-                    if (d != todayIdx) row else row.map { it.copy(on = false) }
-                }
-                draft = rows
-                commit()
-            }) { Text("今天清空", fontSize = 12.sp) }
-        }
-
         // 当前方案概况
-        val hours = draft.sumOf { row -> row.count { it.on } }
+        val totalMinutes = draft.sumOf { Slots.dayMinutes(it) }
         Text(
-            "这套方案一周共 $hours 小时；当前状态：" +
+            "这套方案一周共 " + Slots.fmtMinutes(totalMinutes) + "；当前状态：" +
                 (ScheduleEngine.stateAt(cfg, LocalDateTime.now())?.let {
                     if (it.inBreak) "休息中" else "专注中"
                 } ?: "未在时段内") +
                 if (LockEngine.isLockActive(cfg, LocalDateTime.now())) "（锁机生效）" else "",
             fontSize = 10.5.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = cs.onSurfaceVariant,
         )
         Spacer(Modifier.height(6.dp))
     }
