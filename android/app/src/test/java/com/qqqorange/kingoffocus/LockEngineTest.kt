@@ -5,6 +5,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
 import com.qqqorange.kingoffocus.data.LockCfg
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -111,6 +112,45 @@ class LockEngineTest {
         assertTrue(
             LockEngine.segmentKey(c, at(9, 5)) != LockEngine.segmentKey(c, at(12, 5)),
         )
+    }
+
+    /** 造一份"每小时的 seg 由参数指定"的配置：验证段身份走 id，不走时间连续性 */
+    private fun cfgWithSegs(segs: Map<Int, String>): Config {
+        val base = Config()
+        val days = base.days.map { it.toMutableList() }.toMutableList()
+        for ((h, id) in segs) {
+            days[mon][h] = HourPlan(true, 60, 0, 0, 60, seg = id)
+        }
+        return base.copy(
+            enabled = true,
+            days = days,
+            lock = LockCfg(enabled = true, pauseMinutes = 10, pauseCost = 10, stopCost = 30),
+        )
+    }
+
+    @Test
+    fun `相邻但不同段的两个小时不算同一场`() {
+        // 桌面端的核心语义：09:00–10:00 与 10:00–11:00 时间上贴合，
+        // 但只要不是一次拖出来的（id 不同），就是两场专注。
+        val c = cfgWithSegs(mapOf(9 to "a", 10 to "b"))
+        assertNotEquals(
+            "贴在一起也必须是两段",
+            LockEngine.segmentKey(c, at(9, 5)),
+            LockEngine.segmentKey(c, at(10, 5)),
+        )
+        val stopped = c.copy(lockStoppedSeg = LockEngine.segmentKey(c, at(9, 5)))
+        assertFalse("停掉的是第一场", LockEngine.isLockActive(stopped, at(9, 30)))
+        assertTrue("第二场要重新锁", LockEngine.isLockActive(stopped, at(10, 5)))
+    }
+
+    @Test
+    fun `同一个段跨小时算同一场`() {
+        val c = cfgWithSegs(mapOf(9 to "a", 10 to "a"))
+        assertEquals(
+            LockEngine.segmentKey(c, at(9, 5)),
+            LockEngine.segmentKey(c, at(10, 55)),
+        )
+        assertEquals("这一场到 11:00 结束", 90 * 60L, LockEngine.segmentLeftSeconds(c, at(9, 30)))
     }
 
     @Test

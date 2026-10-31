@@ -71,4 +71,23 @@ class ScheduleRulesTest {
     fun `提示文案说清了下周会解锁`() {
         assertTrue(ScheduleRules.lockReason("周一").contains("下周一自动解锁"))
     }
+
+    @Test
+    fun `retime 只改已选中的小时`() {
+        val day = emptyDay().toMutableList()
+        day[9] = HourPlan(on = true, work = 45, brk = 15, from = 0, to = 60)
+        val after = ScheduleRules.retime(5, todayIdx = 5, day = day, work = 50, brk = 10)
+        assertEquals(50, after[9].work)
+        assertEquals(10, after[9].brk)
+        assertEquals("没选中的小时不该被顺手改掉", HourPlan(), after[10])
+    }
+
+    @Test
+    fun `retime 也拦被锁的日子`() {
+        val day = emptyDay().toMutableList()
+        day[9] = HourPlan(on = true, work = 45, brk = 15, from = 0, to = 60)
+        val after = ScheduleRules.retime(0, todayIdx = 5, day = day, work = 50, brk = 10)
+        assertEquals("锁住的列原样返回", 45, after[9].work)
+        assertEquals(15, after[9].brk)
+    }
 }

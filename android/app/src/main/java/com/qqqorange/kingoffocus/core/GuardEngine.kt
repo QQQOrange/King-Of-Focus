@@ -49,7 +49,9 @@ object GuardEngine {
         if (ts < cfg.unlockUntil) return emptyList()
         val st = ScheduleEngine.stateAt(cfg, now) ?: return emptyList()
         if (st.inBreak) return emptyList()
-        return cfg.rules.filter { it.enabled }
+        // 这套时段挑了规则分组时，只让挑中的那几条生效（桌面端 ClockProfile.bound）
+        val bound = boundOf(cfg)
+        return cfg.rules.filter { it.enabled && (bound.isEmpty() || it.id in bound) }
     }
 
     /**
@@ -69,6 +71,12 @@ object GuardEngine {
     /** 有没有启用着的白名单规则（总览/规则页用来解释"现在是什么模式"） */
     fun hasWhitelistRule(cfg: Config): Boolean =
         cfg.rules.any { it.enabled && it.mode == "whitelist" }
+
+    /** 当前生效的时段方案绑定的规则 id（空 = 全部） */
+    fun boundOf(cfg: Config): Set<String> {
+        val plan = cfg.plans.firstOrNull { it.id == cfg.activePlan } ?: cfg.plans.firstOrNull()
+        return plan?.bound?.toSet().orEmpty()
+    }
 
     /** 系统壳进程：拦了它们等于把手机变砖 */
     private val SHELL = setOf(

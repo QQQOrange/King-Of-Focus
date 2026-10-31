@@ -1,6 +1,7 @@
 package com.qqqorange.kingoffocus.core
 
 import com.qqqorange.kingoffocus.data.Config
+import com.qqqorange.kingoffocus.data.Slots
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -74,22 +75,40 @@ object LockEngine {
     private fun hourOn(cfg: Config, t: LocalDateTime): Boolean =
         cfg.days.getOrNull(t.dayOfWeek.value - 1)?.getOrNull(t.hour)?.on == true
 
+    /** 某一刻所在窗口的段标识（不在时段内 → 空串） */
+    private fun segAt(cfg: Config, t: LocalDateTime): String {
+        val p = cfg.days.getOrNull(t.dayOfWeek.value - 1)?.getOrNull(t.hour) ?: return ""
+        return Slots.windowAt(p, t.minute)?.seg.orEmpty()
+    }
+
     /**
-     * 当前"锁机段"的标识：从这一刻往回走，直到前一个小时不再选中。
+     * 当前"锁机段"的标识：从这一刻往回走，走到**同一段**的开头。
      *
-     * 为什么按"连续选中区间"而不是按小时：19:00–22:00 连着三小时属于同一场专注，
-     * 用户"停止锁机"时想停的是这一整场，而不是"这一个小时"。
-     * 段变了（下一场专注开始）→ 停止自动失效，不需要任何定时器。
+     * 和桌面端一样，"相邻"不等于"同一段"：09:00–10:00 与 10:00–11:00 可能是一次
+     * 拖出来的两段，也可能是两次分别设的。有 `seg` 就按 id 认，没有才退回
+     * "连续选中的小时算一段"（老配置的行为）。
+     *
+     * 段变了 → "停止本段"自动失效，不需要任何定时器。
      */
     fun segmentKey(cfg: Config, now: LocalDateTime): String {
+        val seg = segAt(cfg, now)
         var cur = now.withMinute(0).withSecond(0).withNano(0)
         var guard = 0
         while (guard++ < 48) {
-            val prev = cur.minusHours(1)
-            if (!hourOn(cfg, prev)) break
-            cur = prev
+            val prevHour = cur.minusHours(1)
+            // 用"上一小时的最后一分钟"判断，比看 hour.on 精确：
+            // 上一小时的窗口可能只到 :45，那就不该并进来
+            val prevMinute = prevHour.withMinute(59)
+            val same = if (seg.isEmpty()) {
+                hourOn(cfg, prevHour)
+            } else {
+                segAt(cfg, prevMinute) == seg
+            }
+            if (!same) break
+            cur = prevHour
         }
-        return "${cur.toLocalDate()}|${cur.hour}"
+        return if (seg.isEmpty()) "${cur.toLocalDate()}|${cur.hour}"
+        else "${cur.toLocalDate()}|$seg"
     }
 
     /**
@@ -157,9 +176,28 @@ object LockEngine {
      * 遮罩上该显示的是"还要关多久"，所以从当前小时往后找连续选中的最后一小时。
      */
     fun segmentLeftSeconds(cfg: Config, now: LocalDateTime): Long {
-        var end = now.withMinute(0).withSecond(0).withNano(0).plusHours(1)
+        val day = cfg.days.getOrNull(now.dayOfWeek.value - 1) ?: return 0
+        val p = day.getOrNull(now.hour) ?: return 0
+        val win = Slots.windowAt(p, now.minute) ?: return 0
+        val seg = win.seg
+        // 先算到"当前这一段的窗口"结束
+        // 本小时的起点 + 窗口结束分钟（`withMinute(0)` 之后只需再加 win.to）
+        var end = now.withSecond(0).withNano(0).withMinute(0).plusMinutes(win.to.toLong())
+        // 再往后整小时延伸：下一小时必须从 0 分就开始、且是同一段
         var guard = 0
-        while (guard++ < 48 && hourOn(cfg, end)) end = end.plusHours(1)
+        while (guard++ < 48) {
+            val nextHour = end
+            if (nextHour.minute != 0) break
+            val np = cfg.days.getOrNull(nextHour.dayOfWeek.value - 1)?.getOrNull(nextHour.hour)
+                ?: break
+            if (!np.on) break
+            val wins = Slots.windowsOf(np)
+            val first = wins.firstOrNull() ?: break
+            if (first.from != 0) break
+            val same = if (seg.isEmpty()) true else first.seg == seg
+            if (!same) break
+            end = nextHour.plusMinutes(wins.last().to.toLong())
+        }
         return Duration.between(now, end).seconds.coerceAtLeast(0)
     }
 

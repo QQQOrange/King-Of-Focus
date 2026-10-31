@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "king-of-focus"
-version = "0.1.56"
+version = "0.1.57"
 dependencies = [
  "aes-gcm",
  "argon2",

@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Slots
 import java.time.LocalDateTime
+import java.time.ZoneId
 
 /**
  * 自律时段引擎（纯函数，可单测）。
@@ -22,6 +23,8 @@ object ScheduleEngine {
         val leftSeconds: Long,
         val work: Int,
         val brk: Int,
+        /** 命中的窗口的段标识；老数据为空（此时退回"连续小时算一段"） */
+        val seg: String = "",
     ) {
         val focusing: Boolean get() = inWindow && !inBreak
     }
@@ -36,8 +39,7 @@ object ScheduleEngine {
         // 刻度细到 10/15 分钟后，一小时里可以有好几段（比如 0–15 与 30–45）。
         // 只有落进**具体某一段**才算在时段内；否则中间那段空档会被当成解锁。
         // 命中哪一段就用哪一段的结尾算剩余时间——拿第一段去套第二段会算出负数。
-        val win = Slots.windowsOf(p).firstOrNull { minute >= it.from && minute < it.to }
-            ?: return null
+        val win = Slots.windowAt(p, minute) ?: return null
 
         val winLeft = win.to - minute
         val sec = now.second.toLong()
@@ -46,7 +48,7 @@ object ScheduleEngine {
 
         // 全天专注 / 不做番茄
         if (brk == 0 || work == 0 || work >= 60) {
-            return State(true, false, (winLeft * 60 - sec).coerceAtLeast(0), 60, 0)
+            return State(true, false, (winLeft * 60 - sec).coerceAtLeast(0), 60, 0, win.seg)
         }
 
         val cycle = work + brk
@@ -60,7 +62,29 @@ object ScheduleEngine {
             leftSeconds = (minOf(phaseLeft, winLeft) * 60 - sec).coerceAtLeast(0),
             work = work,
             brk = brk,
+            seg = win.seg,
         )
+    }
+
+    /**
+     * 现在能不能改时段 —— **与桌面端 `settingsFrozen()` 同义**。
+     *
+     * 为什么要有：自律工具最大的漏洞是"正在专注时顺手把时段改掉"。
+     * 一旦允许，锁机和拦截都形同建议。所以专注段生效期间时段页是只读的。
+     *
+     * 三种情况会解除冻结，因为它们都是用户**明确付过代价**的：
+     *   · 积分解锁窗口内（`unlockUntil`）；
+     *   · 锁机暂停期间（`lockPausedUntil`）；
+     *   · 已经"停止本段"（`lockStoppedSeg`）——本段都停了，没必要再挡。
+     * 休息段也不冻结：那本来就是自由时间。
+     */
+    fun frozen(cfg: Config, now: LocalDateTime): Boolean {
+        if (!cfg.enabled) return false
+        val ts = now.atZone(ZoneId.systemDefault()).toEpochSecond()
+        if (ts < cfg.unlockUntil) return false
+        if (ts < cfg.lockPausedUntil) return false
+        if (cfg.lockStoppedSeg.isNotEmpty()) return false
+        return stateAt(cfg, now)?.focusing == true
     }
 
     /** 今天还有哪些小时被选中（用于界面概览） */

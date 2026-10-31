@@ -36,11 +36,12 @@ object ScheduleRules {
         on: Boolean,
         work: Int,
         brk: Int,
+        segId: String = "",
     ): List<HourPlan> =
         if (!canEdit(dayIdx, todayIdx)) {
             day
         } else {
-            Slots.paintSlot(day, slot, step, on, work, brk)
+            Slots.paintSlot(day, slot, step, on, work, brk, segId)
         }
 
     /** 整天全选 / 清空；被锁的日子原样返回 */
@@ -51,11 +52,32 @@ object ScheduleRules {
         on: Boolean,
         work: Int,
         brk: Int,
+        segId: String = "",
     ): List<HourPlan> =
         if (!canEdit(dayIdx, todayIdx)) {
             day
         } else {
-            Slots.paintDay(day, on, work, brk)
+            Slots.paintDay(day, on, work, brk, segId)
+        }
+
+    /**
+     * 把这一天的番茄时长统一改成 [work] / [brk]（**只动已选中的小时**）。
+     *
+     * 对应桌面端右键菜单那句"顺带更新通用时长"。单独抽出来是因为它跟
+     * "改默认值"是两件事：默认值只影响以后新选的时段，这里会覆盖已经排好的，
+     * 所以界面上必须给一次明确的二次确认。被锁的日子照样原样返回。
+     */
+    fun retime(
+        dayIdx: Int,
+        todayIdx: Int,
+        day: List<HourPlan>,
+        work: Int,
+        brk: Int,
+    ): List<HourPlan> =
+        if (!canEdit(dayIdx, todayIdx)) {
+            day
+        } else {
+            day.map { p -> if (p.on) p.copy(work = work, brk = brk) else p }
         }
 
     /** 界面上那句提示：为什么这一列点不动 */
