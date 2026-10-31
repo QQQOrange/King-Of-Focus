@@ -21,6 +21,7 @@ import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.core.StatsStore
+import com.qqqorange.kingoffocus.core.StatsTrack
 import com.qqqorange.kingoffocus.core.ShizukuBridge
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
@@ -60,10 +61,11 @@ class GuardService : Service() {
 
     private var started = false
     private var lastHardenAt = 0L
-    /** 统计采样：每 15 拍（约 15 秒）记一笔，每分钟落一次盘 */
-    private var statsTick = 0
+    /** 统计：上一拍的时间（用来算"这一拍实际经过了多少秒"） */
+    private var statsAt: LocalDateTime? = null
     private var statsFlushAt = 0L
-    private var lastStatsPkg: String? = null
+    /** 已经清理过哪一天的数据，避免每拍都去列目录 */
+    private var statsPruneDay = ""
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
     private var lastLeft = -1L
@@ -171,28 +173,87 @@ class GuardService : Service() {
     }
 
     /**
-     * 使用时长采样：每 15 拍（≈15 秒）给"当前前台应用"记 15 秒。
+     * 使用时长采样 —— 口径与桌面端 `stats.rs` 一致：**每一秒结算一次**。
      *
-     * 为什么不是每拍都记：写盘和加锁的成本要摊薄；15 秒的粒度对"今天用了多久"
-     * 完全够用，误差最多 15 秒。
+     * 与以前的差别（每 15 秒记一笔固定 15 秒）：
+     *  · 按**实际经过的秒数**记账，定时器漂移不会让总时长系统性偏小；
+     *  · 跨整点/跨天由 `StatsMath.slices` 切开，23:59:58 的两秒不会算进第二天；
+     *  · 双轨：自律生效中的时间记 `on`，其余记 `off`（判定见 `StatsTrack`）；
+     *  · 熄屏、锁屏、停在桌面/自家界面一律**不记**，并封口当前连续段；
+     *  · `countIdle=false` 时额外要求 60 秒内有过交互（无障碍事件时间戳）。
+     *
+     * 样本太大就封口：桌面端切窗口就封口，手机端"换应用"靠 key 不同自然分开，
+     * 这里只需在"没有在记"的时候明确收尾，避免下次回来被并成一段假的长时段。
      */
     private fun sampleStats(cfg: Config, now: LocalDateTime) {
-        if (!cfg.stats.enabled) return
-        statsTick += 1
-        if (statsTick % 15 != 0) return
-        // 熄屏不算"在用"：否则一整晚的待机都会被算进最后一个应用
-        val pm = getSystemService(android.os.PowerManager::class.java)
-        if (pm != null && !pm.isInteractive) return
-        val fg = foreground() ?: return
-        if (fg == packageName) return
-        if (fg in SYSTEM_PKGS) return
-        StatsStore.add(now, fg, 15)
-        lastStatsPkg = fg
+        val from = statsAt ?: now
+        statsAt = now
+
+        // 落盘与清理不依赖"这一拍到底记不记"，否则熄屏一夜就不会 flush
         val t = SystemClock.elapsedRealtime()
-        if (t - statsFlushAt > 60_000) {
+        if (t - statsFlushAt > FLUSH_EVERY_MS) {
             statsFlushAt = t
             StatsStore.flush()
         }
+        val day = StatsStore.dayKey(now)
+        if (day != statsPruneDay) {
+            statsPruneDay = day
+            StatsStore.prune(cfg.stats.retentionDays)
+        }
+
+        if (!cfg.stats.enabled) {
+            StatsStore.closeSpan()
+            return
+        }
+        if (!now.isAfter(from)) return
+
+        // 熄屏 / 锁屏 = 人不在：这一段时间一点都不记（桌面端靠"无输入 60 秒"达到同一效果）
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        if (pm != null && !pm.isInteractive) {
+            StatsStore.closeSpan()
+            return
+        }
+        val km = getSystemService(android.app.KeyguardManager::class.java)
+        if (km != null && km.isKeyguardLocked) {
+            StatsStore.closeSpan()
+            return
+        }
+
+        // 严格模式：还要求最近 60 秒内有过交互。
+        // 没有无障碍权限时拿不到这个信号——那就只能退回"亮屏即算"，
+        // 设置页里已经写清楚这一点，不假装生效。
+        if (!cfg.stats.countIdle) {
+            val idle = KofAccessibility.idleMillis()
+            if (idle != null && idle > IDLE_TIMEOUT_MS) {
+                StatsStore.closeSpan()
+                return
+            }
+        }
+
+        val fg = foreground()
+        // 桌面（launcher）、自家界面、系统界面都不算"在用某个应用"
+        if (fg == null || fg == packageName || fg in SYSTEM_PKGS) {
+            StatsStore.closeSpan()
+            return
+        }
+
+        StatsStore.record(
+            from = from,
+            to = now,
+            key = fg,
+            label = labelOf(fg),
+            onTrack = StatsTrack.on(cfg, now),
+        )
+    }
+
+    /** 应用显示名：缓存一次，别每秒去问 PackageManager */
+    private val labelCache = HashMap<String, String>()
+
+    private fun labelOf(pkg: String): String = labelCache.getOrPut(pkg) {
+        runCatching {
+            val pm = packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
     }
 
     /** 阶段提醒：每个阶段只响一次，剩余时间跳大即视为进入新阶段 */
@@ -444,6 +505,8 @@ class GuardService : Service() {
             sleeping -> "睡眠时段 · 还有 " +
                 ScheduleEngine.fmtLeft(SleepEngine.active(Store.current, now)?.leftSeconds ?: 0)
             locked -> "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
+            // 自律关着、只在记录时长：如实说，别让常驻通知看起来像"自律在跑"
+            st == null && !Store.current.enabled -> "自律已关闭 · 正在记录使用时长"
             st == null -> "当前不在自律时段"
             st.inBreak -> "休息中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
             else -> "专注中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
@@ -502,6 +565,12 @@ class GuardService : Service() {
         private const val CH_ONGOING = "kof_ongoing"
         private const val CH_ALERT = "kof_alert"
         /** 采样式统计里忽略的进程：它们不是"用户在用某个应用" */
+        /** 落盘间隔：桌面端 15 秒一次，手机端 60 秒够用（坏一个文件最多丢一分钟） */
+        private const val FLUSH_EVERY_MS = 60_000L
+
+        /** 严格空闲阈值：与桌面端 `IDLE_TIMEOUT_SECS` 同一含义 */
+        private const val IDLE_TIMEOUT_MS = 60_000L
+
         private val SYSTEM_PKGS = setOf(
             "com.android.systemui",
             "com.android.launcher3",
@@ -515,6 +584,28 @@ class GuardService : Service() {
         fun start(ctx: android.content.Context) {
             val i = Intent(ctx, GuardService::class.java)
             ctx.startForegroundService(i)
+        }
+
+        /**
+         * 服务该不该跑：**自律开着，或者统计开着**。
+         *
+         * 以前只有"自律开着"才跑，于是关掉自律之后统计整条停摆——
+         * 而统计页是双轨的（自律时段内 / 时段外），关掉自律的那段时间
+         * 恰恰是"时段外"数据的主要来源。桌面端的监控器与自律开关本来就是两件事，
+         * 手机端现在对齐。
+         */
+        fun shouldRun(cfg: com.qqqorange.kingoffocus.data.Config): Boolean =
+            cfg.enabled || cfg.stats.enabled
+
+        /** 按当前配置把服务与心跳调到应有状态（唯一入口，别各处自己 start/stop） */
+        fun sync(ctx: android.content.Context, cfg: com.qqqorange.kingoffocus.data.Config = Store.current) {
+            if (shouldRun(cfg)) {
+                runCatching { start(ctx) }
+                scheduleHeartbeat(ctx)
+            } else {
+                stop(ctx)
+                cancelHeartbeat(ctx)
+            }
         }
 
         /**

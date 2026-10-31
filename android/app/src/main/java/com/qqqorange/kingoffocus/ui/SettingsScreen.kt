@@ -41,6 +41,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.SleepSegment
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.service.GuardService
+import com.qqqorange.kingoffocus.service.KofAccessibility
 import com.qqqorange.kingoffocus.toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -227,6 +228,36 @@ fun SettingsScreen(cfg: Config) {
         Panel {
             ToggleRow("记录使用时长", "关掉后不再采样，已有数据保留", cfg.stats.enabled) { v ->
                 Store.update { it.copy(stats = it.stats.copy(enabled = v)) }
+                // 统计和自律任意一个开着，服务就得跑（统计页的「时段外」全靠它）
+                GuardService.sync(ctx)
+            }
+            if (cfg.stats.enabled) {
+                // 与桌面端同名开关（stats.countIdle）。桌面用"最后一次键鼠输入"判断人还在不在，
+                // 手机上没有这个 API，所以默认按"亮屏即算"；关掉则要求 60 秒内有过交互。
+                ToggleRow(
+                    "只看屏幕亮着",
+                    "默认算到「亮屏且未锁屏」为止；关掉后还要求 60 秒内有过操作" +
+                        if (KofAccessibility.alive()) "" else "（未授无障碍权限，这项暂时不生效）",
+                    cfg.stats.countIdle,
+                    divider = true,
+                ) { v ->
+                    Store.update { it.copy(stats = it.stats.copy(countIdle = v)) }
+                }
+                Stepper(
+                    "保留天数",
+                    cfg.stats.retentionDays,
+                    7,
+                    3650,
+                    " 天",
+                    step = 30,
+                ) { v ->
+                    Store.update { it.copy(stats = it.stats.copy(retentionDays = v)) }
+                }
+                Text(
+                    "和桌面端同一个默认值 400 天：更久的数据才能回答「去年这个时候我在干什么」。",
+                    fontSize = 10.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(6.dp))
             OutlinedButton(onClick = { confirmReset = true }, modifier = Modifier.fillMaxWidth()) {
@@ -256,7 +287,8 @@ fun SettingsScreen(cfg: Config) {
             confirmButton = {
                 TextButton(onClick = {
                     Store.update { Config() }
-                    GuardService.stop(ctx)
+                    // 重置后统计默认是开的，所以"服务是否该跑"要按新配置重算
+                    GuardService.sync(ctx)
                     confirmReset = false
                     toast(ctx, "已重置为默认配置")
                 }) { Text("重置", color = MaterialTheme.colorScheme.error) }

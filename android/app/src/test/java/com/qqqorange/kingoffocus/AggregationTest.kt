@@ -1,6 +1,7 @@
 package com.qqqorange.kingoffocus
 
 import com.qqqorange.kingoffocus.core.Report
+import com.qqqorange.kingoffocus.core.StatsDay
 import com.qqqorange.kingoffocus.core.StatsMath
 import com.qqqorange.kingoffocus.data.CloudSync
 import com.qqqorange.kingoffocus.data.Config
@@ -25,6 +26,22 @@ class AggregationTest {
 
     private fun day(vararg pairs: Pair<String, IntArray>): Map<String, IntArray> = pairs.toMap()
 
+    /**
+     * 用小时桶造一天的数据（都放「自律生效中」那一轨）。
+     * 桶本来就是分钟/秒级的原始事实，这里只是把它包成双轨结构。
+     */
+    private fun sday(vararg pairs: Pair<String, IntArray>): StatsDay {
+        val d = StatsDay("2026-10-31")
+        for ((k, arr) in pairs) {
+            val acc = d.acc(k, true, k)
+            for (h in 0 until 24) {
+                acc.hours[h] = arr[h]
+                acc.secs += arr[h]
+            }
+        }
+        return d
+    }
+
     private fun buckets(vararg v: Pair<Int, Int>): IntArray {
         val a = IntArray(24)
         v.forEach { (h, s) -> a[h] = s }
@@ -37,11 +54,11 @@ class AggregationTest {
             "a" to buckets(9 to 600, 10 to 300),
             "b" to buckets(9 to 60),
         )
-        val h = StatsMath.hourly(d)
+        val h = StatsMath.hourly(sday(*d.entries.map { it.key to it.value }.toTypedArray()), null)
         assertEquals(660, h[9])
         assertEquals(300, h[10])
         assertEquals(0, h[11])
-        assertEquals(960, StatsMath.total(d))
+        assertEquals(960, StatsMath.total(sday(*d.entries.map { it.key to it.value }.toTypedArray()), null))
     }
 
     @Test
@@ -51,7 +68,7 @@ class AggregationTest {
             "b" to buckets(9 to 600),
             "c" to IntArray(24),
         )
-        val top = StatsMath.top(d, 5)
+        val top = StatsMath.top(listOf(LocalDate.of(2026, 10, 31) to sday(*d.entries.map { it.key to it.value }.toTypedArray())), null, 5)
         assertEquals(listOf("b", "a"), top.map { it.first })
         assertEquals(600, top.first().second)
     }
@@ -70,10 +87,10 @@ class AggregationTest {
     fun reportContainsTotalsAndTopApps() {
         val now = LocalDateTime.of(2026, 10, 31, 20, 0)
         val days = listOf(
-            LocalDate.of(2026, 10, 30) to day("com.a" to buckets(9 to 3600)),
-            LocalDate.of(2026, 10, 31) to day("com.a" to buckets(10 to 1800), "com.b" to buckets(11 to 600)),
+            LocalDate.of(2026, 10, 30) to sday("com.a" to buckets(9 to 3600)),
+            LocalDate.of(2026, 10, 31) to sday("com.a" to buckets(10 to 1800), "com.b" to buckets(11 to 600)),
         )
-        val text = Report.build(now, days, 3, 120) { pkg -> if (pkg == "com.a") "应用甲" else "应用乙" }
+        val text = Report.build(now, days, null, 3, 120) { pkg -> if (pkg == "com.a") "应用甲" else "应用乙" }
         assertTrue(text, text.contains("累计 1 小时 40 分"))
         assertTrue(text, text.contains("应用甲"))
         assertTrue(text, text.contains("自律规则 3 条"))
@@ -82,7 +99,7 @@ class AggregationTest {
 
     @Test
     fun reportHandlesEmptyWeek() {
-        val text = Report.build(LocalDateTime.now(), emptyList(), 0, 0) { it }
+        val text = Report.build(LocalDateTime.now(), emptyList(), null, 0, 0) { it }
         assertTrue(text, text.contains("还没有统计数据"))
     }
 

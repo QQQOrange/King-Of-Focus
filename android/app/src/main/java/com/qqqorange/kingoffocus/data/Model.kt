@@ -230,6 +230,19 @@ data class CloudCfg(
 data class StatsCfg(
     /** 关掉就完全不采样（不写盘、不算）*/
     val enabled: Boolean = true,
+    /**
+     * 亮屏但没人动手机，还算不算"在用"。
+     *
+     * 桌面端的同名开关默认 **false**（用 `GetLastInputInfo`，离开超过 60 秒不计）。
+     * 手机上没有等价的"最后输入时间"API，而"亮屏 + 未锁屏"本身就是很强的
+     * "人就在这儿"信号（人走了手机会自动锁屏），所以这里默认 **true**。
+     *
+     * 关掉 = 更严格：额外要求 60 秒内有过无障碍事件；没有授无障碍权限时退回亮屏判定
+     * （并如实告诉用户这条设置没生效，而不是假装生效）。
+     */
+    val countIdle: Boolean = true,
+    /** 原始数据保留天数；桌面端同名字段默认 400 */
+    val retentionDays: Int = 400,
 )
 
 @Serializable
@@ -420,6 +433,9 @@ fun normalize(cfg: Config): Config {
             url = cfg.cloud.url.trim().let { u -> if (u.isNotEmpty() && !u.endsWith("/")) "$u/" else u },
         ),
         points = cfg.points.coerceAtLeast(0),
+        stats = cfg.stats.copy(
+            retentionDays = cfg.stats.retentionDays.coerceIn(7, 3650),
+        ),
         update = cfg.update.copy(
             intervalHours = cfg.update.intervalHours.coerceIn(1, 168),
             lastCheck = cfg.update.lastCheck.coerceAtLeast(0),

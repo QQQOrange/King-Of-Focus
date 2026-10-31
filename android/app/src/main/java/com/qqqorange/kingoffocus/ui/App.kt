@@ -152,8 +152,9 @@ private fun HomeScreen(cfg: Config) {
     @Suppress("UNUSED_EXPRESSION")
     tick
 
+    // 总览只要一个总数：两轨相加（细分在「统计」页里看）
     val todaySecs = remember(tick, cfg.stats.enabled) {
-        StatsMath.total(StatsStore.today(now))
+        StatsMath.total(StatsStore.today(now), null)
     }
 
     Column(
@@ -232,13 +233,9 @@ private fun HomeScreen(cfg: Config) {
                     toast(ctx, "先授予「使用情况访问」或「无障碍」，否则不知道你在用哪个应用")
                 }
                 Store.update { it.copy(enabled = on) }
-                if (on) {
-                    runCatching { GuardService.start(ctx) }
-                    GuardService.scheduleHeartbeat(ctx)
-                } else {
-                    GuardService.stop(ctx)
-                    GuardService.cancelHeartbeat(ctx)
-                }
+                // 统计是独立的：自律关掉后，只要还在记录时长，服务就该继续跑，
+                // 否则「时段外」那一轨永远是空的
+                GuardService.sync(ctx)
             },
         )
 

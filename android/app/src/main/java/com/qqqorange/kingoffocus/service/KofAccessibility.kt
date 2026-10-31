@@ -163,6 +163,21 @@ class KofAccessibility : AccessibilityService() {
         fun latest(): String? =
             if (SystemClock.elapsedRealtime() - lastAt <= 3000) lastPkg else null
 
+        /**
+         * 距离上一次无障碍事件过了多少毫秒；没连接时返回 null。
+         *
+         * 这是手机端最接近桌面 `GetLastInputInfo` 的东西：点一下、切窗口、改文本
+         * 都会产生事件。它**只能说明"有过交互"**，不能当"最后一次触摸"用
+         * （看视频时一帧都不产生事件也是正常的），所以只在
+         * `stats.countIdle=false` 这种"我就要更严格"的场合才采信。
+         */
+        fun idleMillis(): Long? {
+            if (inst == null) return null
+            val at = lastAt
+            if (at <= 0L) return null
+            return (SystemClock.elapsedRealtime() - at).coerceAtLeast(0L)
+        }
+
         /** 全局动作回桌面：不受后台启动 Activity 限制 */
         fun goHome(): Boolean =
             inst?.performGlobalAction(GLOBAL_ACTION_HOME) == true
