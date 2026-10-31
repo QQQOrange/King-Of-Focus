@@ -88,6 +88,23 @@ data class OverlayCfg(
  * 它和桌面端的"备份密码"是同一个东西：两端各自保存本机的口令，
  * 想互通就得填同一个。
  */
+/**
+ * 自动更新配置。三端各有一份，**互不共享**：桌面端的更新设置不会同步到手机，
+ * 手机端也不会因为桌面端改了源就跟着换。这是刻意的——每台设备的更新通道
+ * 由它自己决定，出问题时也能各自排查。
+ */
+@Serializable
+data class UpdateCfg(
+    /** 打开应用时自动检查（不会自动装，安装永远要用户点一下） */
+    val autoCheck: Boolean = true,
+    /** 上次检查时间（unix 秒），用来避免每次启动都打一次 GitHub */
+    val lastCheck: Long = 0L,
+    /** 用户选择跳过的版本 */
+    val skippedVersion: String = "",
+    /** 自动检查的最小间隔（小时） */
+    val intervalHours: Int = 6,
+)
+
 @Serializable
 data class BackupCfg(val password: String = "")
 
@@ -134,6 +151,7 @@ data class Config(
     val notify: NotifyCfg = NotifyCfg(),
     val overlay: OverlayCfg = OverlayCfg(),
     val backup: BackupCfg = BackupCfg(),
+    val update: UpdateCfg = UpdateCfg(),
     val lock: LockCfg = LockCfg(),
     /** 锁机期间允许使用的应用（遮罩上的白名单，点了能直接打开） */
     val lockAllow: List<String> = emptyList(),
@@ -172,6 +190,10 @@ fun normalize(cfg: Config): Config {
     return cfg.copy(
         days = days,
         points = cfg.points.coerceAtLeast(0),
+        update = cfg.update.copy(
+            intervalHours = cfg.update.intervalHours.coerceIn(1, 168),
+            lastCheck = cfg.update.lastCheck.coerceAtLeast(0),
+        ),
         lock = cfg.lock.copy(
             mode = if (cfg.lock.mode == "strict") "strict" else "gentle",
             pauseMinutes = cfg.lock.pauseMinutes.coerceIn(1, 120),

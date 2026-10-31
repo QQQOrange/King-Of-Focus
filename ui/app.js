@@ -4016,6 +4016,22 @@ function viewAbout() {
 
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div>
+        <div style="font-size:12.5px">本机更新通道</div>
+        <div class="hint" style="margin-top:3px">
+          <span>平台标识</span> <code>${esc(d.platform || 'windows-x64')}</code> ·
+          <span>当前版本</span> <b>v${esc(d.version)}</b>
+        </div>
+      </div>
+      <span class="badge">只收桌面端安装包</span>
+    </div>
+    <div class="hint" style="line-height:1.9;padding:10px 0;border-bottom:1px solid var(--line)">
+      桌面端只读更新清单里 windows-x64 那一条，四道校验都要过。<br>
+      校验平台标识、包类型、版本号、sha256：对不上就不下载。<br>
+      宁可停在提示上，也不去找别的平台的包。
+    </div>
+
+    <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
+      <div>
         <div style="font-size:12.5px">启动时检查更新</div>
         <div class="hint" style="margin-top:3px">最近一次检查：${st.lastCheck ? new Date(st.lastCheck * 1000).toLocaleString() : '还没检查过'}</div>
       </div>
@@ -4070,12 +4086,16 @@ function showUpdateModal(info, manual) {
         <button class="close-x" data-act="close-modal">×</button>
       </div>
       <div class="modal-bd">
-        <div class="row" style="gap:10px;margin-bottom:14px">
+        <div class="row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap">
           <span class="badge gold">当前 v${esc(info.current)}</span>
           <span class="badge green">最新 v${esc(info.latest)}</span>
           <span class="badge">${esc(size)}</span>
+          ${info.platformLabel ? `<span class="badge">${esc(info.platformLabel)}</span>` : ''}
           ${a.name ? `<span class="badge blue">${esc(a.name)}</span>` : ''}
         </div>
+        ${info.platform ? `<div class="hint" style="margin-bottom:10px">
+          只下载本平台（${esc(info.platform)}）的安装包：包名、类型、版本、sha256 四项都和更新清单核对过。
+        </div>` : ''}
         ${notes ? `<div class="note" style="max-height:220px;overflow:auto;white-space:pre-wrap">${esc(notes)}</div>`
                 : '<div class="hint">这个版本没有写更新说明。</div>'}
         ${!a.url ? '<div class="note" style="border-left-color:var(--red);margin-top:12px">该版本还没有上传安装包，暂时无法自动更新。</div>' : ''}
@@ -4091,7 +4111,7 @@ function showUpdateModal(info, manual) {
         <button class="btn" data-act="close-modal">稍后提醒</button>
         <button class="btn btn-primary" data-act="do-update"
           data-url="${esc(a.url || '')}" data-name="${esc(a.name || 'KingOfFocus-Setup.exe')}"
-          data-size="${Number(a.size) || 0}">
+          data-size="${Number(a.size) || 0}" data-sha="${esc(a.sha256 || '')}">
           下载并安装
         </button>
       </div>
@@ -7767,7 +7787,13 @@ const Act = window.Act = {
       const r = await invoke('update_check', { token: typed || null });
       await pull();
       render();
-      if (!r.ok) { toast('检查失败：' + r.error, 'err'); return; }
+      if (!r.ok) {
+        // 校验失败（平台不符 / 类型不符 / 清单坏了）——原话照搬，并带上错误码，
+        // 用户报问题时能直接对到文档里的那一条。
+        const why = r.reject ? `${r.reject.message}（${r.reject.code}）` : r.error;
+        toast('检查失败：' + why, 'err');
+        return;
+      }
       if (r.newer) {
         showUpdateModal(r, true);
       } else if (!r.asset) {
@@ -7813,13 +7839,13 @@ const Act = window.Act = {
     await pull(); render();
     toast('已取消跳过');
   },
-  async doUpdate(url, name, size) {
+  async doUpdate(url, name, size, sha) {
     if (!url) { toast('这个版本没有可下载的安装包', 'err'); return; }
     try {
       setProgress(2, '开始下载…');
-      // size 来自 Release 资产清单：服务器不回 Content-Length（chunked）时，
-      // 这是唯一能判断"下载完整"的依据。
-      const path = await invoke('update_download', { url, name, size: size || 0 });
+      // size / sha256 都来自更新清单：size 判断"下全了"，sha256 判断"下对了"。
+      // 后者是跨平台错配（或发布方传错包）的最后一道闸，不能省。
+      const path = await invoke('update_download', { url, name, size: size || 0, sha256: sha || null });
       setProgress(100, '下载完成，正在退出并安装…');
       await new Promise((r) => setTimeout(r, 900));
       await invoke('update_apply', { installer: path });
@@ -8465,7 +8491,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'skip-version') { await Act.skipVersion(el.dataset.v); return; }
   if (act === 'clear-skip') { await Act.clearSkip(); return; }
   if (act === 'do-update') {
-    await Act.doUpdate(el.dataset.url, el.dataset.name, Number(el.dataset.size) || 0);
+    await Act.doUpdate(el.dataset.url, el.dataset.name, Number(el.dataset.size) || 0, el.dataset.sha || '');
     return;
   }
 });

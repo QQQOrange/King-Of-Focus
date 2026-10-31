@@ -18,6 +18,7 @@ import com.qqqorange.kingoffocus.data.Portable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,7 +66,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
 import com.qqqorange.kingoffocus.core.Caps
+import com.qqqorange.kingoffocus.core.UpdateClient
+import com.qqqorange.kingoffocus.core.Updater
+import com.qqqorange.kingoffocus.core.UpdateHub
 import com.qqqorange.kingoffocus.core.StrictBlocker
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.GuardLevel
@@ -96,6 +102,22 @@ class MainActivity : ComponentActivity() {
         // 用户开着自律时打开应用：确保守护在跑（Android 12+ 允许前台应用启动前台服务）
         if (Store.current.enabled) {
             runCatching { GuardService.start(this) }
+        }
+        // 自动检查更新：只查不装。安装永远要用户自己点一下——
+        // 一个"自律"应用更要守住这条：不能背着人静默装东西。
+        if (Store.current.update.autoCheck) {
+            lifecycleScope.launch {
+                val c = Store.current
+                val nowSec = System.currentTimeMillis() / 1000
+                if (!UpdateHub.due(c.update.lastCheck, c.update.intervalHours, nowSec)) return@launch
+                UpdateHub.busy.value = true
+                val r = withContext(Dispatchers.IO) {
+                    UpdateClient.check(UpdateHub.REPO, appVersion(this@MainActivity))
+                }
+                Store.update { it.copy(update = it.update.copy(lastCheck = nowSec)) }
+                UpdateHub.last.value = r
+                UpdateHub.busy.value = false
+            }
         }
         setContent {
             KofTheme {
@@ -563,6 +585,9 @@ private fun SettingsPage(cfg: Config) {
         SectionTitle("备份与恢复")
         BackupSection(cfg)
 
+        SectionTitle("版本与更新")
+        UpdateSection(cfg)
+
         SectionTitle("数据")
         OutlinedButton(
             onClick = {
@@ -574,7 +599,7 @@ private fun SettingsPage(cfg: Config) {
         ) { Text("重置全部配置") }
 
         SectionTitle("关于")
-        Text("King Of Focus · Android 0.2.0", fontSize = 13.sp)
+        Text("King Of Focus · Android 0.2.1", fontSize = 13.sp)
         Text(
             "桌面版的能力（结束进程、封杀任务管理器、关机、全局热键）在 Android 上不可实现，" +
                 "这里用「时段 + 番茄 + 前台检测 + 全屏拦截页」做等价的自律闭环。",
@@ -767,6 +792,233 @@ private fun BackupSection(cfg: Config) {
             },
         )
     }
+}
+
+// ---------------------------------------------------------------- 版本与更新
+
+/**
+ * 自动更新配置 + 检查 + 安装。
+ *
+ * 两条硬规则：
+ * 1. **只认本平台的包**——判定在 [Updater]（纯函数、单测覆盖），这里只管显示；
+ * 2. **查到 ≠ 装上**：永远要用户点「下载并安装」，绝不静默安装。
+ *
+ * 失败时把错误码一起显示出来（`E_PLATFORM_MISSING` / `E_TYPE_MISMATCH` / `E_HASH…`），
+ * 用户截图报问题就能直接对到 `docs/update-channels.md` 里的那一条。
+ */
+@Composable
+private fun UpdateSection(cfg: Config) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val busy by UpdateHub.busy.collectAsState()
+    val autoRes by UpdateHub.last.collectAsState()
+    var res by remember { mutableStateOf<UpdateClient.Result?>(null) }
+    var status by remember { mutableStateOf("") }
+    var isErr by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0) }
+
+    // 启动时的自动检查结果：进设置页就把它接过来显示，不用再查一遍
+    LaunchedEffect(autoRes) { if (autoRes != null) res = autoRes }
+
+    val current = appVersion(ctx)
+    val skipped = cfg.update.skippedVersion
+
+    fun setStatus(text: String, err: Boolean = false) {
+        status = text
+        isErr = err
+    }
+
+    fun checkNow() = scope.launch {
+        UpdateHub.busy.value = true
+        setStatus("正在检查…")
+        val r = withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current) }
+        Store.update { it.copy(update = it.update.copy(lastCheck = System.currentTimeMillis() / 1000)) }
+        UpdateHub.last.value = r
+        res = r
+        UpdateHub.busy.value = false
+        setStatus("")
+    }
+
+    fun download(r: UpdateClient.Result) = scope.launch {
+        val url = r.url
+        if (url.isNullOrBlank()) {
+            setStatus("这个版本没有可下载的安装包，请到 GitHub 手动下载", true)
+            return@launch
+        }
+        UpdateHub.busy.value = true
+        progress = 0
+        setStatus("正在下载 ${r.file}…")
+        try {
+            val dest = File(ctx.cacheDir, "updates/${r.file}")
+            withContext(Dispatchers.IO) {
+                UpdateClient.download(url, dest, r.size, r.sha256) { done, total ->
+                    if (total > 0) {
+                        val pct = ((done * 100) / total).toInt().coerceIn(0, 100)
+                        scope.launch(Dispatchers.Main) { progress = pct }
+                    }
+                }
+            }
+            setStatus("下载完成，正在打开系统安装器…")
+            installApk(ctx, dest)
+        } catch (e: Exception) {
+            setStatus("更新失败：${e.message}", true)
+        } finally {
+            UpdateHub.busy.value = false
+            progress = 0
+        }
+    }
+
+    // 自动检查开关
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("自动检查更新")
+            Text(
+                "打开应用时检查一次（最多每 " + cfg.update.intervalHours +
+                    " 小时一次）。只检查，不会自己装。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = cfg.update.autoCheck,
+            onCheckedChange = { v ->
+                Store.update { it.copy(update = it.update.copy(autoCheck = v)) }
+            },
+        )
+    }
+    Stepper("检查间隔", cfg.update.intervalHours, 1, 168, " 小时") { v ->
+        Store.update { it.copy(update = it.update.copy(intervalHours = v)) }
+    }
+
+    // 当前通道：平台标识 + 版本，一眼能看出"我只收哪个平台的包"
+    Text(
+        "更新通道：" + Updater.platformLabel(Updater.PLATFORM) + "（" + Updater.PLATFORM + "）" +
+            " · 当前 v" + current,
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(
+        if (cfg.update.lastCheck > 0) {
+            "上次检查：" + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+                .format(java.util.Date(cfg.update.lastCheck * 1000))
+        } else {
+            "还没检查过"
+        },
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { checkNow() }, enabled = !busy, modifier = Modifier.weight(1f)) {
+            Text(if (busy) "处理中…" else "立即检查")
+        }
+        if (skipped.isNotEmpty()) {
+            OutlinedButton(
+                onClick = { Store.update { it.copy(update = it.update.copy(skippedVersion = "")) } },
+                modifier = Modifier.weight(1f),
+            ) { Text("取消跳过") }
+        }
+    }
+
+    if (status.isNotEmpty()) {
+        Text(
+            status + if (progress in 1..99) "（$progress%）" else "",
+            fontSize = 12.sp,
+            color = if (isErr) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        )
+    }
+
+    val r = res ?: return
+
+    when {
+        // ---- 校验失败：原话 + 错误码 ----
+        !r.ok -> Text(
+            r.message + if (r.code.isNotEmpty()) "（${r.code}）" else "",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.error,
+        )
+
+        // ---- 已是最新 ----
+        !r.hasUpdate -> Text(
+            if (r.latest.isNotEmpty() && r.latest == skipped) {
+                "已跳过 v${r.latest}（有新版本时还会提醒）"
+            } else {
+                "已经是最新版本 v$current"
+            },
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        // ---- 有新版本 ----
+        else -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("发现新版本 v${r.latest}", fontWeight = FontWeight.SemiBold)
+                Text(
+                    r.file + " · " + if (r.size > 0) "${r.size / 1024 / 1024} MB" else "大小未知" +
+                        " · 平台 " + Updater.PLATFORM,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "包名、类型、版本、sha256 四项都和更新清单核对过；对不上就不会下载。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (r.notes.isNotBlank()) {
+                    Text(
+                        r.notes.take(600),
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (r.source == "asset-scan") {
+                    Text(
+                        "注意：这次发布没带更新清单，是按文件名兜底校验的。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { download(r) }, enabled = !busy) { Text("下载并安装") }
+                    OutlinedButton(
+                        onClick = {
+                            Store.update { it.copy(update = it.update.copy(skippedVersion = r.latest)) }
+                        },
+                        enabled = !busy,
+                    ) { Text("跳过这个版本") }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 交给系统安装器。Android 8+ 需要用户在系统里允许「安装未知应用」，
+ * 缺这个权限时不要假装失败得莫名其妙——直接把用户带到那一页。
+ */
+private fun installApk(ctx: Context, apk: File) {
+    if (!apk.exists()) {
+        toast(ctx, "安装包已不存在，请重新下载")
+        return
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+        !ctx.packageManager.canRequestPackageInstalls()
+    ) {
+        toast(ctx, "请先允许「安装未知应用」，再点一次下载并安装")
+        runCatching {
+            ctx.startActivity(
+                Intent(SysSettings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+        return
+    }
+    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", apk)
+    val i = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, "application/vnd.android.package-archive")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { ctx.startActivity(i) }
+        .onFailure { toast(ctx, "打不开安装器：${it.message}") }
 }
 
 private fun appVersion(ctx: Context): String = runCatching {

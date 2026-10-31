@@ -242,6 +242,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
         },
         "version": crate::version::VERSION,
         "buildDate": crate::version::BUILD_DATE,
+        // 更新通道的身份：界面照着它显示"我只收哪个平台的包"，也是错配排查的第一条线索
+        "platform": crate::updsel::platform_id(),
+        "platformLabel": crate::updsel::platform_label(crate::updsel::platform_id()),
         "developer": crate::version::DEVELOPER,
         "repoUrl": crate::version::REPO_URL,
         "tokenDocUrl": crate::version::TOKEN_DOC_URL,
@@ -1737,12 +1740,15 @@ pub async fn update_download(
     url: String,
     name: String,
     size: Option<u64>,
+    sha256: Option<String>,
 ) -> Result<String, String> {
     // 下载是阻塞 IO，放阻塞线程池，别占着异步运行时
     let expected = size.unwrap_or(0);
-    tauri::async_runtime::spawn_blocking(move || crate::update::download(&app, &url, &name, expected))
-        .await
-        .map_err(|_| "下载线程异常退出".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::update::download(&app, &url, &name, expected, sha256.as_deref())
+    })
+    .await
+    .map_err(|_| "下载线程异常退出".to_string())?
 }
 
 #[tauri::command]

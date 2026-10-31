@@ -48,7 +48,20 @@
   <ul id="list"></ul>
   <div style="margin-top:10px"><button id="refresh" data-i18n="btn.refresh">立即刷新规则</button></div>
   <div style="margin-top:7px"><button id="sweepNow" data-i18n="btn.sweepWeb">现在收尾</button></div>
+
+  <div class="box" style="margin-top:9px">
+    <div class="r"><span data-i18n="upd.channel">更新通道</span><b id="updPlat">—</b></div>
+    <div class="r"><span data-i18n="upd.version">当前版本</span><b id="updVer">—</b></div>
+    <div class="r"><span data-i18n="upd.auto">自动检查更新</span><b><input type="checkbox" id="updAuto" /></b></div>
+  </div>
+  <div id="updMsg" style="font-size:11.5px;color:#8b95a8;line-height:1.65;margin-bottom:7px"></div>
+  <button id="updCheck" data-i18n="upd.check">检查更新</button>
+  <div style="margin-top:7px;display:none" id="updGetWrap">
+    <button id="updGet" data-i18n="upd.get">下载新版本</button>
+  </div>
+
   <script src="i18n.js"></script>
+  <script src="update.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

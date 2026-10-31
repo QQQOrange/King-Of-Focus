@@ -2,6 +2,7 @@
 
 use crate::model::UpdateCfg;
 use crate::net;
+use crate::updsel;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
@@ -88,13 +89,13 @@ pub fn quota(token: &str) -> Result<(i64, i64), String> {
 }
 
 pub fn check(cfg: &UpdateCfg) -> Value {
-    let repo = repo_of(cfg);
+    let repo = repo_of(&cfg);
     let (remaining, limit) = quota(&cfg.token).unwrap_or((0, 0));
     let auth = bearer(&cfg.token);
     let rel_url = format!("https://api.github.com/repos/{repo}/releases/latest");
 
     match net::get_json_t(&rel_url, auth.as_deref(), CHK_CONNECT, CHK_TOTAL) {
-        Ok(v) => release_json(&v, cfg, remaining, limit),
+        Ok(v) => analyze_release(&v, cfg, auth.as_deref(), remaining, limit),
         Err(e) => {
             // 仓库只打了 tag、还没发 Release 时，GitHub 的 /releases/latest 会返回 404。
             // 以前这里直接把错误抛给界面，用户看到的就是"检测不了"。
@@ -126,6 +127,8 @@ pub fn check(cfg: &UpdateCfg) -> Value {
                                         "publishedAt": "",
                                         "asset": Value::Null,
                                         "source": "manifest",
+                                        "platform": updsel::platform_id(),
+                                        "platformLabel": updsel::platform_label(updsel::platform_id()),
                                         "remaining": remaining,
                                         "limit": limit,
                                         "error": "",
@@ -154,6 +157,8 @@ pub fn check(cfg: &UpdateCfg) -> Value {
                             "publishedAt": "",
                             "asset": Value::Null,
                             "source": "tag",
+                            "platform": updsel::platform_id(),
+                            "platformLabel": updsel::platform_label(updsel::platform_id()),
                             "remaining": remaining,
                             "limit": limit,
                             "error": "",
@@ -191,6 +196,189 @@ pub fn check(cfg: &UpdateCfg) -> Value {
     }
 }
 
+/// 校验失败时的统一回答。**绝不在失败之后"再找找别的包"**——那正是跨平台错配的入口。
+fn reject_json(
+    p: &updsel::Problem,
+    latest: &str,
+    remaining: i64,
+    limit: i64,
+) -> Value {
+    json!({
+        "ok": false,
+        "hasUpdate": false,
+        "latest": latest,
+        "newer": false,
+        "current": current(),
+        "asset": Value::Null,
+        "source": "manifest",
+        "platform": updsel::platform_id(),
+        "platformLabel": updsel::platform_label(updsel::platform_id()),
+        "remaining": remaining,
+        "limit": limit,
+        "reject": { "code": p.code, "message": p.zh },
+        "error": format!("{}（{}）", p.zh, p.code),
+        "note": "为安全起见没有安装任何东西。如果是发布方写错了清单，请到 GitHub 手动下载。",
+    })
+}
+
+/// 拿到 Release 之后：读清单 → 按平台挑包 → 校验 → 给出可下载的资产地址。
+///
+/// 三段信息来源各自独立，任何一段对不上就拒绝：
+///   · **清单**说"windows-x64 应该是哪个文件、多大、sha256 多少"；
+///   · **本机**说"我是 windows-x64，我当前是 x.y.z"；
+///   · **Release 资产列表**说"这个文件真的存在"。
+fn analyze_release(
+    v: &Value,
+    cfg: &UpdateCfg,
+    auth: Option<&str>,
+    remaining: i64,
+    limit: i64,
+) -> Value {
+    let tag = v.get("tag_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let notes = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let published = v
+        .get("published_at")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let assets: Vec<(String, String, u64)> = v
+        .get("assets")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let n = a.get("name").and_then(|x| x.as_str())?;
+                    let u = a.get("browser_download_url").and_then(|x| x.as_str())?;
+                    let s = a.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+                    Some((n.to_string(), u.to_string(), s))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let names: Vec<String> = assets.iter().map(|(n, _, _)| n.clone()).collect();
+    let plat = updsel::platform_id();
+
+    let man_url = assets
+        .iter()
+        .find(|(n, _, _)| n.eq_ignore_ascii_case(updsel::MANIFEST_NAME))
+        .map(|(_, u, _)| u.clone());
+
+    // ---------- 有清单：走严格校验 ----------
+    if let Some(url) = man_url {
+        let text = match net::get_text_t(&url, auth, None, CHK_CONNECT, CHK_TOTAL) {
+            Ok(t) => t,
+            Err(e) => {
+                return json!({
+                    "ok": false, "hasUpdate": false, "current": current(),
+                    "platform": plat, "platformLabel": updsel::platform_label(plat),
+                    "remaining": remaining, "limit": limit,
+                    "reject": { "code": "E_MANIFEST_FETCH", "message": e },
+                    "error": format!("读不到更新清单：{e}（E_MANIFEST_FETCH）"),
+                });
+            }
+        };
+        let manifest: Value = match serde_json::from_str(&text) {
+            Ok(x) => x,
+            Err(e) => {
+                return json!({
+                    "ok": false, "hasUpdate": false, "current": current(),
+                    "platform": plat, "platformLabel": updsel::platform_label(plat),
+                    "remaining": remaining, "limit": limit,
+                    "reject": { "code": "E_BAD_MANIFEST", "message": e.to_string() },
+                    "error": format!("更新清单格式坏了：{e}（E_BAD_MANIFEST）"),
+                });
+            }
+        };
+        let sel = match updsel::select(&manifest, plat, &current(), &names) {
+            Ok(s) => s,
+            Err(p) if p.code == "E_NOT_NEWER" => {
+                let latest = manifest
+                    .get("platforms")
+                    .and_then(|x| x.get(plat))
+                    .and_then(|x| x.get("version"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(&tag)
+                    .to_string();
+                return json!({
+                    "ok": true, "hasUpdate": false, "latest": latest, "newer": false,
+                    "current": current(), "skipped": cfg.skipped_version,
+                    "notes": notes, "publishedAt": published, "asset": Value::Null,
+                    "source": "manifest", "platform": plat,
+                    "platformLabel": updsel::platform_label(plat),
+                    "remaining": remaining, "limit": limit, "error": "",
+                    "note": "已经是最新版本。",
+                });
+            }
+            Err(p) => return reject_json(&p, &tag, remaining, limit),
+        };
+        let url = assets
+            .iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(&sel.file))
+            .map(|(_, u, _)| u.clone())
+            .unwrap_or_default();
+        let has = sel.version != cfg.skipped_version;
+        return json!({
+            "ok": true,
+            "hasUpdate": has,
+            "latest": sel.version,
+            "newer": true,
+            "current": current(),
+            "skipped": cfg.skipped_version,
+            "notes": notes,
+            "publishedAt": published,
+            "asset": {
+                "name": sel.file, "url": url, "size": sel.size,
+                "sha256": sel.sha256, "kind": sel.kind
+            },
+            "source": "manifest",
+            "platform": plat,
+            "platformLabel": updsel::platform_label(plat),
+            "remaining": remaining,
+            "limit": limit,
+            "error": "",
+            "note": if url.is_empty() { "清单里写的文件没有下载地址，请到 GitHub 手动下载。" } else { "" },
+        });
+    }
+
+    // ---------- 没清单：老发布兜底（仍然只认本平台类型）----------
+    match updsel::legacy_pick(assets.iter().map(|(n, u, s)| (n.as_str(), u.as_str(), *s)), plat) {
+        Some((name, url, size)) => {
+            let newer = cmp_ver(&tag, &current()) > 0;
+            json!({
+                "ok": true,
+                "hasUpdate": newer && tag != cfg.skipped_version,
+                "latest": tag,
+                "newer": newer,
+                "current": current(),
+                "skipped": cfg.skipped_version,
+                "notes": notes,
+                "publishedAt": published,
+                "asset": { "name": name, "url": url, "size": size, "sha256": "", "kind": "legacy" },
+                "source": "asset-scan",
+                "platform": plat,
+                "platformLabel": updsel::platform_label(plat),
+                "remaining": remaining,
+                "limit": limit,
+                "error": "",
+                "note": "这次发布没带更新清单，已按文件名兜底校验（其他平台的包一律排除）。",
+            })
+        }
+        None => json!({
+            "ok": false,
+            "hasUpdate": false,
+            "latest": tag,
+            "current": current(),
+            "platform": plat,
+            "platformLabel": updsel::platform_label(plat),
+            "remaining": remaining,
+            "limit": limit,
+            "reject": { "code": "E_PLATFORM_MISSING",
+                        "message": "这次发布里没有 Windows 安装包（也没有更新清单）" },
+            "error": "这次发布里没有 Windows 安装包（E_PLATFORM_MISSING）",
+        }),
+    }
+}
+
 /// 从仓库源码的 Cargo.toml 里读版本号（Release/标签都没有时的最后兜底）
 fn repo_version(repo: &str, auth: Option<&str>) -> Option<String> {
     let mut last = None;
@@ -215,69 +403,6 @@ fn repo_version(repo: &str, auth: Option<&str>) -> Option<String> {
     None
 }
 
-/// 把 GitHub 的 release 响应转成界面用的结构
-fn release_json(v: &Value, cfg: &UpdateCfg, remaining: i64, limit: i64) -> Value {
-    let tag = v
-        .get("tag_name")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    let notes = v
-        .get("body")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    let published = v
-        .get("published_at")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    // 优先 Setup 安装包，其次任意 exe，最后 msi
-    let assets = v
-        .get("assets")
-        .and_then(|x| x.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let pick = |pred: &dyn Fn(&str) -> bool| -> Option<(String, String, u64)> {
-        assets.iter().find_map(|a| {
-            let name = a.get("name").and_then(|x| x.as_str()).unwrap_or("");
-            if !pred(name) {
-                return None;
-            }
-            let u = a.get("browser_download_url").and_then(|x| x.as_str())?;
-            let size = a.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
-            Some((name.to_string(), u.to_string(), size))
-        })
-    };
-    let lower = |s: &str| s.to_lowercase();
-    let found = pick(&|n| lower(n).ends_with(".exe") && lower(n).contains("setup"))
-        .or_else(|| pick(&|n| lower(n).ends_with(".exe")))
-        .or_else(|| pick(&|n| lower(n).ends_with(".msi")));
-
-    let newer = cmp_ver(&tag, &current()) > 0;
-    let asset = match &found {
-        Some((n, u, s)) => json!({"name": n, "url": u, "size": s}),
-        None => Value::Null,
-    };
-    json!({
-        "ok": true,
-        "hasUpdate": newer && tag != cfg.skipped_version,
-        "latest": tag,
-        "newer": newer,
-        "current": current(),
-        "skipped": cfg.skipped_version,
-        "notes": notes,
-        "publishedAt": published,
-        "asset": asset,
-        "source": "release",
-        "remaining": remaining,
-        "limit": limit,
-        "error": "",
-        "note": if found.is_none() { "这个 Release 里没有可自动安装的安装包，请到 GitHub 手动下载。" } else { "" },
-    })
-}
-
 /// 把远端的资产名净化成**一个纯文件名**。
 ///
 /// 资产名来自 GitHub API / 用户填的地址，不能直接 `dir.join(name)`：
@@ -300,8 +425,40 @@ fn safe_name(name: &str) -> String {
     }
 }
 
-/// 下载安装包，过程中通过 update-progress 事件回报进度
-pub fn download(app: &AppHandle, url: &str, name: &str, expected: u64) -> Result<String, String> {
+/// 文件的 sha256（小写十六进制）。清单里给了校验和就必须核到最后一个字节。
+pub fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut f = fs::File::open(path).map_err(|e| format!("读不到下载的文件：{e}"))?;
+    let mut h = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("读取下载文件失败：{e}"))?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    let out = h.finalize();
+    // 自己拼十六进制：为这点事加个 hex 依赖不值得
+    let mut s = String::with_capacity(64);
+    for b in out {
+        s.push_str(&format!("{b:02x}"));
+    }
+    Ok(s)
+}
+
+/// 下载安装包，过程中通过 update-progress 事件回报进度。
+///
+/// `sha256` 是清单里给的校验和：**有了就必须对**。这不是"额外保险"——
+/// 跨平台错配的最后一道闸就在这儿：万一有人把错的包传到对的名字上，
+/// 大小可能刚好一样（都是压缩产物），但内容哈希不会一样。
+pub fn download(
+    app: &AppHandle,
+    url: &str,
+    name: &str,
+    expected: u64,
+    sha256: Option<&str>,
+) -> Result<String, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("下载地址不合法".into());
     }
@@ -376,6 +533,24 @@ pub fn download(app: &AppHandle, url: &str, name: &str, expected: u64) -> Result
     if &head != b"MZ" {
         let _ = fs::remove_file(&file);
         return Err("下载的文件不是 Windows 安装包（MZ 头校验失败）".into());
+    }
+    // 清单给了 sha256 就必须核：大小对得上不代表内容对得上
+    if let Some(want) = sha256.map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty()) {
+        let got = match sha256_file(&file) {
+            Ok(x) => x,
+            Err(e) => {
+                let _ = fs::remove_file(&file);
+                return Err(e);
+            }
+        };
+        if got != want {
+            let _ = fs::remove_file(&file);
+            return Err(format!(
+                "安装包校验和对不上（清单 {}… / 实际 {}…），已删除并放弃安装",
+                &want[..want.len().min(8)],
+                &got[..got.len().min(8)]
+            ));
+        }
     }
     Ok(file.to_string_lossy().to_string())
 }
@@ -508,54 +683,72 @@ mod tests {
         assert_eq!(cmp_ver("1.2.3-beta.1", "1.2.3"), 0, "预发布按主版本比");
     }
 
-    /// 资产优先级：Setup 安装包 > 任意 exe > msi
+    /// 真机探针：打一次真实 GitHub API，把结论打出来。
+    /// 跑法：cargo test --offline __probe_live_check -- --ignored --nocapture
+    /// 用来确认"解析真实响应"这件事没坏（单元测试用的是构造数据）。
     #[test]
-    fn release_prefers_setup_then_exe_then_msi() {
+    #[ignore]
+    fn __probe_live_check() {
+        let out = check(&ucfg());
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        assert_eq!(out["platform"], updsel::platform_id());
+    }
+
+    /// 老发布（没有清单）里混着安卓包：桌面端只能挑出自己的 exe，
+    /// 绝不能因为"exe 找不到"就去拿 apk。这条是跨平台错配的第一道闸。
+    #[test]
+    fn legacy_release_never_picks_android_or_extension() {
         let v = json!({
-            "tag_name": "9.9.9",
-            "body": "notes",
-            "published_at": "2026-10-30T00:00:00Z",
+            "tag_name": "0.1.52",
             "assets": [
-                { "name": "readme.txt", "browser_download_url": "https://x/readme.txt", "size": 1 },
-                { "name": "app.msi", "browser_download_url": "https://x/app.msi", "size": 2 },
-                { "name": "King.Of.Focus-9.9.9.exe", "browser_download_url": "https://x/a.exe", "size": 3 },
-                { "name": "KingOfFocus-Setup-9.9.9.exe", "browser_download_url": "https://x/setup.exe", "size": 4 },
+                { "name": "King.Of.Focus-0.1.52-android.apk", "browser_download_url": "https://x/a.apk", "size": 1 },
+                { "name": "King.Of.Focus-Extension-1.1.1.zip", "browser_download_url": "https://x/e.zip", "size": 2 },
+                { "name": "King.Of.Focus-0.1.52.exe", "browser_download_url": "https://x/a.exe", "size": 3 },
             ],
         });
-        let out = release_json(&v, &ucfg(), 10, 60);
-        assert_eq!(out["latest"], "9.9.9");
-        assert_eq!(out["hasUpdate"], true);
-        assert_eq!(out["asset"]["name"], "KingOfFocus-Setup-9.9.9.exe", "有 Setup 就选 Setup");
+        let out = analyze_release(&v, &ucfg(), None, 0, 60);
+        assert_eq!(out["asset"]["name"], "King.Of.Focus-0.1.52.exe");
+        assert_eq!(out["source"], "asset-scan");
+        assert!(out["note"].as_str().unwrap_or("").contains("兜底"));
     }
 
-    /// 没有安装包时要给出"手动下载"的说明，而不是给个空链接
+    /// 只有安卓包时：明确回答"这次发布没有 Windows 包"，而不是给个空链接或错链接
     #[test]
-    fn release_without_assets_asks_for_manual_download() {
-        let v = json!({ "tag_name": "9.9.9", "assets": [] });
-        let out = release_json(&v, &ucfg(), 0, 60);
-        assert_eq!(out["asset"], serde_json::Value::Null);
-        assert!(out["note"].as_str().unwrap_or("").contains("手动下载"));
-        assert_eq!(out["hasUpdate"], true, "没有包也仍然提示有新版本");
+    fn legacy_release_with_only_apk_reports_missing_platform() {
+        let v = json!({
+            "tag_name": "0.1.52",
+            "assets": [
+                { "name": "King.Of.Focus-0.1.52-android.apk", "browser_download_url": "https://x/a.apk", "size": 1 },
+            ],
+        });
+        let out = analyze_release(&v, &ucfg(), None, 0, 60);
+        assert_eq!(out["ok"], false);
+        assert_eq!(out["reject"]["code"], "E_PLATFORM_MISSING");
+        assert_eq!(out["hasUpdate"], false);
     }
 
-    /// 已经"跳过"的版本不再提示
+    /// 已经"跳过"的老式发布不再提示，但换更新的版本要重新提示
     #[test]
     fn skipped_version_is_not_offered() {
-        let v = json!({ "tag_name": "9.9.9", "assets": [] });
+        let v = json!({
+            "tag_name": "9.9.9",
+            "assets": [{ "name": "King.Of.Focus-9.9.9.exe", "browser_download_url": "https://x/a.exe", "size": 9 }],
+        });
         let mut c = ucfg();
         c.skipped_version = "9.9.9".into();
-        assert_eq!(release_json(&v, &c, 0, 60)["hasUpdate"], false);
-
-        // 换一个更新的版本，跳过标记不应该继续挡住
+        assert_eq!(analyze_release(&v, &c, None, 0, 60)["hasUpdate"], false);
         c.skipped_version = "9.9.8".into();
-        assert_eq!(release_json(&v, &c, 0, 60)["hasUpdate"], true);
+        assert_eq!(analyze_release(&v, &c, None, 0, 60)["hasUpdate"], true);
     }
 
     /// 不比当前版本新的，不算更新
     #[test]
     fn older_or_same_tag_has_no_update() {
-        let v = json!({ "tag_name": "0.0.1", "assets": [] });
-        let out = release_json(&v, &ucfg(), 0, 60);
+        let v = json!({
+            "tag_name": "0.0.1",
+            "assets": [{ "name": "King.Of.Focus-0.0.1.exe", "browser_download_url": "https://x/a.exe", "size": 9 }],
+        });
+        let out = analyze_release(&v, &ucfg(), None, 0, 60);
         assert_eq!(out["newer"], false);
         assert_eq!(out["hasUpdate"], false);
     }

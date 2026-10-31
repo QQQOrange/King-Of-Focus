@@ -594,6 +594,23 @@
     '打开 GitHub 官方教程。': 'to open the official GitHub guide.',
     '当前没有跳过任何版本': 'No versions are skipped',
     '立即检查': 'Check now',
+    '本机更新通道': 'This device\'s update channel',
+    '桌面端只读更新清单里 windows-x64 那一条，四道校验都要过。':
+      'The desktop app only reads the windows-x64 entry, and all four checks must pass.',
+    '校验平台标识、包类型、版本号、sha256：对不上就不下载。':
+      'Platform ID, package type, version and sha256 are checked; any mismatch means no download.',
+    '宁可停在提示上，也不去找别的平台的包。':
+      'It stops at the warning instead of looking for another platform\'s package.',
+    '平台标识': 'Platform ID',
+    '当前版本': 'Current version',
+    '只收桌面端安装包': 'Desktop packages only',
+    '（包名里的平台必须是本机）、': ' (the platform in the file name must be this machine), ',
+    '包类型': 'package type',
+    '版本号': 'version',
+    '（必须比当前新，且与包名一致）、': ' (must be newer than the current one and match the file name), ',
+    '（下载后逐字节核对）。': ' (verified byte by byte after download).',
+    '停在提示上': 'stop at the warning',
+    '检查失败：': 'Check failed: ',
 
     /* —— 侧栏 / 状态 —— */
     '当前没有生效的自律规则': 'No rule is active right now',

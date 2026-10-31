@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只开放更新包这一个目录：FileProvider 暴露的路径越少越好 -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

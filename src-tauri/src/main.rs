@@ -31,6 +31,7 @@ mod sweep;
 mod testmode;
 mod sync;
 mod update;
+mod updsel;
 mod version;
 
 use std::sync::atomic::Ordering;

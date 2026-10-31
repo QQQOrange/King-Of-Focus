@@ -8,10 +8,13 @@
  * 主程序连不上时会立刻清空规则并停止清理，避免主程序退出后浏览器被永久锁死。
  */
 
-importScripts('matcher.js', 'sweep.js');
+importScripts('matcher.js', 'sweep.js', 'update.js');
 
 const PORTS = [27315, 27316, 27317, 31415, 8065];
 const ALARM = 'kof-tick';
+const UPD_ALARM = 'kof-update';
+const UPD_REPO = 'QQQOrange/King-Of-Focus';
+const UPD_EVERY_MIN = 12 * 60;   // 12 小时查一次，够用又不至于天天打 GitHub
 const SCAN_MS = 4000;      // 存活期间主动扫描间隔
 const PULL_MS = 12000;     // 拉规则的间隔
 const MAX_CLOSE_PER_PASS = 30;
@@ -475,6 +478,8 @@ async function applyEmptyDnr() {
 
 function startTimers() {
   chrome.alarms.create(ALARM, { periodInMinutes: 0.5 });
+  // 更新检查是另一条周期：12 小时一次，和 30 秒的规则轮询无关
+  chrome.alarms.create(UPD_ALARM, { periodInMinutes: UPD_EVERY_MIN, delayInMinutes: 1 });
   try {
     clearInterval(globalThis.__kofScan);
     clearInterval(globalThis.__kofPull);
@@ -492,6 +497,13 @@ chrome.runtime.onStartup.addListener(() => {
   refresh({ reason: 'startup' });
 });
 chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === UPD_ALARM) {
+    // 自动检查是"配置"，不是"硬编码"：用户关了就别打扰 GitHub
+    chrome.storage.local.get({ updAuto: true }).then((v) => {
+      if (v.updAuto) checkUpdate('alarm');
+    });
+    return;
+  }
   if (a.name !== ALARM) return;
   chrome.alarms.create(ALARM, { periodInMinutes: 0.5 });
   // 闹钟醒来后补一次；若规则已很久没更新则重新拉取
@@ -514,6 +526,113 @@ chrome.windows.onFocusChanged.addListener(() => { beat(); });
 chrome.tabs.onCreated.addListener((tab) => {
   if (tab && tab.id != null && tab.url) checkTab(tab.id, tab.url);
 });
+
+/* ---------------- 自动更新（只查不装） ----------------
+ *
+ * 插件**不能自己装自己**：未打包安装的扩展没有静默更新通道，
+ * 上传到商店才由浏览器负责。所以这里只做两件事：
+ *   1) 按平台校验后告诉用户"有新版本"；
+ *   2) 给出**本平台**的下载地址。
+ *
+ * 校验逻辑在 update.js（纯函数、node 单测覆盖），这里只负责取数据、存结果。
+ * 特别地：不扫资产列表找"像插件的 zip"——那正是跨平台错配的入口。
+ */
+let UPD_CHECKING = null;
+
+async function checkUpdate(reason) {
+  if (UPD_CHECKING) return UPD_CHECKING;
+  UPD_CHECKING = (async () => {
+    const current = chrome.runtime.getManifest().version;
+    const now = Date.now();
+    const base = { current, platform: KOFUpd.PLATFORM, at: now, reason: reason || 'auto' };
+    const done = (r) => {
+      const out = Object.assign({}, base, r);
+      // 记下来：弹窗打开时直接显示上次结果，不用再打一次网络
+      return chrome.storage.local
+        .set({ updResult: out, updLastCheck: Math.floor(now / 1000) })
+        .then(() => out);
+    };
+    try {
+      const relRes = await fetch(`https://api.github.com/repos/${UPD_REPO}/releases/latest`, {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (!relRes.ok) {
+        return done({
+          status: 'reject',
+          code: 'E_NO_RELEASE',
+          message: `GitHub 返回 HTTP ${relRes.status}${relRes.status === 404 ? '（还没发 Release）' : ''}`,
+        });
+      }
+      const rel = await relRes.json();
+      const tag = String(rel.tag_name || '');
+      const notes = String(rel.body || '');
+      const assets = Array.isArray(rel.assets) ? rel.assets : [];
+      const names = assets.map((a) => a.name);
+
+      const man = assets.find(
+        (a) => String(a.name || '').toLowerCase() === KOFUpd.MANIFEST_NAME.toLowerCase(),
+      );
+
+      if (!man) {
+        // 老发布兜底：只认 zip/crx，且排除桌面与安卓包
+        const pick = KOFUpd.legacyPick(names, KOFUpd.PLATFORM);
+        if (!pick) {
+          return done({
+            status: 'reject',
+            code: 'E_PLATFORM_MISSING',
+            message: '这次发布里没有浏览器插件包（也没有更新清单）',
+          });
+        }
+        const a = assets.find((x) => x.name === pick) || {};
+        if (KOFUpd.compareVer(tag, current) <= 0) {
+          return done({ status: 'none', latest: tag, notes });
+        }
+        return done({
+          status: 'ok',
+          latest: tag,
+          notes,
+          source: 'asset-scan',
+          message: '这次发布没带更新清单，已按文件名兜底校验。',
+          file: pick,
+          size: Number(a.size) || 0,
+          sha256: '',
+          url: a.browser_download_url || '',
+        });
+      }
+
+      const manRes = await fetch(man.browser_download_url);
+      if (!manRes.ok) {
+        return done({ status: 'reject', code: 'E_MANIFEST_FETCH', message: `读不到更新清单（HTTP ${manRes.status}）` });
+      }
+      const manifest = await manRes.json();
+      const picked = KOFUpd.select(manifest, KOFUpd.PLATFORM, current, names);
+      if (picked.status === 'reject') return done(picked);
+      if (picked.status === 'none') {
+        return done({ status: 'none', latest: picked.latest, notes });
+      }
+      const a = assets.find((x) => x.name.toLowerCase() === picked.file.toLowerCase()) || {};
+      return done({
+        status: 'ok',
+        latest: picked.version,
+        notes,
+        source: 'manifest',
+        file: picked.file,
+        size: picked.size,
+        sha256: picked.sha256,
+        url: a.browser_download_url || '',
+      });
+    } catch (e) {
+      return done({
+        status: 'reject',
+        code: 'E_NETWORK',
+        message: `连不上 GitHub：${(e && e.message) || e}`,
+      });
+    } finally {
+      UPD_CHECKING = null;
+    }
+  })();
+  return UPD_CHECKING;
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (!msg) return false;
@@ -552,6 +671,14 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (msg.type === 'sweepWeb') {
     // 手动"现在收尾"：弹窗里的按钮，按当前模式处理已打开的标签页
     webSweep('manual').then((n) => reply({ ok: true, swept: n }));
+    return true;
+  }
+  if (msg.type === 'checkUpdate') {
+    checkUpdate('manual').then((r) => reply(r));
+    return true;
+  }
+  if (msg.type === 'setAutoUpdate') {
+    chrome.storage.local.set({ updAuto: !!msg.value }).then(() => reply({ ok: true }));
     return true;
   }
   if (msg.type === 'setAutoClose') {

@@ -19,6 +19,11 @@
     <!-- Shizuku：拿到 ADB 级 shell 权限（用户自己授权，Shizuku 会把权限跑在 shell 用户下） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
+    <!-- 自动更新：下载 APK 需要网络；安装需要"未知来源"授权（Android 8+ 按应用授予） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- 列出可被拦截的应用（应用选择器） -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -95,6 +100,17 @@
         <service
             android:name=".shell.ShellService"
             android:exported="false" />
+
+        <!-- 更新包：下载到 cacheDir/updates，用 FileProvider 交给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- 心跳：服务被系统清掉后把它拉回来 -->
         <receiver
