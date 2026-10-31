@@ -143,6 +143,8 @@ class MainActivity : ComponentActivity() {
         runCatching { KeepAlive.ensureService(this, Store.current) }
         // 顺带刷新权限状态：授权页回来之后横幅/卡片要立刻变
         runCatching { UsageAccess.probe(this, Store.current) }
+        // 云同步开了「自动备份」时，回到应用顺手传一份（有节流，见 CloudAuto）
+        runCatching { com.qqqorange.kingoffocus.data.CloudAuto.maybeUpload(this) }
     }
 }
 

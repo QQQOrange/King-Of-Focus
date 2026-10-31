@@ -60,6 +60,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import com.qqqorange.kingoffocus.data.Portable
 
 /**
  * 设置页：所有"配置类"的东西都在这里，按主题分组，卡片内一行一个开关/数值。
@@ -365,45 +369,134 @@ private fun CloudSection(cfg: Config) {
     var pass by remember(cfg.cloud.pass) { mutableStateOf(cfg.cloud.pass) }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf(cfg.cloud.lastStatus) }
+    var entries by remember { mutableStateOf<List<CloudSync.Entry>>(emptyList()) }
+    var loaded by remember { mutableStateOf(false) }
+    var picked by remember { mutableStateOf<CloudSync.Entry?>(null) }
+    var confirmDelete by remember { mutableStateOf<CloudSync.Entry?>(null) }
 
-    val json = remember {
-        Json {
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-            prettyPrint = false
-        }
-    }
-
-    fun persist(extra: CloudCfg.() -> CloudCfg = { this }) {
+    fun persist() {
         Store.update { c ->
-            c.copy(cloud = c.cloud.copy(url = url, user = user, pass = pass).extra())
+            c.copy(cloud = c.cloud.copy(url = url.trim(), user = user.trim(), pass = pass))
         }
     }
 
-    fun run(label: String, block: () -> String) = scope.launch {
-        busy = true
-        status = "$label…"
-        val msg = withContext(Dispatchers.IO) { runCatching(block).getOrElse { "出错：${it.message}" } }
+    fun note(msg: String) {
         status = msg
         Store.update { c ->
             c.copy(
                 cloud = c.cloud.copy(
                     lastStatus = msg,
-                    lastSync = if (msg.startsWith("已")) System.currentTimeMillis() / 1000 else c.cloud.lastSync,
+                    lastSync = if (msg.startsWith("已")) System.currentTimeMillis() / 1000
+                    else c.cloud.lastSync,
                 ),
             )
         }
+    }
+
+    fun refresh() = scope.launch {
+        busy = true
+        status = "读取云端…"
+        val r = withContext(Dispatchers.IO) {
+            runCatching { CloudSync.list(Store.current.cloud) }
+                .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
+        }
+        when (r) {
+            is CloudSync.Outcome.Err -> note(r.message)
+            is CloudSync.Outcome.Ok -> {
+                entries = r.entries
+                loaded = true
+                status = if (r.entries.isEmpty()) "云端还没有备份" else "云端 ${r.entries.size} 份备份"
+            }
+        }
         busy = false
+    }
+
+    fun upload() {
+        persist()
+        scope.launch {
+            busy = true
+            status = "上传…"
+            val msg = withContext(Dispatchers.IO) {
+                runCatching {
+                    val c = Store.current
+                    val name = CloudSync.backupName()
+                    // 载荷是**跨设备文档**（与桌面端同一份格式），不是手机自己的 config.json：
+                    // 后者桌面读不懂，传上去也只是一份没人能用的文件。
+                    val doc = Portable.toDoc(c, android.os.Build.MODEL ?: "Android", appVersion(ctx))
+                    val body = Portable.seal(Portable.render(doc), c.backup.password)
+                    when (val r = CloudSync.put(c.cloud, name, body)) {
+                        is CloudSync.Outcome.Err -> r.message
+                        is CloudSync.Outcome.Ok -> {
+                            val hint = if (c.backup.password.isBlank()) {
+                                "（明文，建议设置备份密码）"
+                            } else {
+                                ""
+                            }
+                            "已上传 $name$hint"
+                        }
+                    }
+                }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
+            }
+            note(msg)
+            busy = false
+            if (msg.startsWith("已上传")) refresh()
+        }
+    }
+
+    fun restore(entry: CloudSync.Entry, mode: String) {
+        persist()
+        scope.launch {
+            busy = true
+            status = if (mode == "merge") "正在合并…" else "正在覆盖…"
+            val msg = withContext(Dispatchers.IO) {
+                runCatching {
+                    val c = Store.current
+                    val text = when (val r = CloudSync.get(c.cloud, entry.name)) {
+                        is CloudSync.Outcome.Err -> return@runCatching r.message
+                        is CloudSync.Outcome.Ok -> r.text ?: ""
+                    }
+                    val plain = Portable.unlock(text, c.backup.password)
+                    val parsed = Portable.parse(plain)
+                    val base = Store.current
+                    if (mode == "merge") {
+                        val out = Portable.merge(parsed.doc, base)
+                        if (out.stats.noop) {
+                            "这份备份的内容本机都有了"
+                        } else {
+                            Store.update { out.config }
+                            "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
+                        }
+                    } else {
+                        val next = Portable.overwrite(parsed.doc, base)
+                        Store.update { next }
+                        "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）"
+                    }
+                }.getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
+            }
+            note(msg)
+            busy = false
+            // 规则和时段可能整批换了，守护服务要按新配置重来一遍
+            if (GuardService.shouldRun(Store.current)) runCatching { GuardService.start(ctx) }
+        }
     }
 
     Panel {
         ToggleRow(
             "启用云同步",
-            "只同步本机配置（规则/时段/积分）。备份文件请用下面的「备份与恢复」。",
+            "与桌面端共用同一个 WebDAV 目录：手机传的备份桌面能恢复，桌面传的手机能恢复。",
             cfg.cloud.enabled,
-        ) { v -> Store.update { it.copy(cloud = it.cloud.copy(enabled = v)) } }
+        ) { v ->
+            Store.update { it.copy(cloud = it.cloud.copy(enabled = v)) }
+            if (v) {
+                refresh()
+            } else {
+                entries = emptyList()
+                loaded = false
+            }
+        }
 
         if (cfg.cloud.enabled) {
+            Spacer(Modifier.height(6.dp))
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },
@@ -412,116 +505,223 @@ private fun CloudSection(cfg: Config) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
+            if (url.trim().startsWith("http://")) {
+                Text(
+                    "这个地址是明文 http：账号密码和备份内容在局域网里是可见的。能用 https 就用 https。",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = user,
-                onValueChange = { user = it },
-                label = { Text("账号") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = pass,
-                onValueChange = { pass = it },
-                label = { Text("密码 / 应用密码") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    label = { Text("账号") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = pass,
+                    onValueChange = { pass = it },
+                    label = { Text("密码 / 应用密码") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { persist(); toast(ctx, "已保存") }, enabled = !busy) {
                     Text("保存", fontSize = 12.sp)
                 }
                 OutlinedButton(
-                    onClick = { persist(); run("测试连接") { when (val r = CloudSync.testConnection(Store.current.cloud)) {
-                        is CloudSync.Outcome.Ok -> "连接正常"
-                        is CloudSync.Outcome.Err -> r.message
-                    } } },
+                    onClick = {
+                        persist()
+                        scope.launch {
+                            busy = true
+                            status = "测试连接…"
+                            val msg = withContext(Dispatchers.IO) {
+                                when (val r = CloudSync.testConnection(Store.current.cloud)) {
+                                    is CloudSync.Outcome.Ok -> "连接正常（能读能写）"
+                                    is CloudSync.Outcome.Err -> r.message
+                                }
+                            }
+                            note(msg)
+                            busy = false
+                        }
+                    },
                     enabled = !busy,
                 ) { Text("测试", fontSize = 12.sp) }
             }
-            Spacer(Modifier.height(8.dp))
+
+            Spacer(Modifier.height(10.dp))
+            Text("云端备份", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = {
-                        persist()
-                        run("上传") {
-                            val c = Store.current
-                            // 凭据不上云：密码留在本机
-                            val safe = c.copy(
-                                cloud = c.cloud.copy(pass = "", lastStatus = ""),
-                                backup = c.backup.copy(password = ""),
-                            )
-                            when (val r = CloudSync.upload(Store.current.cloud, json.encodeToString(Config.serializer(), safe))) {
-                                is CloudSync.Outcome.Ok -> "已上传（v${appVersion(ctx)}）"
-                                is CloudSync.Outcome.Err -> r.message
-                            }
-                        }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                ) { Text("上传本机", fontSize = 12.sp) }
-                OutlinedButton(
-                    onClick = {
-                        persist()
-                        run("下载") {
-                            val cloud = Store.current.cloud
-                            when (val r = CloudSync.download(cloud)) {
-                                is CloudSync.Outcome.Err -> r.message
-                                is CloudSync.Outcome.Ok -> {
-                                    val text = r.text ?: ""
-                                    val remote = runCatching { json.decodeFromString(Config.serializer(), text) }
-                                        .getOrElse { return@run "云端文件读不懂，已放弃（本机没变）" }
-                                    when (CloudSync.decide(Store.current.updatedAt, remote.updatedAt)) {
-                                        CloudSync.Side.SAME -> "两边一样，不需要同步"
-                                        CloudSync.Side.LOCAL -> "本机更新，先上传再下载"
-                                        CloudSync.Side.REMOTE -> {
-                                            // 凭据与平台专属设置仍以本机为准
-                                            val local = Store.current
-                                            val merged = remote.copy(
-                                                cloud = local.cloud.copy(
-                                                    url = local.cloud.url,
-                                                    user = local.cloud.user,
-                                                    pass = local.cloud.pass,
-                                                    enabled = true,
-                                                ),
-                                                update = local.update,
-                                                stats = local.stats,
-                                            )
-                                            Store.save(merged)
-                                            "已下载并覆盖本机（远端 ${SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(remote.updatedAt * 1000))}）"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                ) { Text("下载覆盖", fontSize = 12.sp) }
+                OutlinedButton(onClick = { upload() }, enabled = !busy) {
+                    Text("上传本机", fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = { refresh() }, enabled = !busy) {
+                    Text("刷新列表", fontSize = 12.sp)
+                }
             }
+
+            if (loaded) {
+                Spacer(Modifier.height(6.dp))
+                if (entries.isEmpty()) {
+                    Text(
+                        "云端还没有备份。点「上传本机」传一份，桌面端在「备份 → 云端」里就能看到它。",
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    entries.forEach { e ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !busy) { picked = e }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (e.fromAndroid) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.tertiary,
+                                    ),
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    e.sourceLabel + " · " + e.timeLabel +
+                                        if (e.auto) "（自动）" else "",
+                                    fontSize = 12.sp,
+                                )
+                                Text(
+                                    e.name + if (e.size > 0) " · ${e.size / 1024} KB" else "",
+                                    fontSize = 9.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            TextButton(
+                                onClick = { confirmDelete = e },
+                                enabled = !busy,
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) { Text("删除", fontSize = 11.sp) }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                "回到应用时自动备份",
+                "只在配置有改动时上传，覆盖 $AUTO_HINT 这一份，不会堆积",
+                cfg.cloud.auto,
+                divider = true,
+            ) { v -> Store.update { it.copy(cloud = it.cloud.copy(auto = v)) } }
+
             if (status.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(status, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
             }
             if (cfg.cloud.lastSync > 0) {
-                Spacer(Modifier.height(4.dp))
                 Text(
-                    "上次同步：" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(cfg.cloud.lastSync * 1000)),
+                    "上次成功：" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                        .format(Date(cfg.cloud.lastSync * 1000)),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Spacer(Modifier.height(2.dp))
             Text(
-                "同一个 WebDAV 目录下，手机写 kof-android.json，桌面写它自己的配置文件，互不覆盖。",
+                "云端存的是 .kofbak 跨设备备份，两端格式与加密方式一致。"
+                    + "「备份密码」在下面「备份与恢复」里填，两端要一样，否则解不开。",
                 fontSize = 10.sp,
+                lineHeight = 14.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
+
+    // —— 从云端恢复：合并 / 覆盖 ——
+    picked?.let { e ->
+        AlertDialog(
+            onDismissRequest = { picked = null },
+            title = { Text("从云端恢复？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "${e.sourceLabel} · ${e.timeLabel}" + if (e.auto) "（自动备份）" else "",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "覆盖：用这份备份的规则、时段、积分替换本机，本机多出来的规则会消失。",
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        "合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列。",
+                        fontSize = 12.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { picked = null; restore(e, "merge") }) { Text("合并") }
+                    TextButton(onClick = { picked = null; restore(e, "overwrite") }) { Text("覆盖") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { picked = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // —— 删除云端备份（不可撤销，二次确认） ——
+    confirmDelete?.let { e ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("删除云端这份备份？") },
+            text = {
+                Text(
+                    "${e.name} 会从网盘上删掉，本机配置不受影响。删了就找不回来了。",
+                    fontSize = 12.sp,
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmDelete = null
+                    scope.launch {
+                        busy = true
+                        val msg = withContext(Dispatchers.IO) {
+                            when (val r = CloudSync.delete(Store.current.cloud, e.name)) {
+                                is CloudSync.Outcome.Err -> r.message
+                                is CloudSync.Outcome.Ok -> "已删除 ${e.name}"
+                            }
+                        }
+                        note(msg)
+                        busy = false
+                        refresh()
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("取消") }
+            },
+        )
+    }
 }
+
+/** 自动备份的文件名，写在提示里和实际用的保持一致 */
+private const val AUTO_HINT = "kof-auto-android.kofbak"
 
 /**
  * 保活体检：逐项列出权限/系统设置的状态，展开能看到"用途 / 申请时机 / 缺了会怎样"。

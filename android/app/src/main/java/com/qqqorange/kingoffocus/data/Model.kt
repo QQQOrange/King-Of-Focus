@@ -222,6 +222,13 @@ data class CloudCfg(
     val url: String = "",
     val user: String = "",
     val pass: String = "",
+    /**
+     * 回到应用时自动上传一份备份（覆盖固定名字 `kof-auto-android.kofbak`）。
+     *
+     * 默认关：自动上传会写网盘，用户没配好之前不该偷偷往外发东西。开了之后
+     * 也只在「配置有改动」且距上次尝试超过 10 分钟时才动一次，不会刷屏。
+     */
+    val auto: Boolean = false,
     val lastSync: Long = 0L,
     val lastStatus: String = "",
 )
