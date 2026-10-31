@@ -831,7 +831,15 @@ private fun UpdateSection(cfg: Config) {
     fun checkNow() = scope.launch {
         UpdateHub.busy.value = true
         setStatus("正在检查…")
-        val r = withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current) }
+        val r = try {
+            withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current) }
+        } catch (e: Exception) {
+            // 兜底：检查里任何没被接住的异常都不能让 busy 永远卡住
+            android.util.Log.e("KofUpdate", "检查更新时出错", e)
+            UpdateHub.busy.value = false
+            setStatus("更新失败：${e.message}", true)
+            return@launch
+        }
         Store.update { it.copy(update = it.update.copy(lastCheck = System.currentTimeMillis() / 1000)) }
         UpdateHub.last.value = r
         res = r
