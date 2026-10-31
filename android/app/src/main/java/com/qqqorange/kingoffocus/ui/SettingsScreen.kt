@@ -29,10 +29,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.qqqorange.kingoffocus.AppPickerDialog
 import com.qqqorange.kingoffocus.BackupSection
 import com.qqqorange.kingoffocus.UpdateSection
 import com.qqqorange.kingoffocus.appVersion
+import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.data.CloudCfg
@@ -59,7 +59,6 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(cfg: Config) {
     val ctx = LocalContext.current
-    var showAllow by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
 
     Column(
@@ -142,9 +141,19 @@ fun SettingsScreen(cfg: Config) {
                         Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
                     }
                 }
-                OutlinedButton(onClick = { showAllow = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("允许使用的应用（${cfg.lockAllow.size}）", fontSize = 12.sp)
-                }
+                // 允许名单只有一份：白名单规则。这里只读展示，改的地方在「规则」页。
+                val allowList = GuardEngine.allowedPackages(cfg)
+                Text(
+                    if (allowList.isEmpty()) {
+                        "允许使用的应用：还没有。锁机期间除系统界面与输入法，其余一律挡住；" +
+                            "要让某个应用能用，去「规则」页建一条白名单规则。"
+                    } else {
+                        "允许使用的应用：${allowList.size} 个，来自「规则」页的白名单。" +
+                            "遮罩上的可点列表和这里的拦截判定读的是同一份，不会两处打架。"
+                    },
+                    fontSize = 10.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -237,17 +246,6 @@ fun SettingsScreen(cfg: Config) {
             )
         }
         Spacer(Modifier.height(10.dp))
-    }
-
-    if (showAllow) {
-        AppPickerDialog(
-            selected = cfg.lockAllow,
-            onDismiss = { showAllow = false },
-            onConfirm = { pkgs ->
-                Store.update { it.copy(lockAllow = pkgs) }
-                showAllow = false
-            },
-        )
     }
 
     if (confirmReset) {

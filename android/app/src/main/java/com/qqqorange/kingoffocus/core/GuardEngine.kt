@@ -52,6 +52,24 @@ object GuardEngine {
         return cfg.rules.filter { it.enabled }
     }
 
+    /**
+     * **允许使用的应用——全应用唯一的一份名单。**
+     *
+     * 以前这里有两份：锁机遮罩自己有一个 `lockAllow`，白名单规则里又有一份。
+     * 于是常出现"遮罩里能点开、规则却把它送回桌面"的矛盾——同一个应用，
+     * 两处配置各说各话。现在只有白名单规则这一个来源：
+     * 遮罩的允许列表、白名单模式的判定，读的都是它。
+     */
+    fun allowedPackages(cfg: Config): Set<String> =
+        cfg.rules.asSequence()
+            .filter { it.enabled && it.mode == "whitelist" }
+            .flatMap { it.packages.asSequence() }
+            .toSet()
+
+    /** 有没有启用着的白名单规则（总览/规则页用来解释"现在是什么模式"） */
+    fun hasWhitelistRule(cfg: Config): Boolean =
+        cfg.rules.any { it.enabled && it.mode == "whitelist" }
+
     /** 系统壳进程：拦了它们等于把手机变砖 */
     private val SHELL = setOf(
         "com.android.systemui",

@@ -129,7 +129,15 @@ class LockEngineTest {
 
     @Test
     fun shouldMaskSkipsAllowListAndEmergency() {
-        val c = cfg().copy(lockAllow = listOf("com.tencent.mm"))
+        // 允许名单现在只有白名单规则这一个来源（老的 lockAllow 已废弃）
+        val c = cfg().copy(
+            rules = listOf(
+                com.qqqorange.kingoffocus.data.Rule(
+                    id = "r", name = "允许", mode = "whitelist",
+                    packages = listOf("com.tencent.mm"),
+                ),
+            ),
+        )
         val now = at(9, 5)
         assertTrue("桌面也要盖", LockEngine.shouldMask(c, now, "com.google.android.apps.nexuslauncher", "com.qqqorange.kingoffocus"))
         assertTrue("别的应用要盖", LockEngine.shouldMask(c, now, "com.example.game", "com.qqqorange.kingoffocus"))

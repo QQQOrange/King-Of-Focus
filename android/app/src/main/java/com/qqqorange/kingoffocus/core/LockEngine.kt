@@ -144,7 +144,9 @@ object LockEngine {
         if (!isLockActive(cfg, now)) return false
         if (fg.isNullOrEmpty()) return false
         if (fg == selfPkg) return false
-        if (fg in cfg.lockAllow) return false
+        // 允许名单只有一个来源：白名单规则（见 GuardEngine.allowedPackages）。
+        // 以前这里读 cfg.lockAllow，于是"遮罩放行的应用"和"规则放行的应用"可以不一样。
+        if (fg in GuardEngine.allowedPackages(cfg)) return false
         if (isAlwaysAllowed(fg, imePkgs)) return false
         return true
     }
