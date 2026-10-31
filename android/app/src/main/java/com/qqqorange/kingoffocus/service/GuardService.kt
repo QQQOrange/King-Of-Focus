@@ -22,6 +22,8 @@ import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.core.StatsTrack
+import com.qqqorange.kingoffocus.core.KeepAlive
+import com.qqqorange.kingoffocus.core.UsageAccess
 import com.qqqorange.kingoffocus.core.ShizukuBridge
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
@@ -66,6 +68,10 @@ class GuardService : Service() {
     private var statsFlushAt = 0L
     /** 已经清理过哪一天的数据，避免每拍都去列目录 */
     private var statsPruneDay = ""
+
+    /** 上次探测「使用情况访问」的时间与状态（用来发现"被回收"） */
+    private var usageProbeAt = 0L
+    private var lastUsageState: UsageAccess.State? = null
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
     private var lastLeft = -1L
@@ -205,6 +211,31 @@ class GuardService : Service() {
             StatsStore.closeSpan()
             return
         }
+
+        // 权限状态：每 10 秒探一次（AppOps 调用不算便宜），并记录状态迁移。
+        // 没有权限时**不采样**，但原因要落到 UsageAccess.last 上，页面上直接显示，
+        // 绝不能让用户看着一屏 0 以为是"今天没用手机"。
+        if (t - usageProbeAt > USAGE_PROBE_MS) {
+            usageProbeAt = t
+            val st = UsageAccess.probe(this, cfg)
+            if (st.state != lastUsageState) {
+                val prev = lastUsageState
+                lastUsageState = st.state
+                // 只有"从有到无"才提醒：首次没给过由界面卡片引导，不打扰
+                if (prev == UsageAccess.State.GRANTED && st.state == UsageAccess.State.REVOKED) {
+                    alert(
+                        "「使用情况访问」被收回了",
+                        "统计已暂停。可能是清理软件或系统更新把它关掉了，点通知回到应用重新授予即可。",
+                    )
+                }
+            }
+        }
+        val access = UsageAccess.last ?: UsageAccess.probe(this, cfg)
+        if (!access.canRecord) {
+            StatsStore.closeSpan()
+            return
+        }
+
         if (!now.isAfter(from)) return
 
         // 熄屏 / 锁屏 = 人不在：这一段时间一点都不记（桌面端靠"无输入 60 秒"达到同一效果）
@@ -571,6 +602,9 @@ class GuardService : Service() {
         /** 严格空闲阈值：与桌面端 `IDLE_TIMEOUT_SECS` 同一含义 */
         private const val IDLE_TIMEOUT_MS = 60_000L
 
+        /** 多久探一次权限状态 */
+        private const val USAGE_PROBE_MS = 10_000L
+
         private val SYSTEM_PKGS = setOf(
             "com.android.systemui",
             "com.android.launcher3",
@@ -602,9 +636,12 @@ class GuardService : Service() {
             if (shouldRun(cfg)) {
                 runCatching { start(ctx) }
                 scheduleHeartbeat(ctx)
+                // 第二条保活通道：部分 ROM 拦闹钟但放行 Job
+                KeepAlive.scheduleJob(ctx, cfg)
             } else {
                 stop(ctx)
                 cancelHeartbeat(ctx)
+                KeepAlive.cancelJob(ctx)
             }
         }
 

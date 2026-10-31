@@ -37,6 +37,8 @@ object Store {
         _state.value = normalize(load())
         // 统计目录也在这里初始化：服务、界面、报告都从 StatsStore 读同一份
         com.qqqorange.kingoffocus.core.StatsStore.init(ctx.applicationContext)
+        // 权限状态机要把"首次拿到"记下来（用来区分"从没给过"和"被回收"）
+        com.qqqorange.kingoffocus.core.UsageAccess.bind { block -> update(block) }
     }
 
     private fun load(): Config {

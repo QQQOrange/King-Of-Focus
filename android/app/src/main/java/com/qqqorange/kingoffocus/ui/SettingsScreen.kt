@@ -25,6 +25,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -41,6 +42,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.SleepSegment
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.service.GuardService
+import com.qqqorange.kingoffocus.core.KeepAlive
 import com.qqqorange.kingoffocus.service.KofAccessibility
 import com.qqqorange.kingoffocus.toast
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +52,14 @@ import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Button
+import androidx.compose.runtime.collectAsState
 
 /**
  * 设置页：所有"配置类"的东西都在这里，按主题分组，卡片内一行一个开关/数值。
@@ -222,6 +232,10 @@ fun SettingsScreen(cfg: Config) {
 
         SectionTitle("版本与更新")
         UpdateSection(cfg)
+
+        // ---------------- 保活体检 ----------------
+        SectionTitle("保活体检")
+        KeepAliveSection(cfg)
 
         // ---------------- 数据 ----------------
         SectionTitle("数据")
@@ -506,5 +520,138 @@ private fun CloudSection(cfg: Config) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * 保活体检：逐项列出权限/系统设置的状态，展开能看到"用途 / 申请时机 / 缺了会怎样"。
+ *
+ * 为什么默认折叠：这一屏有 6 项，每项三行说明会把页面撑爆；
+ * 而用户真正需要先看到的是"哪几项没开"。
+ */
+@Composable
+private fun KeepAliveSection(cfg: Config) {
+    val ctx = LocalContext.current
+    val tick by UiTick.n.collectAsState()
+    var open by remember { mutableStateOf<String?>(null) }
+    var confirmRestart by remember { mutableStateOf(false) }
+
+    val items = remember(tick, cfg.enabled, cfg.stats.enabled) { KeepAlive.audit(ctx, cfg) }
+    val running = remember(tick) { KeepAlive.isServiceRunning(ctx) }
+    val should = GuardService.shouldRun(cfg)
+
+    Panel {
+        Text(
+            KeepAlive.healthLine(ctx, cfg),
+            fontSize = 11.5.sp,
+            color = if (running || !should) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "自律与统计都靠一个常驻前台服务。它被系统清掉时，时段不再判定、规则不再拦截、"
+                + "统计也不再记录——所以下面这些项缺一不可。",
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        items.forEach { item ->
+            val expanded = open == item.title
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { open = if (expanded) null else item.title }
+                    .padding(vertical = 6.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (item.ok) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.error,
+                            ),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        item.title,
+                        fontSize = 12.5.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (item.ok) "已就绪" else "缺失",
+                        fontSize = 10.5.sp,
+                        color = if (item.ok) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.error,
+                    )
+                }
+                if (expanded) {
+                    Spacer(Modifier.height(5.dp))
+                    Text("用途：" + item.purpose, fontSize = 10.5.sp, lineHeight = 15.sp)
+                    Text(
+                        "申请时机：" + item.whenAsk,
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "缺失影响：" + item.impact,
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    if (!item.ok) {
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedButton(
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                horizontal = 10.dp, vertical = 2.dp,
+                            ),
+                            onClick = {
+                                item.action?.let { runCatching { ctx.startActivity(it) } }
+                                toast(ctx, "按提示开启后回到本页，状态会自动刷新")
+                            },
+                        ) { Text("去开启", fontSize = 11.5.sp) }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { confirmRestart = true }) {
+                Text("重启守护", fontSize = 12.sp)
+            }
+            OutlinedButton(onClick = { UiTick.bump() }) {
+                Text("重新体检", fontSize = 12.sp)
+            }
+        }
+    }
+
+    if (confirmRestart) {
+        AlertDialog(
+            onDismissRequest = { confirmRestart = false },
+            title = { Text("重启守护服务？") },
+            text = {
+                Text(
+                    "会把常驻服务重新拉起来，并重新排上心跳与周期任务。"
+                        + "正在进行的专注段不受影响（状态是从配置现算的）。",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmRestart = false
+                    runCatching { GuardService.stop(ctx) }
+                    runCatching { GuardService.sync(ctx) }
+                    KeepAlive.ensureService(ctx, Store.current)
+                    UiTick.bump()
+                    toast(ctx, "已请求重启守护")
+                }) { Text("重启") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text("取消") } },
+        )
     }
 }
