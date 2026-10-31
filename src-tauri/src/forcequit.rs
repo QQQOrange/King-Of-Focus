@@ -395,9 +395,25 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
     // 先过"自律时段内是否允许退出"这道闸：
     // 开关关掉时，热键 / Alt+F4 / 设置页按钮走的都是这个函数，
     // 在入口处统一拒绝，保证"任何方式都退不掉"是真的。
-    if let Some(why) = crate::guard::session_quit_hint(&shared.config()) {
+    let cfg_now = shared.config();
+    if let Some(why) = crate::guard::session_quit_hint(&cfg_now) {
         log(&format!("拒绝退出：{why}"));
         crate::notify::toast(app, "warn", "自律时段内已禁止退出", &why, "quit-blocked", 6);
+        return false;
+    }
+    // 固化锁定期间同样退不掉 —— 这正是「固化」的意义，界面文案也明确承诺过。
+    // 以前这里只查 session_quit_hint（会话内是否允许退出），而固化判定在
+    // guard::exit_blocked 里，只有托盘「退出」走那条路；于是热键 / Alt+F4 /
+    // 设置页「立即退出」都能在固化期间把程序关掉，固化形同虚设。
+    let info = crate::guard::lock_info(&cfg_now);
+    if info.locked {
+        let body = format!(
+            "<b>{}</b><br>固化锁定中（{} 结束），现在不能退出；需要提前结束请用积分解锁。",
+            info.names.join("、"),
+            info.until_text
+        );
+        log("拒绝退出：固化锁定中");
+        crate::notify::toast(app, "warn", "固化锁定中，不能退出", &body, "quit-blocked", 6);
         return false;
     }
     if QUITTING.swap(true, Ordering::SeqCst) {

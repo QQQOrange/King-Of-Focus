@@ -84,7 +84,15 @@ pub fn load() -> Config {
 pub fn save(cfg: &Config) -> Result<(), String> {
     let p = config_path();
     let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&p, s).map_err(|e| format!("写入配置失败: {e}"))
+    // 原子写：先写同目录的临时文件再改名替换。
+    //
+    // 直接 fs::write 会先把原文件截断成 0 字节，写到一半被强杀 / 断电，
+    // config.json 就是空文件或半截 JSON —— 规则、备份口令、令牌全丢。
+    // 更隐蔽的是守护进程每 2 秒 load() 一次，读到半截文件会解析失败、
+    // 退回默认配置（自律时段是关的），于是固化判定失效并自行退出。
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| format!("写入配置失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("替换配置失败: {e}"))
 }
 
 /// 「进入自律时间自动打开」的归一化。

@@ -41,13 +41,22 @@ fn auth_of(c: &SyncCfg) -> Option<String> {
 }
 
 fn payload(config: &Config, device: &str) -> String {
+    // 上传体里不能带任何凭据：WebDAV 账号密码、备份口令、更新令牌。
+    // 网盘/NAS 的读权限比本机宽得多，明文 PUT 一份 config 等于把凭据交出去。
+    // 下载端本来就会保留本机的这些字段（见 download），剥离不影响同步效果。
+    let mut safe = config.clone();
+    safe.settings.sync.url.clear();
+    safe.settings.sync.username.clear();
+    safe.settings.sync.password.clear();
+    safe.settings.backup.password.clear();
+    safe.settings.update.token.clear();
     json!({
         "app": "king-of-focus",
         "schema": 1,
         "updatedAt": config.updated_at,
         "device": device,
         "version": env!("CARGO_PKG_VERSION"),
-        "config": config,
+        "config": safe,
     })
     .to_string()
 }
@@ -178,6 +187,26 @@ pub fn start_auto(shared: Arc<Shared>) {
 mod tests {
     use super::*;
     use crate::model::SyncCfg;
+
+    /// 上传体里不能出现任何凭据：网盘的读权限比本机宽得多，
+    /// 明文上传一份 config 等于把 WebDAV 口令、备份口令、更新令牌一起交出去。
+    #[test]
+    fn payload_strips_credentials() {
+        let mut c = Config::default();
+        c.settings.sync.url = "https://dav.example.com/dav".into();
+        c.settings.sync.username = "user1".into();
+        c.settings.sync.password = "dav-secret".into();
+        c.settings.backup.password = "bak-secret".into();
+        c.settings.update.token = "gh-token".into();
+        let body = payload(&c, "dev");
+        for leaked in ["dav-secret", "bak-secret", "gh-token", "dav.example.com"] {
+            assert!(!body.contains(leaked), "上传体里泄露了 {leaked}");
+        }
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["config"]["settings"]["sync"]["password"], "");
+        assert_eq!(v["config"]["settings"]["backup"]["password"], "");
+        assert_eq!(v["config"]["settings"]["update"]["token"], "");
+    }
 
     /// 网盘地址与文件名的拼接：末尾有没有斜杠、文件名带不带前导斜杠都要对。
     /// 拼错一个 `/` 就是 404，而界面上只会显示"同步失败"，很难查。

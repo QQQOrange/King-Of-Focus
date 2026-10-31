@@ -1124,8 +1124,13 @@ function tabBreak(r) {
 function tabLock(r) {
   const locked = !!(S.data && S.data.runtime && S.data.runtime.locked);
   return `
-    <div class="hint" style="margin-bottom:14px">
-      「固化」开关在<b>「固化」标签页</b>里控制：开启后生效期间程序不可退出、设置不可修改、任务管理器会被关闭。
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px">
+      <div>
+        <div class="card-title">固化锁定</div>
+        <div class="card-sub">开启后，这条规则生效期间程序不可退出、设置不可修改、任务管理器会被关闭。</div>
+        <div class="card-sub">以前这里只有一段说明文字、没有开关，新建规则一律固化且关不掉；现在可以直接控制。</div>
+      </div>
+      <div class="switch${locked ? ' locked' : ''}" data-act="hard-toggle" title="开启 / 关闭固化"><input type="checkbox" ${r.hard ? 'checked' : ''}><i></i></div>
     </div>
     ${locked ? `<div class="note" style="border-left:3px solid var(--red);background:rgba(255,92,92,.07)">
       当前正在固化中（${esc(S.data.runtime.lockUntilText || '时段结束')} 结束），期间无法保存任何修改。

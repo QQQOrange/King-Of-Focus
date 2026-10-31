@@ -301,8 +301,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             // 遮罩线程里的口径是：生效 = 用户开关 OR (跟随自律 AND 这里发布的标志)。
             // 这样"关掉跟随"之后主开关立刻回到用户手里，也不会出现
             // "手动关了 1 秒又被自己打开"的打架现象。
+            // 积分解锁期间遮罩也不该盖上来（"所有拦截暂停"包含遮罩这一层）
+            let unlocked_now = chrono::Local::now().timestamp() < cfg.points.unlock_until;
             shared.mask.schedule_on.store(
-                !active.is_empty() || lock.locked || clock_on,
+                !unlocked_now && (!active.is_empty() || lock.locked || clock_on),
                 std::sync::atomic::Ordering::Relaxed,
             );
             // 自律状态一变就叫醒遮罩线程，别等兜底超时

@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+*.log
+verify_config.json
+shot_*.png
+.idea/

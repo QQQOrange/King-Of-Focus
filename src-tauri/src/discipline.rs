@@ -112,7 +112,20 @@ pub fn blocked_rule<'a>(cfg: &Config, rules: &'a [Rule], app: &WinApp) -> Option
 /// 用户想"9 点开始自律"，结果要去两个页面各排一次时间，很容易对不上。
 /// 现在时间只在「自律时段」排一次，自律规则纯名单。
 pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Rule> {
-    let _ = now; // 自律规则不再依赖具体时刻，保留参数是为了不破坏调用方签名
+    // 积分解锁窗口内：**所有拦截暂停**。
+    // 界面承诺"到 xx 之前所有拦截暂停""解锁 N 分钟自由时间"，但以前只有
+    // guard::lock_info 读这个字段，于是花掉积分只换来"能退出、能改设置"，
+    // 软件照拦、网页照拦、遮罩照盖 —— 用户花了分却什么都没得到。
+    // 这里是拦截判定的唯一入口（monitor 拦软件、server 下发网页规则、
+    // autoopen 自动打开、cmds 判断是否在自律），一处生效到处生效。
+    let ts = now
+        .and_local_timezone(chrono::Local)
+        .single()
+        .map(|x| x.timestamp())
+        .unwrap_or_else(|| chrono::Local::now().timestamp());
+    if ts < cfg.points.unlock_until {
+        return Vec::new();
+    }
     // 自律时间之外（含休息段、没选中的小时）→ 自律规则整体静默
     if !d.clock_on {
         return Vec::new();
@@ -195,6 +208,27 @@ mod tests {
 
     /// 黑名单一侧也要保护系统进程：名单里写 `*` 时不能把 explorer 结束掉。
     /// 以前只有白名单分支判断 is_protected，黑名单是"名单命中就拦"。
+    /// 积分解锁窗口内所有拦截暂停（界面承诺"到 xx 之前所有拦截暂停"）。
+    /// 以前只有 guard::lock_info 读 unlock_until，花积分换不到任何东西。
+    #[test]
+    fn points_unlock_pauses_all_rules() {
+        let mut c = base();
+        clock_on(&mut c, 2, 10, 60, 0);
+        let now = now_at(2, 10, 5);
+        let d = state(&c, &now);
+        assert_eq!(active_rules(&c, &now, &d).len(), 1, "前提：此刻规则生效");
+        let ts = now
+            .and_local_timezone(chrono::Local)
+            .single()
+            .expect("本地时间可解析")
+            .timestamp();
+        c.points.unlock_until = ts + 600;
+        assert!(
+            active_rules(&c, &now, &d).is_empty(),
+            "解锁期间不该有任何规则生效"
+        );
+    }
+
     #[test]
     fn blacklist_skips_protected_process() {
         let mut c = base();
