@@ -52,6 +52,19 @@
             android:theme="@style/Theme.Kof.Block"
             android:turnScreenOn="true" />
 
+        <!--
+            锁机遮罩：**刻意**和主界面共用任务栈（不设 taskAffinity）。
+            这样从桌面点开本应用时，任务栈顶就是遮罩，用户回不到主界面去关掉自律。
+            也不进最近任务：它不该是一张"可以划掉"的卡片。
+        -->
+        <activity
+            android:name=".ui.LockActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Kof.Block"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".service.GuardService"
             android:exported="false"

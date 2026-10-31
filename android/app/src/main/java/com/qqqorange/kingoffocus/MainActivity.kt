@@ -65,11 +65,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.qqqorange.kingoffocus.core.GuardEngine
+import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.service.GuardService
 import com.qqqorange.kingoffocus.ui.KofTheme
+import com.qqqorange.kingoffocus.ui.LockActivity
 import kotlinx.coroutines.delay
 import java.time.LocalDateTime
 
@@ -77,6 +79,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
+        // 锁机期间打开本应用 = 直接进遮罩。
+        // 不这么拦的话，"回桌面 + 遮罩"就有一个后门：从图标进来关掉自律即可。
+        if (LockEngine.isLockActive(Store.current, LocalDateTime.now())) {
+            runCatching { GuardService.start(this) }
+            startActivity(Intent(this, LockActivity::class.java))
+            finish()
+            return
+        }
         // 用户开着自律时打开应用：确保守护在跑（Android 12+ 允许前台应用启动前台服务）
         if (Store.current.enabled) {
             runCatching { GuardService.start(this) }
@@ -236,7 +246,7 @@ private fun HomePage(cfg: Config) {
                 )
             }
         }
-        PermRow("悬浮窗", "拦截页在部分机型上需要它才能盖住", overlayOk) {
+        PermRow("悬浮窗", "锁机遮罩靠它才能在后台拉起来（缺了锁机不生效）", overlayOk) {
             runCatching {
                 ctx.startActivity(
                     Intent(SysSettings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))
@@ -316,6 +326,7 @@ private fun UnlockDialog(balance: Int, onDismiss: () -> Unit, onPick: (Int) -> U
 @Composable
 private fun SettingsPage(cfg: Config) {
     val ctx = LocalContext.current
+    var showAllow by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxSize()
@@ -369,6 +380,64 @@ private fun SettingsPage(cfg: Config) {
             )
         }
 
+        SectionTitle("锁机")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("锁机（回桌面 + 全屏遮罩）")
+                Text(
+                    "专注段里离开允许的应用时：先回桌面，再立刻盖上遮罩。不杀进程、不关机。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = cfg.lock.enabled,
+                onCheckedChange = { v ->
+                    Store.update { it.copy(lock = it.lock.copy(enabled = v)) }
+                    if (v) {
+                        if (!GuardEngine.hasUsageAccess(ctx)) {
+                            toast(ctx, "还需要授予「使用情况访问」，否则不知道你在用什么应用")
+                        }
+                        if (!SysSettings.canDrawOverlays(ctx)) {
+                            // 不是"建议"而是硬性前置：没有它，后台拉起遮罩会被系统拦掉
+                            toast(ctx, "锁机需要「悬浮窗」权限，现在带你过去授予")
+                            runCatching {
+                                ctx.startActivity(
+                                    Intent(SysSettings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+        }
+        if (cfg.lock.enabled) {
+            Stepper("暂停时长", cfg.lock.pauseMinutes, 1, 120, " 分钟") { v ->
+                Store.update { it.copy(lock = it.lock.copy(pauseMinutes = v)) }
+            }
+            Stepper("暂停消耗", cfg.lock.pauseCost, 1, 500, " 分") { v ->
+                Store.update { it.copy(lock = it.lock.copy(pauseCost = v)) }
+            }
+            Stepper("停止消耗", cfg.lock.stopCost, 1, 500, " 分") { v ->
+                Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
+            }
+            OutlinedButton(
+                onClick = { showAllow = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("允许使用的应用（${cfg.lockAllow.size}）") }
+            Text(
+                "遮罩上会列出这些应用，点一下直接打开；它们不会被挡在遮罩后面。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "「停止」只对当前这一段生效，下一段专注会重新锁机；「暂停」到点自动恢复。",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SectionTitle("备份与恢复")
         BackupSection(cfg)
 
@@ -383,7 +452,7 @@ private fun SettingsPage(cfg: Config) {
         ) { Text("重置全部配置") }
 
         SectionTitle("关于")
-        Text("King Of Focus · Android 0.1.0", fontSize = 13.sp)
+        Text("King Of Focus · Android 0.1.2", fontSize = 13.sp)
         Text(
             "桌面版的能力（结束进程、封杀任务管理器、关机、全局热键）在 Android 上不可实现，" +
                 "这里用「时段 + 番茄 + 前台检测 + 全屏拦截页」做等价的自律闭环。",
@@ -391,6 +460,17 @@ private fun SettingsPage(cfg: Config) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
+    }
+
+    if (showAllow) {
+        AppPickerDialog(
+            selected = cfg.lockAllow,
+            onDismiss = { showAllow = false },
+            onConfirm = { pkgs ->
+                Store.update { it.copy(lockAllow = pkgs) }
+                showAllow = false
+            },
+        )
     }
 }
 

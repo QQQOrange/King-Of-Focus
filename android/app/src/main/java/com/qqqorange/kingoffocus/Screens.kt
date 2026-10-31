@@ -315,7 +315,7 @@ private fun RuleDialog(
 }
 
 @Composable
-private fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
+internal fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val apps = remember { loadLaunchableApps(ctx) }
     var query by remember { mutableStateOf("") }

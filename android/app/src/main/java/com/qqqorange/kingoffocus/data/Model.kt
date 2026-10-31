@@ -91,6 +91,28 @@ data class OverlayCfg(
 @Serializable
 data class BackupCfg(val password: String = "")
 
+/**
+ * 锁机。
+ *
+ * 和「被拦应用 → 全屏拦截页」不是一回事：
+ *   · 拦截页处理的是"你打开了某个不该开的应用"；
+ *   · 锁机处理的是"现在是专注段，整台手机暂时不属于你"——
+ *     走的是"回桌面 + 立刻盖上全屏遮罩"，不杀进程、不关机
+ *     （Android 本来也不允许一个应用结束另一个应用）。
+ *
+ * 两个出口都要花积分，价格写在配置里、执行前先摆出来：
+ *   · 暂停：花 [pauseCost] 分，换 [pauseMinutes] 分钟自由；
+ *   · 停止：花 [stopCost] 分，把**当前这一段**的锁机整个关掉（换段自动恢复）。
+ */
+@Serializable
+data class LockCfg(
+    /** 默认关：升级后不该突然把用户锁在门外 */
+    val enabled: Boolean = false,
+    val pauseMinutes: Int = 10,
+    val pauseCost: Int = 10,
+    val stopCost: Int = 30,
+)
+
 @Serializable
 data class Config(
     val version: Int = 1,
@@ -107,6 +129,16 @@ data class Config(
     val notify: NotifyCfg = NotifyCfg(),
     val overlay: OverlayCfg = OverlayCfg(),
     val backup: BackupCfg = BackupCfg(),
+    val lock: LockCfg = LockCfg(),
+    /** 锁机期间允许使用的应用（遮罩上的白名单，点了能直接打开） */
+    val lockAllow: List<String> = emptyList(),
+    /** 暂停到什么时候（unix 秒）；期间不锁、不拦 */
+    val lockPausedUntil: Long = 0L,
+    /**
+     * 已经"停止"的那一段锁机的标识（[com.qqqorange.kingoffocus.core.LockEngine.segmentKey]）。
+     * 用段标识而不是时间戳：这样"停止"只作用于这一段，下一段专注自动恢复锁机。
+     */
+    val lockStoppedSeg: String = "",
 )
 
 fun defaultDays(): List<List<HourPlan>> = List(7) { List(24) { HourPlan() } }
@@ -132,7 +164,16 @@ fun normalize(cfg: Config): Config {
             HourPlan(p.on, work, brk, from, to)
         }
     }
-    return cfg.copy(days = days, points = cfg.points.coerceAtLeast(0))
+    return cfg.copy(
+        days = days,
+        points = cfg.points.coerceAtLeast(0),
+        lock = cfg.lock.copy(
+            pauseMinutes = cfg.lock.pauseMinutes.coerceIn(1, 120),
+            pauseCost = cfg.lock.pauseCost.coerceIn(0, 2000),
+            stopCost = cfg.lock.stopCost.coerceIn(0, 5000),
+        ),
+        lockAllow = cfg.lockAllow.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+    )
 }
 
 /** 应用选择器里的一项：包名 + 显示名（不参与序列化） */
