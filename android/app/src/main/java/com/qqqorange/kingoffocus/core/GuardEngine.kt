@@ -33,8 +33,14 @@ object GuardEngine {
                     // 白名单：名单外的一律拦；系统壳（桌面/输入法/设置）永远放行
                     if (!isShell(pkg) && pkg !in r.packages) return r
                 }
+                "both" -> {
+                    // 同时生效：禁止名单优先，其次允许名单，最后是"名单外"。
+                    // 允许名单为空时退化成纯黑名单（否则一条 both 规则能一键锁死全机）
+                    if (pkg in r.deny) return r
+                    if (r.packages.isNotEmpty() && !isShell(pkg) && pkg !in r.packages) return r
+                }
                 else -> {
-                    if (pkg in r.packages) return r
+                    if (pkg in r.packages || pkg in r.deny) return r
                 }
             }
         }
@@ -76,9 +82,25 @@ object GuardEngine {
      */
     fun allowedPackages(cfg: Config): Set<String> =
         lockRules(cfg).asSequence()
-            .filter { it.mode == "whitelist" }
+            // both 的 packages 也是"允许名单"，一样要放行
+            .filter { it.mode == "whitelist" || it.mode == "both" }
             .flatMap { it.packages.asSequence() }
             .toSet()
+
+    /**
+     * **禁止名单**：黑名单规则的名单 + 所有规则的 `deny`（both / whitelist 里的例外）。
+     *
+     * 白名单规则里的 `deny` 也认：那是"名单内但必须禁"的例外，
+     * 写在白名单里反而更容易被忽略，更该生效。
+     */
+    fun blackPackages(cfg: Config): Set<String> =
+        lockRules(cfg).asSequence().flatMap { r ->
+            when (r.mode) {
+                "whitelist" -> r.deny.asSequence()
+                "both" -> r.deny.asSequence()
+                else -> (r.packages + r.deny).asSequence()
+            }
+        }.toSet()
 
     /** 有没有启用着的白名单规则（总览/规则页用来解释"现在是什么模式"） */
     fun hasWhitelistRule(cfg: Config): Boolean =

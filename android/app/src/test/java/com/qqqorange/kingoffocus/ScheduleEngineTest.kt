@@ -35,13 +35,22 @@ class ScheduleEngineTest {
     private fun epoch(t: LocalDateTime): Long = t.atZone(ZoneId.systemDefault()).toEpochSecond()
 
     @Test
-    fun `专注段生效中不许改时段`() {
-        // 与桌面端 settingsFrozen 一致：能改表就等于能把自律关掉
+    fun `自律时段内不许改时段与规则 休息段也一样`() {
+        // 能改表就等于能把自律关掉；休息也是这套排班的一部分，
+        // 允许"趁休息把后面全改了"，冻结就只挡住了一半时间。
         val c = cfg(work = 45, brk = 15)
-        assertTrue("09:10 在专注段", ScheduleEngine.frozen(c, monday(9, 10)))
-        assertFalse("09:50 是休息段，不冻", ScheduleEngine.frozen(c, monday(9, 50)))
+        assertTrue("09:10 专注段", ScheduleEngine.frozen(c, monday(9, 10)))
+        assertTrue("09:50 番茄休息段同样冻结", ScheduleEngine.frozen(c, monday(9, 50)))
         assertFalse("10:10 不在时段内", ScheduleEngine.frozen(c, monday(10, 10)))
         assertFalse("总开关关了就不冻", ScheduleEngine.frozen(c.copy(enabled = false), monday(9, 10)))
+    }
+
+    @Test
+    fun `休息上限吃到整段跳过时仍在时段内 依旧冻结`() {
+        // 25/5 + 上限 3：09:25 之后休息被跳过，仍算在时段内
+        val c = cfg(work = 25, brk = 5).copy(defCap = 3)
+        assertTrue(ScheduleEngine.frozen(c, monday(9, 29)))
+        assertTrue(ScheduleEngine.frozen(c, monday(9, 59)))
     }
 
     @Test

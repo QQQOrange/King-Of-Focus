@@ -26,10 +26,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.AppPickerDialog
+import com.qqqorange.kingoffocus.toast
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Rule
@@ -46,6 +48,8 @@ import java.util.UUID
 fun RulesScreen(cfg: Config) {
     var editing by remember { mutableStateOf<Rule?>(null) }
     var showPicker by remember { mutableStateOf(false) }
+    /** 这次打开选择器是选"允许名单"还是"禁止名单" */
+    var pickerTarget by remember { mutableStateOf("allow") }
 
     fun newRule(): Rule = Rule(
         id = UUID.randomUUID().toString().take(8),
@@ -64,9 +68,19 @@ fun RulesScreen(cfg: Config) {
     ) {
         PageHeader("自律规则", "名单里的应用在专注段不可用；白名单模式只允许名单内")
 
+        // 自律时段内**规则与时段都只读**（含番茄休息）。
+        // 理由：能改名单就能把想玩的应用加进白名单，锁机立刻形同虚设。
+        // 三个付费出口仍然有效（积分解锁 / 暂停 / 停止本段），见 ScheduleEngine.frozen。
+        val ctx = LocalContext.current
+        val now = java.time.LocalDateTime.now()
+        val frozen = ScheduleEngine.frozen(cfg, now)
+
+        fun refuse() {
+            toast(ctx, "自律时段内不能改规则：等这一段结束，或用积分解锁 / 暂停 / 停止本段")
+        }
+
         // 为什么"规则配了却不拦"：绝大多数时候是这三件事没同时成立。
         // 与其让人猜，不如把当前状态摆出来。
-        val now = java.time.LocalDateTime.now()
         val status = when {
             !cfg.enabled -> "自律总开关是关的 —— 规则一条都不会生效"
             ScheduleEngine.stateAt(cfg, now) == null -> "现在不在自律时段内 —— 规则只在时段里生效"
@@ -77,9 +91,72 @@ fun RulesScreen(cfg: Config) {
         }
         Panel {
             Text(status, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (frozen) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "自律时段生效中（含番茄休息）：规则与本页开关暂时只读。",
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
 
-        OutlinedButton(onClick = { editing = newRule() }, modifier = Modifier.fillMaxWidth()) {
+        // —— 锁机页展示方式 ——
+        //
+        // 两个模式是**互斥**的两档，不是叠加：
+        //  · 开：整机锁（回桌面 + 全屏遮罩），一直是默认行为；
+        //  · 关：不锁整机，只在点开黑名单应用时弹 5 秒提示页，然后回桌面。
+        // 关闭时白名单不参与判定（没有整机锁，"只允许名单内"没有意义），文案里写明。
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("展示锁机页面", fontSize = 14.sp)
+                    Text(
+                        if (cfg.lock.showPage) {
+                            "开启：专注段里整台手机锁住（回桌面 + 全屏遮罩），按现有锁机逻辑拦。"
+                        } else {
+                            "关闭：不锁整机。桌面随便用，点开黑名单应用才弹 5 秒提示页并自动回桌面。"
+                        },
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = cfg.lock.showPage,
+                    enabled = !frozen,
+                    onCheckedChange = { v ->
+                        if (frozen) {
+                            refuse()
+                        } else {
+                            Store.update { it.copy(lock = it.lock.copy(showPage = v)) }
+                            toast(
+                                ctx,
+                                if (v) "已开启：专注段内整机锁机" else "已关闭：只拦黑名单应用，点开时弹 5 秒提示",
+                            )
+                        }
+                    },
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (cfg.lock.showPage) {
+                    "白名单应用在锁机页仍可打开；黑名单与「只按规则」的范围照旧生效。"
+                } else {
+                    "这一档只看黑名单：白名单规则不参与判定（因为没有整机锁）。"
+                },
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        OutlinedButton(
+            onClick = { if (frozen) refuse() else editing = newRule() },
+            enabled = !frozen,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text("新建一条规则")
         }
 
@@ -94,17 +171,25 @@ fun RulesScreen(cfg: Config) {
                         Text(r.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(3.dp))
                         Text(
-                            (if (r.mode == "whitelist") "白名单 · 只允许名单内" else "黑名单 · 名单内禁止") +
-                                " · ${r.packages.size} 个应用" + if (r.hard) " · 固化" else "",
+                            when (r.mode) {
+                                "whitelist" -> "白名单 · 只允许名单内 ${r.packages.size} 个"
+                                "both" -> "白名单 + 黑名单 · 允许 ${r.packages.size} / 禁止 ${r.deny.size}"
+                                else -> "黑名单 · 名单内禁止 ${r.packages.size} 个"
+                            } + if (r.hard) " · 固化" else "",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Switch(
                         checked = r.enabled,
+                        enabled = !frozen,
                         onCheckedChange = { v ->
-                            Store.update { c ->
-                                c.copy(rules = c.rules.map { if (it.id == r.id) it.copy(enabled = v) else it })
+                            if (frozen) {
+                                refuse()
+                            } else {
+                                Store.update { c ->
+                                    c.copy(rules = c.rules.map { if (it.id == r.id) it.copy(enabled = v) else it })
+                                }
                             }
                         },
                     )
@@ -121,14 +206,31 @@ fun RulesScreen(cfg: Config) {
 
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { editing = r }) { Text("编辑", fontSize = 12.sp) }
-                    OutlinedButton(onClick = {
-                        val copy = r.copy(id = UUID.randomUUID().toString().take(8), name = r.name + " 副本")
-                        Store.update { c -> c.copy(rules = c.rules + copy) }
-                    }) { Text("复制", fontSize = 12.sp) }
-                    OutlinedButton(onClick = {
-                        Store.update { c -> c.copy(rules = c.rules.filterNot { it.id == r.id }) }
-                    }) { Text("删除", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
+                    OutlinedButton(
+                        onClick = { if (frozen) refuse() else editing = r },
+                        enabled = !frozen,
+                    ) { Text("编辑", fontSize = 12.sp) }
+                    OutlinedButton(
+                        onClick = {
+                            if (frozen) {
+                                refuse()
+                            } else {
+                                val copy = r.copy(id = UUID.randomUUID().toString().take(8), name = r.name + " 副本")
+                                Store.update { c -> c.copy(rules = c.rules + copy) }
+                            }
+                        },
+                        enabled = !frozen,
+                    ) { Text("复制", fontSize = 12.sp) }
+                    OutlinedButton(
+                        onClick = {
+                            if (frozen) {
+                                refuse()
+                            } else {
+                                Store.update { c -> c.copy(rules = c.rules.filterNot { it.id == r.id }) }
+                            }
+                        },
+                        enabled = !frozen,
+                    ) { Text("删除", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -139,7 +241,10 @@ fun RulesScreen(cfg: Config) {
     if (cur != null) {
         RuleDialog(
             rule = cur,
-            onPickApps = { showPicker = true },
+            onPickApps = { target ->
+                pickerTarget = target
+                showPicker = true
+            },
             onDismiss = { editing = null },
             onSave = { updated ->
                 Store.update { c ->
@@ -152,11 +257,12 @@ fun RulesScreen(cfg: Config) {
     }
 
     if (showPicker && cur != null) {
+        val deny = pickerTarget == "deny"
         AppPickerDialog(
-            selected = cur.packages,
+            selected = if (deny) cur.deny else cur.packages,
             onDismiss = { showPicker = false },
             onConfirm = { pkgs ->
-                editing = cur.copy(packages = pkgs)
+                editing = if (deny) cur.copy(deny = pkgs) else cur.copy(packages = pkgs)
                 showPicker = false
             },
         )
@@ -166,7 +272,7 @@ fun RulesScreen(cfg: Config) {
 @Composable
 private fun RuleDialog(
     rule: Rule,
-    onPickApps: () -> Unit,
+    onPickApps: (String) -> Unit,
     onDismiss: () -> Unit,
     onSave: (Rule) -> Unit,
 ) {
@@ -185,11 +291,38 @@ private fun RuleDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("模式", Modifier.width(42.dp), fontSize = 13.sp)
-                    OutlinedButton(onClick = { mode = if (mode == "blacklist") "whitelist" else "blacklist" }) {
-                        Text(if (mode == "blacklist") "黑名单（名单内禁止）" else "白名单（只允许名单内）", fontSize = 12.sp)
+                // 模式：三选一。用三个横排按钮而不是"点一下循环"——
+                // 循环切到第三态时，用户不知道自己按了几次。
+                Column {
+                    Text("模式", fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            "blacklist" to "黑名单",
+                            "whitelist" to "白名单",
+                            "both" to "两者",
+                        ).forEach { (k, label) ->
+                            OutlinedButton(
+                                onClick = { mode = k },
+                                modifier = Modifier.weight(1f),
+                                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                                    contentColor = if (mode == k) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                            ) { Text(if (mode == k) "● $label" else label, fontSize = 11.5.sp) }
+                        }
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when (mode) {
+                            "whitelist" -> "只允许名单内的应用，其余一律拦。"
+                            "both" -> "允许名单放行、禁止名单拦截；两边都写了同一个应用时**以禁止为准**。"
+                            else -> "只拦名单内的应用，其余照常使用。"
+                        },
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -202,8 +335,26 @@ private fun RuleDialog(
                     }
                     Switch(checked = hard, onCheckedChange = { hard = it })
                 }
-                OutlinedButton(onClick = onPickApps, modifier = Modifier.fillMaxWidth()) {
-                    Text("选择应用（已选 ${rule.packages.size} 个）", fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = { onPickApps("allow") },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (mode == "whitelist") "选择允许的应用（${rule.packages.size} 个）"
+                        else "选择名单（${rule.packages.size} 个）",
+                        fontSize = 12.sp,
+                    )
+                }
+                if (mode == "both") {
+                    OutlinedButton(
+                        onClick = { onPickApps("deny") },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Text("选择禁止的应用（${rule.deny.size} 个）", fontSize = 12.sp)
+                    }
                 }
             }
         },

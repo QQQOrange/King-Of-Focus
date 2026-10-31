@@ -54,9 +54,23 @@ data class Rule(
     val id: String = "",
     val name: String = "",
     val enabled: Boolean = true,
-    /** blacklist = 名单内禁止；whitelist = 只允许名单内 */
+    /**
+     * blacklist = 名单内禁止；whitelist = 只允许名单内；both = 两者同时生效。
+     *
+     * `both` 的语义：`packages` 是**允许名单**，`deny` 是**禁止名单**。
+     * 判定顺序固定为：禁止名单 > 允许名单 > 默认（有允许名单就"名单外全禁"，没有就放行）。
+     * 也就是**同一条规则里，禁止优先于允许**——把某个应用明确写进禁止名单，
+     * 是比"它在允许名单里"更强的表态。
+     */
     val mode: String = "blacklist",
     val packages: List<String> = emptyList(),
+    /**
+     * `both` 模式下的**禁止名单**（其他模式忽略）。
+     *
+     * 为什么不把两个名单塞进一个数组：白名单和黑名单的语义相反，
+     * 混在一起就没法表达"这个允许、那个禁止"。
+     */
+    val deny: List<String> = emptyList(),
     /** 固化：生效期间不允许关闭自律、不允许改设置 */
     val hard: Boolean = true,
     /**
@@ -211,6 +225,17 @@ data class LockCfg(
     val endNotice: String = "notify",
     /** 进入锁机 / 睡眠的那一刻震动一下（短震，不打扰别人） */
     val vibrate: Boolean = true,
+    /**
+     * 锁机时是否**展示整机锁机页**。默认 true（= 一直以来的行为）。
+     *
+     *  · true  ：按现有锁机逻辑拦——专注段里整台手机锁住（回桌面 + 全屏遮罩）；
+     *  · false ：**不整机锁**。桌面可以正常用，点开黑名单里的应用才会跳一页锁机页，
+     *            停 5 秒后自动回桌面；不是黑名单的应用照常用。
+     *
+     * 关闭时**白名单不参与判定**（没有整机锁，"只允许名单内"没有意义），
+     * 这条在设置页文案里说清楚，避免用户以为白名单还生效。
+     */
+    val showPage: Boolean = true,
     /**
      * 锁机期的限制范围。
      *
@@ -460,6 +485,25 @@ private fun migrateLockAllow(rules: List<Rule>, allow: List<String>): List<Rule>
     }
 }
 
+/**
+ * 规则清洗。
+ *
+ * 两件事：
+ *  1. **认不出的模式一律按黑名单**——宁可少开一个口子，也不要因为一个拼写错误
+ *     让整条规则变成"什么都不拦"（那正是"配了规则却不生效"的经典来源）；
+ *  2. 两个名单去空白、去重，避免出现 `["com.a", "com.a"]` 这种看着是 2 个的 1 个。
+ */
+private fun normalizeRules(rules: List<Rule>): List<Rule> = rules.map { r ->
+    r.copy(
+        mode = when (r.mode) {
+            "whitelist", "both" -> r.mode
+            else -> "blacklist"
+        },
+        packages = r.packages.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+        deny = r.deny.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+    )
+}
+
 fun normalize(cfg: Config): Config {
     val days = normalizeDays(cfg.days)
     // ---- 多套方案：老配置只有一套 days，迁移成 plans[0] ----
@@ -518,7 +562,7 @@ fun normalize(cfg: Config): Config {
         defCap = cfg.defCap.coerceIn(0, 60),
         granularity = Slots.stepOf(cfg.granularity),
         // 老的两份名单并成一份；迁移完 lockAllow 就永远是空的
-        rules = migrateLockAllow(cfg.rules, cfg.lockAllow),
+        rules = normalizeRules(migrateLockAllow(cfg.rules, cfg.lockAllow)),
         plans = plans,
         activePlan = activeId,
         sleep = cfg.sleep.copy(

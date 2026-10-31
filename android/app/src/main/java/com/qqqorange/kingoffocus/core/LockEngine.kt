@@ -172,14 +172,40 @@ object LockEngine {
         if (pkg.isEmpty()) return Decision(false, "")
         if (pkg == selfPkg) return Decision(false, "")
         if (isAlwaysAllowed(pkg, imePkgs)) return Decision(false, "")
-        val rules = GuardEngine.lockRules(cfg)
-        // 白名单：名单内的应用在锁机期间照样能用（闹钟、备忘录、词典这类）
-        if (pkg in GuardEngine.allowedPackages(cfg)) return Decision(false, "")
+        val allow = GuardEngine.allowedPackages(cfg)
+        val deny = GuardEngine.blackPackages(cfg)
+        // 判定顺序（写死在这里，别处不要再复制一份）：
+        //   1. 禁止名单 → 挡（明确写进禁区的应用，不该被允许名单顺手放开）
+        //   2. 允许名单 → 放
+        //   3. 整机锁 / 睡眠 → 挡
+        //   4. 只按规则且存在允许名单 → 名单外挡
+        //   5. 其余 → 放（只有黑名单时，它只管名单内那几个）
+        if (pkg in deny) return Decision(true, "在禁止名单里")
+        if (pkg in allow) return Decision(false, "")
         if (sleep || cfg.lock.scope != "rules") return Decision(true, "整机锁")
-        if (rules.any { it.mode == "whitelist" }) return Decision(true, "不在允许名单里")
-        val hit = rules.firstOrNull { it.mode != "whitelist" && pkg in it.packages }
-        if (hit != null) return Decision(true, "命中规则「${hit.name}」")
+        if (allow.isNotEmpty()) return Decision(true, "不在允许名单里")
         return Decision(false, "")
+    }
+
+    /**
+     * 「不展示整机锁机页」时，这个应用要不要弹 5 秒锁机页。
+     *
+     * 这一档里**只看黑名单**：没有整机锁，"只允许白名单内"就没有意义
+     * （用户能进桌面、能点任何应用，白名单外全拦等于又变回整机锁）。
+     * 所以关闭整机锁之后，白名单规则不参与判定——设置页里写着这句话。
+     *
+     * 紧急通道与自家应用永远不算。
+     */
+    fun pageBlocked(
+        cfg: Config,
+        pkg: String,
+        selfPkg: String,
+        imePkgs: Set<String> = emptySet(),
+    ): Boolean {
+        if (pkg.isEmpty() || pkg == selfPkg) return false
+        if (isAlwaysAllowed(pkg, imePkgs)) return false
+        // "黑名单应用"= 禁止名单（黑名单规则的名单 + both/whitelist 的 deny）
+        return pkg in GuardEngine.blackPackages(cfg)
     }
 
     /**
@@ -262,6 +288,9 @@ object LockEngine {
         }
         return Duration.between(now, end).seconds.coerceAtLeast(0)
     }
+
+    /** 一周里最长的一段锁机有多少分钟（强制模式确认框用它说"要锁多久"） */
+    fun longestSegmentMinutes(cfg: Config): Int = Slots.longestBlockMinutes(cfg.days)
 
     /** 暂停还能用多久（秒）；没暂停返回 0 */
     fun pauseLeftSeconds(cfg: Config, now: LocalDateTime): Long =

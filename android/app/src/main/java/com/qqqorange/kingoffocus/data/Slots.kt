@@ -460,6 +460,15 @@ object Slots {
 
     // ---------------------------------------------------------------- 统计
 
+    /**
+     * 一周里最长的一块有多少分钟。
+     *
+     * 用途：强制模式的第二个确认框里写"一段最长约 N 分钟"——用户要签的是
+     * "我可能被锁 N 分钟"，这个数字必须来自他自己的排班，不能是编的。
+     */
+    fun longestBlockMinutes(days: List<List<HourPlan>>): Int =
+        days.maxOfOrNull { day -> blocks(day).maxOfOrNull { it.minutes } ?: 0 } ?: 0
+
     /** 这一天一共选中多少分钟 */
     fun dayMinutes(day: List<HourPlan>): Int = day.sumOf { p -> windowsOf(p).sumOf { it.to - it.from } }
 

@@ -33,9 +33,12 @@ import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.BackupSection
 import com.qqqorange.kingoffocus.UpdateSection
 import com.qqqorange.kingoffocus.appVersion
+import com.qqqorange.kingoffocus.core.Caps
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
+import com.qqqorange.kingoffocus.core.StrictBlocker
+import com.qqqorange.kingoffocus.core.StrictFlow
 import com.qqqorange.kingoffocus.data.CloudCfg
 import com.qqqorange.kingoffocus.data.CloudSync
 import com.qqqorange.kingoffocus.data.Config
@@ -195,6 +198,9 @@ fun SettingsScreen(cfg: Config) {
             }
             if (cfg.lock.enabled) {
                 val strict = LockEngine.isStrict(cfg)
+                // 三步确认的"当前第几步"：只是对话框的序号，**不进配置**。
+                // 所以任何一步取消都没有中间态可以残留（0 = 没在进行）。
+                var strictStep by remember { mutableStateOf(StrictFlow.IDLE) }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ModeButton("温和模式", !strict, Modifier.weight(1f)) {
                         if (!LockEngine.canSwitchMode(cfg, java.time.LocalDateTime.now())) {
@@ -204,7 +210,9 @@ fun SettingsScreen(cfg: Config) {
                         }
                     }
                     ModeButton("强制模式", strict, Modifier.weight(1f)) {
-                        Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_STRICT)) }
+                        if (strict) return@ModeButton
+                        // 一点就开太轻了：先走三道确认，最后一步才写配置
+                        strictStep = 1
                     }
                 }
                 Text(
@@ -310,6 +318,58 @@ fun SettingsScreen(cfg: Config) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
+
+                // —— 三重确认 ——
+                //
+                // 三个窗口共用同一个对话框，靠 strictStep 决定显示哪一步：
+                // 少写两套样式的重复，也让"第 2 步"不可能被跳过。
+                if (strictStep != StrictFlow.IDLE) {
+                    val step = strictStep
+                    val blocker = capsOf(ctx).strictBlocker()
+                    AlertDialog(
+                        onDismissRequest = { strictStep = StrictFlow.IDLE },
+                        title = { Text(StrictFlow.title(step), fontSize = 16.sp) },
+                        text = {
+                            Column {
+                                Text(
+                                    StrictFlow.body(step, LockEngine.longestSegmentMinutes(cfg)),
+                                    fontSize = 13.sp,
+                                    lineHeight = 20.sp,
+                                )
+                                if (step >= 2 && blocker != null) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        "注意：现在缺「${when (blocker) {
+                                            StrictBlocker.NO_FOREGROUND -> "使用情况访问 / 无障碍"
+                                            StrictBlocker.NO_MASK -> "悬浮窗或 Shizuku"
+                                            StrictBlocker.NO_APP_CONTROL -> "Shizuku"
+                                        }}」，强制模式会打折：这仍然拦得住你，但拦不干净。",
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                if (StrictFlow.enables(step, yes = true)) {
+                                    strictStep = StrictFlow.IDLE
+                                    Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_STRICT)) }
+                                    toast(ctx, "强制模式已开启：这一段结束前没有暂停与跳过")
+                                } else {
+                                    strictStep = StrictFlow.advance(step, yes = true)
+                                }
+                            }) { Text(StrictFlow.confirmLabel(step), fontSize = 13.sp) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = {
+                                // 取消：回到 IDLE。配置一个字都没改，所以不存在"回退到中间态"
+                                strictStep = StrictFlow.advance(step, yes = false)
+                            }) { Text(StrictFlow.cancelLabel(step), fontSize = 13.sp) }
+                        },
+                    )
+                }
 
                 ToggleRow(
                     "进入时震动一下",
@@ -1010,6 +1070,14 @@ private fun KeepAliveSection(cfg: Config) {
         )
     }
 }
+
+/** 当前能力矩阵：强制模式确认框用它提示"会打折" */
+private fun capsOf(ctx: android.content.Context): Caps = Caps(
+    accessibility = KofAccessibility.alive(),
+    shizuku = com.qqqorange.kingoffocus.core.ShizukuBridge.ready(),
+    usageStats = GuardEngine.hasUsageAccess(ctx),
+    overlay = android.provider.Settings.canDrawOverlays(ctx),
+)
 
 /** 现在有没有能力从后台拉起一个界面（悬浮窗或 Shizuku 之一）：结束弹窗要靠它 */
 private fun canShowDialog(ctx: android.content.Context): Boolean =

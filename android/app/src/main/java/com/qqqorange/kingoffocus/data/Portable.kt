@@ -412,16 +412,22 @@ object Portable {
             rj.arr("sites").mapNotNull { it as? JsonObject }
                 .filter { it.str("pattern").isNotBlank() }
                 .map { PtApp("site", it.str("pattern"), it.str("label")) }
+        // 桌面端的三值语义：blacklist / whitelist / both（apps 命中即拦，另一侧交给插件）。
+        // 手机端现在也有 both，但含义是"允许名单 + 禁止名单"：
+        // 桌面端的 both 名单在软件侧等价于黑名单，所以导进来落在**禁止名单**里，
+        // 允许名单留空 —— 这样两端的拦截结果一致（宁可更严，不放松）。
         val mode = when (rj.str("mode")) {
             "whitelist" -> "whitelist"
-            else -> "blacklist" // both / 未知值：判定与 blacklist 一致
+            "both" -> "both"
+            else -> "blacklist"
         }
         return Rule(
             id = rj.str("id").trim(),
             name = rj.str("name").trim().ifBlank { "未命名" },
             enabled = rj.bool("enabled", true),
             mode = mode,
-            packages = pkgs,
+            packages = if (mode == "both") emptyList() else pkgs,
+            deny = if (mode == "both") pkgs else emptyList(),
             hard = rj.bool("hard", true),
             foreign = foreign,
             carry = if (needsCarry(rj)) rj.toString() else "",
@@ -438,16 +444,26 @@ object Portable {
         }
         val kept = base.arr("apps").mapNotNull { it as? JsonObject }
             .filter { it.str("kind") != "pkg" }
-        val apps = kept + r.packages.filter { it.isNotBlank() }.distinct().map {
+        // both 且没有允许名单时，"名单"指的是禁止名单
+        val localPkgs = if (r.mode == "both" && r.packages.isEmpty()) r.deny else r.packages
+        val apps = kept + localPkgs.filter { it.isNotBlank() }.distinct().map {
             buildJsonObject {
                 put("kind", "pkg")
                 put("value", it)
                 put("label", "")
             }
         }
-        // "both" 是桌面端的三值之一（黑名单 + 例外白名单同时生效），
-        // 手机端只认两值；原始值在 carry 里，别把它降级掉
-        val mode = if (base.str("mode") == "both" && r.mode == "blacklist") "both" else r.mode
+        // 手机端的 both（允许 + 禁止两张名单）在桌面端表达不了：
+        //  · 没有允许名单 → 导成 both，apps 放禁止名单，两端结果一致；
+        //  · 有允许名单   → 导成 whitelist（只允许这些），并把禁止名单并进 apps？
+        //    不行——桌面端 whitelist 会把 apps 当"允许"，并进去等于放开。
+        //    所以这里选"更严的那一侧"：只导允许名单，禁止名单留在手机端本地，
+        //    并在规则名前加标记，避免用户以为桌面端也禁了那几个。
+        val mode = when {
+            r.mode != "both" -> r.mode
+            r.packages.isEmpty() -> "both"
+            else -> "whitelist"
+        }
         return buildJsonObject {
             base.forEach { (k, v) -> if (k !in OVERLAY_KEYS) put(k, v) }
             put("id", r.id)
