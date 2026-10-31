@@ -54,6 +54,10 @@ import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.core.StatsMath
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.data.Config
+import com.qqqorange.kingoffocus.core.PermId
+import com.qqqorange.kingoffocus.core.Permissions
+import com.qqqorange.kingoffocus.core.ShizukuBridge
+import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.notificationsAllowed
 import com.qqqorange.kingoffocus.service.GuardService
@@ -129,6 +133,9 @@ private fun HomeScreen(cfg: Config) {
     val tick by UiTick.n.collectAsState()
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     var askOverlay by remember { mutableStateOf(false) }
+    // 权限清单展开哪一项。放在页面层而不是列表内部：
+    // 这个页面每秒重组一次，组件内部的 remember 会被重置成"全折叠"。
+    var openPerm by remember { mutableStateOf<PermId?>(null) }
 
     // 一秒一拍：倒计时、睡眠状态都靠它刷新
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -147,6 +154,12 @@ private fun HomeScreen(cfg: Config) {
     val overlayOk = Settings.canDrawOverlays(ctx)
     val notifOk = notificationsAllowed(ctx)
     val level = Caps(accOk, false, usageOk, overlayOk).level()
+    // 通知权限的申请入口：只有"第一次开启自律"才有内容可发，那时才该弹
+    val askNotify = rememberNotificationRequester()
+    // 权限清单的唯一来源（与设置页、docs 同一份）；tick 让"从系统设置回来"后自动刷新
+    val permissions = remember(tick, cfg.perm.notifAsked, cfg.perm.notifBlocked) {
+        Permissions.audit(ctx, cfg)
+    }
 
     // tick 只是用来让"从设置页回来"时重算上面几个权限
     @Suppress("UNUSED_EXPRESSION")
@@ -156,6 +169,15 @@ private fun HomeScreen(cfg: Config) {
     val todaySecs = remember(tick, cfg.stats.enabled) {
         StatsMath.total(StatsStore.today(now), null)
     }
+
+    // 今天排了多少自律——按**分钟**算，不是数整点。
+    // 15 分钟刻度和"一小时多段"都必须算准：以前 `count { it.on }` 会把
+    // 09:00–09:45 记成 1 小时，越精细的表错得越多。
+    val todayPlan = cfg.days.getOrNull(now.dayOfWeek.value - 1).orEmpty()
+    val todayPlanMin = Slots.dayMinutes(todayPlan)
+    val todaySegs = todayPlan.sumOf { Slots.windowsOf(it).size }
+    val todayLongest = todayPlan.flatMap { Slots.windowsOf(it) }
+        .maxOfOrNull { it.to - it.from } ?: 0
 
     Column(
         Modifier
@@ -220,7 +242,7 @@ private fun HomeScreen(cfg: Config) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 KV("积分", "${cfg.points}", MaterialTheme.colorScheme.secondary)
                 KV("今日使用", StatsMath.fmtDuration(todaySecs))
-                KV("今日自律", "${cfg.days.getOrNull(now.dayOfWeek.value - 1)?.count { it.on } ?: 0} 小时")
+                KV("今日自律", Slots.fmtMinutes(todayPlanMin))
             }
         }
 
@@ -232,6 +254,9 @@ private fun HomeScreen(cfg: Config) {
                 if (on && !usageOk && !accOk) {
                     toast(ctx, "先授予「使用情况访问」或「无障碍」，否则不知道你在用哪个应用")
                 }
+                // 开启自律后才会有"剩余多久""这段做完了"可发，此时申请通知才讲得通；
+                // 启动就弹的话用户还不知道这应用做什么，大概率直接拒绝。
+                if (on && !notifOk) askNotify()
                 Store.update { it.copy(enabled = on) }
                 // 统计是独立的：自律关掉后，只要还在记录时长，服务就该继续跑，
                 // 否则「时段外」那一轨永远是空的
@@ -267,6 +292,30 @@ private fun HomeScreen(cfg: Config) {
                 Text("12", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("24", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+
+            // 色条是「几点到几点」，这一行是「一共多久」：同一份排班的两个视角，
+            // 所以放在同一个面板里、用和状态卡一样的 KV 层级，而不是另起一张卡。
+            Spacer(Modifier.height(10.dp))
+            HLine()
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KV(
+                    "今日自律总时长",
+                    Slots.fmtMinutes(todayPlanMin),
+                    MaterialTheme.colorScheme.primary,
+                )
+                KV("共几段", if (todaySegs > 0) "$todaySegs 段" else "—")
+                KV("最长一段", if (todayLongest > 0) Slots.fmtMinutes(todayLongest) else "—")
+            }
+            if (todayPlanMin == 0) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "今天还没排自律时段。去「时段」点一格定起点，长按后拖动就是框选。",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // —— 权限 ——
@@ -282,28 +331,39 @@ private fun HomeScreen(cfg: Config) {
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(4.dp))
-            PermRow("使用情况访问", "知道当前前台是哪个应用", usageOk) {
-                runCatching {
-                    ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-            }
-            PermRow("无障碍服务", "切应用即刻识别；回桌面不受后台限制", accOk) {
-                runCatching {
-                    ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-            }
-            PermRow("在其他应用上层显示", "锁机遮罩靠它在后台拉起来（缺了锁机不生效）", overlayOk) {
-                askOverlay = true
-            }
-            PermRow("通知", "阶段提醒与常驻状态", notifOk) {
-                runCatching {
-                    ctx.startActivity(
-                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
+            Spacer(Modifier.height(6.dp))
+            PermList(
+                items = permissions,
+                open = openPerm,
+                onToggle = { openPerm = if (openPerm == it) null else it },
+                onFix = { item ->
+                    when (item.spec.id) {
+                        // 悬浮窗要先讲清"为什么"再跳，所以走确认弹窗
+                        PermId.OVERLAY -> askOverlay = true
+                        // 通知走运行时申请（能弹窗就弹，已永久拒绝直接跳设置）
+                        PermId.NOTIFICATION -> askNotify()
+                        PermId.SHIZUKU -> {
+                            ShizukuBridge.request(ctx)
+                            toast(ctx, "已请求 Shizuku 授权，允许后回到本页会自动连上")
+                        }
+                        else -> runCatching {
+                            item.action?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)?.let { ctx.startActivity(it) }
+                        }
+                    }
+                },
+            )
+
+            // 通知被关要单独说一句：守护还在跑，但四类通知都不会出现。
+            // 不说的话，用户只会觉得"这软件怎么什么都不提醒"。
+            if (!notifOk) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "通知被关：常驻状态、阶段提醒、完成通知、每日汇总都不会出现。"
+                        + "统计与拦截仍照常工作。",
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
@@ -337,35 +397,3 @@ private fun HomeScreen(cfg: Config) {
     }
 }
 
-@Composable
-private fun PermRow(title: String, sub: String, ok: Boolean, onFix: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp)
-            .let { m ->
-                if (ok) m else m
-            },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .background(
-                    if (ok) Color(0xFF34C759) else MaterialTheme.colorScheme.error,
-                    CircleShape,
-                ),
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 13.5.sp)
-            Spacer(Modifier.height(2.dp))
-            Text(sub, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (ok) {
-            Text("已授予", fontSize = 11.sp, color = Color(0xFF34C759))
-        } else {
-            TextButton(onClick = onFix) { Text("去开启", fontSize = 12.sp) }
-        }
-    }
-}

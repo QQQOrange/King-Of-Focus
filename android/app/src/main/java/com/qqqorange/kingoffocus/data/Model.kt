@@ -86,14 +86,50 @@ data class PtApp(
     val label: String = "",
 )
 
+/**
+ * 权限申请历史。
+ *
+ * 为什么要记：`checkSelfPermission` 只能回答"现在有没有"，分不出
+ * 「从没问过」和「问过被拒」。前者该主动弹一次，后者再弹也是白弹
+ * （Android 13+ 第二次拒绝后系统不再显示弹窗），只能引导去设置。
+ */
+@Serializable
+data class PermCfg(
+    /** 通知权限被问过几次（0 = 从没问过） */
+    val notifAsked: Int = 0,
+    /** 系统已不再弹窗（永久拒绝） */
+    val notifBlocked: Boolean = false,
+)
+
 @Serializable
 data class NotifyCfg(
+    /** 通知总开关（关掉后四类都不发；应用内状态照常显示） */
     val enabled: Boolean = true,
     /** 专注结束前多少分钟提醒，0 = 不提醒 */
     val workBefore: Int = 5,
     /** 休息结束前多少分钟提醒，0 = 不提醒 */
     val breakBefore: Int = 2,
     val breakNotify: Boolean = true,
+    /**
+     * 任务完成通知：专注段结束 / 休息结束的那一刻发一条。
+     *
+     * 和"结束前提醒"是两件事：那个是"还有 5 分钟"，这个是"这一段做完了"。
+     * 只留前者的话，用户放下手机就再也不知道自己完成了。
+     */
+    val done: Boolean = true,
+    /** 当日使用时长汇总：每天固定时间发一条（只在当天有记录时发） */
+    val dailySummary: Boolean = true,
+    /** 汇总时间（0–23 点），默认 22 点 */
+    val dailyAt: Int = 22,
+    /** 常驻通知里显示"今日进度"（已自律 X / 计划 Y），关掉只留当前状态 */
+    val ongoingProgress: Boolean = true,
+    /**
+     * 最近一次发过「当日汇总」的日期（yyyy-MM-dd）。
+     *
+     * 必须落盘：服务被系统重启后内存变量会清空，只靠内存会导致
+     * 同一个晚上收到两三次汇总。
+     */
+    val lastSummaryDay: String = "",
 )
 
 @Serializable
@@ -283,6 +319,8 @@ data class Config(
     /** 积分解锁到什么时候（unix 秒）；解锁期间所有拦截暂停 */
     val unlockUntil: Long = 0L,
     val notify: NotifyCfg = NotifyCfg(),
+    /** 权限申请历史（区分"从没问过"与"永久拒绝"） */
+    val perm: PermCfg = PermCfg(),
     val overlay: OverlayCfg = OverlayCfg(),
     val backup: BackupCfg = BackupCfg(),
     val update: UpdateCfg = UpdateCfg(),
@@ -450,6 +488,13 @@ fun normalize(cfg: Config): Config {
             url = cfg.cloud.url.trim().let { u -> if (u.isNotEmpty() && !u.endsWith("/")) "$u/" else u },
         ),
         points = cfg.points.coerceAtLeast(0),
+        // 通知：结束前提醒 0–120 分钟（0 = 不提醒），汇总时间落在 0–23 点
+        notify = cfg.notify.copy(
+            workBefore = cfg.notify.workBefore.coerceIn(0, 120),
+            breakBefore = cfg.notify.breakBefore.coerceIn(0, 120),
+            dailyAt = cfg.notify.dailyAt.coerceIn(0, 23),
+        ),
+        perm = cfg.perm.copy(notifAsked = cfg.perm.notifAsked.coerceAtLeast(0)),
         stats = cfg.stats.copy(
             retentionDays = cfg.stats.retentionDays.coerceIn(7, 3650),
         ),

@@ -64,6 +64,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import com.qqqorange.kingoffocus.data.Portable
+import com.qqqorange.kingoffocus.core.PermId
+import com.qqqorange.kingoffocus.core.Permissions
+import com.qqqorange.kingoffocus.ui.rememberNotificationRequester
 
 /**
  * 设置页：所有"配置类"的东西都在这里，按主题分组，卡片内一行一个开关/数值。
@@ -85,20 +88,85 @@ fun SettingsScreen(cfg: Config) {
     ) {
         PageHeader("设置", "所有改动即时保存，不需要点确定")
 
-        // ---------------- 提醒 ----------------
-        SectionTitle("提醒")
+        // ---------------- 通知 ----------------
+        //
+        // 四类通知各自独立可关：常驻状态 / 阶段结束前 / 任务完成 / 每日汇总。
+        // 只有"总开关"会把它们一起关掉——单个用户不需要的就不该强迫接受。
+        SectionTitle("通知")
         Panel {
-            ToggleRow("启用提醒", "在阶段结束前提醒你", cfg.notify.enabled) { v ->
-                Store.update { it.copy(notify = it.notify.copy(enabled = v)) }
+            val askNotify = rememberNotificationRequester()
+            val notifPerm = Permissions.item(ctx, cfg, PermId.NOTIFICATION)
+            if (!notifPerm.ok) {
+                // 通知权限被拒时，下面所有开关都是"看起来开着、其实发不出去"，
+                // 所以先说清楚，再给一键去开启。
+                Text(
+                    notifPerm.hint,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(
+                    onClick = { askNotify() },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) { Text("去开启通知", fontSize = 12.sp) }
+                Spacer(Modifier.height(4.dp))
             }
-            Stepper("专注结束前", cfg.notify.workBefore, 0, 120, " 分钟", step = 1) { v ->
-                Store.update { it.copy(notify = it.notify.copy(workBefore = v)) }
-            }
-            Stepper("休息结束前", cfg.notify.breakBefore, 0, 120, " 分钟", step = 1) { v ->
-                Store.update { it.copy(notify = it.notify.copy(breakBefore = v)) }
-            }
-            ToggleRow("休息也提醒", null, cfg.notify.breakNotify, divider = true) { v ->
-                Store.update { it.copy(notify = it.notify.copy(breakNotify = v)) }
+
+            ToggleRow(
+                "启用通知",
+                "关掉后四类都不发；应用内状态与统计照常",
+                cfg.notify.enabled,
+            ) { v -> Store.update { it.copy(notify = it.notify.copy(enabled = v)) } }
+
+            if (cfg.notify.enabled) {
+                // —— 常驻 ——
+                ToggleRow(
+                    "常驻状态显示今日进度",
+                    "通知栏里带「今日已自律 X / 计划 Y 分」和进度条；关掉只留当前状态",
+                    cfg.notify.ongoingProgress,
+                    divider = true,
+                ) { v -> Store.update { it.copy(notify = it.notify.copy(ongoingProgress = v)) } }
+
+                // —— 阶段结束前 ——
+                Stepper("专注结束前提醒", cfg.notify.workBefore, 0, 120, " 分钟", step = 1) { v ->
+                    Store.update { it.copy(notify = it.notify.copy(workBefore = v)) }
+                }
+                Stepper("休息结束前提醒", cfg.notify.breakBefore, 0, 120, " 分钟", step = 1) { v ->
+                    Store.update { it.copy(notify = it.notify.copy(breakBefore = v)) }
+                }
+                ToggleRow("休息也提醒", null, cfg.notify.breakNotify, divider = true) { v ->
+                    Store.update { it.copy(notify = it.notify.copy(breakNotify = v)) }
+                }
+
+                // —— 完成 ——
+                ToggleRow(
+                    "任务完成通知",
+                    "专注段做完 / 休息结束的那一刻发一条，带今日累计",
+                    cfg.notify.done,
+                    divider = true,
+                ) { v -> Store.update { it.copy(notify = it.notify.copy(done = v)) } }
+
+                // —— 每日汇总 ——
+                ToggleRow(
+                    "每日使用汇总",
+                    "每天固定时间汇总当天的使用时长与自律时长；当天没记录就不发",
+                    cfg.notify.dailySummary,
+                    divider = true,
+                ) { v -> Store.update { it.copy(notify = it.notify.copy(dailySummary = v)) } }
+                if (cfg.notify.dailySummary) {
+                    Stepper("汇总时间", cfg.notify.dailyAt, 0, 23, " 点", step = 1) { v ->
+                        Store.update { it.copy(notify = it.notify.copy(dailyAt = v)) }
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "系统设置里还能按渠道单独关（自律守护 / 阶段提醒 / 任务完成 / 每日使用汇总），"
+                        + "那比这里的开关更彻底：关掉渠道后代码里发也不会出现。",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
