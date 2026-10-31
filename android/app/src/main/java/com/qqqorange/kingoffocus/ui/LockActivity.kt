@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.data.AppInfo
@@ -134,9 +135,10 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
     val price = LockEngine.pausePrice(cfg)
     val stopCost = LockEngine.stopPrice(cfg)
     val left = fmtLeft(LockEngine.segmentLeftSeconds(cfg, now))
-    val allowed = remember(cfg.lockAllow) {
-        val want = cfg.lockAllow.toSet()
-        loadLaunchableApps(ctx).filter { it.pkg in want }
+    // 允许名单的唯一来源：白名单规则（锁机这边不再有自己的副本）
+    val allowPkgs = GuardEngine.allowedPackages(cfg)
+    val allowed = remember(allowPkgs) {
+        loadLaunchableApps(ctx).filter { it.pkg in allowPkgs }
     }
 
     Column(
@@ -295,7 +297,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         }
 
         // —— 白名单：允许的应用，点了直接打开（睡眠时段不给） ——
-        if (!sleep && cfg.lockAllow.isNotEmpty()) {
+        if (!sleep && allowed.isNotEmpty()) {
             Spacer(Modifier.height(18.dp))
             OutlinedButton(
                 onClick = { showAllow = !showAllow },

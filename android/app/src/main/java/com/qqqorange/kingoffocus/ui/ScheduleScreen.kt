@@ -48,6 +48,7 @@ import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
 import com.qqqorange.kingoffocus.data.SchedulePlan
+import com.qqqorange.kingoffocus.data.ScheduleRules
 import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Store
 import java.time.LocalDateTime
@@ -97,6 +98,10 @@ fun ScheduleScreen(cfg: Config) {
     }
     val active = plans.firstOrNull { it.id == cfg.activePlan } ?: plans.first()
 
+    // 今天星期几（0 = 周一）。**今天之前的列不许编辑**——点不动，写入也会被拒。
+    val todayIdx = LocalDateTime.now().dayOfWeek.value - 1
+    val editable = ScheduleRules.editableDays(todayIdx)
+
     // 草稿用稳定的 state 持有：pointerInput 里捕获的是这个对象。
     // 如果每次 cfg.days 变了就换一个新 state，正在拖的手势会写进旧对象。
     val draftState = remember { mutableStateOf(cfg.days) }
@@ -107,6 +112,9 @@ fun ScheduleScreen(cfg: Config) {
     val vScroll = rememberScrollState()
     var renameTarget by remember { mutableStateOf<SchedulePlan?>(null) }
     var renameText by remember { mutableStateOf("") }
+    // 点表头打开的那一天；clearAsk = 正在二次确认"清空哪一天"
+    var dayAction by remember { mutableStateOf<Int?>(null) }
+    var clearAsk by remember { mutableStateOf<Int?>(null) }
 
     val density = LocalDensity.current
     val rowPx = with(density) { rowH.toPx() }
@@ -130,7 +138,10 @@ fun ScheduleScreen(cfg: Config) {
     fun applySlot(day: Int, slot: Int, on: Boolean) {
         val cur = draftState.value
         val dayPlan = cur.getOrNull(day) ?: return
-        val painted = Slots.paintSlot(dayPlan, slot, step, on, cfg.defWork, cfg.defBrk)
+        // 落盘前再过一次规则：界面已经拦了"点不动"，但写入口不能只靠界面拦
+        val painted = ScheduleRules.paint(
+            day, todayIdx, dayPlan, slot, step, on, cfg.defWork, cfg.defBrk,
+        )
         draftState.value = cur.toMutableList().also { it[day] = painted }
     }
 
@@ -142,7 +153,6 @@ fun ScheduleScreen(cfg: Config) {
         vScroll.scrollTo(target.coerceIn(0, vScroll.maxValue))
     }
 
-    val todayIdx = LocalDateTime.now().dayOfWeek.value - 1
     val nowMinute = LocalDateTime.now().let { it.hour * 60 + it.minute }
     val draft = draftState.value
     val selectedToday = Slots.dayMinutes(draft.getOrNull(todayIdx).orEmpty())
@@ -278,13 +288,29 @@ fun ScheduleScreen(cfg: Config) {
             Row(Modifier.fillMaxWidth()) {
                 Spacer(Modifier.width(AXIS_W))
                 for (d in 0 until 7) {
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        Text(
-                            DAY_NAMES[d],
-                            fontSize = 11.sp,
-                            fontWeight = if (d == todayIdx) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (d == todayIdx) cs.primary else cs.onSurfaceVariant,
-                        )
+                    Box(
+                        Modifier.weight(1f).clickable { dayAction = d },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                DAY_NAMES[d],
+                                fontSize = 11.sp,
+                                fontWeight = if (d == todayIdx) FontWeight.SemiBold else FontWeight.Normal,
+                                color = when {
+                                    d == todayIdx -> cs.primary
+                                    !editable[d] -> cs.onSurfaceVariant.copy(alpha = 0.45f)
+                                    else -> cs.onSurfaceVariant
+                                },
+                            )
+                            if (!editable[d]) {
+                                Text(
+                                    "锁",
+                                    fontSize = 7.sp,
+                                    color = cs.onSurfaceVariant.copy(alpha = 0.55f),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -327,6 +353,9 @@ fun ScheduleScreen(cfg: Config) {
 
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     val first = cellAt(down.position)
+                                    // 已经过去的星期是锁的：不涂、不吃手势（交还给滚动），
+                                    // 想改就等下周——点表头会说明原因
+                                    if (!editable[first.first]) return@awaitEachGesture
                                     val on = !isOn(first.first, first.second)
                                     applySlot(first.first, first.second, on)
                                     down.consume()
@@ -414,7 +443,17 @@ fun ScheduleScreen(cfg: Config) {
                             )
                         }
 
-                        // 4) 现在几点：今天那一列里的一条横线
+                        // 4) 锁住的列（今天之前）：盖一层底色，看起来就是"动不了"
+                        for (d in 0 until 7) {
+                            if (editable[d]) continue
+                            drawRect(
+                                color = cs.background.copy(alpha = 0.62f),
+                                topLeft = Offset(d * colW, 0f),
+                                size = Size(colW, size.height),
+                            )
+                        }
+
+                        // 5) 现在几点：今天那一列里的一条横线
                         val yNow = nowMinute * rowPx / step
                         if (yNow <= size.height) {
                             drawLine(
@@ -431,7 +470,8 @@ fun ScheduleScreen(cfg: Config) {
             Spacer(Modifier.height(8.dp))
             Text(
                 "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) +
-                    "；浅色格表示旧边界跨在格子中间，重涂一下就会对齐。",
+                    "；浅色格表示旧边界跨在格子中间，重涂一下就会对齐。" +
+                    "灰色的星期已经过去，点表头可以看原因或清空那一天。",
                 fontSize = 10.5.sp,
                 color = cs.onSurfaceVariant,
             )
@@ -444,12 +484,9 @@ fun ScheduleScreen(cfg: Config) {
                 draftState.value = rows2
                 commit()
             }) { Text("今天全选", fontSize = 12.sp) }
-            OutlinedButton(onClick = {
-                val rows2 = draftState.value.toMutableList()
-                rows2[todayIdx] = Slots.paintDay(rows2[todayIdx], false, cfg.defWork, cfg.defBrk)
-                draftState.value = rows2
-                commit()
-            }) { Text("今天清空", fontSize = 12.sp) }
+            OutlinedButton(onClick = { clearAsk = todayIdx }) {
+                Text("今天清空", fontSize = 12.sp)
+            }
         }
 
         // —— 番茄参数 ——
@@ -505,6 +542,86 @@ fun ScheduleScreen(cfg: Config) {
                 }) { Text("保存") }
             },
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("取消") } },
+        )
+    }
+
+    // —— 每天的操作：点表头打开（全选 / 清空 / 说明为什么锁着） ——
+    val act = dayAction
+    if (act != null) {
+        val name = "周" + DAY_NAMES[act]
+        val mins = Slots.dayMinutes(draft.getOrNull(act).orEmpty())
+        AlertDialog(
+            onDismissRequest = { dayAction = null },
+            title = { Text(name) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("已选 " + Slots.fmtMinutes(mins), fontSize = 13.sp)
+                    if (!editable[act]) {
+                        Text(
+                            ScheduleRules.lockReason(name) + "。原有计划照常生效，只是不能再改。",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    val rows = draftState.value.toMutableList()
+                                    rows[act] = ScheduleRules.paintAll(
+                                        act, todayIdx, rows[act], true, cfg.defWork, cfg.defBrk,
+                                    )
+                                    draftState.value = rows
+                                    commit()
+                                    dayAction = null
+                                },
+                            ) { Text("全选", fontSize = 12.sp) }
+                            OutlinedButton(
+                                onClick = {
+                                    dayAction = null
+                                    clearAsk = act
+                                },
+                            ) {
+                                Text("清空这一天", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { dayAction = null }) { Text("关闭") } },
+        )
+    }
+
+    // —— 二次确认：清空一整天的计划不是能撤销的操作 ——
+    val ask = clearAsk
+    if (ask != null) {
+        val name = "周" + DAY_NAMES[ask]
+        val mins = Slots.dayMinutes(draft.getOrNull(ask).orEmpty())
+        AlertDialog(
+            onDismissRequest = { clearAsk = null },
+            title = { Text("清空$name？") },
+            text = {
+                Text(
+                    "$name 现在的 " + Slots.fmtMinutes(mins) + " 计划会全部移除，这一步不能撤销。",
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val rows = draftState.value.toMutableList()
+                        rows[ask] = ScheduleRules.paintAll(
+                            ask, todayIdx, rows[ask], false, cfg.defWork, cfg.defBrk,
+                        )
+                        draftState.value = rows
+                        commit()
+                        clearAsk = null
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("清空") }
+            },
+            dismissButton = { TextButton(onClick = { clearAsk = null }) { Text("取消") } },
         )
     }
 }

@@ -240,7 +240,14 @@ data class Config(
     val backup: BackupCfg = BackupCfg(),
     val update: UpdateCfg = UpdateCfg(),
     val lock: LockCfg = LockCfg(),
-    /** 锁机期间允许使用的应用（遮罩上的白名单，点了能直接打开） */
+    /**
+     * **已废弃，只用于迁移。**
+     *
+     * 以前锁机遮罩有一套自己的允许名单，和白名单规则里的名单是两份配置，
+     * 于是同一个应用可能"遮罩里能点开、规则却把它赶回桌面"。
+     * 现在唯一来源是白名单规则（`GuardEngine.allowedPackages`）：
+     * 这里的老数据会在 [normalize] 里并进一条白名单规则，然后清空。
+     */
     val lockAllow: List<String> = emptyList(),
     /** 暂停到什么时候（unix 秒）；期间不锁、不拦 */
     val lockPausedUntil: Long = 0L,
@@ -289,6 +296,40 @@ fun normalizeDays(raw: List<List<HourPlan>>): List<List<HourPlan>> =
         }
     }
 
+/** 老"锁机允许的应用"迁移后落到的规则 id：一直沿用，重复迁移也不会越并越多 */
+private const val LOCK_ALLOW_RULE_ID = "rule-lock-allow"
+
+/**
+ * 把废弃的 `lockAllow` 并进一条白名单规则。
+ *
+ * 为什么不直接丢掉：用户当初勾的应用是他真实的选择，丢掉等于把"锁机时能用的应用"
+ * 清空——那会让他在锁机期间连设置都打不开。并进去之后，规则页上看得见、改得动，
+ * 遮罩和白名单判定读的也是同一份，两处再也不会互相矛盾。
+ */
+private fun migrateLockAllow(rules: List<Rule>, allow: List<String>): List<Rule> {
+    val want = allow.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (want.isEmpty()) return rules
+    val i = rules.indexOfFirst { it.id == LOCK_ALLOW_RULE_ID }
+    if (i < 0) {
+        return rules + Rule(
+            id = LOCK_ALLOW_RULE_ID,
+            name = "允许的应用",
+            enabled = true,
+            mode = "whitelist",
+            packages = want,
+            hard = false,
+        )
+    }
+    val old = rules[i]
+    return rules.toMutableList().also {
+        it[i] = old.copy(
+            enabled = true,
+            mode = "whitelist",
+            packages = (old.packages + want).distinct(),
+        )
+    }
+}
+
 fun normalize(cfg: Config): Config {
     val days = normalizeDays(cfg.days)
     // ---- 多套方案：老配置只有一套 days，迁移成 plans[0] ----
@@ -329,6 +370,8 @@ fun normalize(cfg: Config): Config {
     return cfg.copy(
         days = days,
         granularity = Slots.stepOf(cfg.granularity),
+        // 老的两份名单并成一份；迁移完 lockAllow 就永远是空的
+        rules = migrateLockAllow(cfg.rules, cfg.lockAllow),
         plans = plans,
         activePlan = activeId,
         sleep = cfg.sleep.copy(
@@ -352,7 +395,8 @@ fun normalize(cfg: Config): Config {
             pauseCost = cfg.lock.pauseCost.coerceIn(0, 2000),
             stopCost = cfg.lock.stopCost.coerceIn(0, 5000),
         ),
-        lockAllow = cfg.lockAllow.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
+        // 名单已并进白名单规则，这里不再保留副本——两处配置就是矛盾的来源
+        lockAllow = emptyList(),
     )
 }
 

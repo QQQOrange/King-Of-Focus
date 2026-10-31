@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.AppPickerDialog
+import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Rule
 import com.qqqorange.kingoffocus.data.Store
@@ -62,6 +63,21 @@ fun RulesScreen(cfg: Config) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         PageHeader("自律规则", "名单里的应用在专注段不可用；白名单模式只允许名单内")
+
+        // 为什么"规则配了却不拦"：绝大多数时候是这三件事没同时成立。
+        // 与其让人猜，不如把当前状态摆出来。
+        val now = java.time.LocalDateTime.now()
+        val status = when {
+            !cfg.enabled -> "自律总开关是关的 —— 规则一条都不会生效"
+            ScheduleEngine.stateAt(cfg, now) == null -> "现在不在自律时段内 —— 规则只在时段里生效"
+            ScheduleEngine.stateAt(cfg, now)?.inBreak == true -> "现在是番茄的休息段 —— 休息时规则暂停"
+            now.atZone(java.time.ZoneId.systemDefault()).toEpochSecond() < cfg.unlockUntil ->
+                "你正在用积分解锁的这段时间 —— 所有拦截暂停"
+            else -> "生效中：规则正在按「时段」执行"
+        }
+        Panel {
+            Text(status, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
 
         OutlinedButton(onClick = { editing = newRule() }, modifier = Modifier.fillMaxWidth()) {
             Text("新建一条规则")

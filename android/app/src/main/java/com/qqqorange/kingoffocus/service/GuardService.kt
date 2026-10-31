@@ -226,13 +226,27 @@ class GuardService : Service() {
         if (pkg == packageName) return
         val rule = GuardEngine.blockedRule(cfg, now, pkg, packageName) ?: return
         val nowMs = SystemClock.elapsedRealtime()
-        if (pkg == lastBlockPkg && nowMs - lastBlockAt < 5000) return
+        // 3 秒内同一条重复拦：既保证"马上就退出"，又不至于每秒刷一堆动作
+        if (pkg == lastBlockPkg && nowMs - lastBlockAt < 3000) return
         lastBlockPkg = pkg
         lastBlockAt = nowMs
 
         val label = appLabel(pkg)
+        val whitelist = rule.mode == "whitelist"
+        // 先回桌面：用户多半正停在这个应用里，先把他送走，再处理那个应用，
+        // 否则杀进程的一瞬间会闪一下白屏，看起来像崩了。
         goHome()
-        alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
+
+        if (whitelist && !GuardEngine.isShell(pkg) && ShizukuBridge.ready()) {
+            // "强制退出"真的能做到的唯一路径：shell 身份的 am force-stop。
+            // 没有 Shizuku 时 Android 不允许一个应用结束另一个应用，只能回桌面 + 通知。
+            bg.execute {
+                Log.i(TAG, "白名单外的应用，强制退出 $pkg -> " + ShizukuBridge.forceStop(pkg))
+            }
+            alert("「$label」现在不能用", "它不在白名单里，已经把它关掉并回到桌面。")
+        } else {
+            alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
+        }
     }
 
     private fun appLabel(pkg: String): String = runCatching {
@@ -278,7 +292,8 @@ class GuardService : Service() {
         val fg = foreground()
         // 睡眠时段没有白名单：只留紧急通道和输入法，其它一概不盖不到
         if (fg.isNullOrEmpty() || fg == packageName) return
-        if (kind == LockActivity.KIND_FOCUS && fg in cfg.lockAllow) return
+        // 允许名单只有一个来源：白名单规则。
+        if (kind == LockActivity.KIND_FOCUS && fg in GuardEngine.allowedPackages(cfg)) return
         if (LockEngine.isAlwaysAllowed(fg, imePkgs)) return
         if (fg !in homePkgs) {
             goHome()
