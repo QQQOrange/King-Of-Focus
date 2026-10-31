@@ -100,7 +100,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         // 用户开着自律时打开应用：确保守护在跑（Android 12+ 允许前台应用启动前台服务）
-        if (Store.current.enabled) {
+        if (GuardService.shouldRun(Store.current)) {
             runCatching { GuardService.start(this) }
         }
         // 自动检查更新：只查不装。安装永远要用户自己点一下——
@@ -218,7 +218,7 @@ internal fun BackupSection(cfg: Config) {
             }
             status = msg
             // 规则和时段可能整批换了，守护服务要按新配置重来一遍
-            if (Store.current.enabled) runCatching { GuardService.start(ctx) }
+            if (GuardService.shouldRun(Store.current)) runCatching { GuardService.start(ctx) }
         } catch (e: Exception) {
             status = "恢复失败：${e.message ?: "未知错误"}"
         } finally {

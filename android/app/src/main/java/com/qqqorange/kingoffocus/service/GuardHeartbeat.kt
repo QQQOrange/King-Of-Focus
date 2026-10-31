@@ -18,7 +18,7 @@ import com.qqqorange.kingoffocus.data.Store
 class GuardHeartbeat : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent?) {
         Store.init(ctx)
-        if (!Store.current.enabled) return
+        if (!GuardService.shouldRun(Store.current)) return
         GuardService.start(ctx)
         GuardService.scheduleHeartbeat(ctx)
     }
