@@ -83,6 +83,7 @@ object Portable {
                             days = cfg.days,
                             defWork = cfg.defWork,
                             defBrk = cfg.defBrk,
+                            defCap = cfg.defCap,
                         ),
                     )
                 }
@@ -101,6 +102,8 @@ object Portable {
                                 put("name", plan.name)
                                 put("defWork", if (isActive) cfg.defWork else plan.defWork)
                                 put("defBrk", if (isActive) cfg.defBrk else plan.defBrk)
+                                // 每小时累计休息上限（0 = 不限）；桌面端同名 defCap
+                                put("defCap", if (isActive) cfg.defCap else plan.defCap)
                                 // 这套时段绑定的规则 id（空 = 全部），桌面端 ClockProfile.bound
                                 put("bound", JsonArray(plan.bound.map { JsonPrimitive(it) }))
                                 put("days", daysToDoc(if (isActive) cfg.days else plan.days))
@@ -206,6 +209,7 @@ object Portable {
                     days = days,
                     defWork = prof?.int("defWork", p.defWork)?.coerceIn(1, 59) ?: p.defWork,
                     defBrk = prof?.int("defBrk", p.defBrk)?.coerceIn(0, 59) ?: p.defBrk,
+                    defCap = prof?.int("defCap", p.defCap)?.coerceIn(0, 60) ?: p.defCap,
                     bound = if (prof == null) p.bound else docBound(prof),
                 )
             }.ifEmpty {
@@ -216,6 +220,7 @@ object Portable {
                         days = days,
                         defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
                         defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(0, 59) ?: base.defBrk,
+                        defCap = prof?.int("defCap", base.defCap)?.coerceIn(0, 60) ?: base.defCap,
                         bound = if (prof == null) emptyList() else docBound(prof),
                     ),
                 )
@@ -231,6 +236,7 @@ object Portable {
             defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
             // 休息可以是 0（= 整段不休息），别夹成 1——那会凭空多出一次休息
             defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(0, 59) ?: base.defBrk,
+            defCap = prof?.int("defCap", base.defCap)?.coerceIn(0, 60) ?: base.defCap,
             // 方案级 bound 也带回来：只在"覆盖"时整体接受（合并时不动本机分组）
             plans = plans,
             activePlan = if (docPlans.isEmpty()) base.activePlan.ifBlank { "plan-default" } else docActive,
@@ -566,6 +572,7 @@ object Portable {
                 defBrk = o.int("defBrk", 10).let { b ->
                     if (b > 0) b.coerceIn(0, 59).coerceAtMost(60 - o.int("defWork", 50).coerceIn(1, 59)) else 0
                 },
+                defCap = o.int("defCap", 0).coerceIn(0, 60),
                 bound = docBound(o),
             )
         }.distinctBy { it.id }

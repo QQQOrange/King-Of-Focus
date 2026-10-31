@@ -91,8 +91,14 @@ class AggregationTest {
             LocalDate.of(2026, 10, 31) to sday("com.a" to buckets(10 to 1800), "com.b" to buckets(11 to 600)),
         )
         val text = Report.build(now, days, null, 3, 120) { pkg -> if (pkg == "com.a") "应用甲" else "应用乙" }
-        assertTrue(text, text.contains("累计 1 小时 40 分"))
+        // 与桌面端 report_out 同一套段落：时长总览 → 两侧分布 → 说明
+        assertTrue(text, text.contains("时长总览"))
+        assertTrue(text, text.contains("合计：1 小时 40 分"))
+        assertTrue(text, text.contains("开启占比：100.0%"))
+        assertTrue(text, text.contains("开启时段的分布"))
+        assertTrue(text, text.contains("程序："))
         assertTrue(text, text.contains("应用甲"))
+        assertTrue(text, text.contains("未开启时段的分布"))
         assertTrue(text, text.contains("自律规则 3 条"))
         assertTrue(text, text.contains("当前积分 120"))
     }

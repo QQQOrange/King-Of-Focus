@@ -93,6 +93,24 @@ object SleepEngine {
         return true
     }
 
+    /**
+     * 下一次进入睡眠还有多少秒（正在睡眠 → 0；未来 [horizonHours] 小时内没有 → null）。
+     *
+     * 与 [LockEngine.secondsUntilStart] 同一个思路（30 秒步长向后探）：跨夜段、
+     * 多段、跨天都自动算对，不需要另写一套"23:00 到底过了没"的算术。
+     */
+    fun secondsUntilStart(cfg: Config, now: LocalDateTime, horizonHours: Int = 12): Long? {
+        if (!cfg.sleep.enabled) return null
+        if (isSleeping(cfg, now)) return 0
+        var acc = 30L
+        val limit = horizonHours.coerceIn(1, 48) * 3600L
+        while (acc <= limit) {
+            if (isSleeping(cfg, now.plusSeconds(acc))) return acc
+            acc += 30
+        }
+        return null
+    }
+
     /** 解锁一次的价格（0 = 这段睡眠不许解锁） */
     fun unlockPrice(cfg: Config): Int {
         val perMin = cfg.sleep.unlockPrice.coerceAtLeast(0)

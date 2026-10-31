@@ -36,11 +36,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -198,6 +201,68 @@ fun ScheduleScreen(cfg: Config) {
     // 本次手势共用的段 id（拖动结束清空）
     var dragSeg by remember { mutableStateOf("") }
 
+    // ---- 块级拖动（整块平移 / 拉上下边界）----
+    var blockDay by remember { mutableStateOf(0) }
+    var blockSeg by remember { mutableStateOf("") }
+    /** 按下点距离块起点的分钟数（平移时保持"手抓住的位置不动"） */
+    var blockGrab by remember { mutableStateOf(0) }
+    /** 手势开始那一天的快照：每帧都从它重算，避免增量叠加 */
+    var blockBase by remember { mutableStateOf<List<HourPlan>>(emptyList()) }
+    /** 正在拖动的是哪一列（-1 = 没在拖），只用于把那一块画得显眼一点 */
+    var dragDay by remember { mutableStateOf(-1) }
+
+    /**
+     * 长按落在**已有块**里时进入哪种子模式。
+     *
+     * 判定按"格"而不是按像素：块的第一格 = 拉起点、最后一格 = 拉终点、中间 = 整块平移。
+     * 一格只有 8/11dp，按像素分三段的边缘区会小到点不住；按格判还有一个好处——
+     * 15 分钟刻度和 10 分钟刻度用的是同一句规则，用户不用重新学。
+     *
+     * 只有一格长的块没有"中间"，一律按平移处理（拉起点还是拉终点没有意义）。
+     */
+    fun beginBlock(day: Int, blk: Slots.Block, grabMin: Int): String {
+        var d = draftState.value.getOrNull(day).orEmpty()
+        var seg = blk.seg
+        if (seg.isEmpty()) {
+            // 老数据没有段标识，而块级操作全靠 seg 定位：先给它补一个，
+            // 补完写回草稿，后面的移动/拉伸就能按这个 id 找回来
+            seg = Slots.newSegId()
+            d = Slots.assignSeg(d, blk, seg, cfg.defWork, cfg.defBrk)
+            draftState.value = draftState.value.toMutableList().also { it[day] = d }
+        }
+        blockDay = day
+        blockSeg = seg
+        blockGrab = (grabMin - blk.startMin).coerceAtLeast(0)
+        blockBase = d
+        dragging = true
+        dragDay = day
+        val off = grabMin - blk.startMin
+        return when {
+            blk.minutes <= step -> "move"
+            off < step -> "resizeTop"
+            blk.endMin - grabMin <= step -> "resizeBottom"
+            else -> "move"
+        }
+    }
+
+    /** 整块平移：目标起点 = 手指所在分钟 - 抓住的偏移，再吸附刻度 */
+    fun blockMoveTo(pos: androidx.compose.ui.geometry.Offset) {
+        if (blockBase.isEmpty()) return
+        val pMin = ((pos.y / rowPx).toFloat() * step).toInt()
+        val cur = Slots.blocks(blockBase).firstOrNull { it.seg == blockSeg } ?: return
+        val delta = Slots.snap(pMin - blockGrab, step) - cur.startMin
+        val moved = Slots.moveBlock(blockBase, blockSeg, delta, cfg.defWork, cfg.defBrk)
+        draftState.value = draftState.value.toMutableList().also { it[blockDay] = moved }
+    }
+
+    /** 拉上下边界：落点吸附刻度，边界与冲突由 Slots.resizeBlock 收口 */
+    fun blockResizeTo(pos: androidx.compose.ui.geometry.Offset, top: Boolean) {
+        if (blockBase.isEmpty()) return
+        val pMin = ((pos.y / rowPx).toFloat() * step).toInt().coerceIn(0, 1440)
+        val next = Slots.resizeBlock(blockBase, blockSeg, top, pMin, step, cfg.defWork, cfg.defBrk)
+        draftState.value = draftState.value.toMutableList().also { it[blockDay] = next }
+    }
+
     /** 这一格现在落在哪一段里（用于"扩展已有段"时沿用 id） */
     fun segIdAt(day: Int, slot: Int): String {
         val lo = slot * step
@@ -239,6 +304,7 @@ fun ScheduleScreen(cfg: Config) {
         if (dragSeg.isEmpty()) dragSeg = segIdAt(day, slot)
         if (anchorOn && dragSeg.isEmpty()) dragSeg = Slots.newSegId()
         dragging = true
+        dragDay = day
     }
 
     /** 拖到某格：同一天就按"起点↔当前"整段涂；跨列只涂那一格并把起点挪过去 */
@@ -277,7 +343,8 @@ fun ScheduleScreen(cfg: Config) {
     ) {
         PageHeader(
             "自律时段",
-            "纵向是时间、横向是星期；点一格定起点，长按后可上下拖动框选，直接上下滑只滚动页面",
+            "纵向是时间、横向是星期。点一格 = 选中/取消；长按空白处拖动 = 框选；" +
+                "长按色块 = 拖动整块（按在块的第一格拉起点、最后一格拉终点，中间整块平移）",
         )
 
         // 专注段生效中：整页只读。这与桌面端一致——自律期间能改表，锁机就只是建议
@@ -313,6 +380,7 @@ fun ScheduleScreen(cfg: Config) {
                                         days = p.days,
                                         defWork = p.defWork,
                                         defBrk = p.defBrk,
+                                        defCap = p.defCap,
                                         activePlan = p.id,
                                     )
                                 }
@@ -341,6 +409,7 @@ fun ScheduleScreen(cfg: Config) {
                         days = defaultDays(),
                         defWork = cfg.defWork,
                         defBrk = cfg.defBrk,
+                        defCap = cfg.defCap,
                     )
                     Store.update {
                         it.copy(plans = plans + p, activePlan = p.id, days = p.days)
@@ -369,6 +438,7 @@ fun ScheduleScreen(cfg: Config) {
                             days = copy.days,
                             defWork = copy.defWork,
                             defBrk = copy.defBrk,
+                            defCap = copy.defCap,
                         )
                     }
                 },
@@ -390,6 +460,7 @@ fun ScheduleScreen(cfg: Config) {
                             days = rest.first().days,
                             defWork = rest.first().defWork,
                             defBrk = rest.first().defBrk,
+                            defCap = rest.first().defCap,
                         )
                     }
                 },
@@ -544,6 +615,13 @@ fun ScheduleScreen(cfg: Config) {
                         Modifier
                             .weight(1f)
                             .height(rowH * rows)
+                            // 读屏用户拿不到画布里的内容：至少把"这是哪一天、选了多少"
+                            // 说出来，别让这一整块变成沉默区域
+                            .semantics {
+                                contentDescription = "自律时段网格，今天已选 " +
+                                    Slots.fmtMinutes(selectedToday) +
+                                    "；编辑请逐格点击，或用长按拖动"
+                            }
                             .pointerInput(step, cfg.defWork, cfg.defBrk) {
                                 awaitEachGesture {
                                     val w = size.width.toFloat()
@@ -566,13 +644,15 @@ fun ScheduleScreen(cfg: Config) {
 
                                     val slop = viewConfiguration.touchSlop
                                     val longMs = viewConfiguration.longPressTimeoutMillis
-                                    var dragMode = false
+                                    // "" = 还没进长按；其余是长按之后的模式
+                                    var mode = ""
                                     var lastCell = start
+                                    val grabMin = start.second * step
 
                                     while (true) {
                                         // 手指按住不动时不会有新的指针事件，长按只能靠超时来判。
-                                        // 进入拖选之后就不再需要超时，无限等下一个事件即可。
-                                        val ev = if (dragMode) {
+                                        // 进入拖动之后就不再需要超时，无限等下一个事件即可。
+                                        val ev = if (mode.isNotEmpty()) {
                                             awaitPointerEvent()
                                         } else {
                                             val left = (down.uptimeMillis + longMs -
@@ -581,10 +661,21 @@ fun ScheduleScreen(cfg: Config) {
                                         }
 
                                         if (ev == null) {
-                                            // 超时 = 长按成立：进拖选，并给一次触感反馈
-                                            dragMode = true
+                                            // 超时 = 长按成立。
+                                            //
+                                            // 落在**空白格**→ 框选（老用法，从这一格开始涂）；
+                                            // 落在**已有块**里 → 块级操作，按按下的那一格决定是
+                                            // 拉起点 / 拉终点 / 整块平移（见 beginBlock）。
+                                            // 这一步**还不改数据**：真正改动从下一次移动开始，
+                                            // 所以"长按了没动"不会留下任何痕迹。
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            beginDrag(start.first, start.second)
+                                            val blk = Slots.blockAt(draftState.value.getOrNull(start.first).orEmpty(), grabMin)
+                                            mode = if (blk == null) {
+                                                beginDrag(start.first, start.second)
+                                                "box"
+                                            } else {
+                                                beginBlock(start.first, blk, grabMin)
+                                            }
                                             lastCell = start
                                             continue
                                         }
@@ -593,14 +684,14 @@ fun ScheduleScreen(cfg: Config) {
                                         val moved = (ch.position - down.position).getDistance()
 
                                         if (!ch.pressed) {
-                                            // 抬手：没进入拖选、也没怎么移动 = 一次点击
-                                            if (!dragMode && moved <= slop) {
+                                            // 抬手：没进入长按、也没怎么移动 = 一次点击
+                                            if (mode.isEmpty() && moved <= slop) {
                                                 tapCell(start.first, start.second)
                                             }
                                             break
                                         }
 
-                                        if (!dragMode) {
+                                        if (mode.isEmpty()) {
                                             // 还没长按就滑走了 → 这是滚动意图。
                                             // 注意：这里**不消费**手势，一格都不碰。
                                             if (moved > slop) return@awaitEachGesture
@@ -608,16 +699,24 @@ fun ScheduleScreen(cfg: Config) {
                                         }
 
                                         val c = cellAt(ch.position)
-                                        if (c != lastCell && editable[c.first]) {
-                                            lastCell = c
-                                            dragTo(c.first, c.second)
+                                        when (mode) {
+                                            "box" -> if (c != lastCell && editable[c.first]) {
+                                                lastCell = c
+                                                dragTo(c.first, c.second)
+                                            }
+                                            // 块级操作只能在自己的那一列里动：跨列拖动会让
+                                            // "这是哪一天的块"变得含糊，而时间块本来就不该跨天
+                                            "move" -> if (c.first == blockDay) blockMoveTo(ch.position)
+                                            "resizeTop" -> if (c.first == blockDay) blockResizeTo(ch.position, true)
+                                            "resizeBottom" -> if (c.first == blockDay) blockResizeTo(ch.position, false)
                                         }
                                         ch.consume()
                                     }
 
                                     dragging = false
                                     dragSeg = ""
-                                    if (dragMode) commit()
+                                    dragDay = -1
+                                    if (mode.isNotEmpty()) commit()
                                 }
                             },
                     ) {
@@ -638,23 +737,38 @@ fun ScheduleScreen(cfg: Config) {
                             )
                         }
 
-                        // 2) 已选：一格一格画。半格（旧边界跨在格子中间）画浅一点，
-                        //    而不是四舍五入——那等于偷偷改用户的时段
+                        // 2) 已选：**按块画**。
+                        //
+                        //    同一段连续/重叠的窗口在数据上是分开存的（按小时），
+                        //    但用户眼里"9 点到 12 点学习"是一整块。所以这里按
+                        //    Slots.blocks() 的合并结果画一个圆角矩形：
+                        //    块内**没有缝隙、没有分割线**，跨小时也不会断成几截。
+                        //    拖动中的块再加一圈描边，让用户知道动的是哪一块。
                         for (d in 0 until 7) {
-                            val row = grid.getOrNull(d).orEmpty()
-                            for (slot in 0 until rows) {
-                                val h = Slots.hourOfSlot(slot, step)
-                                val off = Slots.offsetOfSlot(slot, step)
-                                val p = row.getOrNull(h) ?: continue
-                                val hit = Slots.windowsOf(p).sumOf {
-                                    maxOf(0, minOf(it.to, off + step) - maxOf(it.from, off))
-                                }
-                                if (hit <= 0) continue
-                                drawRect(
-                                    color = cs.primary.copy(alpha = if (hit >= step) 1f else 0.45f),
-                                    topLeft = Offset(d * colW + gap, slot * rowPx),
-                                    size = Size(colW - gap * 2, rowPx - gap * 0.5f),
+                            val dayBlocks = Slots.blocks(grid.getOrNull(d).orEmpty())
+                            for (b in dayBlocks) {
+                                val top = b.startMin * rowPx / step
+                                val h = (b.endMin - b.startMin) * rowPx / step
+                                val draggingThis = isDragging && d == dragDay
+                                drawRoundRect(
+                                    color = if (draggingThis) {
+                                        cs.primary.copy(alpha = 0.86f)
+                                    } else {
+                                        cs.primary
+                                    },
+                                    topLeft = Offset(d * colW + gap, top),
+                                    size = Size(colW - gap * 2, h.coerceAtLeast(1f)),
+                                    cornerRadius = CornerRadius(4.dp.toPx()),
                                 )
+                                if (draggingThis) {
+                                    drawRoundRect(
+                                        color = cs.onPrimary,
+                                        topLeft = Offset(d * colW + gap, top),
+                                        size = Size(colW - gap * 2, h.coerceAtLeast(1f)),
+                                        cornerRadius = CornerRadius(4.dp.toPx()),
+                                        style = androidx.compose.ui.graphics.drawscope.Stroke(1.4.dp.toPx()),
+                                    )
+                                }
                             }
                         }
 
@@ -716,10 +830,12 @@ fun ScheduleScreen(cfg: Config) {
 
             Spacer(Modifier.height(8.dp))
             Text(
-                "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) +
-                    "；点一格定起点，长按后拖动才是框选，直接上下滑只滚动。浅色格表示旧边界" +
-                    "跨在格子中间，重涂一下就会对齐；灰色的星期已经过去。",
+                "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) + "；" +
+                    "长按色块中间可以整块平移，按在块的头/尾那一格拉上下边界（吸附到 $step 分钟，" +
+                    "撞到相邻块就停在它的边界上，不会吞掉它）。直接上下滑只滚动，不改数据；" +
+                    "灰色的星期已经过去。",
                 fontSize = 10.5.sp,
+                lineHeight = 15.sp,
                 color = cs.onSurfaceVariant,
             )
         }
@@ -752,6 +868,33 @@ fun ScheduleScreen(cfg: Config) {
             Stepper("休息", cfg.defBrk, 0, 60 - cfg.defWork, " 分钟", enabled = !frozen) { v ->
                 Store.update { c -> c.copy(defBrk = v) }
             }
+            // 一小时内累计能给多少休息。0 = 不限（默认，行为和以前完全一样）
+            Stepper(
+                "每小时休息上限",
+                cfg.defCap,
+                0,
+                60,
+                " 分钟",
+                enabled = !frozen,
+            ) { v -> Store.update { c -> c.copy(defCap = v) } }
+            // 用 val 拼好再交给 Text：`when` 里跨行用 `+` 续写会被当成一元运算符
+            val capHint = when {
+                cfg.defCap <= 0 ->
+                    "0 = 不限。一轮专注 + 一轮休息每小时能跑几轮，就休几次。"
+                cfg.defCap < cfg.defBrk ->
+                    "上限比单次休息还短：每次休息都会被截到 ${cfg.defCap} 分钟，" +
+                        "其余时间继续专注（锁机不解除）。"
+                else ->
+                    "一小时里累计休息到 ${cfg.defCap} 分钟就不再休息：" +
+                        "比如 25/5 这种一小时两轮的节奏，第二轮休息会被截短、" +
+                        "之后的休息整段跳过，继续专注并保持锁机。"
+            }
+            Text(
+                capHint,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                color = cs.onSurfaceVariant,
+            )
             Text(
                 "只作用于这套方案的默认值：之后新框选 / 新点选的时段沿用这套时长，"
                     + "已经排好的时段保持原样（它们各自记着自己的节奏）。要统一改，用下面的按钮。",

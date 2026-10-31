@@ -145,11 +145,48 @@ object LockEngine {
     fun canSwitchMode(cfg: Config, now: LocalDateTime): Boolean =
         !(isStrict(cfg) && isLockActive(cfg, now))
 
+    /** 锁机期间一个应用的处置结果 */
+    data class Decision(val block: Boolean, val why: String)
+
+    /**
+     * **锁机期间这个应用能不能用**——拦截页/遮罩/睡眠锁机共用这一个判定。
+     *
+     * 三种配置，三条规则，互不叠加：
+     *  1. `scope = all`（默认）或睡眠锁机 → **整机锁**：除白名单应用与紧急通道，一律盖住；
+     *  2. `scope = rules` 且有启用的白名单 → **只允许名单内**，名单外一律盖住；
+     *  3. `scope = rules` 且只有黑名单 → **只禁黑名单**，其余照常使用。
+     *
+     * 白名单永远优先于黑名单：同一个应用同时出现在两边时按"允许"处理——
+     * 用户把它加进白名单是个更强的表态，不该被另一条规则悄悄否掉。
+     *
+     * 紧急通道（状态栏 / 来电 / 输入法 / 权限弹窗）与自家应用永远放行：
+     * 盖住那些不是自律，是把手机变成砖。
+     */
+    fun decision(
+        cfg: Config,
+        pkg: String,
+        sleep: Boolean,
+        selfPkg: String,
+        imePkgs: Set<String> = emptySet(),
+    ): Decision {
+        if (pkg.isEmpty()) return Decision(false, "")
+        if (pkg == selfPkg) return Decision(false, "")
+        if (isAlwaysAllowed(pkg, imePkgs)) return Decision(false, "")
+        val rules = GuardEngine.lockRules(cfg)
+        // 白名单：名单内的应用在锁机期间照样能用（闹钟、备忘录、词典这类）
+        if (pkg in GuardEngine.allowedPackages(cfg)) return Decision(false, "")
+        if (sleep || cfg.lock.scope != "rules") return Decision(true, "整机锁")
+        if (rules.any { it.mode == "whitelist" }) return Decision(true, "不在允许名单里")
+        val hit = rules.firstOrNull { it.mode != "whitelist" && pkg in it.packages }
+        if (hit != null) return Decision(true, "命中规则「${hit.name}」")
+        return Decision(false, "")
+    }
+
     /**
      * 现在这一拍要不要把遮罩盖上去。
      *
      * 不盖的四种情况：不在锁机 / 读不到前台（宁可漏一拍也不乱盖）/
-     * 前台就是自己（遮罩已经在）/ 前台在白名单或紧急通道里。
+     * 前台就是自己（遮罩已经在）/ 判定为可用（白名单、紧急通道、只禁黑名单且没命中）。
      *
      * 注意**桌面不在放行名单里**：回桌面之后遮罩要立刻盖住桌面，否则"回桌面"就是出口。
      */
@@ -162,12 +199,37 @@ object LockEngine {
     ): Boolean {
         if (!isLockActive(cfg, now)) return false
         if (fg.isNullOrEmpty()) return false
-        if (fg == selfPkg) return false
-        // 允许名单只有一个来源：白名单规则（见 GuardEngine.allowedPackages）。
-        // 以前这里读 cfg.lockAllow，于是"遮罩放行的应用"和"规则放行的应用"可以不一样。
-        if (fg in GuardEngine.allowedPackages(cfg)) return false
-        if (isAlwaysAllowed(fg, imePkgs)) return false
-        return true
+        return decision(cfg, fg, sleep = false, selfPkg = selfPkg, imePkgs = imePkgs).block
+    }
+
+    /**
+     * 下一次进入锁机还有多少秒（已经锁着 → 0；未来 [horizonHours] 小时内没有 → null）。
+     *
+     * 界面/服务靠它算"锁机开始前提醒"。用 30 秒步长向后探，跟
+     * `ScheduleEngine.secondsUntilChange` 一个思路：分钟级窗口、跨小时、跨天都自动算对，
+     * 不需要另写一套"下一个整点在哪"的算术（那种写法总会在跨夜那一段出错）。
+     */
+    fun secondsUntilStart(
+        cfg: Config,
+        now: LocalDateTime,
+        horizonHours: Int = 12,
+    ): Long? {
+        if (!cfg.lock.enabled || !cfg.enabled) return null
+        if (isLockActive(cfg, now)) return 0
+        var acc = 30L
+        val limit = horizonHours.coerceIn(1, 48) * 3600L
+        while (acc <= limit) {
+            if (isLockActive(cfg, now.plusSeconds(acc))) return acc
+            acc += 30
+        }
+        return null
+    }
+
+    /** 下一次锁机开始的时刻（用来给"提前提醒"去重：同一段只提醒一次） */
+    fun nextStart(cfg: Config, now: LocalDateTime, horizonHours: Int = 12): LocalDateTime? {
+        val secs = secondsUntilStart(cfg, now, horizonHours) ?: return null
+        if (secs <= 0) return null
+        return now.plusSeconds(secs)
     }
 
     /**

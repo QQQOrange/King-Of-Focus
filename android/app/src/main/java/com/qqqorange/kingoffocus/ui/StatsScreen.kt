@@ -565,8 +565,16 @@ fun StatsScreen(cfg: Config) {
         Panel {
             // 键里必须带 window：只按 days.size 记会串期（10-30 与 10-31 都是 1 天），
             // 翻页后报告还写着前一天
-            val text = remember(bump, tab, window, cfg.rules.size, cfg.points) {
-                Report.build(now, days, tab, cfg.rules.size, cfg.points) { k -> labelOf(k) }
+            // 周期跟着视图走：按日 = 日报、按周 = 周报、按月 = 月报。
+            // 这样"报告"和上面的图永远说的是同一段时间，不会出现"图是本周、
+            // 报告是本月"的对不上（桌面端报告也是按 period 生成同一区间）。
+            val period = when (view) {
+                StatsView.DAY -> Report.Period.DAILY
+                StatsView.WEEK -> Report.Period.WEEKLY
+                StatsView.MONTH -> Report.Period.MONTHLY
+            }
+            val text = remember(bump, tab, window, view, cfg.rules.size, cfg.points) {
+                Report.build(now, days, tab, cfg.rules.size, cfg.points, period) { k -> labelOf(k) }
             }
             Text(text, fontSize = 11.5.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.height(10.dp))

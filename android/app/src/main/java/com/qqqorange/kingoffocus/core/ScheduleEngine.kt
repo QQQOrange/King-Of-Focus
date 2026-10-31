@@ -12,7 +12,8 @@ import java.time.ZoneId
  *  · 一周 7 天 × 24 小时，每格可以是"整点内的某几分钟"（from/to）；
  *  · 番茄相位锚点是**整点**，`offset % (work + brk)` 取模，
  *    所以 25/5 这种小于一小时的配置一小时里会跑两轮；
- *  · 阶段剩余时间以窗口结束封顶（09:00–09:30 的窗口里看不到 09:45 开始的休息）。
+ *  · 阶段剩余时间以窗口结束封顶（09:00–09:30 的窗口里看不到 09:45 开始的休息）；
+ *  · 一小时内的累计休息受 `Config.defCap` 限制，到上限后休息整轮跳过（见 [phase]）。
  */
 object ScheduleEngine {
 
@@ -27,6 +28,50 @@ object ScheduleEngine {
         val seg: String = "",
     ) {
         val focusing: Boolean get() = inWindow && !inBreak
+    }
+
+    /** 一个阶段：现在是不是休息、这一阶段还剩多少**分钟**（以整点为界） */
+    data class Phase(val inBreak: Boolean, val leftMin: Int)
+
+    /**
+     * 番茄相位（纯函数）。**桌面端 `clock.rs::phase_at` 是同一份算法**，改一边必须改另一边。
+     *
+     * 相位锚点是整点：`off = 这一小时的第几分钟 % (work + brk)`。
+     *
+     * [cap] 是"这一小时累计休息上限"（0 = 不限）。它改变的是**休息还能给多久**：
+     *  · 第 k 轮休息之前，已经休掉 `min(k×brk, cap)` 分钟；
+     *  · 只剩 `cap - acc` 分钟可休，所以这一轮实际长度 = `min(brk, 剩余额度)`；
+     *  · 额度用完（0 分钟）时这一轮**整段跳过**——`inBreak = false`，
+     *    于是锁机不解除、拦截继续，这就是"达到上限后保持学习锁机状态"。
+     *
+     * 注意被截断的休息之后不会再有休息：额度已经归零，后面每轮都是跳过。
+     * 所以"休息结束"之后一律算到整点，不需要再找下一轮。
+     */
+    fun phase(work: Int, brk: Int, cap: Int, minute: Int): Phase {
+        val w = work.coerceIn(0, 60)
+        val b = brk.coerceIn(0, 60)
+        val c = cap.coerceIn(0, 60)
+        // 不设休息 / 专注占满整小时 → 整段专注
+        if (b == 0 || w == 0 || w >= 60) return Phase(false, 60 - minute)
+
+        val cyc = w + b
+        val k = minute / cyc
+        val off = minute % cyc
+        // 第 i 轮休息实际能休多久（0 = 整轮跳过）
+        fun durAt(i: Int): Int =
+            if (c <= 0) b else (c - minOf(i * b, c)).coerceAtLeast(0).coerceAtMost(b)
+
+        val dur = durAt(k)
+        if (off < w) {
+            // 专注中：本轮休息若已被额度吃掉，就一直专注到整点
+            return if (dur > 0) Phase(false, w - off) else Phase(false, 60 - minute)
+        }
+        if (off < w + dur) return Phase(true, w + dur - off)
+
+        // 这一轮休息已经走完（含被截断）：额度用完 → 到整点；否则等下一轮
+        val nextStart = (k + 1) * cyc + w
+        val nextDur = durAt(k + 1)
+        return if (nextDur > 0 && nextStart < 60) Phase(false, nextStart - minute) else Phase(false, 60 - minute)
     }
 
     /** 未启用 / 当前小时没选中 / 分钟落在窗口外 → null */
@@ -51,15 +96,15 @@ object ScheduleEngine {
             return State(true, false, (winLeft * 60 - sec).coerceAtLeast(0), 60, 0, win.seg)
         }
 
-        val cycle = work + brk
-        // 相位锚点是整点：窗口的 from/to 只决定"哪几分钟可见"，不改变节奏
-        val off = minute % cycle
-        val inBreak = off >= work
-        val phaseLeft = if (inBreak) cycle - off else work - off
+        // 相位（含"累计休息上限"）全在 phase 里：锚点是整点，窗口的 from/to
+        // 只决定"哪几分钟可见"，不改变节奏
+        val ph = phase(work, brk, cfg.defCap, minute)
         return State(
             inWindow = true,
-            inBreak = inBreak,
-            leftSeconds = (minOf(phaseLeft, winLeft) * 60 - sec).coerceAtLeast(0),
+            inBreak = ph.inBreak,
+            // 窗口可能比阶段更早结束（如 09:00–09:30 的窗口里看不到 09:45 开始的休息），
+            // 尾段一律截到窗口末尾
+            leftSeconds = (minOf(ph.leftMin, winLeft) * 60 - sec).coerceAtLeast(0),
             work = work,
             brk = brk,
             seg = win.seg,

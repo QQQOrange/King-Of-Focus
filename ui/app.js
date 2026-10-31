@@ -1301,6 +1301,8 @@ function ccNormProfile(p, idx) {
   p.defWork = Math.max(1, Math.min(60, Math.round(p.defWork || CC_DEF_W)));
   p.defBrk = Math.max(0, Math.min(60, Math.round(p.defBrk || CC_DEF_B)));
   if (p.defBrk > 0 && p.defWork + p.defBrk > 60) p.defBrk = 60 - p.defWork;
+  // 每小时累计休息上限（0 = 不限）。缺字段的老配置落到 0，行为与以前完全一致
+  p.defCap = Math.max(0, Math.min(60, Math.round(p.defCap || 0)));
   const fresh = () => ({ on: false, work: p.defWork, brk: p.defBrk, from: 0, to: 60 });
   if (!Array.isArray(p.days)) p.days = [];
   while (p.days.length < 7) p.days.push(Array.from({ length: 24 }, fresh));
@@ -2012,6 +2014,8 @@ function ccSegIdIn(day, lo, hi) {
 
 function ccSegs(day) {
   const out = [];
+  // 上限是方案级的（跟着当前生效方案），循环外取一次
+  const cap = Math.max(0, Math.min(60, clockProfile().defCap || 0));
   for (let h = 0; h < 24; h++) {
     const p = day[h];
     const ws = hourWins(p);
@@ -2039,6 +2043,7 @@ function ccSegs(day) {
         mins: w.to - w.from,
         work,
         brk,
+        cap,
       });
     }
   }
@@ -2054,7 +2059,9 @@ function ccSegs(day) {
 
 /** 一段的概括性内容：节奏 + 轮数 + 时长，一句话 */
 function ccSegBrief(sg) {
-  const rhythm = sg.brk ? `专注 ${sg.work} 分 / 休息 ${sg.brk} 分` : `连续专注 ${sg.work} 分`;
+  // 设了休息上限时也说一句：否则用户看到"休息 5 分"却只休了 3 分钟会以为坏了
+  const cap = sg.cap > 0 ? `（每小时最多休 ${sg.cap} 分）` : '';
+  const rhythm = sg.brk ? `专注 ${sg.work} 分 / 休息 ${sg.brk} 分${cap}` : `连续专注 ${sg.work} 分`;
   const rounds = sg.rounds > 0 ? `${sg.rounds} 个番茄` : '不足 1 轮';
   return `${rhythm} · ${rounds} · ${ccMinText(0, sg.mins).dur}`;
 }
@@ -2815,8 +2822,10 @@ function viewClock() {
       <span class="cc-def-lab">通用时长</span>
       <label>专注 <input type="number" id="defW" min="1" max="60" step="1" value="${prof.defWork}"> 分</label>
       <label>休息 <input type="number" id="defB" min="0" max="60" step="1" value="${prof.defBrk}"> 分</label>
+      <label title="一小时里累计能给多少休息；0 = 不限。到上限后剩下的休息整段跳过，继续保持专注">休息上限 <input type="number" id="defCap" min="0" max="60" step="1" value="${prof.defCap || 0}"> 分</label>
       <button class="btn btn-sm" data-act="clock-def-save">保存</button>
       <span class="hint">只作用于「${esc(prof.name)}」这套：之后新框选 / 单击选中的时段都沿用这套时长；右键菜单里改也能顺手更新它</span>
+      <span class="hint">一小时里累计能给多少休息；0 = 不限。到上限后剩下的休息整段跳过，继续保持专注</span>
     </div>
   </div>
 
@@ -7243,15 +7252,21 @@ const Act = window.Act = {
     const prof = clockProfile();
     let w = Math.round(Number($('#defW').value) || 0);
     let b = Math.round(Number($('#defB').value) || 0);
+    let c = Math.round(Number(($('#defCap') || {}).value) || 0);
     w = Math.max(1, Math.min(60, w));
     b = Math.max(0, Math.min(60, b));
     if (b > 0 && w + b > 60) b = 60 - w;
+    c = Math.max(0, Math.min(60, c));
     prof.defWork = w;
     prof.defBrk = b;
+    prof.defCap = c;
     await saveConfig();
     render();
     // 通用时长只作用于"之后新选的时段"；已经选中的时段保留各自的时长
-    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}：之后新选的时段都会沿用（已选中的时段保持原样）`, 'ok');
+    const capTip = c > 0
+      ? `，每小时休息上限 ${c} 分（到上限后剩下的休息跳过、继续专注）`
+      : '，休息不设上限';
+    toast(`通用时长已设为 专注 ${w} 分${b ? ` / 休息 ${b} 分` : '（不休息）'}${capTip}：之后新选的时段都会沿用（已选中的时段保持原样）`, 'ok');
   },
 
   /** 改「每次选择多少分钟」：10 / 15。

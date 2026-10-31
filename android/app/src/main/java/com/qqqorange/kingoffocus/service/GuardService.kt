@@ -7,10 +7,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.qqqorange.kingoffocus.MainActivity
@@ -89,6 +92,15 @@ class GuardService : Service() {
     private var lockShownAt = 0L
     /** 已经为哪一段提醒过"缺悬浮窗权限"，避免每秒刷一条通知 */
     private var warnedSeg = ""
+
+    /** 上一拍是否在锁机 / 睡眠中：用来抓"进入"与"结束"这两个瞬间 */
+    private var prevLocked = false
+    private var prevSleeping = false
+    /** 已经为哪一次锁机发过"提前提醒"（键 = 类型 + 开始时刻），同一段只提醒一次 */
+    private var preSentKey = ""
+    private var preCalcAt = 0L
+    /** 服务的第一拍：只用来建立"上一拍状态"，不做进入/结束动作 */
+    private var firstTick = true
 
     /** 桌面包名（可能有多个启动器）。缓存一次，别每秒去问 PackageManager */
     private val homePkgs: Set<String> by lazy {
@@ -169,6 +181,10 @@ class GuardService : Service() {
         } else {
             null
         }
+        // 进入/结束锁机的瞬间动作：震动、提前提醒、结束提醒。
+        // 放在 updateOngoing 之后、分支 return 之前——睡眠和锁机两条路都要走到。
+        onLockTransitions(cfg, now, locked, sleeping)
+
         updateOngoing(cfg.enabled && st != null, st, locked, sleeping, progress)
 
         // 睡眠优先：晚上这段整机先别用，和白天那套自律独立
@@ -311,6 +327,169 @@ class GuardService : Service() {
             val pm = packageManager
             pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault(pkg)
+    }
+
+    /**
+     * 锁机相关的三个瞬间。
+     *
+     * | 瞬间 | 动作 | 为什么在这里做 |
+     * |---|---|---|
+     * | 进入锁机 / 睡眠 | 震动一下 | 用户可能正低头看别处，震一下是最快的"现在开始了" |
+     * | 开始前 N 分钟 | 一条提前提醒 | 整机锁会打断导航、付款码、正在写的消息，得给收尾时间 |
+     * | 结束 | 通知 / 弹窗 / 两者 | 结束了却不知道，用户会以为坏了 |
+     *
+     * "结束"只在**这一段时间真的走完**时算：暂停、停止本段、积分解锁都是用户
+     * 主动买来的自由，那时候提示"锁机结束"是噪音（而且会让人以为自律失效了）。
+     */
+    private fun onLockTransitions(
+        cfg: Config,
+        now: LocalDateTime,
+        locked: Boolean,
+        sleeping: Boolean,
+    ) {
+        // 首拍只记基线：服务被系统重启时（很可能正锁着）不该再震一次、
+        // 更不该把"上一段已经结束"当成刚发生。这和"刚启动不算任务完成"是同一条原则。
+        if (!firstTick) {
+            val startLock = locked && !prevLocked
+            val startSleep = sleeping && !prevSleeping
+            if (startLock || startSleep) vibrateOnce(cfg)
+        }
+
+        val endLock = prevLocked && !locked
+        val endSleep = prevSleeping && !sleeping
+        if (endLock || endSleep) {
+            // 只有"这一段真的走完"才提醒。三种情况都不算走完：
+            //  · 暂停买了一会儿自由（仍在专注段里，只是锁机被暂时关掉）；
+            //  · 停止本段（用户明确说不锁了）；
+            //  · 睡眠用积分解锁（人还醒着，只是买了十分钟）。
+            // 判据用**时间本身**而不是"锁机是否还生效"——后者正是被暂停改写的那个值，
+            // 拿它判会把"暂停"误报成"结束"（上一版就是这么错的）。
+            val stillFocusing = ScheduleEngine.stateAt(cfg, now)?.focusing == true
+            val stillInSleepWindow = SleepEngine.active(cfg, now) != null
+            val natural = if (endSleep) !stillInSleepWindow else {
+                !stillFocusing || !cfg.enabled || !cfg.lock.enabled
+            }
+            if (natural) notifyLockEnd(cfg, endSleep)
+        }
+        prevLocked = locked
+        prevSleeping = sleeping
+        firstTick = false
+
+        maybeLockPreAlert(cfg, now)
+    }
+
+    /** 进入锁机/睡眠时短震一下（默认开；关掉后完全静音进入） */
+    private fun vibrateOnce(cfg: Config) {
+        if (!cfg.lock.vibrate) return
+        val v = getSystemService(Vibrator::class.java) ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createOneShot(180, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(180)
+            }
+        }
+    }
+
+    /**
+     * 锁机开始前的提前提醒：**每一次锁机只提醒一次**。
+     *
+     * 去重的键是"下一次锁机的开始时刻"，不是"当前时间"：提前 5 分钟意味着有
+     * 300 拍都满足"到点了"，不记住"这一次说过了"就会刷出 300 条。
+     */
+    private fun maybeLockPreAlert(cfg: Config, now: LocalDateTime) {
+        val before = cfg.lock.beforeMin
+        if (before <= 0 || !cfg.notify.enabled) return
+        val t = SystemClock.elapsedRealtime()
+        // 向后找"下一次整机不能用"要逐拍试算（最多 720 次 stateAt），20 秒算一次足够
+        if (t - preCalcAt < 20_000) return
+        preCalcAt = t
+
+        // 两个来源：锁机与睡眠。它们的共同点是"整台手机马上不能用"，
+        // 所以共用同一个提前量，取更早的那个提醒（同一时刻只发一条）。
+        // 只需要看"提前量 + 一点余量"这么远：超出这个范围的一次锁机，
+        // 这一拍本来就不该提醒，多探 12 小时纯属浪费（这是每秒一拍的循环）
+        val horizon = (before / 60 + 1).coerceIn(1, 2)
+        var bestKey = ""
+        var bestSecs = Long.MAX_VALUE
+        var bestSleep = false
+        LockEngine.secondsUntilStart(cfg, now, horizon)?.takeIf { it > 0 }?.let { secs ->
+            val start = now.plusSeconds(secs)
+            bestKey = "lock|" + start.toLocalDate() + "|" + start.hour + ":" + start.minute
+            bestSecs = secs
+        }
+        SleepEngine.secondsUntilStart(cfg, now, horizon)?.takeIf { it > 0 }?.let { secs ->
+            if (secs < bestSecs) {
+                val start = now.plusSeconds(secs)
+                bestKey = "sleep|" + start.toLocalDate() + "|" + start.hour + ":" + start.minute
+                bestSecs = secs
+                bestSleep = true
+            }
+        }
+        if (bestKey.isEmpty()) return
+        if (!NotifyPlan.shouldPreAlert(before, bestSecs, bestKey, preSentKey)) return
+        preSentKey = bestKey
+        notifyOnce(
+            CH_LOCK,
+            LOCK_PRE_ID,
+            if (bestSleep) "睡眠时段即将开始" else "锁机即将开始",
+            NotifyPlan.preAlertText(bestSecs, sleep = bestSleep),
+        )
+    }
+
+    /**
+     * 锁机结束提醒。
+     *
+     * 弹窗要能盖住当前应用，而 Android 10+ 后台拉起界面需要悬浮窗或 Shizuku。
+     * 拿不到就**只发通知**并在正文里说明——假装弹过比不弹更糟。
+     */
+    private fun notifyLockEnd(cfg: Config, sleep: Boolean) {
+        val mode = cfg.lock.endNotice
+        if (mode == "none") return
+        val canDialog = caps().canShowMask()
+        val wantDialog = NotifyPlan.endDialog(mode) && canDialog
+        val wantNotify = NotifyPlan.endNotify(mode) || (NotifyPlan.endDialog(mode) && !canDialog)
+        val title = if (sleep) "睡眠时段结束" else "锁机结束"
+        val body = if (sleep) {
+            "早上好。睡眠时段已经走完，手机恢复正常使用。"
+        } else {
+            "这一段锁机走完了，休息一下眼睛。"
+        }
+        if (wantNotify) {
+            notifyOnce(
+                CH_LOCK, LOCK_END_ID, title,
+                body + if (NotifyPlan.endDialog(mode) && !canDialog) {
+                    "（没拿到悬浮窗权限，弹窗提醒改成了通知）"
+                } else "",
+            )
+        }
+        if (wantDialog) showLockEnd(title, body)
+    }
+
+    /** 盖上"锁机结束"页：只是一个能一眼看懂、点一下就走的提示，不拦任何东西 */
+    private fun showLockEnd(title: String, body: String) {
+        val intent = Intent(this, LockActivity::class.java)
+            .putExtra(LockActivity.EXTRA_KIND, LockActivity.KIND_END)
+            .putExtra(LockActivity.EXTRA_END_TITLE, title)
+            .putExtra(LockActivity.EXTRA_END_BODY, body)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+            )
+        if (ShizukuBridge.ready()) {
+            val comp = "$packageName/${LockActivity::class.java.name}"
+            bg.execute {
+                val ok = ShizukuBridge.startActivity(
+                    comp,
+                    "--es ${LockActivity.EXTRA_KIND} ${LockActivity.KIND_END}",
+                )
+                if (!ok) handler.post { runCatching { startActivity(intent) } }
+            }
+            return
+        }
+        runCatching { startActivity(intent) }
     }
 
     /** 阶段提醒：每个阶段只响一次，剩余时间跳大即视为进入新阶段 */
@@ -522,11 +701,18 @@ class GuardService : Service() {
             return
         }
         val fg = foreground()
-        // 睡眠时段没有白名单：只留紧急通道和输入法，其它一概不盖不到
         if (fg.isNullOrEmpty() || fg == packageName) return
-        // 允许名单只有一个来源：白名单规则。
-        if (kind == LockActivity.KIND_FOCUS && fg in GuardEngine.allowedPackages(cfg)) return
-        if (LockEngine.isAlwaysAllowed(fg, imePkgs)) return
+        // 判定只有一个出口：LockEngine.decision。
+        // 睡眠恒为"整机锁"（白名单应用仍可用），锁机按 cfg.lock.scope 走
+        // 「整机锁 / 只允许白名单 / 只禁黑名单」三种之一。
+        val decision = LockEngine.decision(
+            cfg = cfg,
+            pkg = fg,
+            sleep = kind == LockActivity.KIND_SLEEP,
+            selfPkg = packageName,
+            imePkgs = imePkgs,
+        )
+        if (!decision.block) return
         if (fg !in homePkgs) {
             goHome()
             // 给桌面一点时间完成切换，再压上遮罩；否则遮罩会盖在旧应用上
@@ -660,6 +846,12 @@ class GuardService : Service() {
                 setShowBadge(false)
             },
         )
+        // 锁机开始前 / 结束的提醒单独一个渠道：想只留"结束"、关掉"即将开始"的人有得选
+        nm.createNotificationChannel(
+            NotificationChannel(CH_LOCK, "锁机提醒", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "锁机开始前的提前提醒与结束提醒"
+            },
+        )
     }
 
     private fun buildOngoing(
@@ -759,6 +951,10 @@ class GuardService : Service() {
         private const val CH_ALERT = "kof_alert"
         private const val CH_DONE = "kof_done"
         private const val CH_DAILY = "kof_daily"
+        private const val CH_LOCK = "kof_lock"
+        /** 锁机提醒两个 id：提醒是"事件"，同一类只留最新一条 */
+        private const val LOCK_PRE_ID = 4104
+        private const val LOCK_END_ID = 4105
         /** 完成通知与汇总通知的固定 id：同一类只留最新一条，不刷屏 */
         private const val DONE_ID = 4102
         private const val DAILY_ID = 4103

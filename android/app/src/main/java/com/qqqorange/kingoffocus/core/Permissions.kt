@@ -261,10 +261,27 @@ object Permissions {
 
     // ------------------------------------------------------------ 各项判定
 
+    /**
+     * 可见应用数只数一次。
+     *
+     * `audit()` 挂在总览页上，而那个页面**每秒重组一次**（状态要实时刷新）。
+     * 每次去 `getInstalledApplications()` 在装了几百个应用的机器上要几十毫秒，
+     * 一秒一次就是明摆着的卡顿——每次重组都做一遍完全是浪费。
+     * 包可见性在一次运行里不会变（要变也是装/卸应用之后，重启就重算了），
+     * 所以缓存到进程级是安全的。
+     */
+    @Volatile
+    private var appCountCache = -1
+
+    private fun installedCount(ctx: Context): Int {
+        if (appCountCache >= 0) return appCountCache
+        val n = runCatching { ctx.packageManager.getInstalledApplications(0).size }.getOrDefault(0)
+        appCountCache = n
+        return n
+    }
+
     private fun appList(ctx: Context): Triple<PermState, String, Intent?> {
-        val n = runCatching {
-            ctx.packageManager.getInstalledApplications(0).size
-        }.getOrDefault(0)
+        val n = installedCount(ctx)
         // 包名可见性被限制时，连自己的应用都数不到几个；正常机器至少几十个
         return if (n > 5) {
             Triple(PermState.OK, "已就绪（可见 $n 个应用）", null)

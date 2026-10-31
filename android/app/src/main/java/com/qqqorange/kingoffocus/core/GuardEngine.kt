@@ -55,6 +55,18 @@ object GuardEngine {
     }
 
     /**
+     * **锁机期生效的规则**：只看"启用 + 这套时段绑定的分组"。
+     *
+     * 与 [activeRules] 的区别：后者还要看"现在是不是自律时段、有没有积分解锁"，
+     * 而锁机（尤其睡眠锁机）本身就已经是"该拦的时候"，再让时段去否决会把
+     * 睡眠锁机的名单变成空的。规则名单本身不需要再被时间筛一次。
+     */
+    fun lockRules(cfg: Config): List<Rule> {
+        val bound = boundOf(cfg)
+        return cfg.rules.filter { it.enabled && (bound.isEmpty() || it.id in bound) }
+    }
+
+    /**
      * **允许使用的应用——全应用唯一的一份名单。**
      *
      * 以前这里有两份：锁机遮罩自己有一个 `lockAllow`，白名单规则里又有一份。
@@ -63,8 +75,8 @@ object GuardEngine {
      * 遮罩的允许列表、白名单模式的判定，读的都是它。
      */
     fun allowedPackages(cfg: Config): Set<String> =
-        cfg.rules.asSequence()
-            .filter { it.enabled && it.mode == "whitelist" }
+        lockRules(cfg).asSequence()
+            .filter { it.mode == "whitelist" }
             .flatMap { it.packages.asSequence() }
             .toSet()
 

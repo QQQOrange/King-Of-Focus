@@ -186,6 +186,211 @@ object Slots {
         return out.sortedBy { it.from }
     }
 
+    // ---------------------------------------------------------------- 时段块
+
+    /**
+     * 一天里的"块"：**同一段（同 seg）里连续或重叠的窗口并成一块**（绝对分钟，左闭右开）。
+     *
+     * 为什么需要这一层：数据还是按小时存的（一小时里可以有好几段），
+     * 但用户眼里的"我 9 点到 12 点学习"是一整块。以前一格一格画，
+     * 跨小时的同一段看起来像 3 个独立小方块，拖动也无从谈起。
+     *
+     * 三条规则（与桌面端 `ccSegs()` 同义）：
+     *  · 同 seg 且**首尾相接或重叠** → 并成一块；
+     *  · 不同 seg **重叠** → 先出现的那段占住重叠部分，后一段从它结束处开始
+     *    （同一条时间轴上不能让两个段同时成立，否则锁机"停止本段"会不知道该停谁）；
+     *  · 不同 seg 只是**紧邻** → 各是各的块（这正是"相邻不等于同一段"）。
+     */
+    data class Block(val seg: String, val startMin: Int, val endMin: Int) {
+        val minutes: Int get() = endMin - startMin
+    }
+
+    fun blocks(day: List<HourPlan>): List<Block> {
+        val raw = ArrayList<Block>()
+        for (h in 0 until 24) {
+            val p = day.getOrNull(h) ?: continue
+            for (w in windowsOf(p)) raw += Block(w.seg, h * 60 + w.from, h * 60 + w.to)
+        }
+        raw.sortWith(compareBy({ it.startMin }, { it.endMin }))
+        val out = ArrayList<Block>()
+        for (b in raw) {
+            val last = out.lastOrNull()
+            when {
+                last == null -> out += b
+                sameSeg(last.seg, b.seg) && b.startMin <= last.endMin ->
+                    out[out.size - 1] = last.copy(endMin = maxOf(last.endMin, b.endMin))
+                // 不同段重叠：让先出现的占住重叠部分，剩下的一截另算
+                b.startMin < last.endMin ->
+                    if (b.endMin > last.endMin) out += Block(b.seg, last.endMin, b.endMin) else Unit
+                else -> out += b
+            }
+        }
+        return out
+    }
+
+    /** 某一分钟落在哪一块里（长按判定"这是不是一个已有块"用它） */
+    fun blockAt(day: List<HourPlan>, minute: Int): Block? =
+        blocks(day).firstOrNull { minute >= it.startMin && minute < it.endMin }
+
+    /**
+     * 用"块列表"重建一天。**所有块级编辑的唯一写出口**。
+     *
+     * 重建时每一小时的番茄参数保持原样（已选中的沿用自己记着的，空的用默认值），
+     * 因为移动/拉伸只该改时间，不该顺手把 45/15 改成 50/10。
+     */
+    fun rebuild(day: List<HourPlan>, blocks: List<Block>, work: Int, brk: Int): List<HourPlan> {
+        val sorted = blocks
+            .map { Block(it.seg, it.startMin.coerceIn(0, 1440), it.endMin.coerceIn(0, 1440)) }
+            .filter { it.endMin > it.startMin }
+            .sortedBy { it.startMin }
+        return (0 until 24).map { h ->
+            val hs = h * 60
+            val wins = sorted.mapNotNull { b ->
+                if (b.startMin >= hs + 60 || b.endMin <= hs) null
+                else HourWin(
+                    from = (b.startMin - hs).coerceIn(0, 59),
+                    to = (b.endMin - hs).coerceIn(1, 60),
+                    seg = b.seg,
+                )
+            }
+            val p = day.getOrNull(h) ?: HourPlan()
+            val w = if (p.on) p.work else work
+            val b = if (p.on) p.brk else brk
+            pack(wins, w, b)
+        }
+    }
+
+    /**
+     * 给一个"没有段标识"的块补一个 id（老配置升级后第一次拖动它时用）。
+     *
+     * 块级操作都按 `seg` 定位，老数据（`seg` 为空）没法定位；补 id 时**只动这一块**，
+     * 不碰其它块——按连续性合并老数据会把"两个碰巧相邻的独立安排"黏成一个，
+     * 那正是用户当初报的 bug。
+     */
+    fun assignSeg(day: List<HourPlan>, block: Block, seg: String, work: Int, brk: Int): List<HourPlan> {
+        if (block.seg.isNotEmpty()) return day
+        val all = blocks(day).map {
+            if (it.startMin == block.startMin && it.endMin == block.endMin && it.seg.isEmpty()) {
+                Block(seg, it.startMin, it.endMin)
+            } else {
+                it
+            }
+        }
+        return rebuild(day, all, work, brk)
+    }
+
+    /**
+     * 把某一块的番茄节奏写到它现在覆盖的那些小时上。
+     *
+     * 为什么需要：番茄参数是**按小时**存的，而块会跨小时。整块搬到 10:00 之后，
+     * 10 点那一格原本是空的（用默认 50/10），不补这一步，"45/15 的那一段"
+     * 搬过去就变成了 50/10——用户只是挪了个位置，节奏不该变。
+     *
+     * 副作用说清楚：如果目标小时里还有另一块，它的节奏也会被改成这一块的。
+     * 一小时只有一个 `work/brk`，这是数据结构决定的，不是这里偷懒。
+     */
+    private fun applyRhythm(
+        day: List<HourPlan>,
+        startMin: Int,
+        endMin: Int,
+        work: Int,
+        brk: Int,
+    ): List<HourPlan> {
+        if (endMin <= startMin) return day
+        val lo = (startMin / 60).coerceIn(0, 23)
+        val hi = ((endMin - 1) / 60).coerceIn(0, 23)
+        return day.mapIndexed { h, p ->
+            if (h in lo..hi && p.on) p.copy(work = work, brk = brk) else p
+        }
+    }
+
+    /** 把分钟对齐到刻度（四舍五入），用于拖动时的吸附 */
+    fun snap(minute: Int, step: Int): Int {
+        val st = stepOf(step)
+        return ((minute + st / 2) / st) * st
+    }
+
+    /**
+     * 整块平移 [deltaMin] 分钟。
+     *
+     * 边界与冲突（这里定死，界面上不再各判一套）：
+     *  · 不越出当天 `00:00–24:00`；
+     *  · 撞到相邻块就**停在它的边界上**，既不覆盖也不合并——
+     *    自动合并只发生在"同段"之间，两段不同的安排粘在一起是错的；
+     *  · 一点也动不了就原样返回（界面据此判定"顶到头了"）。
+     */
+    fun moveBlock(
+        day: List<HourPlan>,
+        seg: String,
+        deltaMin: Int,
+        work: Int,
+        brk: Int,
+    ): List<HourPlan> {
+        if (deltaMin == 0) return day
+        val all = blocks(day)
+        val mine = all.filter { it.seg == seg }
+        if (mine.isEmpty()) return day
+        val others = all.filter { it.seg != seg }
+        val first = mine.first().startMin
+        val last = mine.last().endMin
+
+        val prevEnd = others.filter { it.endMin <= first }.maxOfOrNull { it.endMin } ?: 0
+        val nextStart = others.filter { it.startMin >= last }.minOfOrNull { it.startMin } ?: 1440
+        val d = deltaMin
+            .coerceAtLeast(maxOf(-first, prevEnd - first))
+            .coerceAtMost(minOf(1440 - last, nextStart - last))
+        if (d == 0) return day
+        // 节奏跟着块走：取块起点那一小时的参数（用户手调过的那份）
+        val src = day.getOrNull((first / 60).coerceIn(0, 23))
+        val w = src?.work ?: work
+        val b = src?.brk ?: brk
+        val moved = mine.map { Block(it.seg, it.startMin + d, it.endMin + d) } + others
+        val out = rebuild(day, moved, work, brk)
+        return applyRhythm(out, first + d, last + d, w, b)
+    }
+
+    /**
+     * 拖块的上下边界改起止时间。
+     *
+     * `top = true` 改起点，否则改终点；[minute] 是拖到的位置（会被吸附到刻度）。
+     * 约定：**至少保留一个刻度**的长度；起点不能越过上一块的结束，终点不能越过下一块的开始；
+     * 起点最晚到 `终点 - 刻度`，终点最早到 `起点 + 刻度`。
+     */
+    fun resizeBlock(
+        day: List<HourPlan>,
+        seg: String,
+        top: Boolean,
+        minute: Int,
+        step: Int,
+        work: Int,
+        brk: Int,
+    ): List<HourPlan> {
+        val all = blocks(day)
+        val b = all.firstOrNull { it.seg == seg } ?: return day
+        val others = all.filter { it.seg != seg }
+        val st = stepOf(step)
+        val m = snap(minute, st)
+        if (top) {
+            val prevEnd = others.filter { it.endMin <= b.startMin }.maxOfOrNull { it.endMin } ?: 0
+            val ns = m.coerceIn(prevEnd, b.endMin - st)
+            if (ns == b.startMin) return day
+            return rebuild(day, others + b.copy(startMin = ns), work, brk)
+        }
+        val nextStart = others.filter { it.startMin >= b.endMin }.minOfOrNull { it.startMin } ?: 1440
+        val ne = m.coerceIn(b.startMin + st, nextStart.coerceAtMost(1440))
+        if (ne == b.endMin) return day
+        return rebuild(day, others + b.copy(endMin = ne), work, brk)
+    }
+
+    /** 块的读法："09:00–12:00"（24:00 也能正确显示） */
+    fun fmtBlock(b: Block): String {
+        fun hm(m: Int): String {
+            val mm = m.coerceIn(0, 1440)
+            return "%02d:%02d".format(mm / 60, mm % 60)
+        }
+        return hm(b.startMin) + "–" + hm(b.endMin)
+    }
+
     // ---------------------------------------------------------------- 涂格子
 
     /**

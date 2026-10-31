@@ -193,6 +193,32 @@ data class LockCfg(
     val pauseMinutes: Int = 10,
     val pauseCost: Int = 10,
     val stopCost: Int = 30,
+    /**
+     * 锁机开始前多少分钟提醒一次（0 = 不提醒）。
+     *
+     * 为什么要它：锁机是"整台手机先别用"，被它打断正在做的事（导航、付款码、
+     * 正在写的消息）比打断一个应用难受得多。提前几分钟说一声，用户来得及收尾。
+     * 只为**下一次锁机**发一次，不重复刷。
+     */
+    val beforeMin: Int = 5,
+    /**
+     * 锁机结束时怎么提醒。
+     *
+     * `none` / `notify` / `dialog` / `both`。
+     * 弹窗要能盖住当前应用，而 Android 10+ 后台拉起界面需要悬浮窗或 Shizuku；
+     * 拿不到时会**降级成通知**并在设置页写明，不会假装弹过。
+     */
+    val endNotice: String = "notify",
+    /** 进入锁机 / 睡眠的那一刻震动一下（短震，不打扰别人） */
+    val vibrate: Boolean = true,
+    /**
+     * 锁机期的限制范围。
+     *
+     * `all` = 整机锁（默认，也是以前的唯一行为）：除白名单应用与紧急通道，其它一概盖住；
+     * `rules` = 只按自律规则：有白名单就"仅允许名单内"，没有白名单只有黑名单就"只禁黑名单"。
+     * 睡眠时段永远按 `all` 处理——它就是用来管晚上的。
+     */
+    val scope: String = "all",
 )
 
 /**
@@ -209,6 +235,18 @@ data class SchedulePlan(
     val days: List<List<HourPlan>> = defaultDays(),
     val defWork: Int = 50,
     val defBrk: Int = 10,
+    /**
+     * 每小时**累计休息上限**（分钟，0 = 不限）。
+     *
+     * 「专注 25 + 休息 5」这种节奏一小时会跑两轮，休息合计 10 分钟；把上限设成
+     * 6 分钟，第二轮休息就只给 1 分钟、之后直接跳过休息继续锁机。
+     * 上限小于单次休息时，每次休息都会被截到上限。
+     *
+     * 为什么是"每小时"而不是"每次休息"：每个整点是番茄相位的锚点（见
+     * [com.qqqorange.kingoffocus.core.ScheduleEngine]），以整点为界累计才不需要
+     * 任何运行时状态——同一时刻在任何设备上算出来的结果都一致。
+     */
+    val defCap: Int = 0,
     /**
      * 这套时段生效时，启用**哪些**自律规则（`Rule.id`）。
      *
@@ -314,6 +352,8 @@ data class Config(
     val granularity: Int = 15,
     val defWork: Int = 50,
     val defBrk: Int = 10,
+    /** 每小时累计休息上限（分钟，0 = 不限）；与 [SchedulePlan.defCap] 同义 */
+    val defCap: Int = 0,
     val rules: List<Rule> = emptyList(),
     val points: Int = 0,
     /** 积分解锁到什么时候（unix 秒）；解锁期间所有拦截暂停 */
@@ -433,6 +473,8 @@ fun normalize(cfg: Config): Config {
             defBrk = p.defBrk.coerceIn(0, 59).let { b ->
                 if (b > 0) b.coerceAtMost(60 - p.defWork.coerceIn(1, 59)) else b
             },
+            // 上限超过一小时没有意义（一小时最多 60 分钟）；0 = 不限，保持 0
+            defCap = p.defCap.coerceIn(0, 60),
             bound = p.bound.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
         )
     }.ifEmpty {
@@ -455,6 +497,7 @@ fun normalize(cfg: Config): Config {
                 days = days,
                 defWork = cfg.defWork.coerceIn(1, 59),
                 defBrk = cfg.defBrk.coerceIn(0, 59),
+                defCap = cfg.defCap.coerceIn(0, 60),
             )
         } else {
             p
@@ -472,12 +515,17 @@ fun normalize(cfg: Config): Config {
         days = days,
         defWork = defW,
         defBrk = defB,
+        defCap = cfg.defCap.coerceIn(0, 60),
         granularity = Slots.stepOf(cfg.granularity),
         // 老的两份名单并成一份；迁移完 lockAllow 就永远是空的
         rules = migrateLockAllow(cfg.rules, cfg.lockAllow),
         plans = plans,
         activePlan = activeId,
         sleep = cfg.sleep.copy(
+            // 睡眠期间**必须**锁机：这段的意义就是"晚上手机不能用"。
+            // 以前的开关会让它退化成"只记一条统计"，名字叫睡眠时段却什么也不管。
+            // 老配置里 lockScreen=false 的，升级后按"要锁"处理；想不被锁就关掉整个睡眠时段。
+            lockScreen = true,
             segments = cfg.sleep.segments.ifEmpty { listOf(SleepSegment()) }.map {
                 SleepSegment(it.from.coerceIn(0, 1439), it.to.coerceIn(0, 1440))
             },
@@ -507,6 +555,13 @@ fun normalize(cfg: Config): Config {
             pauseMinutes = cfg.lock.pauseMinutes.coerceIn(1, 120),
             pauseCost = cfg.lock.pauseCost.coerceIn(0, 2000),
             stopCost = cfg.lock.stopCost.coerceIn(0, 5000),
+            // 提前提醒最多一小时：再长就变成"上午就提醒你晚上十点要锁机"
+            beforeMin = cfg.lock.beforeMin.coerceIn(0, 60),
+            endNotice = when (cfg.lock.endNotice) {
+                "none", "dialog", "both" -> cfg.lock.endNotice
+                else -> "notify"
+            },
+            scope = if (cfg.lock.scope == "rules") "rules" else "all",
         ),
         // 名单已并进白名单规则，这里不再保留副本——两处配置就是矛盾的来源
         lockAllow = emptyList(),

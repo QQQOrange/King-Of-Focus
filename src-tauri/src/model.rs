@@ -476,6 +476,15 @@ pub struct ClockProfile {
     /// 右键菜单应用时也可以顺手把它更新掉（一处设置，处处沿用）
     pub def_work: u32,
     pub def_brk: u32,
+    /// 每小时**累计休息上限**（分钟，0 = 不限）。
+    ///
+    /// 「专注 25 + 休息 5」一小时跑两轮、休息合计 10 分钟；上限设成 6 分钟时，
+    /// 第二轮只给 1 分钟、之后直接跳过休息（继续保持专注/锁机）。
+    /// 上限小于单次休息时，每次休息都被截到这个上限。
+    ///
+    /// 判定在 `clock::phase_at`，与手机端 `ScheduleEngine.phase` 是同一份算法。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub def_cap: u32,
     /// 这套时段生效时，启用**哪些**自律规则（`Rule::id` 列表）。
     ///
     /// 空 = 全部（老配置没有这个字段，语义必须保持原样：所有已启用自律规则都生效）。
@@ -496,6 +505,7 @@ impl Default for ClockProfile {
             name: "默认时段".into(),
             days: vec![vec![HourPlan::default(); 24]; 7],
             def_work: 50,
+            def_cap: 0,
             def_brk: 10,
             bound: Vec::new(),
         }

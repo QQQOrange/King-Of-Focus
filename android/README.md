@@ -32,6 +32,9 @@
 
 ## 二、权限（为什么每一项都必须）
 
+> 行为与边界（休息上限、时段块拖动、锁机提醒、锁机期应用限制、统计报告）见
+> [`docs/schedule-lock-and-report.md`](../docs/schedule-lock-and-report.md)。
+
 > 完整的权限与通知清单（用途 / 申请时机 / 申请方式 / 拒绝后的降级 / 重新授权）见
 > [`docs/permissions-and-notifications.md`](../docs/permissions-and-notifications.md)；
 > 应用内「总览 → 权限与能力」展开每一项看到的是同一份内容。

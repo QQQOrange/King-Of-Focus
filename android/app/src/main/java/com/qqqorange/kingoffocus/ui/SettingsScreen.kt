@@ -224,19 +224,99 @@ fun SettingsScreen(cfg: Config) {
                         Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
                     }
                 }
+                // —— 锁机期间限制哪些应用 ——
+                //
+                // 两种模式互斥，不是叠加：整机锁 = 除白名单外全盖住；
+                // 只按规则 = 有白名单就"只允许名单内"，只有黑名单就"只禁黑名单"。
+                Text("锁机期间的限制范围", fontSize = 13.sp)
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ModeButton("整机锁", cfg.lock.scope != "rules", Modifier.weight(1f)) {
+                        Store.update { it.copy(lock = it.lock.copy(scope = "all")) }
+                    }
+                    ModeButton("只按规则", cfg.lock.scope == "rules", Modifier.weight(1f)) {
+                        Store.update { it.copy(lock = it.lock.copy(scope = "rules")) }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
                 // 允许名单只有一份：白名单规则。这里只读展示，改的地方在「规则」页。
                 val allowList = GuardEngine.allowedPackages(cfg)
+                val hasWhite = GuardEngine.hasWhitelistRule(cfg)
+                val hasBlack = cfg.rules.any { it.enabled && it.mode != "whitelist" }
                 Text(
-                    if (allowList.isEmpty()) {
-                        "允许使用的应用：还没有。锁机期间除系统界面与输入法，其余一律挡住；" +
-                            "要让某个应用能用，去「规则」页建一条白名单规则。"
-                    } else {
-                        "允许使用的应用：${allowList.size} 个，来自「规则」页的白名单。" +
-                            "遮罩上的可点列表和这里的拦截判定读的是同一份，不会两处打架。"
+                    when {
+                        cfg.lock.scope != "rules" && allowList.isEmpty() ->
+                            "整机锁：除系统界面与输入法，其余一律挡住。要让某个应用能用，" +
+                                "去「规则」页建一条白名单规则（名单内的应用锁机时照样能开）。"
+                        cfg.lock.scope != "rules" ->
+                            "整机锁：白名单里的 ${allowList.size} 个应用照样能用，其余一概挡住。"
+                        hasWhite ->
+                            "只按规则：只允许白名单里的 ${allowList.size} 个应用，其它一律挡住。"
+                        hasBlack ->
+                            "只按规则：没有白名单，所以按黑名单来——只有名单内的应用会被挡住，其余照常使用。"
+                        else ->
+                            "只按规则，但一条启用的规则都没有，等于锁机不拦任何应用。" +
+                                "先去「规则」页建一条。"
                     },
                     fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
+                    color = if (cfg.lock.scope == "rules" && !hasWhite && !hasBlack) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+
+                // —— 提醒 ——
+                Stepper("开始前提醒", cfg.lock.beforeMin, 0, 60, " 分钟", step = 1) { v ->
+                    Store.update { it.copy(lock = it.lock.copy(beforeMin = v)) }
+                }
+                Text(
+                    if (cfg.lock.beforeMin == 0) "0 = 不提前提醒，到点直接锁。"
+                    else "锁机开始前 ${cfg.lock.beforeMin} 分钟提醒一次（每次锁机只提醒一次）。"
+                        + "整机锁会打断导航、付款码这类事，留点收尾时间。",
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                Spacer(Modifier.height(8.dp))
+                Text("结束时提醒", fontSize = 13.sp)
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("none" to "不提醒", "notify" to "通知", "dialog" to "弹窗", "both" to "两者").forEach { (k, label) ->
+                        Box(Modifier.weight(1f)) {
+                            ModeButton(label, cfg.lock.endNotice == k, Modifier.fillMaxWidth()) {
+                                Store.update { it.copy(lock = it.lock.copy(endNotice = k)) }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                val canDialog = canShowDialog(ctx)
+                Text(
+                    when {
+                        cfg.lock.endNotice == "none" -> "到点结束时不提醒，遮罩自己消失。"
+                        cfg.lock.endNotice == "notify" -> "结束时发一条通知（最稳，任何机型都能到）。"
+                        !canDialog -> "选的是「${if (cfg.lock.endNotice == "both") "两者" else "弹窗"}」，" +
+                            "但现在拿不到「悬浮窗」或 Shizuku，弹不出来——已降级成通知。去总览页授予后才会真弹。"
+                        else -> "结束时盖一页「锁机结束」，10 秒后自己退场，点一下就关。"
+                    },
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
+                    color = if (!canDialog && cfg.lock.endNotice != "notify" && cfg.lock.endNotice != "none") {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+
+                ToggleRow(
+                    "进入时震动一下",
+                    "锁机 / 睡眠开始的那一刻短震（180ms）。关掉就完全静音进入。",
+                    cfg.lock.vibrate,
+                    divider = true,
+                ) { v -> Store.update { it.copy(lock = it.lock.copy(vibrate = v)) } }
             }
         }
 
@@ -249,9 +329,16 @@ fun SettingsScreen(cfg: Config) {
                 cfg.sleep.enabled,
             ) { v -> Store.update { it.copy(sleep = it.sleep.copy(enabled = v)) } }
             if (cfg.sleep.enabled) {
-                ToggleRow("锁屏", "关掉只算统计、不锁", cfg.sleep.lockScreen, divider = true) { v ->
-                    Store.update { it.copy(sleep = it.sleep.copy(lockScreen = v)) }
-                }
+                // 睡眠期间的锁机**不给关**：这段的功能就是"晚上手机不能用"，
+                // 关掉之后它就只剩一条统计记录，"睡眠时段"这个名字就名不副实了。
+                // 真要留一个口子，用下面的积分解锁（有代价、有上限、会自己结束）。
+                Text(
+                    "睡眠期间一定锁机（不给关）。可以用下面的积分解锁换一小段，"
+                        + "比如起夜看时间——那是有代价、有上限、到点自动收回的。",
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 cfg.sleep.segments.forEachIndexed { i, seg ->
                     SleepSegRow(
@@ -923,3 +1010,8 @@ private fun KeepAliveSection(cfg: Config) {
         )
     }
 }
+
+/** 现在有没有能力从后台拉起一个界面（悬浮窗或 Shizuku 之一）：结束弹窗要靠它 */
+private fun canShowDialog(ctx: android.content.Context): Boolean =
+    android.provider.Settings.canDrawOverlays(ctx) ||
+        com.qqqorange.kingoffocus.core.ShizukuBridge.ready()

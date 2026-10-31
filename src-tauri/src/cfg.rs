@@ -542,6 +542,8 @@ fn normalize_profile(p: &mut ClockProfile, idx: usize, seen: &mut Vec<String>) {
     // 通用默认时长：与单段同样的夹紧口径（新选时段沿用这套值）
     p.def_work = p.def_work.clamp(1, 60);
     p.def_brk = p.def_brk.min(60);
+    // 累计休息上限：一小时最多 60 分钟，超出没有意义；0 保持 0（不限）
+    p.def_cap = p.def_cap.min(60);
     if p.def_brk > 0 {
         p.def_work = p.def_work.clamp(1, 59);
         if p.def_work + p.def_brk > 60 {
