@@ -18,14 +18,17 @@ import com.qqqorange.kingoffocus.R
 import com.qqqorange.kingoffocus.core.Caps
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
+import com.qqqorange.kingoffocus.core.NotifyPlan
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
+import com.qqqorange.kingoffocus.core.StatsMath
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.core.StatsTrack
 import com.qqqorange.kingoffocus.core.KeepAlive
 import com.qqqorange.kingoffocus.core.UsageAccess
 import com.qqqorange.kingoffocus.core.ShizukuBridge
 import com.qqqorange.kingoffocus.data.Config
+import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.ui.LockActivity
 import java.time.LocalDateTime
@@ -72,6 +75,13 @@ class GuardService : Service() {
     /** 上次探测「使用情况访问」的时间与状态（用来发现"被回收"） */
     private var usageProbeAt = 0L
     private var lastUsageState: UsageAccess.State? = null
+
+    /** 上一拍的阶段（false = 专注，true = 休息）；null = 不在时段内 / 刚启动 */
+    private var prevInBreak: Boolean? = null
+
+    /** 今日进度缓存（已自律分钟, 计划分钟） */
+    private var progressAt = 0L
+    private var progressCache: Pair<Int, Int>? = null
     private var lastBlockPkg: String? = null
     private var lastBlockAt = 0L
     private var lastLeft = -1L
@@ -149,12 +159,23 @@ class GuardService : Service() {
         val locked = LockEngine.isLockActive(cfg, now)
         val sleeping = SleepEngine.isSleeping(cfg, now)
 
-        updateOngoing(cfg.enabled && st != null, st, locked, sleeping)
+        // 当日汇总与"现在是不是自律时间"无关：一天快过完了都该告诉用户今天用了多久。
+        // 放在最前面，免得被下面的 sleep / locked 提前 return 掉。
+        maybeDailySummary(cfg, now)
+
+        // 常驻通知里的今日进度：不必每秒重算（读日文件 + 数分钟），30 秒一次就够
+        val progress = if (cfg.notify.enabled && cfg.notify.ongoingProgress) {
+            todayProgress(cfg, now)
+        } else {
+            null
+        }
+        updateOngoing(cfg.enabled && st != null, st, locked, sleeping, progress)
 
         // 睡眠优先：晚上这段整机先别用，和白天那套自律独立
         if (sleeping) {
             lastLeft = -1
             notifiedPhase = false
+            prevInBreak = null
             enforceMask(cfg, now, LockActivity.KIND_SLEEP)
             return
         }
@@ -163,19 +184,24 @@ class GuardService : Service() {
         if (locked) {
             lastLeft = -1
             notifiedPhase = false
+            prevInBreak = null
             enforceMask(cfg, now, LockActivity.KIND_FOCUS)
             hardenIfStrict(cfg, now)
             return
         }
 
-        if (st == null || st.inBreak) {
+        if (st == null) {
             lastLeft = -1
             notifiedPhase = false
+            prevInBreak = null
             return
         }
 
+        // 专注与休息都要走通知：以前这里只处理专注段，
+        // 于是「休息结束前提醒」永远发不出来（st.inBreak 早就 return 了）
         maybeNotify(cfg, st)
-        enforce(cfg, now)
+        maybeComplete(cfg, st)
+        if (!st.inBreak) enforce(cfg, now)
     }
 
     /**
@@ -304,6 +330,120 @@ class GuardService : Service() {
         val text = if (st.inBreak) "休息还剩 $mins 分钟，准备回到专注" else "本轮专注还剩 $mins 分钟，坚持一下"
         alert("阶段提醒", text)
     }
+
+    /**
+     * 任务完成通知：**阶段切换那一刻**发一条。
+     *
+     * 和「结束前提醒」是两件事：那个说「还有 5 分钟」，这个说「这一段做完了」。
+     * 只留前者的话，用户放下手机就再也不知道自己完成了。
+     *
+     * 只在真正跨过阶段边界时发：
+     *  · 首次进入时段（prev == null）不发——那是"刚打开应用"，不是"完成"；
+     *  · 从时段里出来（st 变 null）不发——可能是手动关了开关或切了方案，发了就是误报。
+     */
+    private fun maybeComplete(cfg: Config, st: ScheduleEngine.State) {
+        val prev = prevInBreak
+        prevInBreak = st.inBreak
+        // 判定在 NotifyPlan 里：null = 不该发，也保证"刚启动不算完成"
+        val title = NotifyPlan.completeTitle(prev, st.inBreak) ?: return
+        if (!cfg.notify.enabled || !cfg.notify.done) return
+        val now = LocalDateTime.now()
+        val head = if (st.inBreak) {
+            "这一段做完了，休息 ${st.brk.coerceAtLeast(0)} 分钟"
+        } else {
+            "开始下一轮专注，先做最重要的那件"
+        }
+        val plan = Slots.dayMinutes(cfg.days.getOrNull(now.dayOfWeek.value - 1).orEmpty())
+        val doneMin = StatsStore.today(now).total(true) / 60
+        val tail = if (plan > 0) " · 今日已自律 $doneMin/$plan 分" else ""
+        notifyOnce(CH_DONE, DONE_ID, title, head + tail)
+    }
+
+    /**
+     * 当日使用时长汇总：每天固定时间一条。
+     *
+     * 三条约束：
+     *  · 只在"今天确实有记录"时发（total > 0），否则一天没碰手机也会被打扰；
+     *  · **先落盘最后发送**：发到一半服务被杀，也不会整晚重复提醒；
+     *  · 时间点可调（默认 22 点），改早了当天立刻会用新时间判断。
+     */
+    private fun maybeDailySummary(cfg: Config, now: LocalDateTime) {
+        val n = cfg.notify
+        val today = now.toLocalDate().toString()
+        val due = NotifyPlan.shouldSummarize(
+            notifyEnabled = n.enabled,
+            summaryEnabled = n.dailySummary,
+            hourOfDay = now.hour,
+            dailyAt = n.dailyAt,
+            today = today,
+            lastDay = n.lastSummaryDay,
+        )
+        if (!due) return
+
+        val day = StatsStore.today(now)
+        val total = StatsMath.total(day, null)
+        // 到点时今天还没有任何记录 → 先不发，**也不记账**：
+        // 记了的话，用户 22:00 后才开始用手机，就再也收不到今天的汇总了。
+        if (total <= 0) return
+
+        // 真发了才记账：通知被系统静音也算"发过了"，不能每拍重试
+        Store.update { c -> c.copy(notify = c.notify.copy(lastSummaryDay = today)) }
+        val on = StatsMath.total(day, true)
+        val top = StatsMath.top(listOf(now.toLocalDate() to day), null, 3)
+        val body = buildString {
+            append("自律时段内 ")
+            append(StatsMath.fmtDuration(on))
+            append("（")
+            append(if (total > 0) on * 100 / total else 0)
+            append("%）")
+            if (top.isNotEmpty()) {
+                append(" · 用得最多：")
+                append(top.take(2).joinToString("、") { labelOf(it.first) })
+            }
+        }
+        notifyOnce(CH_DAILY, DAILY_ID, "今日使用 " + StatsMath.fmtDuration(total), body, big = true)
+    }
+
+    /**
+     * 今日进度（已自律分钟 / 计划分钟），供常驻通知显示。
+     *
+     * 30 秒缓存：`StatsStore.today` 会读日文件，`Slots.dayMinutes` 要遍历 24 小时，
+     * 每秒各做一次没必要——这个数字一分钟才变一次量级。
+     */
+    private fun todayProgress(cfg: Config, now: LocalDateTime): Pair<Int, Int> {
+        val t = SystemClock.elapsedRealtime()
+        val cached = progressCache
+        if (cached != null && t - progressAt < PROGRESS_EVERY_MS) return cached
+        progressAt = t
+        val plan = Slots.dayMinutes(cfg.days.getOrNull(now.dayOfWeek.value - 1).orEmpty())
+        val done = StatsStore.today(now).total(true) / 60
+        return (done to plan).also { progressCache = it }
+    }
+
+    /** 发一条独立通知（可被用户划掉；没有通知权限时静默失败，不崩） */
+    private fun notifyOnce(
+        channel: String,
+        id: Int,
+        title: String,
+        body: String,
+        big: Boolean = false,
+    ) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val b = NotificationCompat.Builder(this, channel)
+            .setSmallIcon(R.drawable.ic_stat_focus)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(openApp())
+        if (big) b.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        runCatching { nm.notify(id, b.build()) }
+    }
+
+    private fun openApp(): PendingIntent = PendingIntent.getActivity(
+        this, 2, Intent(this, MainActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
 
     /**
      * 拦截：命中名单就**把用户送回桌面**，并发一条说明。
@@ -507,6 +647,19 @@ class GuardService : Service() {
                 description = "专注 / 休息结束前的提醒"
             },
         )
+        // 完成与汇总单独开渠道：用户可以只关掉"完成"，保留"汇总"（系统设置里按渠道关）
+        nm.createNotificationChannel(
+            NotificationChannel(CH_DONE, "任务完成", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "专注段做完 / 休息结束时提醒一条"
+                setShowBadge(false)
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_DAILY, "每日使用汇总", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "每天固定时间汇总当天的使用时长与自律时长"
+                setShowBadge(false)
+            },
+        )
     }
 
     private fun buildOngoing(
@@ -514,6 +667,7 @@ class GuardService : Service() {
         st: ScheduleEngine.State?,
         locked: Boolean,
         sleeping: Boolean = false,
+        progress: Pair<Int, Int>? = null,
     ): Notification {
         // 锁机 / 睡眠期间点通知回的是遮罩页，而不是主界面：
         // 主界面上有个"启用自律"开关，那等于给遮罩配了一把钥匙。
@@ -548,15 +702,22 @@ class GuardService : Service() {
             active -> "King Of Focus · 自律中"
             else -> "King Of Focus"
         }
-        return NotificationCompat.Builder(this, CH_ONGOING)
+        // 今日进度：只在"有计划"时显示，否则 0/0 比不显示更让人困惑
+        val p = progress?.takeIf { it.second > 0 }
+        val body = if (p != null) "$text · 今日 ${p.first}/${p.second} 分" else text
+        val b = NotificationCompat.Builder(this, CH_ONGOING)
             .setSmallIcon(R.drawable.ic_stat_focus)
             .setContentTitle(title)
-            .setContentText(text)
+            .setContentText(body)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        if (p != null) {
+            b.setProgress(100, NotifyPlan.progressPct(p.first, p.second), false)
+            b.setSubText("今日自律 ${p.first}/${p.second} 分")
+        }
+        return b.build()
     }
 
     private fun updateOngoing(
@@ -564,9 +725,10 @@ class GuardService : Service() {
         st: ScheduleEngine.State?,
         locked: Boolean,
         sleeping: Boolean = false,
+        progress: Pair<Int, Int>? = null,
     ) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(FOREGROUND_ID, buildOngoing(active, st, locked, sleeping))
+        nm.notify(FOREGROUND_ID, buildOngoing(active, st, locked, sleeping, progress))
     }
 
     private fun alert(title: String, body: String, openOverlaySettings: Boolean = false) {
@@ -595,6 +757,13 @@ class GuardService : Service() {
         private const val TAG = "KofGuard"
         private const val CH_ONGOING = "kof_ongoing"
         private const val CH_ALERT = "kof_alert"
+        private const val CH_DONE = "kof_done"
+        private const val CH_DAILY = "kof_daily"
+        /** 完成通知与汇总通知的固定 id：同一类只留最新一条，不刷屏 */
+        private const val DONE_ID = 4102
+        private const val DAILY_ID = 4103
+        /** 今日进度缓存时长 */
+        private const val PROGRESS_EVERY_MS = 30_000L
         /** 采样式统计里忽略的进程：它们不是"用户在用某个应用" */
         /** 落盘间隔：桌面端 15 秒一次，手机端 60 秒够用（坏一个文件最多丢一分钟） */
         private const val FLUSH_EVERY_MS = 60_000L
