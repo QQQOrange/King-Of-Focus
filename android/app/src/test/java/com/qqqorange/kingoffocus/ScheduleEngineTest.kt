@@ -4,6 +4,7 @@ import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
+import com.qqqorange.kingoffocus.data.HourWin
 import com.qqqorange.kingoffocus.data.Rule
 import com.qqqorange.kingoffocus.data.defaultDays
 import org.junit.Assert.assertEquals
@@ -90,6 +91,31 @@ class ScheduleEngineTest {
             15 * 60L,
             ScheduleEngine.stateAt(c, monday(9, 30))!!.leftSeconds, // 到 09:45 还剩 15 分钟
         )
+    }
+
+    /**
+     * 十分钟刻度带来的新形态：一小时里两段（09:00–09:15 与 09:30–09:45）。
+     *
+     * 中间那 15 分钟必须**不算**在时段内——以前只有一对 from/to，只能取外包区间
+     * 0–45，等于把中间的休息也锁上了。
+     */
+    @Test
+    fun `一小时里的两段只在各自窗口内生效`() {
+        val days = defaultDays().map { it.toMutableList() }.toMutableList()
+        days[0][9] = HourPlan(
+            on = true,
+            work = 60,
+            brk = 0,
+            from = 0,
+            to = 45,
+            wins = listOf(HourWin(0, 15), HourWin(30, 45)),
+        )
+        val c = Config(enabled = true, days = days)
+
+        assertEquals("第一段还剩 5 分钟", 5 * 60L, ScheduleEngine.stateAt(c, monday(9, 10))!!.leftSeconds)
+        assertNull("中间的空档不该在时段内", ScheduleEngine.stateAt(c, monday(9, 20)))
+        assertEquals("第二段还剩 10 分钟", 10 * 60L, ScheduleEngine.stateAt(c, monday(9, 35))!!.leftSeconds)
+        assertNull("第二段之后也结束", ScheduleEngine.stateAt(c, monday(9, 50)))
     }
 
     /** 积分解锁期间所有拦截暂停；休息段同理 */

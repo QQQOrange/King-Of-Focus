@@ -1,6 +1,7 @@
 package com.qqqorange.kingoffocus.core
 
 import com.qqqorange.kingoffocus.data.Config
+import com.qqqorange.kingoffocus.data.Slots
 import java.time.LocalDateTime
 
 /**
@@ -32,9 +33,13 @@ object ScheduleEngine {
         val p = day.getOrNull(now.hour) ?: return null
         if (!p.on) return null
         val minute = now.minute
-        if (minute < p.from || minute >= p.to) return null
+        // 刻度细到 10/15 分钟后，一小时里可以有好几段（比如 0–15 与 30–45）。
+        // 只有落进**具体某一段**才算在时段内；否则中间那段空档会被当成解锁。
+        // 命中哪一段就用哪一段的结尾算剩余时间——拿第一段去套第二段会算出负数。
+        val win = Slots.windowsOf(p).firstOrNull { minute >= it.from && minute < it.to }
+            ?: return null
 
-        val winLeft = p.to - minute
+        val winLeft = win.to - minute
         val sec = now.second.toLong()
         val work = p.work.coerceIn(0, 60)
         val brk = p.brk.coerceIn(0, 60)

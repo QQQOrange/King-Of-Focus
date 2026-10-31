@@ -2,6 +2,8 @@ package com.qqqorange.kingoffocus
 
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
+import com.qqqorange.kingoffocus.data.HourWin
+import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Portable
 import com.qqqorange.kingoffocus.data.Rule
 import kotlinx.serialization.json.Json
@@ -11,6 +13,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -171,6 +174,44 @@ class PortableTest {
     }
 
     /** 覆盖不能碰手机专属设置（拦截页文案） */
+    /**
+     * 十分钟刻度 + 一小时两段，跨设备来回一圈必须原样回来。
+     *
+     * 以前手机端只有一对 from/to，桌面端带过来的 `wins` 会被压成"外包区间"，
+     * 等于把中间的休息时间也锁上；粒度则被写死成 60，桌面端打开手机备份时
+     * 网格会退回整小时。
+     */
+    @Test
+    fun windowsAndGranularitySurviveRoundTrip() {
+        val days = (0 until 7).map { d ->
+            (0 until 24).map { h ->
+                when {
+                    d == 0 && h == 9 -> Slots.pack(
+                        listOf(HourWin(0, 10), HourWin(30, 40)), 45, 15,
+                    )
+                    d == 0 && h == 10 -> Slots.pack(listOf(HourWin(15, 45)), 45, 15)
+                    else -> HourPlan()
+                }
+            }
+        }
+        val cfg = blank().copy(days = days, granularity = 10)
+        val doc = Portable.toDoc(cfg, "x", "0")
+
+        val clock = doc["clock"]!!.jsonObject
+        assertEquals("10 分钟刻度要原样带出去", 10, clock["granularity"]!!.jsonPrimitive.content.toInt())
+        val day0 = clock["profiles"]!!.jsonArray[0].jsonObject["days"]!!.jsonArray[0].jsonArray
+        val h9 = day0[9].jsonObject
+        assertEquals("一小时两段必须写 wins", 2, (h9["wins"] as JsonArray).size)
+        assertNull("单段不该写 wins（形状与桌面端一致）", day0[10].jsonObject["wins"])
+
+        val back = Portable.overwrite(doc, blank())
+        assertEquals(10, back.granularity)
+        assertEquals(2, back.days[0][9].wins.size)
+        // 09 点是 10+10=20 分钟，10 点是 30 分钟，合起来 50
+        assertEquals(50, Slots.dayMinutes(back.days[0]))
+        assertFalse("中间那 20 分钟不能算选中", Slots.covers(back.days[0][9], 20))
+    }
+
     @Test
     fun overwriteKeepsPhoneOnlySettings() {
         val base = blank().copy(

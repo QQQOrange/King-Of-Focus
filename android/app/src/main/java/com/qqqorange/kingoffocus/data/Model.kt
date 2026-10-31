@@ -3,12 +3,26 @@ package com.qqqorange.kingoffocus.data
 import kotlinx.serialization.Serializable
 
 /**
+ * 一小时里的一个窗口：`[from, to)` 分钟。
+ *
+ * 手机端以前的网格是整小时一格，所以只需要一对 `from`/`to`；现在刻度可以细到
+ * 10 / 15 分钟，同一小时里完全可能有"0–15 和 30–45"这种两段，那时 `wins` 非空、
+ * 以它为准（见 [Slots]）。
+ */
+@Serializable
+data class HourWin(
+    val from: Int = 0,
+    val to: Int = 60,
+)
+
+/**
  * 一小时里的一段计划。
  *
  * 语义与 Windows 版保持一致：
  *  · `on` 决定这一小时是否被选中；
  *  · `from`/`to` 只收窄"这一小时的哪几分钟可见"，**不改变相位**；
  *  · `work`/`brk` 是番茄参数，相位锚点是整点（09:00 起算），不是窗口起点。
+ *  · `wins` 非空时是窗口的**权威数据**（一小时可以有好几段）；为空时退回 `from`/`to`。
  */
 @Serializable
 data class HourPlan(
@@ -17,6 +31,7 @@ data class HourPlan(
     val brk: Int = 15,
     val from: Int = 0,
     val to: Int = 60,
+    val wins: List<HourWin> = emptyList(),
 )
 
 /**
@@ -207,6 +222,13 @@ data class Config(
     val enabled: Boolean = false,
     /** 7 天 × 24 小时 */
     val days: List<List<HourPlan>> = defaultDays(),
+    /**
+     * 时段网格的刻度（分钟）：10 或 15。
+     *
+     * 只影响**怎么画、怎么点**，不影响判定：窗口永远按分钟存。所以从 15 改成 10
+     * 不会让已排好的时段失效——旧边界会跨在新格子中间，界面上画成半格，重涂即对齐。
+     */
+    val granularity: Int = 15,
     val defWork: Int = 45,
     val defBrk: Int = 15,
     val rules: List<Rule> = emptyList(),
@@ -248,19 +270,22 @@ fun normalizeDays(raw: List<List<HourPlan>>): List<List<HourPlan>> =
         val row = raw.getOrNull(d).orEmpty()
         (0 until 24).map { h ->
             val p = row.getOrNull(h) ?: HourPlan()
-            var from = p.from.coerceIn(0, 59)
-            var to = p.to.coerceIn(1, 60)
-            if (from >= to) {
-                from = 0
-                to = 60
-            }
             var work = p.work.coerceIn(0, 60)
             var brk = p.brk.coerceIn(0, 60)
             if (brk > 0) {
                 work = work.coerceIn(1, 59)
                 if (work + brk > 60) brk = 60 - work
             }
-            HourPlan(p.on, work, brk, from, to)
+            // 窗口统一走 Slots.pack：老配置只有 from/to 的会补成单窗口，
+            // 手改坏的（from ≥ to）会被丢掉，多段的重叠会被合并
+            val wins = if (p.wins.isNotEmpty()) {
+                p.wins
+            } else if (p.on) {
+                listOf(HourWin(p.from.coerceIn(0, 59), p.to.coerceIn(1, 60)))
+            } else {
+                emptyList()
+            }
+            Slots.pack(wins, work, brk)
         }
     }
 
@@ -303,6 +328,7 @@ fun normalize(cfg: Config): Config {
 
     return cfg.copy(
         days = days,
+        granularity = Slots.stepOf(cfg.granularity),
         plans = plans,
         activePlan = activeId,
         sleep = cfg.sleep.copy(

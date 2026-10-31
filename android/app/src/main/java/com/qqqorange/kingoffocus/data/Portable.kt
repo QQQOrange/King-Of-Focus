@@ -70,7 +70,9 @@ object Portable {
                 // 的"当前生效方案"上：enabled 就是时段总开关
                 put("enabled", cfg.enabled)
                 put("applyRules", true)
-                put("granularity", 60)
+                // 手机端的刻度（10/15）原样带出去：桌面端读同一份清单，
+                // 打开网格时用的就是手机这边设的刻度
+                put("granularity", cfg.granularity)
                 put("active", PHONE_PROFILE_ID)
                 put(
                     "profiles",
@@ -93,6 +95,22 @@ object Portable {
                                                         put("brk", h.brk)
                                                         put("from", h.from)
                                                         put("to", h.to)
+                                                        // 一小时里有多段时才写 wins（单段用 from/to 就够了，
+                                                        // 这样和桌面端的序列化形状保持一致）
+                                                        val w = Slots.windowsOf(h)
+                                                        if (w.size > 1) {
+                                                            put(
+                                                                "wins",
+                                                                JsonArray(
+                                                                    w.map { one ->
+                                                                        buildJsonObject {
+                                                                            put("from", one.from)
+                                                                            put("to", one.to)
+                                                                        }
+                                                                    },
+                                                                ),
+                                                            )
+                                                        }
                                                     }
                                                 },
                                             )
@@ -194,6 +212,8 @@ object Portable {
         val prof = activeProfile(doc)
         val next = base.copy(
             enabled = clock?.bool("enabled", base.enabled) ?: base.enabled,
+            // 粒度是"怎么画"，不是"怎么判定"：跟文档走，但只认 10/15
+            granularity = Slots.stepOf(clock?.int("granularity", base.granularity) ?: base.granularity),
             days = days,
             defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
             defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(1, 59) ?: base.defBrk,
@@ -502,25 +522,26 @@ object Portable {
 
     private fun hourFrom(o: JsonObject?): HourPlan {
         if (o == null) return HourPlan()
+        val on = o.bool("on", false)
         var from = o.int("from", 0).coerceIn(0, 59)
         var to = o.int("to", 60).coerceIn(1, 60)
-        // 桌面端能表达"一小时里两段"（wins）；手机端只有首尾，取外包区间，
-        // 宁可多盖一点也不能把那半小时漏掉
-        val wins = o.arr("wins").mapNotNull { it as? JsonObject }
-        if (wins.isNotEmpty()) {
-            from = wins.minOf { it.int("from", 0) }.coerceIn(0, 59)
-            to = wins.maxOf { it.int("to", 60) }.coerceIn(1, 60)
-        }
         if (from >= to) {
             from = 0
             to = 60
         }
-        return HourPlan(
-            on = o.bool("on", false),
-            work = o.int("work", 45).coerceIn(0, 60),
-            brk = o.int("brk", 15).coerceIn(0, 60),
-            from = from,
-            to = to,
+        // 桌面端的 `wins`（一小时多段）现在也收下来——手机端自己也会产生多段，
+        // 以前退化成"外包区间"等于把中间的休息时间也锁上
+        val wins = o.arr("wins").mapNotNull { it as? JsonObject }
+            .map { HourWin(it.int("from", 0), it.int("to", 60)) }
+        val all = when {
+            wins.isNotEmpty() -> wins
+            on -> listOf(HourWin(from, to))
+            else -> emptyList()
+        }
+        return Slots.pack(
+            all,
+            o.int("work", 45).coerceIn(0, 60),
+            o.int("brk", 15).coerceIn(0, 60),
         )
     }
 
