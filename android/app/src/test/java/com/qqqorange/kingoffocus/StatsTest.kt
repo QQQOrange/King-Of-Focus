@@ -187,6 +187,22 @@ class StatsTest {
     }
 
     @Test
+    fun `明细按所选档位筛段，跨档合并只在汇总`() {
+        val dir = tmpDir()
+        StatsStore.useDirForTest(dir)
+        val t = at(9, 0)
+        StatsStore.record(t, t.plusSeconds(30), "pkg.a", "A", onTrack = true)
+        StatsStore.closeSpan()
+        StatsStore.record(t.withMinute(30), t.withMinute(30).plusSeconds(30), "pkg.a", "A", onTrack = false)
+        StatsStore.closeSpan()
+
+        val days = listOf(t.toLocalDate() to StatsStore.today(t))
+        assertEquals("自律时段内只该有 1 段", 1, StatsStore.spansOf("pkg.a", days, true).size)
+        assertEquals("时段外也只该有 1 段", 1, StatsStore.spansOf("pkg.a", days, false).size)
+        assertEquals("汇总才是两段都在", 2, StatsStore.spansOf("pkg.a", days, null).size)
+    }
+
+    @Test
     fun `mergeSpans 合并相邻与重叠`() {
         val merged = StatsMath.mergeSpans(listOf(Span(600, 620), Span(621, 640), Span(700, 710)))
         assertEquals(2, merged.size)
