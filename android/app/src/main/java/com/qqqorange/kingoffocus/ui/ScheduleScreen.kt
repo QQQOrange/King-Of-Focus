@@ -38,8 +38,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,6 +56,7 @@ import com.qqqorange.kingoffocus.data.Store
 import java.time.LocalDateTime
 import java.util.UUID
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** 星期表头（横轴）；索引 = 周一 .. 周日 */
 private val DAY_NAMES = listOf("一", "二", "三", "四", "五", "六", "日")
@@ -79,10 +82,19 @@ private val GRID_H = 420.dp
  * 用指针坐标反算 (星期, 格号)，按下那一刻决定"这次是选还是取消"，
  * 之后划过的格子跟随同一个值。松手才写盘——否则一次长拖会触发几十次磁盘写入。
  *
- * ## 滚动与涂抹的冲突
+ * ## 手势：点一下定起点，长按之后才能拖
  *
- * 竖着拖 = 涂抹（这个页面最常用的动作），所以格子区域吃掉手势；
- * 想上下滚动就在**左侧时间刻度条**上滑——那里不接涂抹，交给滚动容器。
+ * 网格比屏幕高，要滚动就必须能在格子上起手。所以"涂抹"不能抢占普通滑动：
+ *
+ * | 动作 | 结果 |
+ * |---|---|
+ * | 点一下 | 切换这一格，并把它记作**拖选起点**（起点会画一圈描边） |
+ * | 长按（约 0.5 秒） | 进入拖选状态，伴随一次触感反馈 |
+ * | 长按后上下拖 | 从起点到当前格整段框选；反方向拖回去即撤销 |
+ * | 直接上下滑 | **一格都不改**，交给页面滚动 |
+ *
+ * 鼠标与触控走同一条判定：按下 → 等长按超时 → 才进入拖选；
+ * 期间指针移动超过 touchSlop 就当作滚动意图直接放弃，绝不"顺手改一笔"。
  */
 @Composable
 fun ScheduleScreen(cfg: Config) {
@@ -117,6 +129,8 @@ fun ScheduleScreen(cfg: Config) {
     var clearAsk by remember { mutableStateOf<Int?>(null) }
 
     val density = LocalDensity.current
+    // 长按进入拖选时给一次触感：否则用户不知道"现在已经可以拖了"
+    val haptic = LocalHapticFeedback.current
     val rowPx = with(density) { rowH.toPx() }
     val hourPx = with(density) { hourH.toPx() }
 
@@ -145,6 +159,53 @@ fun ScheduleScreen(cfg: Config) {
         draftState.value = cur.toMutableList().also { it[day] = painted }
     }
 
+    // 拖选的起点与"这次是选中还是取消"。没有起点就没有拖选——
+    // 这是关键：以前一按下就涂，于是任何一次想滚动页面的滑动都会改数据。
+    var anchor by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var anchorOn by remember { mutableStateOf(true) }
+    var dragging by remember { mutableStateOf(false) }
+
+    /** 点一下：切换这一格，并把它记作"起点"（下一次长按拖选的锚点） */
+    fun tapCell(day: Int, slot: Int) {
+        val on = !isOn(day, slot)
+        applySlot(day, slot, on)
+        anchor = day to slot
+        anchorOn = on
+        commit()
+    }
+
+    /**
+     * 长按进入拖选。
+     *
+     * **长按本身不改数据**——只把这一格设为起点、把状态切成"拖选"。
+     * 以前这里顺手把它涂了一下，结果"手滑长按"就会悄悄删掉一格计划。
+     *
+     * 涂成"选中"还是"取消"由起点当前的状态决定：
+     *   · 长按一个没选的格子 → 拖出来是选中（最常见）；
+     *   · 先点一下把它取消（起点变"取消"态），再长按同一个格子 → 拖出来是擦除。
+     * 这正好对应"先选中起始时段，再长按拖选"的用法。
+     */
+    fun beginDrag(day: Int, slot: Int) {
+        if (anchor != (day to slot)) {
+            anchor = day to slot
+            anchorOn = true
+        }
+        dragging = true
+    }
+
+    /** 拖到某格：同一天就按"起点↔当前"整段涂；跨列只涂那一格并把起点挪过去 */
+    fun dragTo(day: Int, slot: Int) {
+        val a = anchor ?: return
+        if (day == a.first) {
+            for (k in Slots.dragRange(a.second, slot)) {
+                applySlot(day, k, anchorOn)
+            }
+        } else {
+            applySlot(day, slot, anchorOn)
+            anchor = day to slot
+        }
+    }
+
     // 开局滚到 06:00 附近：凌晨那段绝大多数人是空的，先看有用的部分
     LaunchedEffect(step) {
         val target = (6 * hourPx).toInt()
@@ -166,7 +227,7 @@ fun ScheduleScreen(cfg: Config) {
     ) {
         PageHeader(
             "自律时段",
-            "纵向是时间、横向是星期；在格子上拖动即框选，在左侧刻度条上滑动可滚动",
+            "纵向是时间、横向是星期；点一格定起点，长按后可上下拖动框选，直接上下滑只滚动页面",
         )
 
         // —— 方案 ——
@@ -334,7 +395,15 @@ fun ScheduleScreen(cfg: Config) {
                             }
                         }
                     }
-                    // 格子区：整块一个画布，手势在这里涂抹
+                    // 格子区：整块一个画布。
+                    //
+                    // 手势分工（按需求定的，别再改回"按下即涂"）：
+                    //   · 点一下        → 切换这一格，并记作拖选起点
+                    //   · 长按（≥500ms）→ 进入拖选；之后上下拖动才框选
+                    //   · 直接上下滑    → 一格都不改，交还给页面滚动
+                    //
+                    // 为什么必须等长按：网格比屏幕高，要滚动就得从格子上起手。
+                    // 以前一按下就涂，等于把"滚动"这条路堵死了，用户只能误改时段。
                     Canvas(
                         Modifier
                             .weight(1f)
@@ -352,38 +421,64 @@ fun ScheduleScreen(cfg: Config) {
                                     }
 
                                     val down = awaitFirstDown(requireUnconsumed = false)
-                                    val first = cellAt(down.position)
+                                    val start = cellAt(down.position)
                                     // 已经过去的星期是锁的：不涂、不吃手势（交还给滚动），
                                     // 想改就等下周——点表头会说明原因
-                                    if (!editable[first.first]) return@awaitEachGesture
-                                    val on = !isOn(first.first, first.second)
-                                    applySlot(first.first, first.second, on)
-                                    down.consume()
+                                    if (!editable[start.first]) return@awaitEachGesture
 
-                                    var lastDay = first.first
-                                    var lastSlot = first.second
+                                    val slop = viewConfiguration.touchSlop
+                                    val longMs = viewConfiguration.longPressTimeoutMillis
+                                    var dragMode = false
+                                    var lastCell = start
+
                                     while (true) {
-                                        val ev = awaitPointerEvent()
-                                        val ch = ev.changes.firstOrNull() ?: break
-                                        if (!ch.pressed) break
-                                        val (d, s) = cellAt(ch.position)
-                                        if (d != lastDay || s != lastSlot) {
-                                            // 拖得快会跳过中间几格：同一列就把中间补齐，
-                                            // 否则 6:00 拉到 18:00 会变成一串断点
-                                            if (d == lastDay) {
-                                                for (k in minOf(lastSlot, s)..maxOf(lastSlot, s)) {
-                                                    applySlot(d, k, on)
-                                                }
-                                            } else {
-                                                applySlot(d, s, on)
+                                        // 手指按住不动时不会有新的指针事件，长按只能靠超时来判。
+                                        // 进入拖选之后就不再需要超时，无限等下一个事件即可。
+                                        val ev = if (dragMode) {
+                                            awaitPointerEvent()
+                                        } else {
+                                            val left = (down.uptimeMillis + longMs -
+                                                android.os.SystemClock.uptimeMillis()).coerceAtLeast(1L)
+                                            withTimeoutOrNull(left) { awaitPointerEvent() }
+                                        }
+
+                                        if (ev == null) {
+                                            // 超时 = 长按成立：进拖选，并给一次触感反馈
+                                            dragMode = true
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            beginDrag(start.first, start.second)
+                                            lastCell = start
+                                            continue
+                                        }
+
+                                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                        val moved = (ch.position - down.position).getDistance()
+
+                                        if (!ch.pressed) {
+                                            // 抬手：没进入拖选、也没怎么移动 = 一次点击
+                                            if (!dragMode && moved <= slop) {
+                                                tapCell(start.first, start.second)
                                             }
-                                            lastDay = d
-                                            lastSlot = s
+                                            break
+                                        }
+
+                                        if (!dragMode) {
+                                            // 还没长按就滑走了 → 这是滚动意图。
+                                            // 注意：这里**不消费**手势，一格都不碰。
+                                            if (moved > slop) return@awaitEachGesture
+                                            continue
+                                        }
+
+                                        val c = cellAt(ch.position)
+                                        if (c != lastCell && editable[c.first]) {
+                                            lastCell = c
+                                            dragTo(c.first, c.second)
                                         }
                                         ch.consume()
                                     }
-                                    // 松手才落盘：拖动过程中一次都不写
-                                    commit()
+
+                                    dragging = false
+                                    if (dragMode) commit()
                                 }
                             },
                     ) {
@@ -391,6 +486,8 @@ fun ScheduleScreen(cfg: Config) {
                         val colW = cellsW / 7f
                         val gap = 1.dp.toPx()
                         val grid = draftState.value
+                        val dragAnchor = anchor
+                        val isDragging = dragging
 
                         // 1) 底轨：每一天一条淡淡的竖带，没有它空白一片看不出格子
                         for (d in 0 until 7) {
@@ -453,6 +550,17 @@ fun ScheduleScreen(cfg: Config) {
                             )
                         }
 
+                        // 拖选时把起点圈出来，用户才知道"这一段是从哪一格拉过来的"
+                        val a = dragAnchor
+                        if (isDragging && a != null && editable[a.first]) {
+                            drawRect(
+                                color = cs.primary,
+                                topLeft = Offset(a.first * colW + gap, a.second * rowPx),
+                                size = Size(colW - gap * 2, rowPx),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
+                            )
+                        }
+
                         // 5) 现在几点：今天那一列里的一条横线
                         val yNow = nowMinute * rowPx / step
                         if (yNow <= size.height) {
@@ -470,8 +578,8 @@ fun ScheduleScreen(cfg: Config) {
             Spacer(Modifier.height(8.dp))
             Text(
                 "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) +
-                    "；浅色格表示旧边界跨在格子中间，重涂一下就会对齐。" +
-                    "灰色的星期已经过去，点表头可以看原因或清空那一天。",
+                    "；点一格定起点，长按后拖动才是框选，直接上下滑只滚动。浅色格表示旧边界" +
+                    "跨在格子中间，重涂一下就会对齐；灰色的星期已经过去。",
                 fontSize = 10.5.sp,
                 color = cs.onSurfaceVariant,
             )

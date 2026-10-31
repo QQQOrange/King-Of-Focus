@@ -5,7 +5,8 @@ git smart HTTP 走不了），但本地已经有完整提交。于是用 Git Dat
 按同样的内容建 blobs → tree → commit，再更新 main 并打 tag。
 
 安全措施：
-  1. 远端 main 必须仍等于本地 HEAD~1（否则说明有人推过，直接放弃）；
+  1. 远端 main 必须仍等于本地 HEAD~1，**或者**两者"树完全相同、只有 SHA 不同"
+     （上一次也是用这个脚本推的，就会出现这种情况）——树不一样才放弃；
   2. 建好 tree 后**逐个文件比对** blob sha 与本地 `git ls-tree -r HEAD`，
      不一致就放弃，绝不 force。
 
@@ -67,7 +68,15 @@ ref = api('GET', '/repos/%s/git/ref/heads/main' % REPO)
 remote_head = ref['object']['sha']
 print('远端 main   ', remote_head)
 if remote_head != parent_local:
-    raise SystemExit('远端 main 已经不等于本地 HEAD~1，放弃（请改用正常 push）')
+    # 上次用 API 推过：远端 commit 的 SHA 与本地不同，但内容（树）一样。
+    # 这种情况必须放行，否则这个兜底脚本只能用一次。
+    same_tree = (
+        api('GET', '/repos/%s/git/commits/%s' % (REPO, remote_head))['tree']['sha']
+        == git('rev-parse', 'HEAD~1^{tree}')
+    )
+    if not same_tree:
+        raise SystemExit('远端 main 已经分叉（树都不同），放弃（请改用正常 push）')
+    print('  远端与本地 HEAD~1 树相同、SHA 不同（上次走的是 API），按内容继续')
 
 base_tree = api('GET', '/repos/%s/git/commits/%s' % (REPO, remote_head))['tree']['sha']
 changed = [p for p in git('diff', '--name-only', parent_local, head).splitlines() if p]
