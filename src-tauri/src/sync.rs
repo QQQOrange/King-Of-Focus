@@ -106,10 +106,17 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     )
     .map_err(|e| format!("云端配置解析失败：{e}"))?;
 
-    // 保留本机的同步账号信息，别被云端覆盖掉
+    // 保留本机的机器专属字段，别被云端覆盖：
+    // · 同步账号：不然下一次上传就没凭据了；
+    // · 备份口令：被云端换掉后，之后所有本地备份都用别人的口令加密，且用户毫不知情；
+    // · 更新令牌 / 提权 / 自启：都是"这台机器怎么运行"的设置，跨机同步没有意义。
     remote.settings.sync.url = c.settings.sync.url.clone();
     remote.settings.sync.username = c.settings.sync.username.clone();
     remote.settings.sync.password = c.settings.sync.password.clone();
+    remote.settings.backup.password = c.settings.backup.password.clone();
+    remote.settings.update.token = c.settings.update.token.clone();
+    remote.settings.run_as_admin = c.settings.run_as_admin;
+    remote.settings.autostart = c.settings.autostart;
     remote.updated_at = v.get("updatedAt").and_then(|x| x.as_i64()).unwrap_or(remote.updated_at);
     cfg::sanitize(&mut remote);
     // 下载 = 整份配置覆盖，必须过纪律校验：
@@ -117,7 +124,8 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     if let Some(why) = crate::guard::config_replace_blocked(&c, &remote) {
         return Err(why);
     }
-    let _ = cfg::save(&remote);
+    // 写盘失败必须上报：内存已经是新配置、磁盘还是旧的，重启后"恢复成功"就白做了
+    cfg::save(&remote)?;
     let n = remote.rules.len();
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;

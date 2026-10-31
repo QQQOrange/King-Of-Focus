@@ -127,14 +127,19 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(cfg: Config) -> Self {
-        Shared {
+        let s = Shared {
             cfg: RwLock::new(cfg),
             rt: Mutex::new(Runtime::default()),
             mask: Arc::new(MaskCtl::default()),
             stats: Mutex::new(DayFile::default()),
             stats_dirty: AtomicBool::new(false),
             notice: Mutex::new(None),
+        };
+        // 配置读坏过：必须让用户知道（否则"规则怎么全没了"永远是个谜）
+        if crate::cfg::take_load_broken() {
+            s.say("配置文件读取失败，已重置为默认；旧文件已留档在数据目录（config.broken-*.json）");
         }
+        s
     }
 
     pub fn say(&self, msg: impl Into<String>) {

@@ -1048,8 +1048,8 @@ const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VAL: &str = "KingOfFocus";
 const TASK_NAME: &str = "King Of Focus";
 
-fn add_run_entry(exe: &str) {
-    let _ = Command::new("reg")
+fn add_run_entry(exe: &str) -> bool {
+    Command::new("reg")
         .args([
             "add",
             RUN_KEY,
@@ -1062,7 +1062,9 @@ fn add_run_entry(exe: &str) {
             "/f",
         ])
         .creation_flags(CREATE_NO_WINDOW)
-        .status();
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn remove_run_entry() {
@@ -1109,35 +1111,40 @@ fn remove_scheduled_task() {
 ///
 /// `want_admin` 为真且当前**确实是管理员**时才建计划任务 ——
 /// 普通权限下 schtasks 会被拒绝，硬建只会每次启动都多一次失败调用。
-pub fn apply_autostart(on: bool, want_admin: bool) {
+pub fn apply_autostart(on: bool, want_admin: bool) -> Result<(), String> {
     let exe = match std::env::current_exe() {
         Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) => return,
+        Err(_) => return Err("拿不到自己的路径，无法设置开机自启".into()),
     };
     if !on {
         remove_run_entry();
         if is_admin() {
             remove_scheduled_task();
         }
-        return;
+        return Ok(());
     }
     if want_admin && is_admin() && add_scheduled_task(&exe) {
         // 任务版就位后清掉 Run 项，避免同一台机器启动两次
         remove_run_entry();
-        return;
+        return Ok(());
     }
     if want_admin {
         // 没权限建任务：至少把旧的普通权限任务清掉，免得残留一条低权限自启
         remove_scheduled_task();
     }
-    add_run_entry(&exe);
+    // 落到 Run 项是唯一还会失败的一步：组策略禁用 Run 键、杀软拦截 reg.exe 都会失败。
+    // 以前返回值被丢弃，界面照样显示"已开启"，重启后并不自启。
+    if add_run_entry(&exe) {
+        Ok(())
+    } else {
+        Err("开机自启写入失败（可能被组策略或安全软件拦截）".into())
+    }
 }
 
 #[tauri::command]
 pub fn set_autostart(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
     let c = shared.config();
-    apply_autostart(enabled, c.settings.run_as_admin);
-    Ok(())
+    apply_autostart(enabled, c.settings.run_as_admin)
 }
 
 /// 请**已经运行的那个实例**提权重启（由它自己写配置 + 弹 UAC）。

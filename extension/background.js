@@ -131,6 +131,12 @@ async function syncDnr(rules) {
     const sites = (r.sites || []).map(condOf).filter(Boolean);
     if (isWhite) {
       if (!sites.length) continue; // 空白名单不生效，避免全站封锁
+      // 例外必须比白名单的 allow 优先级更高：否则"只允许 A 站，但 B 站例外"
+      // 这种配置里 B 站会先被白名单兜底规则拦掉。以前这一支完全没处理 exceptions。
+      for (const e of r.exceptions || []) {
+        const c = condOf(e);
+        if (c) add.push({ id: id++, priority: 35, action: { type: 'allow' }, condition: c });
+      }
       add.push({
         id: id++,
         priority: 10,

@@ -69,7 +69,16 @@ pub fn load() -> Config {
             }
             Err(e) => {
                 eprintln!("配置解析失败，已备份: {e}");
-                let _ = std::fs::copy(&p, data_dir().join("config.broken.json"));
+                // 文件名带时间戳：第二次损坏不会再覆盖第一次的留档。
+                // 同时置一个标志，让 Shared 构造后能在界面上说一句 ——
+                // 本程序是 GUI 子系统，eprintln 根本没有宿主，用户什么也看不到，
+                // 只会觉得"我的规则怎么没了"。
+                let bad = data_dir().join(format!(
+                    "config.broken-{}.json",
+                    chrono::Local::now().format("%Y%m%d%H%M%S")
+                ));
+                let _ = std::fs::copy(&p, &bad);
+                LOAD_BROKEN.store(true, std::sync::atomic::Ordering::Relaxed);
                 Config::default()
             }
         },
@@ -81,7 +90,23 @@ pub fn load() -> Config {
     }
 }
 
+/// 上次加载时配置文件是坏的（一次性读取，读到即清除）。
+static LOAD_BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 取一次"配置曾经坏过"的标志，取到就清零
+pub fn take_load_broken() -> bool {
+    LOAD_BROKEN.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn save(cfg: &Config) -> Result<(), String> {
+    // 每次落盘都刷新 updated_at。
+    //
+    // 自动同步用 last-write-wins 判断谁更新，而改遮罩/提醒/积分这些入口以前
+    // 不刷这个字段：本机刚改完，updated_at 没变 → 判定"云端更新" → 下一轮自动同步
+    // 把本地改动冲掉，用户看不出原因。在这里统一刷新，一处覆盖所有调用点。
+    let mut owned = cfg.clone();
+    owned.updated_at = chrono::Local::now().timestamp();
+    let cfg = &owned;
     let p = config_path();
     let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     // 原子写：先写同目录的临时文件再改名替换。

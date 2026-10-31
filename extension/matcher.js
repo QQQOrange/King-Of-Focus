@@ -122,7 +122,11 @@
     }
     if (whites.length) {
       for (i = 0; i < whites.length; i++) {
-        if (any(whites[i].sites, u)) return null;
+        var w = whites[i];
+        // 例外优先于白名单：界面明确写着"例外的优先级高于网站自律规则"。
+        // 以前这里只看 sites，白名单模式下配了例外也照拦，等于这一栏是摆设。
+        if (w.exceptions && w.exceptions.length && any(w.exceptions, u)) return null;
+        if (any(w.sites, u)) return null;
       }
       return whites[0].name;
     }

@@ -198,10 +198,12 @@ pub fn decrypt(envelope: &str, pass: &str) -> Result<String, String> {
 
 // ---------------- 本地备份 ----------------
 pub fn dir() -> PathBuf {
-    let base = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| cfg::data_dir());
+    // 与**数据目录**同级，而不是 exe 所在目录。
+    // 数据目录是带"可写探测 + 回落到 %APPDATA%"的，备份必须跟着走：
+    // 以前装在 Program Files 时数据已回落到 APPDATA，备份却仍往不可写的安装目录写，
+    // 而失败还被上层吞掉 —— 用户以为每天都有备份，其实一份都没有。
+    let dd = cfg::data_dir();
+    let base = dd.parent().map(|p| p.to_path_buf()).unwrap_or(dd);
     let d = base.join(DIR_NAME);
     let _ = std::fs::create_dir_all(&d);
     d

@@ -176,9 +176,25 @@ fn day_path(date: &str) -> PathBuf {
 }
 
 fn load_day(date: &str) -> DayFile {
-    match std::fs::read_to_string(day_path(date)) {
-        Ok(s) => serde_json::from_str::<DayFile>(&s).unwrap_or_else(|_| DayFile::new(date.into())),
-        Err(_) => DayFile::new(date.into()),
+    let p = day_path(date);
+    let s = match std::fs::read_to_string(&p) {
+        Ok(s) => s,
+        Err(_) => return DayFile::new(date.into()),
+    };
+    match serde_json::from_str::<DayFile>(&s) {
+        Ok(v) => v,
+        Err(_) => {
+            // 解析失败绝不能"返回空对象了事"：调用方（flush / 跨天轮转）
+            // 会把它原样写回同名文件，那一天的数据就永久变成 0。
+            // 把原文件留档，用户至少还能手工捞回来。
+            let bad = p.with_extension(format!(
+                "json.bad-{}",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ));
+            let _ = std::fs::rename(&p, &bad);
+            crate::mask::mlog(&format!("统计日文件解析失败，已留档：{}", bad.display()));
+            DayFile::new(date.into())
+        }
     }
 }
 
@@ -422,7 +438,9 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
                 if !cur.date.is_empty() {
                     let _ = save_day(&cur);
                 }
-                *cur = DayFile::new(today.clone());
+                // 今天可能已经有数据了：时区往西改、系统时间回拨、睡眠唤醒后 NTP 校正，
+                // 都会让"今天"重新出现。无条件换成空对象，下一次 flush 就把那天覆盖成 0。
+                *cur = load_day(&today);
                 shared.stats_dirty.store(false, Ordering::Relaxed);
             }
         }
@@ -1044,12 +1062,30 @@ fn run_due(shared: &Shared) {
     let today = Local::now().date_naive();
 
     if st.auto_daily {
-        let y = today - CDur::days(1);
-        let key = y.format("%Y-%m-%d").to_string();
-        if s.daily != key {
-            let _ = generate(shared, "daily", &key, &key);
-            s.daily = key;
-            changed = true;
+        let yesterday = today - CDur::days(1);
+        // 从上次生成日的**下一天**开始补到今天-1：
+        // 以前只比较"昨天"，程序停三天再启动，中间两天永远不会补。
+        let start = if s.daily.is_empty() {
+            yesterday
+        } else {
+            match chrono::NaiveDate::parse_from_str(&s.daily, "%Y-%m-%d") {
+                Ok(d) => (d + CDur::days(1)).min(yesterday),
+                Err(_) => yesterday,
+            }
+        };
+        let mut d = start;
+        while d <= yesterday {
+            let key = d.format("%Y-%m-%d").to_string();
+            // 只有真的写成功才推进游标：否则磁盘满/路径不可写时，
+            // 那一天会被永久标记成"已生成"，以后再也不补。
+            match generate(shared, "daily", &key, &key) {
+                Ok(_) => {
+                    s.daily = key;
+                    changed = true;
+                }
+                Err(_) => break,
+            }
+            d += CDur::days(1);
         }
     }
     if st.auto_weekly {

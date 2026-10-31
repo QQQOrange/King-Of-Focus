@@ -86,6 +86,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
         // terminate 永远失败，原来每 700ms 重试一次且永不停止。
         let mut pending: HashMap<u64, (Instant, u32)> = HashMap::new();
         let mut logged: HashMap<u64, Instant> = HashMap::new();
+        // 守护进程的存活复核节流计数
+        let mut guard_check: u32 = 0;
         let self_pid = std::process::id();
         let mut acc_ms: u64 = 0;
         let mut guard_running = false;
@@ -119,6 +121,14 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     if !guard_running {
                         guard::ensure_guard();
                         guard_running = true;
+                    } else {
+                        // 每 5 拍复核一次：守护被任务管理器杀掉、或它自己到了重启上限退出时，
+                        // guard_running 会一直是 true，于是再也不拉起 ——
+                        // "被强杀就复活"这条保护就静默失效了。
+                        guard_check = guard_check.wrapping_add(1);
+                        if guard_check % 5 == 0 && !guard::guard_alive() {
+                            guard::ensure_guard();
+                        }
                     }
                 }
             } else if guard_running {

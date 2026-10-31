@@ -40,6 +40,15 @@ eq(M.match('https://www.coursera.org/learn/x', wl), null, '白名单内放行');
 eq(M.match('https://docs.rs/serde', wl), null, '白名单内放行 2');
 eq(M.match('https://youtube.com/', wl), '只准学习', '白名单外拦截');
 
+// 白名单 + 例外：例外必须优先于白名单。
+// 以前白名单分支只看 sites，配了例外也照拦 —— 界面承诺的"例外优先级更高"是空的。
+const wlExc = M.compile([
+  { name: '只准学习', mode: 'whitelist', sites: ['coursera.org'], exceptions: ['docs.rs'] },
+]);
+eq(M.match('https://docs.rs/serde', wlExc), null, '白名单模式下例外放行');
+eq(M.match('https://www.coursera.org/', wlExc), null, '白名单内照常放行');
+eq(M.match('https://youtube.com/', wlExc), '只准学习', '白名单外仍然拦截');
+
 // 空名单的白名单规则不能清场
 const emptyWl = M.compile([{ name: '空名单', mode: 'whitelist', sites: [] }]);
 eq(M.match('https://youtube.com/', emptyWl), null, '空白名单视为未配置');

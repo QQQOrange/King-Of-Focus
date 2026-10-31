@@ -83,8 +83,20 @@ pub fn lock_info_at(cfg: &Config, nd: chrono::NaiveDateTime) -> LockInfo {
     if !d.clock_on {
         return LockInfo::default();
     }
+    // 这套自律时段绑定了哪些规则；空 = 不限制（与 discipline::active_rules 同一口径）。
+    // 不看绑定的话，用户把「周末」方案只绑「娱乐」组，工作组里的固化规则照样把他锁住，
+    // 而且 lock_names 显示的还是一条此刻并不生效的规则名。
+    let bound: Vec<String> = cfg
+        .settings
+        .focus_clock
+        .active_profile()
+        .map(|p| p.bound.clone())
+        .unwrap_or_default();
     for l in cfg.rules.iter() {
         if !l.enabled || !l.hard {
+            continue;
+        }
+        if !bound.is_empty() && !bound.contains(&l.id) {
             continue;
         }
         // 条目自己的时间范围是"自律时间内的二次收窄"
@@ -430,6 +442,11 @@ fn existing_guard() -> Option<u32> {
     Some(pid)
 }
 
+/// 守护进程是否还活着（pid 文件在、进程在、且创建时间对得上）
+pub fn guard_alive() -> bool {
+    existing_guard().is_some()
+}
+
 /// 确保守护进程在跑（只在锁定时调用）
 pub fn ensure_guard() {
     if existing_guard().is_some() {
@@ -529,7 +546,13 @@ fn quit_requested() -> bool {
 pub fn stop_guard() {
     let _ = std::fs::remove_file(hb_path());
     if let Some(p) = existing_guard() {
-        proc::terminate(p);
+        if !proc::terminate(p) {
+            // 权限不足时终止会失败。pid 文件绝不能删 —— 删了以后就再也定位不到这个
+            // 孤儿守护，它会继续按心跳判定把主进程复活（用户看到"退出后又自己回来"）。
+            // 留着 pid，下一次 stop_guard / 提权退出还能再试一次。
+            crate::mask::mlog(&format!("守护进程 {p} 终止失败，保留 pid 以便下次重试"));
+            return;
+        }
     }
     let _ = std::fs::remove_file(pid_path());
 }

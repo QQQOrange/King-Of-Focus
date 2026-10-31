@@ -200,11 +200,17 @@ fn main() {
 
     // 自启项自愈：升级换过可执行文件名、或刚打开了"以管理员启动"之后，
     // 注册表里那条可能还指着旧路径/旧模式。这里按当前状态重写一次（幂等）。
+    let mut autostart_err: Option<String> = None;
     if config.settings.autostart {
-        cmds::apply_autostart(true, config.settings.run_as_admin);
+        if let Err(e) = cmds::apply_autostart(true, config.settings.run_as_admin) {
+            autostart_err = Some(e);
+        }
     }
 
     let shared = Arc::new(shared::Shared::new(config.clone()));
+    if let Some(e) = autostart_err {
+        shared.say(format!("开机自启设置失败：{e}"));
+    }
     let shared_exit = shared.clone();
 
     // 把配置里的遮罩参数灌进运行态
@@ -221,7 +227,10 @@ fn main() {
         let sh = shared.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(5));
-            let _ = backup::make(&sh);
+            // 失败不能吞：磁盘满 / 目录不可写时，用户以为"每天自动备份"一直在跑
+            if let Err(e) = backup::make(&sh) {
+                sh.say(format!("自动备份失败：{e}"));
+            }
         });
     }
     sync::start_auto(shared.clone());
