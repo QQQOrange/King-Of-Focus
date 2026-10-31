@@ -163,4 +163,56 @@ class LockEngineTest {
         assertFalse("5 分付不起暂停", LockEngine.canAfford(c, LockEngine.pausePrice(c).cost))
         assertTrue("刚好够就算够", LockEngine.canAfford(c.copy(points = 10), 10))
     }
+
+    // ---------------- 温和 / 强制 ----------------
+
+    private fun strict(c: Config) = c.copy(lock = c.lock.copy(mode = LockEngine.MODE_STRICT))
+
+    @Test
+    fun strictIgnoresPauseBoughtEarlier() {
+        val c = cfg()
+        val paused = c.copy(lockPausedUntil = epoch(at(9, 50)))
+        assertFalse("温和模式下暂停有效", LockEngine.isLockActive(paused, at(9, 5)))
+        assertTrue(
+            "切成强制后，之前买的暂停不算数（否则切模式就是个后门）",
+            LockEngine.isLockActive(strict(paused), at(9, 5)),
+        )
+    }
+
+    @Test
+    fun strictIgnoresStopOfCurrentSegment() {
+        val c = cfg()
+        val stopped = c.copy(lockStoppedSeg = LockEngine.segmentKey(c, at(9, 5)))
+        assertFalse(LockEngine.isLockActive(stopped, at(9, 10)))
+        assertTrue(LockEngine.isLockActive(strict(stopped), at(9, 10)))
+    }
+
+    @Test
+    fun strictHasNoExitDoor() {
+        val c = strict(cfg())
+        val now = at(9, 5)
+        assertTrue(LockEngine.isLockActive(c, now))
+        assertFalse("强制模式没有暂停", LockEngine.canPause(c, now))
+        assertFalse("强制模式没有停止", LockEngine.canStop(c, now))
+        // 温和模式两个都有
+        val g = cfg()
+        assertTrue(LockEngine.canPause(g, now))
+        assertTrue(LockEngine.canStop(g, now))
+    }
+
+    @Test
+    fun cannotSwitchBackToGentleWhileStrictLockRuns() {
+        val c = strict(cfg())
+        assertFalse("强制锁机进行中不许切回温和", LockEngine.canSwitchMode(c, at(9, 5)))
+        assertTrue("这一段过了就随便改", LockEngine.canSwitchMode(c, at(10, 5)))
+        assertTrue("本来就不是强制，当然能改", LockEngine.canSwitchMode(cfg(), at(9, 5)))
+    }
+
+    @Test
+    fun strictEndsWhenTheSegmentEnds() {
+        // work=60/brk=0 表示这一小时不做番茄，整点内一直是专注段
+        val c = strict(cfg(hours = listOf(9), work = 60, brk = 0))
+        assertTrue(LockEngine.isLockActive(c, at(9, 59)))
+        assertFalse("配置的小时走完就自然解除", LockEngine.isLockActive(c, at(10, 1)))
+    }
 }

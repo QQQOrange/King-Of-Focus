@@ -99,6 +99,8 @@ private fun LockScreen(onDone: () -> Unit) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     var showAllow by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(false) }
+    // 只在进入遮罩时探一次：这里只是给底部那行字用，不需要实时性
+    val shizukuReady = remember { com.qqqorange.kingoffocus.core.ShizukuBridge.ready() }
 
     // 一秒一拍：刷新倒计时；锁机结束（暂停 / 停止 / 到点 / 关掉自律）时自己退场，
     // 这样"状态变了遮罩立刻跟着变"，不需要服务端再发指令。
@@ -114,6 +116,7 @@ private fun LockScreen(onDone: () -> Unit) {
         }
     }
 
+    val strict = LockEngine.isStrict(cfg)
     val price = LockEngine.pausePrice(cfg)
     val stopCost = LockEngine.stopPrice(cfg)
     val left = fmtLeft(LockEngine.segmentLeftSeconds(cfg, now))
@@ -132,9 +135,20 @@ private fun LockScreen(onDone: () -> Unit) {
         Text("🔒", fontSize = 34.sp)
         Spacer(Modifier.height(6.dp))
         Text("锁机中", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF2F4F8))
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (strict) "强制模式 · 不可暂停 / 不可跳过" else "温和模式 · 可用积分暂停或提前结束",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (strict) Color(0xFFFF8A65) else Color(0xFF7FB4FF),
+        )
         Spacer(Modifier.height(8.dp))
         Text(
-            "现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。",
+            if (strict) {
+                "这一段必须完整走完。没有暂停、没有跳过，也没有积分可以买时间。"
+            } else {
+                "现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。"
+            },
             fontSize = 13.sp,
             textAlign = TextAlign.Center,
             color = Color(0xFF9AA4B2),
@@ -159,6 +173,9 @@ private fun LockScreen(onDone: () -> Unit) {
         Spacer(Modifier.height(24.dp))
 
         // —— 两个出口，价格写在按钮上，点之前就知道要付多少 ——
+        // 强制模式下这两个按钮**不存在**（不是置灰）：承诺是"没有任何提前结束的方式"，
+        // 留一个灰按钮只会让人反复去点，以为是自己积分不够。
+        if (!strict) {
         OutlinedButton(
             onClick = {
                 if (!LockEngine.canAfford(cfg, price.cost)) {
@@ -202,6 +219,7 @@ private fun LockScreen(onDone: () -> Unit) {
                 contentColor = Color(0xFFF2F4F8),
             ),
         ) { Text("停止锁机 · $stopCost 分") }
+        }
 
         // —— 白名单：允许的应用，点了直接打开 ——
         if (cfg.lockAllow.isNotEmpty()) {
@@ -233,23 +251,36 @@ private fun LockScreen(onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(20.dp))
-        Text(
-            "长按这行可强制解除（不计分，仅限紧急）",
-            fontSize = 11.sp,
-            color = Color(0xFF5A6472),
-            modifier = Modifier
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectTapGestures(onLongPress = {
-                        val seg = LockEngine.segmentKey(Store.current, LocalDateTime.now())
-                        Store.update { it.copy(lockStoppedSeg = seg) }
-                        toast(ctx, "已强制解除本次锁机")
-                        if (!done) { done = true; onDone() }
-                    })
-                }
-                .padding(vertical = 8.dp),
-            textAlign = TextAlign.Center,
-        )
+        if (strict) {
+            Text(
+                if (shizukuReady) {
+                    "有 Shizuku：你一进设置就会被弹出来；但卸载本应用仍然拦不住（那需要设备管理员）"
+                } else {
+                    "缺 Shizuku：只能靠无障碍把设置页按回去；这一页之外没有别的锁"
+                },
+                fontSize = 11.sp,
+                color = Color(0xFF5A6472),
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            Text(
+                "长按这行可强制解除（不计分，仅限紧急）",
+                fontSize = 11.sp,
+                color = Color(0xFF5A6472),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectTapGestures(onLongPress = {
+                            val seg = LockEngine.segmentKey(Store.current, LocalDateTime.now())
+                            Store.update { it.copy(lockStoppedSeg = seg) }
+                            toast(ctx, "已强制解除本次锁机")
+                            if (!done) { done = true; onDone() }
+                        })
+                    }
+                    .padding(vertical = 8.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 

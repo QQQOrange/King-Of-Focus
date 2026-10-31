@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  无障碍服务声明。
+
+  · eventTypes 只要 windowStateChanged：切应用才需要知道，页面内滚动/输入不关心
+    （内容变化事件量极大，白耗电，还容易把"同一应用内换页"误判成切换）；
+  · canRetrieveWindowContent=true：强制模式下要读一下设置页的文案，
+    判断用户是不是正站在"关掉本应用"的那一页；
+  · notificationTimeout=100：系统会合并事件，100ms 够用，不必逐条处理。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/acc_desc"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.qqqorange.kingoffocus.MainActivity" />

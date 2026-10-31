@@ -108,6 +108,11 @@ data class BackupCfg(val password: String = "")
 data class LockCfg(
     /** 默认关：升级后不该突然把用户锁在门外 */
     val enabled: Boolean = false,
+    /**
+     * gentle = 温和：可以花积分暂停或提前结束这一段；
+     * strict = 强制：暂停/跳过一律不生效，必须等这一段自然走完。
+     */
+    val mode: String = "gentle",
     val pauseMinutes: Int = 10,
     val pauseCost: Int = 10,
     val stopCost: Int = 30,
@@ -168,6 +173,7 @@ fun normalize(cfg: Config): Config {
         days = days,
         points = cfg.points.coerceAtLeast(0),
         lock = cfg.lock.copy(
+            mode = if (cfg.lock.mode == "strict") "strict" else "gentle",
             pauseMinutes = cfg.lock.pauseMinutes.coerceIn(1, 120),
             pauseCost = cfg.lock.pauseCost.coerceIn(0, 2000),
             stopCost = cfg.lock.stopCost.coerceIn(0, 5000),

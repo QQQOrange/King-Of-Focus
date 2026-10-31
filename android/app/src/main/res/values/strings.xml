@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">King Of Focus</string>
+    <string name="acc_service_name">King Of Focus 自律守护</string>
+    <string name="acc_desc">用于识别当前前台应用、在锁机时把用户送回桌面，并在强制模式下阻止从系统设置里关掉本应用。不读取聊天内容，不联网上传任何数据。</string>
 </resources>

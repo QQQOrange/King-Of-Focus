@@ -59,6 +59,12 @@ object LockEngine {
     private fun epoch(now: LocalDateTime): Long =
         now.atZone(ZoneId.systemDefault()).toEpochSecond()
 
+    const val MODE_GENTLE = "gentle"
+    const val MODE_STRICT = "strict"
+
+    /** 强制模式：没有任何"提前结束"的出口，只能等这一段走完 */
+    fun isStrict(cfg: Config): Boolean = cfg.lock.mode == MODE_STRICT
+
     /** 积分解锁窗口内（和 GuardEngine 同一口径：解锁期间一切暂停） */
     fun isUnlocked(cfg: Config, now: LocalDateTime): Boolean = epoch(now) < cfg.unlockUntil
 
@@ -97,10 +103,28 @@ object LockEngine {
         val st = ScheduleEngine.stateAt(cfg, now) ?: return false
         if (st.inBreak) return false
         if (isUnlocked(cfg, now)) return false
-        if (isPaused(cfg, now)) return false
-        if (cfg.lockStoppedSeg.isNotEmpty() && cfg.lockStoppedSeg == segmentKey(cfg, now)) return false
+        // 强制模式**故意**不看暂停/停止：那两个状态是温和模式买来的自由，
+        // 现在切成强制了，就不能靠"之前买过一次"绕过（否则切模式就是个后门）。
+        if (!isStrict(cfg)) {
+            if (isPaused(cfg, now)) return false
+            if (cfg.lockStoppedSeg.isNotEmpty() && cfg.lockStoppedSeg == segmentKey(cfg, now)) return false
+        }
         return true
     }
+
+    /** 温和模式才有"买自由"这件事；强制模式返回 false，界面据此隐藏按钮 */
+    fun canPause(cfg: Config, now: LocalDateTime): Boolean = isLockActive(cfg, now) && !isStrict(cfg)
+
+    fun canStop(cfg: Config, now: LocalDateTime): Boolean = isLockActive(cfg, now) && !isStrict(cfg)
+
+    /**
+     * 能不能把模式从强制切回温和。
+     *
+     * 强制锁机正在进行时不允许——否则"先切回温和，再点停止"就是一步到位的绕过。
+     * 等这一段结束就随便改。
+     */
+    fun canSwitchMode(cfg: Config, now: LocalDateTime): Boolean =
+        !(isStrict(cfg) && isLockActive(cfg, now))
 
     /**
      * 现在这一拍要不要把遮罩盖上去。

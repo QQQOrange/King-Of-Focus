@@ -16,6 +16,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Shizuku：拿到 ADB 级 shell 权限（用户自己授权，Shizuku 会把权限跑在 shell 用户下） -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
     <!-- 列出可被拦截的应用（应用选择器） -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
@@ -73,6 +76,30 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="self_discipline_guard" />
         </service>
+
+        <!-- 无障碍：前台识别 + 全局回桌面 + 强制模式防绕过 -->
+        <service
+            android:name=".service.KofAccessibility"
+            android:exported="true"
+            android:label="@string/acc_service_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service" />
+        </service>
+
+        <!-- Shizuku 用户服务：跑在 shell 身份下，只对外提供一个 exec 方法 -->
+        <service
+            android:name=".shell.ShellService"
+            android:exported="false" />
+
+        <!-- 心跳：服务被系统清掉后把它拉回来 -->
+        <receiver
+            android:name=".service.GuardHeartbeat"
+            android:exported="false" />
 
         <receiver
             android:name=".service.BootReceiver"

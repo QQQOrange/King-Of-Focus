@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -64,8 +65,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.qqqorange.kingoffocus.core.Caps
+import com.qqqorange.kingoffocus.core.StrictBlocker
 import com.qqqorange.kingoffocus.core.GuardEngine
+import com.qqqorange.kingoffocus.core.GuardLevel
 import com.qqqorange.kingoffocus.core.LockEngine
+import com.qqqorange.kingoffocus.core.ShizukuBridge
+import com.qqqorange.kingoffocus.service.KofAccessibility
 import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
@@ -98,6 +104,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 用户可能刚从 Shizuku 授权页 / 无障碍设置回来：
+        // 已经授权的话这里补一次连接，界面上的等级立刻跟着变
+        runCatching { ShizukuBridge.connect(this) }
     }
 }
 
@@ -151,6 +164,16 @@ private fun HomePage(cfg: Config) {
     val usageOk = GuardEngine.hasUsageAccess(ctx)
     val notifOk = notificationsAllowed(ctx)
     val overlayOk = SysSettings.canDrawOverlays(ctx)
+    val accOk = KofAccessibility.alive()
+    // Shizuku 的"能用"要三件事齐：服务在、已授权、用户服务已连上
+    val shzOk = runCatching { ShizukuBridge.granted() && ShizukuBridge.ready() }.getOrDefault(false)
+    val level = Caps(accOk, shzOk, usageOk, overlayOk).level()
+    val levelText = when (level) {
+        GuardLevel.FULL -> "完整"
+        GuardLevel.STRONG -> "增强"
+        GuardLevel.BASIC -> "基础"
+        GuardLevel.NONE -> "未生效"
+    }
     var showUnlock by remember { mutableStateOf(false) }
 
     Column(
@@ -219,23 +242,59 @@ private fun HomePage(cfg: Config) {
                 onCheckedChange = { on ->
                     Store.update { it.copy(enabled = on) }
                     if (on) {
-                        if (!usageOk) toast(ctx, "还需要授予「使用情况访问」才能检测前台应用")
+                        if (!usageOk && !accOk) {
+                            toast(ctx, "还需要「使用情况访问」或「无障碍」，否则不知道你在用哪个应用")
+                        }
                         GuardService.start(ctx)
+                        GuardService.scheduleHeartbeat(ctx)
                     } else {
                         GuardService.stop(ctx)
+                        // 关掉自律就别再让心跳把服务拉起来了，否则通知会自己冒出来
+                        GuardService.cancelHeartbeat(ctx)
                     }
                 },
             )
         }
 
         // 权限
-        SectionTitle("需要的权限")
+        SectionTitle("限制能力与权限")
+
         PermRow(
             "使用情况访问",
-            "Android 没有公开的「当前前台应用」接口，只能通过这一项读取",
+            "知道「当前前台是哪个应用」。没有它就要靠无障碍；两个都没有，限制基本失效",
             usageOk,
         ) {
             runCatching { ctx.startActivity(Intent(SysSettings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+        PermRow(
+            "无障碍服务",
+            "① 切应用即刻识别（不用等 1 秒轮询）② 回桌面不受后台限制 ③ 强制模式下挡住" +
+                "「去设置里关掉它」这一页",
+            accOk,
+        ) {
+            runCatching {
+                ctx.startActivity(
+                    Intent(SysSettings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+        PermRow(
+            "Shizuku",
+            "① 拉起遮罩不受系统限制（不需要悬浮窗）② 强制模式下你一进设置就把设置关掉 " +
+                "③ 无障碍被关掉后自动恢复",
+            shzOk,
+        ) {
+            if (ShizukuBridge.available()) {
+                ShizukuBridge.request(ctx)
+            } else {
+                toast(ctx, "先安装并启动 Shizuku（或通过 adb 启动它的服务）")
+                runCatching {
+                    ctx.startActivity(
+                        ctx.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
         }
         PermRow("通知", "阶段提醒与常驻状态", notifOk) {
             runCatching {
@@ -246,7 +305,7 @@ private fun HomePage(cfg: Config) {
                 )
             }
         }
-        PermRow("悬浮窗", "锁机遮罩靠它才能在后台拉起来（缺了锁机不生效）", overlayOk) {
+        PermRow("悬浮窗", "没有 Shizuku 时，遮罩只能靠它在后台拉起来", overlayOk) {
             runCatching {
                 ctx.startActivity(
                     Intent(SysSettings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))
@@ -254,6 +313,17 @@ private fun HomePage(cfg: Config) {
                 )
             }
         }
+        Text(
+            "当前防护等级：$levelText —— " + when (level) {
+                GuardLevel.FULL -> "看得见、盖得住、也关不掉，强制模式才有意义"
+                GuardLevel.STRONG -> "看得见也盖得住，但用户仍能在系统设置里强制停止本应用"
+                GuardLevel.BASIC -> "每秒轮询 + 悬浮窗遮罩，系统一收紧就可能失效"
+                GuardLevel.NONE -> "还差前面几项，现在限制不住任何东西"
+            },
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
 
         // 积分
         SectionTitle("积分")
@@ -413,14 +483,62 @@ private fun SettingsPage(cfg: Config) {
             )
         }
         if (cfg.lock.enabled) {
-            Stepper("暂停时长", cfg.lock.pauseMinutes, 1, 120, " 分钟") { v ->
-                Store.update { it.copy(lock = it.lock.copy(pauseMinutes = v)) }
+            // —— 温和 / 强制 ——
+            val strict = LockEngine.isStrict(cfg)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ModeChoice("温和模式", selected = !strict) {
+                    if (!LockEngine.canSwitchMode(cfg, LocalDateTime.now())) {
+                        toast(ctx, "强制锁机进行中，不能切回温和模式；等这一段结束再改")
+                    } else {
+                        Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_GENTLE)) }
+                    }
+                }
+                ModeChoice("强制模式", selected = strict) {
+                    Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_STRICT)) }
+                }
             }
-            Stepper("暂停消耗", cfg.lock.pauseCost, 1, 500, " 分") { v ->
-                Store.update { it.copy(lock = it.lock.copy(pauseCost = v)) }
+            Text(
+                if (strict) {
+                    "强制模式：暂停与提前结束一律不生效，必须完整走完这一段。"
+                } else {
+                    "温和模式：可以花积分暂停（到点自动恢复）或提前结束这一段。"
+                },
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            val blocker = Caps(
+                KofAccessibility.alive(),
+                runCatching { ShizukuBridge.ready() }.getOrDefault(false),
+                GuardEngine.hasUsageAccess(ctx),
+                SysSettings.canDrawOverlays(ctx),
+            ).strictBlocker()
+            if (strict && blocker != null) {
+                Text(
+                    "⚠ " + when (blocker) {
+                        StrictBlocker.NO_FOREGROUND -> "缺前台识别：请开启「无障碍」或授予「使用情况访问」，否则不知道该拦谁"
+                        StrictBlocker.NO_MASK -> "盖不上遮罩：请授予「悬浮窗」，或安装 Shizuku 并授权"
+                        StrictBlocker.NO_APP_CONTROL -> "缺 Shizuku：去设置里关掉本应用只能靠无障碍按返回，" +
+                            "中途切走或无障碍被停用就拦不住了"
+                    },
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
-            Stepper("停止消耗", cfg.lock.stopCost, 1, 500, " 分") { v ->
-                Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
+
+            if (!strict) {
+                Stepper("暂停时长", cfg.lock.pauseMinutes, 1, 120, " 分钟") { v ->
+                    Store.update { it.copy(lock = it.lock.copy(pauseMinutes = v)) }
+                }
+                Stepper("暂停消耗", cfg.lock.pauseCost, 1, 500, " 分") { v ->
+                    Store.update { it.copy(lock = it.lock.copy(pauseCost = v)) }
+                }
+                Stepper("停止消耗", cfg.lock.stopCost, 1, 500, " 分") { v ->
+                    Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
+                }
             }
             OutlinedButton(
                 onClick = { showAllow = true },
@@ -432,7 +550,11 @@ private fun SettingsPage(cfg: Config) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "「停止」只对当前这一段生效，下一段专注会重新锁机；「暂停」到点自动恢复。",
+                if (strict) {
+                    "强制模式下没有「暂停/停止」，积分在这里不起作用；白名单是唯一能用的应用。"
+                } else {
+                    "「停止」只对当前这一段生效，下一段专注会重新锁机；「暂停」到点自动恢复。"
+                },
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -452,7 +574,7 @@ private fun SettingsPage(cfg: Config) {
         ) { Text("重置全部配置") }
 
         SectionTitle("关于")
-        Text("King Of Focus · Android 0.1.2", fontSize = 13.sp)
+        Text("King Of Focus · Android 0.2.0", fontSize = 13.sp)
         Text(
             "桌面版的能力（结束进程、封杀任务管理器、关机、全局热键）在 Android 上不可实现，" +
                 "这里用「时段 + 番茄 + 前台检测 + 全屏拦截页」做等价的自律闭环。",
@@ -693,6 +815,16 @@ private fun PermRow(title: String, sub: String, ok: Boolean, onFix: () -> Unit) 
         } else {
             TextButton(onClick = onFix) { Text("去授予") }
         }
+    }
+}
+
+/** 二选一的模式按钮：选中的是实心，未选中的是描边 */
+@Composable
+private fun RowScope.ModeChoice(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, modifier = Modifier.weight(1f)) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = Modifier.weight(1f)) { Text(label) }
     }
 }
 

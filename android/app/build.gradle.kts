@@ -13,8 +13,8 @@ android {
         applicationId = "com.qqqorange.kingoffocus"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -36,6 +36,8 @@ android {
     }
     buildFeatures {
         compose = true
+        // IShell.aidl 要生成 Java 接口，AGP 8 默认不开
+        aidl = true
     }
     packaging {
         resources {
@@ -55,6 +57,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Shizuku：借 ADB 级 shell 权限做"无障碍做不到"的三件事
+    // （拉起遮罩不受后台限制、阻止强制停止/卸载、把被关掉的无障碍重新打开）
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
