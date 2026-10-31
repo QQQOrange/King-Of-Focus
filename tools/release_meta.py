@@ -37,6 +37,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 DIST = os.path.join(ROOT, 'dist')
 
 APP_ID = 'king-of-focus'
+# 本机部署目录：桌面 exe 与安卓 apk 都放这里（文件名对人类友好，不带版本号）
+DEPLOY_DIR = r'D:/software/myself'
+DEPLOY_NAMES = {
+    'windows-x64': 'King Of Focus.exe',
+    'android': 'King Of Focus.apk',
+}
 MANIFEST_NAME = 'King.Of.Focus-update.json'
 NAME_PREFIX = 'King.Of.Focus-'
 SCHEMA = 1
@@ -281,6 +287,36 @@ def check(require_same=False, tag=None):
     return report(problems, warnings)
 
 
+def deploy(manifest):
+    """把本机要用的两个包放到位：`King Of Focus.exe` 和 `King Of Focus.apk`。
+
+    为什么带上 sha 比对再复制：exe 可能正在运行（Windows 会拒绝覆盖），
+    而内容没变的时候根本不需要复制。所以"一样就跳过，不一样才覆盖"。
+    """
+    if not os.path.isdir(DEPLOY_DIR):
+        print('跳过部署：%s 不存在' % DEPLOY_DIR)
+        return 0
+    for plat, name in DEPLOY_NAMES.items():
+        e = manifest['platforms'].get(plat)
+        if not e:
+            continue
+        src = os.path.join(DIST, e['file'])
+        dst = os.path.join(DEPLOY_DIR, name)
+        if not os.path.exists(src):
+            print('  跳过 %s：产物不在 dist/' % plat)
+            continue
+        if os.path.exists(dst) and sha256_of(dst) == e['sha256']:
+            print('  %-16s 已是最新，跳过（%s）' % (plat, name))
+            continue
+        try:
+            shutil.copy2(src, dst)
+            print('  %-16s 已部署 -> %s' % (plat, dst))
+        except PermissionError:
+            # 正在运行的 exe 会被占用；如实说出来，别假装成功
+            print('  %-16s 无法覆盖 %s（程序可能正在运行，退出后重试）' % (plat, name))
+    return 0
+
+
 def report(problems, warnings):
     if warnings:
         print('\n提醒')
@@ -297,12 +333,21 @@ def report(problems, warnings):
 
 def main():
     ap = argparse.ArgumentParser(description='三端统一发布：校验版本与产物，生成更新清单')
-    ap.add_argument('action', choices=['check', 'build'])
+    ap.add_argument('action', choices=['check', 'build', 'deploy'])
     ap.add_argument('--notes', help='发布说明文件（写进清单与 Release）')
     ap.add_argument('--tag', help='要求清单里的 tag 必须等于它，例如 v0.1.52')
     ap.add_argument('--require-same', action='store_true',
                     help='额外要求三端版本号完全相同（严格统一版本时用）')
     a = ap.parse_args()
+
+    if a.action == 'deploy':
+        man_path = os.path.join(DIST, MANIFEST_NAME)
+        if not os.path.exists(man_path):
+            die('还没有清单，先跑 build')
+        with io.open(man_path, encoding='utf-8') as f:
+            man = json.load(f)
+        print('部署到 %s' % DEPLOY_DIR)
+        return deploy(man)
 
     if a.action == 'build':
         out, man = build_manifest(a.notes)
@@ -310,6 +355,8 @@ def main():
         for plat, e in man['platforms'].items():
             print('  %-16s v%-8s %-46s %8.1f MB' % (
                 plat, e['version'], e['file'], e['size'] / 1024 / 1024))
+        print('\n本机部署')
+        deploy(man)
         print('\n接下来：python tools/release.py %s（会把这些资产和清单一起传上去）'
               % man['tag'].lstrip('v'))
         return 0
