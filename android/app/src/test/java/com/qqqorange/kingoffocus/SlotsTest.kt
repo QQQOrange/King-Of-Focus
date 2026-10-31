@@ -138,6 +138,13 @@ class SlotsTest {
     }
 
     @Test
+    fun `拖选区间与方向无关，且包含两端`() {
+        assertEquals("往下拖", 4..10, Slots.dragRange(4, 10))
+        assertEquals("往上拖结果一样", 4..10, Slots.dragRange(10, 4))
+        assertEquals("原地不动只含一格", 7..7, Slots.dragRange(7, 7))
+    }
+
+    @Test
     fun `fmtMinutes 读起来像人话`() {
         assertEquals("0 分钟", Slots.fmtMinutes(0))
         assertEquals("45 分钟", Slots.fmtMinutes(45))

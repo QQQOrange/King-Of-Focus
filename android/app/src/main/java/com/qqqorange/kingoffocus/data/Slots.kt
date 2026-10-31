@@ -118,6 +118,15 @@ object Slots {
         }
     }
 
+    /**
+     * 拖选区间：从起点到当前格（**含两端**），与拖动方向无关。
+     *
+     * 抽出来是为了让"往上拖和往下拖结果一样"这件事有断言可测——
+     * 以前在界面里写 `for (k in min..max)`，改一行就可能变成单向的。
+     */
+    fun dragRange(anchorSlot: Int, slot: Int): IntRange =
+        minOf(anchorSlot, slot)..maxOf(anchorSlot, slot)
+
     /** 整天涂成一样：全选 / 清空 */
     fun paintDay(day: List<HourPlan>, on: Boolean, work: Int, brk: Int): List<HourPlan> =
         day.map { p ->
