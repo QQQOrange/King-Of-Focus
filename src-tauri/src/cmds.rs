@@ -1785,9 +1785,67 @@ pub fn backup_list() -> Value {
     json!(crate::backup::list())
 }
 
+/// 恢复备份目录里的某一份。
+///
+/// `mode`：overwrite（默认，整份换掉）| merge（只补缺的）。
+/// 用 Option 而不是必填，是为了让老前端（不传这个参数）照样能调。
 #[tauri::command]
-pub fn backup_restore(shared: State<'_, Arc<Shared>>, path: String) -> Result<String, String> {
-    crate::backup::restore_local(&shared, &path)
+pub fn backup_restore(
+    shared: State<'_, Arc<Shared>>,
+    path: String,
+    mode: Option<String>,
+) -> Result<Value, String> {
+    let m = mode.unwrap_or_else(|| "overwrite".into());
+    let r = crate::backup::restore_local(&shared, &path, &m)?;
+    // 恢复完必须重灌运行态：遮罩参数 / 快捷键 / 端口读的都是运行态，
+    // 只改 cfg 不重灌，用户会看到"恢复了但好像没生效，重启才好"。
+    apply_runtime_cfg(&shared);
+    Ok(r)
+}
+
+/// 导出跨设备备份（可选密码，没密码就是明文）
+#[tauri::command]
+pub async fn backup_export(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+) -> Result<Value, String> {
+    let name = format!(
+        "kof-backup-{}.kofbak",
+        chrono::Local::now().format("%Y%m%d-%H%M")
+    );
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("导出跨设备备份（可拷到手机上恢复）")
+        .set_file_name(&name)
+        .add_filter("King Of Focus 备份", &["kofbak", "json"])
+        .blocking_save_file();
+    let path = picked.ok_or_else(|| "已取消导出".to_string())?;
+    let mut p = std::path::PathBuf::from(path.to_string());
+    if p.extension().is_none() {
+        p.set_extension("kofbak");
+    }
+    crate::backup::export_file(&shared, &p.to_string_lossy())
+}
+
+/// 从任意文件导入（手机传过来的也能直接选）
+#[tauri::command]
+pub async fn backup_import(
+    app: AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    mode: Option<String>,
+) -> Result<Value, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("选择要恢复的备份文件")
+        .add_filter("King Of Focus 备份", &["kofbak", "json"])
+        .blocking_pick_file();
+    let path = picked.ok_or_else(|| "已取消导入".to_string())?;
+    let m = mode.unwrap_or_else(|| "overwrite".into());
+    let r = crate::backup::import_file(&shared, &path.to_string(), &m)?;
+    apply_runtime_cfg(&shared);
+    Ok(r)
 }
 
 #[tauri::command]
@@ -1827,6 +1885,13 @@ pub fn backup_cloud_upload(shared: State<'_, Arc<Shared>>) -> Result<String, Str
 }
 
 #[tauri::command]
-pub fn backup_cloud_restore(shared: State<'_, Arc<Shared>>, name: String) -> Result<String, String> {
-    crate::backup::cloud_restore(&shared, &name)
+pub fn backup_cloud_restore(
+    shared: State<'_, Arc<Shared>>,
+    name: String,
+    mode: Option<String>,
+) -> Result<Value, String> {
+    let m = mode.unwrap_or_else(|| "overwrite".into());
+    let r = crate::backup::cloud_restore(&shared, &name, &m)?;
+    apply_runtime_cfg(&shared);
+    Ok(r)
 }

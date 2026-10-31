@@ -213,6 +213,15 @@ internal fun RulesPage(cfg: Config) {
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // 从桌面端备份带过来的条目：手机端拦不了，但必须让用户看见
+                        // "这条规则里还有东西"，否则会以为备份把名单弄丢了
+                        if (r.foreign.isNotEmpty()) {
+                            Text(
+                                "另有 ${r.foreign.size} 个桌面条目（网站 / exe 路径），手机端不拦，备份回桌面时原样带回",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { editing = r }) { Text("编辑") }
                             OutlinedButton(onClick = {

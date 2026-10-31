@@ -18,6 +18,7 @@ mod model;
 mod monitor;
 mod net;
 mod notify;
+mod portable;
 mod proc;
 mod quotes;
 mod report_out;
@@ -465,6 +466,8 @@ fn main() {
             cmds::backup_make,
             cmds::backup_list,
             cmds::backup_restore,
+            cmds::backup_export,
+            cmds::backup_import,
             cmds::backup_delete,
             cmds::backup_open_dir,
             cmds::backup_save,

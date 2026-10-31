@@ -440,6 +440,30 @@
     '备份失败': 'Backup failed',
     '恢复': 'Restore',
     '恢复失败': 'Restore failed',
+    /* —— 跨设备备份（桌面 ↔ 手机） —— */
+    '导出跨设备备份…': 'Export cross-device backup…',
+    '从文件恢复…': 'Restore from file…',
+    '覆盖': 'Overwrite',
+    '合并': 'Merge',
+    '：用备份里的规则、时段、积分、提醒和语言替换本机。':
+      ': replaces this device’s rules, hours, points, reminders and language.',
+    '：只补本机没有的规则和时段，已有的一律不改。':
+      ': only adds rules and hours this device is missing; nothing is changed.',
+    '本机多出来的规则会消失；遮罩、HUD、端口、备份密码不受影响。':
+      'Rules that only exist here will disappear; mask, HUD, port and backup password stay.',
+    '同名不同内容的规则会改名并列，积分取两边较大值。':
+      'Same-named rules with different contents are renamed and kept side by side; points take the higher value.',
+    '跨设备：导出的文件可以拷到手机上恢复，手机导出的也能拿回来。设了备份密码就是密文，没设就是明文 JSON。':
+      'Cross-device: exported files restore on your phone, and phone backups restore here. With a backup password the file is encrypted; without one it is plain JSON.',
+    '手机互通：': 'Phone ↔ PC: ',
+    '· 备份是两端共用的格式，设了备份密码就能在电脑和手机之间互相恢复。':
+      '· One shared format; with a backup password it restores on both PC and phone.',
+    '· 桌面端：「导出跨设备备份…」和「从文件恢复…」。':
+      '· PC: Export cross-device backup / Restore from file.',
+    '· 手机端：「设置 → 备份与恢复」，填同一个密码。':
+      '· Phone: Settings → Backup, same password.',
+    '· 恢复时选「覆盖」（整份替换）或「合并」（只补缺的）。':
+      '· On restore pick Overwrite (replace all) or Merge (fill the gaps).',
 
     /* —— 设置 —— */
     '提醒': 'Reminders',

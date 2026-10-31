@@ -244,6 +244,25 @@ window.__TAURI__ = {
     if (cmd === 'force_quit') { window.__forceQuit = (window.__forceQuit || 0) + 1; return null; }
     if (cmd === 'report_list') return [];
     if (cmd === 'backup_list') return [];
+    // 备份恢复：记下前端传的模式，并按模式返回不同的计数，供断言核对提示文案
+    if (cmd === 'backup_restore') {
+      window.__bk = { path: args.path, mode: args.mode };
+      return args.mode === 'merge'
+        ? { mode: 'merge', rules: 9, added: 2, skipped: 1, conflict: 1, slots: 3, noop: false }
+        : { mode: 'overwrite', rules: 5, added: 5, skipped: 0, conflict: 0, slots: 0, legacy: false, noop: false };
+    }
+    if (cmd === 'backup_import') {
+      window.__bkImport = args.mode;
+      return { mode: args.mode || 'overwrite', rules: 4, added: 1, skipped: 0, conflict: 0, slots: 0, noop: false };
+    }
+    if (cmd === 'backup_export') {
+      window.__bkExport = (window.__bkExport || 0) + 1;
+      return { path: 'C:\\kof-backup.kofbak', encrypted: true, size: 100, rules: 4, source: 'desktop' };
+    }
+    if (cmd === 'backup_cloud_restore') {
+      window.__bkCloud = args.mode;
+      return { mode: args.mode || 'overwrite', rules: 3, added: 3, skipped: 0, conflict: 0, slots: 0, noop: false };
+    }
     if (cmd === 'update_check') return { ok: true, newer: false, current: '0.0.2', latest: '0.0.2' };
     return null;
   } },
@@ -4927,6 +4946,75 @@ window.__itest = async () => {
     await Act.setTheme('system');        // 还原成默认，后面的用例按 system 走
     await Act.nav(view0);
     await wait(220);
+  }
+
+  // 27. 备份：跨设备入口 + 覆盖 / 合并两种恢复方式
+  {
+    await Act.nav('sync');
+    await wait(220);
+    out.push(['备份卡片有「导出跨设备备份」', !!document.querySelector('[data-act="backup-export"]'), true]);
+    out.push(['备份卡片有「从文件恢复」', !!document.querySelector('[data-act="backup-import"]'), true]);
+    out.push(['备份密码输入框还在', !!document.querySelector('#bkPass'), true]);
+
+    // 造一条备份，走真实按钮：先问方式，再落事务
+    S.backups = [{ name: 'kof-20261031-120000.kofbak', path: 'C:\\back\\kof-20261031-120000.kofbak', size: 2048, mtime: 1793500000 }];
+    render(); await wait(150);
+    const rbtn = () => document.querySelector('[data-act="backup-restore"]');
+    out.push(['列表里有恢复按钮', !!rbtn(), true]);
+
+    window.__bk = null;
+    fire('click', rbtn());
+    await wait(150);
+    out.push(['点恢复先问覆盖还是合并',
+      !!document.querySelector('[data-act="mode-overwrite"]') && !!document.querySelector('[data-act="mode-merge"]'), true]);
+    out.push(['弹层讲清了覆盖的代价', /多出来的规则会消失/.test(($('#modalRoot') || {}).textContent || ''), true]);
+    out.push(['还没选就不能落事务', window.__bk, null]);
+
+    $('#toastRoot').innerHTML = '';
+    fire('click', document.querySelector('[data-act="mode-merge"]'));
+    await wait(220);
+    out.push(['选合并 → 后端收到 merge', (window.__bk || {}).mode, 'merge']);
+    out.push(['合并提示报新增条数', /新增 2 条规则/.test($('#toastRoot').textContent), true]);
+    out.push(['合并提示报冲突条数', /冲突 1 条/.test($('#toastRoot').textContent), true]);
+    out.push(['合并提示报补上的时段', /补上 3 个小时段/.test($('#toastRoot').textContent), true]);
+    out.push(['合并后弹层关掉了', !document.querySelector('[data-act="mode-merge"]'), true]);
+
+    $('#toastRoot').innerHTML = '';
+    fire('click', rbtn());
+    await wait(150);
+    fire('click', document.querySelector('[data-act="mode-overwrite"]'));
+    await wait(220);
+    out.push(['选覆盖 → 后端收到 overwrite', (window.__bk || {}).mode, 'overwrite']);
+    out.push(['覆盖提示报规则总数', /现在有 5 条规则/.test($('#toastRoot').textContent), true]);
+
+    window.__bk = null;
+    fire('click', rbtn());
+    await wait(150);
+    fire('click', document.querySelector('[data-act="mode-cancel"]'));
+    await wait(150);
+    out.push(['取消 → 什么都不做', window.__bk, null]);
+    out.push(['取消后弹层关掉了', !document.querySelector('[data-act="mode-merge"]'), true]);
+
+    window.__bkImport = null;
+    fire('click', document.querySelector('[data-act="backup-import"]'));
+    await wait(160);
+    out.push(['从文件恢复也要先问方式', !!document.querySelector('[data-act="mode-merge"]'), true]);
+    fire('click', document.querySelector('[data-act="mode-merge"]'));
+    await wait(220);
+    out.push(['导入把选择的模式传给了后端', window.__bkImport, 'merge']);
+
+    const rc = window.confirm;
+    window.confirm = () => true;
+    window.__bkExport = 0;
+    await Act.backupExport();
+    window.confirm = rc;
+    out.push(['导出跨设备备份调用了后端', window.__bkExport, 1]);
+
+    out.push(['重复导入会说明"没有新内容"', /没有需要合并的内容/.test(restoreText({ noop: true })), true]);
+    out.push(['已存在的条目会算进跳过', /跳过 2 条/.test(restoreText({ mode: 'merge', added: 0, skipped: 2, conflict: 0, slots: 0 })), true]);
+    out.push(['旧格式覆盖会注明整份恢复', /整份恢复/.test(restoreText({ mode: 'overwrite', rules: 3, legacy: true })), true]);
+
+    S.backups = [];
   }
 
   const pre = document.createElement('pre');

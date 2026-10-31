@@ -1,6 +1,6 @@
 [package]
 name = "king-of-focus"
-version = "0.1.50"
+version = "0.1.51"
 description = "King of Focus - 专注与自律守护工具"
 authors = ["QQQOrange"]
 edition = "2021"
@@ -24,6 +24,10 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 #   AES-256-GCM 带认证、有 AES-NI 加速；Argon2id 抗暴力破解。
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "rand_core", "getrandom"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+# 跨设备信封（kofEnc:3）用 PBKDF2-HMAC-SHA256：手机端 javax.crypto 原生就有
+# 这个实现，Argon2id 没有。两端用同一套 KDF 才能互相解开对方的备份。
+hmac = "0.12"
+sha2 = "0.10"
 
 # 媒体管控：WinRT SMTC（GlobalSystemMediaTransportControlsSessionManager）
 # 用官方 windows 投影，不手写 COM ABI（手写 vtable/IID 猜错会调错方法甚至崩）。

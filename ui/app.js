@@ -1773,6 +1773,70 @@ function ccNameDialog(mode) {
   if (inp) { inp.focus(); inp.select(); }
 }
 
+/* ---------------- 备份：恢复方式选择 ----------------
+ *
+ * 为什么要在恢复前多问一句：
+ *   「覆盖」是不可撤销的（本机多出来的规则会消失），「合并」只加不减。
+ *   这两种意图差得很远，替用户猜一个不如让他点一下——点错了代价太大。
+ *   返回 Promise<'overwrite'|'merge'|null>，取消得到 null。
+ */
+let _modeResolve = null;
+
+function askRestoreMode(title, sub) {
+  return new Promise((resolve) => {
+    if (_modeResolve) { const old = _modeResolve; _modeResolve = null; old(null); }
+    _modeResolve = resolve;
+    $('#modalRoot').innerHTML = `
+      <div class="modal-mask" data-act="mode-cancel">
+        <div class="modal" style="max-width:540px">
+          <div class="modal-hd">
+            <h3>${esc(title || '选择恢复方式')}</h3>
+            <button class="close-x" data-act="mode-cancel">×</button>
+          </div>
+          <div class="modal-bd">
+            ${sub ? `<div class="hint" style="margin-bottom:12px">${esc(sub)}</div>` : ''}
+            <div class="note" style="margin-bottom:10px">
+              <b>覆盖</b>：用备份里的规则、时段、积分、提醒和语言替换本机。<br>
+              本机多出来的规则会消失；遮罩、HUD、端口、备份密码不受影响。
+            </div>
+            <div class="note">
+              <b>合并</b>：只补本机没有的规则和时段，已有的一律不改。<br>
+              同名不同内容的规则会改名并列，积分取两边较大值。
+            </div>
+          </div>
+          <div class="modal-ft">
+            <button class="btn" data-act="mode-cancel">取消</button>
+            <button class="btn" data-act="mode-merge">合并</button>
+            <button class="btn btn-primary" data-act="mode-overwrite">覆盖</button>
+          </div>
+        </div>
+      </div>`;
+  });
+}
+
+/** 点按钮 → 兑现 Promise 并关掉弹层 */
+function pickRestoreMode(act) {
+  const r = _modeResolve;
+  _modeResolve = null;
+  closeModal();
+  if (r) r(act === 'mode-merge' ? 'merge' : act === 'mode-overwrite' ? 'overwrite' : null);
+}
+
+/** 把后端返回的计数说成人话 */
+function restoreText(r) {
+  if (!r) return '已完成';
+  if (r.noop) return '没有需要合并的内容：这些规则本机已经有了';
+  if (r.mode === 'merge') {
+    const p = [];
+    if (r.added) p.push(`新增 ${r.added} 条规则`);
+    if (r.skipped) p.push(`跳过 ${r.skipped} 条（已存在）`);
+    if (r.conflict) p.push(`冲突 ${r.conflict} 条已改名并列`);
+    if (r.slots) p.push(`补上 ${r.slots} 个小时段`);
+    return '合并完成：' + (p.length ? p.join('，') : '没有变化');
+  }
+  return `已覆盖：现在有 ${r.rules} 条规则` + (r.legacy ? '（旧版备份，整份恢复）' : '');
+}
+
 /* ---------------- 生效时间段：微缩图 + 完整页（两级形态） ----------------
  *
  * 为什么分成两级：
@@ -3836,9 +3900,16 @@ function viewSync() {
       存在软件目录下的 <code>king of focus back</code>，写盘前就加密：设了密码用 AES-256-GCM（可跨机恢复），
       没设密码用本机 Windows DPAPI。只保留最近 10 份、且 7 天内的。
     </div>
-    <div class="row" style="gap:9px;flex-wrap:wrap;margin-bottom:14px">
+    <div class="row" style="gap:9px;flex-wrap:wrap;margin-bottom:10px">
       <button class="btn btn-primary btn-sm" data-act="backup-make">立即备份</button>
       <button class="btn btn-sm" data-act="backup-dir">打开备份目录</button>
+    </div>
+    <div class="row" style="gap:9px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="btn btn-sm" data-act="backup-export">导出跨设备备份…</button>
+      <button class="btn btn-sm" data-act="backup-import">从文件恢复…</button>
+    </div>
+    <div class="hint" style="margin-bottom:14px">
+      跨设备：导出的文件可以拷到手机上恢复，手机导出的也能拿回来。设了备份密码就是密文，没设就是明文 JSON。
     </div>
     <div class="row" style="align-items:center;gap:9px;margin-bottom:14px;flex-wrap:wrap">
       <span class="hint" style="width:74px">备份密码</span>
@@ -4175,7 +4246,12 @@ function viewHelp() {
     本地备份在软件目录下的 <code>king of focus back</code>，写盘前加密（设了密码用 AES-256-GCM，
     没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。<br>
     云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。
-    「立即同步」只同步自律规则和设置，不做版本归档。
+    「立即同步」只同步自律规则和设置，不做版本归档。<br>
+    <b>手机互通：</b><br>
+    · 备份是两端共用的格式，设了备份密码就能在电脑和手机之间互相恢复。<br>
+    · 桌面端：「导出跨设备备份…」和「从文件恢复…」。<br>
+    · 手机端：「设置 → 备份与恢复」，填同一个密码。<br>
+    · 恢复时选「覆盖」（整份替换）或「合并」（只补缺的）。
   `)}
 
   ${sec('10 · 常见问题', `
@@ -6236,12 +6312,38 @@ const Act = window.Act = {
     } catch (e) { toast(String(e), 'err'); }
   },
   async backupRestore(path) {
-    if (!confirm('用这份备份覆盖当前配置？当前配置会被替换。')) return;
+    const mode = await askRestoreMode('恢复这份备份？', '文件来自本机的备份目录。');
+    if (!mode) return;
     try {
-      const msg = await invoke('backup_restore', { path });
-      closeModal(); await pull(); render();
-      toast(msg, 'ok');
-    } catch (e) { toast(String(e), 'err'); }
+      const r = await invoke('backup_restore', { path, mode });
+      await pull(); render();
+      toast(restoreText(r), 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+  },
+  /** 导出成可以拷到手机上的文件 */
+  async backupExport() {
+    const pass = ((S.data.config.settings || {}).backup || {}).password || '';
+    if (!pass && !confirm('没设备份密码，导出的是明文文件。继续吗？')) return;
+    try {
+      const r = await invoke('backup_export');
+      toast(r.encrypted
+        ? `已导出 ${r.rules} 条规则（密码加密）`
+        : `已导出 ${r.rules} 条规则（明文，请妥善保管）`, r.encrypted ? 'ok' : 'warn');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+  },
+  /** 从任意文件恢复：电脑导出的、手机导出的都认 */
+  async backupImport() {
+    const mode = await askRestoreMode('从文件恢复', '选一个 .kofbak 备份文件，电脑或手机导出的都行。');
+    if (!mode) return;
+    try {
+      const r = await invoke('backup_import', { mode });
+      await pull(); render();
+      toast(restoreText(r), 'ok');
+    } catch (e) {
+      const m = String(e).replace(/^Error:\s*/, '');
+      if (m.includes('已取消')) return;
+      toast(m, 'err');
+    }
   },
   async backupDelete(path) {
     if (!confirm('删除这份备份文件？')) return;
@@ -6271,12 +6373,13 @@ const Act = window.Act = {
     } catch (e) { toast(String(e), 'err'); }
   },
   async cloudRestore(name) {
-    if (!confirm('用云端的 ' + name + ' 覆盖当前配置？')) return;
+    const mode = await askRestoreMode('恢复云端的 ' + name + '？', '这台机器会按你选的方式应用它。');
+    if (!mode) return;
     try {
-      const msg = await invoke('backup_cloud_restore', { name });
-      closeModal(); await pull(); render();
-      toast(msg, 'ok');
-    } catch (e) { toast(String(e), 'err'); }
+      const r = await invoke('backup_cloud_restore', { name, mode });
+      await pull(); render();
+      toast(restoreText(r), 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
   },
 
   async saveNotify() {
@@ -8297,6 +8400,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'save-notify') { await Act.saveNotify(); return; }
   if (act === 'save-hotkey') { await Act.saveHotkey(); return; }
   if (act === 'backup-make') { await Act.backupMake(); return; }
+  if (act === 'backup-export') { await Act.backupExport(); return; }
+  if (act === 'backup-import') { await Act.backupImport(); return; }
+  if (act === 'mode-merge' || act === 'mode-overwrite' || act === 'mode-cancel') { pickRestoreMode(act); return; }
   if (act === 'backup-restore') { await Act.backupRestore(el.dataset.path); return; }
   if (act === 'backup-del') { await Act.backupDelete(el.dataset.path); return; }
   if (act === 'backup-pass') { await Act.backupSavePass(); return; }

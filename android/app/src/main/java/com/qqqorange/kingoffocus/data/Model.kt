@@ -35,6 +35,31 @@ data class Rule(
     val packages: List<String> = emptyList(),
     /** 固化：生效期间不允许关闭自律、不允许改设置 */
     val hard: Boolean = true,
+    /**
+     * 从桌面端备份带过来的、手机端表达不了的条目（exe 路径 / 文件夹 / 进程名 / 网站）。
+     *
+     * 为什么要留着：手机端只能按包名拦应用，桌面端那套 `C:\Games\x.exe`、
+     * `*.bilibili.com` 在这里没有任何作用，但**不能丢**——用户拿着手机备份
+     * 回桌面时，这些条目必须原样回去，否则一来一回就把桌面端的名单洗没了。
+     * 它们不参与手机端判定，只做保管。
+     */
+    val foreign: List<PtApp> = emptyList(),
+    /**
+     * 这条规则原始的跨设备 JSON（仅在含桌面专属内容时非空）。
+     *
+     * `foreign` 只保管名单，`carry` 把时段表、锁定方式、颜色、例外这些
+     * 手机端根本没有字段可放的东西整条存下来，导出时再叠回手机端可改的几项。
+     * 这样"桌面 → 手机 → 桌面"才是真正无损的。
+     */
+    val carry: String = "",
+)
+
+/** 跨设备备份里的一个名单条目（kind: exe / dir / name / title / pkg / site） */
+@Serializable
+data class PtApp(
+    val kind: String = "",
+    val value: String = "",
+    val label: String = "",
 )
 
 @Serializable
@@ -55,6 +80,17 @@ data class OverlayCfg(
     val allowStop: Boolean = false,
 )
 
+/**
+ * 备份设置。
+ *
+ * `password` 为空 = 导出的备份是明文 JSON（界面上会警告）；
+ * 非空 = PBKDF2-HMAC-SHA256 + AES-256-GCM 信封，桌面上同一套参数解得开。
+ * 它和桌面端的"备份密码"是同一个东西：两端各自保存本机的口令，
+ * 想互通就得填同一个。
+ */
+@Serializable
+data class BackupCfg(val password: String = "")
+
 @Serializable
 data class Config(
     val version: Int = 1,
@@ -70,6 +106,7 @@ data class Config(
     val unlockUntil: Long = 0L,
     val notify: NotifyCfg = NotifyCfg(),
     val overlay: OverlayCfg = OverlayCfg(),
+    val backup: BackupCfg = BackupCfg(),
 )
 
 fun defaultDays(): List<List<HourPlan>> = List(7) { List(24) { HourPlan() } }

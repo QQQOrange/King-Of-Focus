@@ -10,6 +10,14 @@ import android.os.Bundle
 import android.provider.Settings as SysSettings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.qqqorange.kingoffocus.data.Portable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -361,6 +369,9 @@ private fun SettingsPage(cfg: Config) {
             )
         }
 
+        SectionTitle("备份与恢复")
+        BackupSection(cfg)
+
         SectionTitle("数据")
         OutlinedButton(
             onClick = {
@@ -382,6 +393,187 @@ private fun SettingsPage(cfg: Config) {
         Spacer(Modifier.height(8.dp))
     }
 }
+
+// ---------------------------------------------------------------- 备份（跨设备）
+
+/**
+ * 备份与恢复。
+ *
+ * 三件事必须同时成立，缺一个"互通"就是空话：
+ * 1. 文件格式和桌面端一致（`data/Portable.kt`，两端读同一份样例断言）；
+ * 2. 加密方式两端都算得出来（PBKDF2-HMAC-SHA256 + AES-256-GCM）；
+ * 3. 恢复时让用户明确选「覆盖」还是「合并」，并把结果说清楚。
+ *
+ * 文件读写走 SAF（系统文件选择器）：不需要存储权限，用户自己决定放在哪。
+ */
+@Composable
+private fun BackupSection(cfg: Config) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    var pending by remember { mutableStateOf<Uri?>(null) }
+    var askMode by remember { mutableStateOf(false) }
+
+    fun runExport(uri: Uri) = scope.launch {
+        busy = true
+        status = "正在导出…"
+        try {
+            val pass = Store.current.backup.password
+            val text = withContext(Dispatchers.IO) {
+                val doc = Portable.toDoc(
+                    Store.current,
+                    android.os.Build.MODEL ?: "Android",
+                    appVersion(ctx),
+                )
+                Portable.seal(Portable.render(doc), pass)
+            }
+            withContext(Dispatchers.IO) {
+                (ctx.contentResolver.openOutputStream(uri)
+                    ?: error("这个位置写不进去")).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            }
+            val n = Store.current.rules.size
+            status = if (pass.isBlank()) {
+                "已导出 $n 条规则（明文文件，请妥善保管）"
+            } else {
+                "已导出 $n 条规则（密码加密）"
+            }
+        } catch (e: Exception) {
+            status = "导出失败：${e.message ?: "未知错误"}"
+        } finally {
+            busy = false
+        }
+    }
+
+    fun runImport(mode: String, uri: Uri) = scope.launch {
+        busy = true
+        status = if (mode == "merge") "正在合并…" else "正在覆盖…"
+        try {
+            val msg = withContext(Dispatchers.IO) {
+                val text = (ctx.contentResolver.openInputStream(uri)
+                    ?: error("读不到这个文件")).use { it.readBytes().toString(Charsets.UTF_8) }
+                val plain = Portable.unlock(text, Store.current.backup.password)
+                val parsed = Portable.parse(plain)
+                val base = Store.current
+                if (mode == "merge") {
+                    val out = Portable.merge(parsed.doc, base)
+                    if (out.stats.noop) {
+                        "没有需要合并的内容：这些规则本机已经有了"
+                    } else {
+                        val st = out.stats
+                        Store.update { out.config }
+                        "合并完成：新增 ${st.added} 条规则，跳过 ${st.skipped} 条，" +
+                            "冲突 ${st.conflict} 条，补上 ${st.slots} 个小时段"
+                    }
+                } else {
+                    val next = Portable.overwrite(parsed.doc, base)
+                    Store.update { next }
+                    "已覆盖：现在有 ${next.rules.size} 条规则" +
+                        if (parsed.legacy) "（旧版备份，整份恢复）" else ""
+                }
+            }
+            status = msg
+            // 规则和时段可能整批换了，守护服务要按新配置重来一遍
+            if (Store.current.enabled) runCatching { GuardService.start(ctx) }
+        } catch (e: Exception) {
+            status = "恢复失败：${e.message ?: "未知错误"}"
+        } finally {
+            busy = false
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri -> if (uri != null) runExport(uri) }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            pending = uri
+            askMode = true
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = cfg.backup.password,
+            onValueChange = { v -> Store.update { it.copy(backup = it.backup.copy(password = v)) } },
+            label = { Text("备份密码") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Text(
+            "两端填同一个密码，导出的备份就能互相恢复。留空 = 明文文件（任何人都能打开）。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { exportLauncher.launch(defaultBackupName()) },
+                enabled = !busy,
+            ) { Text("导出备份…") }
+            OutlinedButton(
+                onClick = { importLauncher.launch(arrayOf("*/*")) },
+                enabled = !busy,
+            ) { Text("从文件恢复…") }
+        }
+        Text(
+            "导出的 .kofbak 桌面端可直接恢复；桌面端导出的文件也能在这里选。",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (status.isNotBlank()) {
+            Text(status, fontSize = 12.sp)
+        }
+    }
+
+    if (askMode && pending != null) {
+        val uri = pending
+        AlertDialog(
+            onDismissRequest = { askMode = false; pending = null },
+            title = { Text("怎么应用这份备份？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "覆盖：用备份里的规则、时段、积分、提醒替换本机，本机多出来的规则会消失。" +
+                            "拦截页文案这类手机专属设置不受影响。",
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        "合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列，" +
+                            "积分取两边较大值。",
+                        fontSize = 12.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        askMode = false; pending = null
+                        if (uri != null) runImport("merge", uri)
+                    }) { Text("合并") }
+                    TextButton(onClick = {
+                        askMode = false; pending = null
+                        if (uri != null) runImport("overwrite", uri)
+                    }) { Text("覆盖") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { askMode = false; pending = null }) { Text("取消") }
+            },
+        )
+    }
+}
+
+private fun appVersion(ctx: Context): String = runCatching {
+    ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "0.1.0"
+}.getOrDefault("0.1.0")
+
+private fun defaultBackupName(): String =
+    "kof-backup-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+        .format(java.util.Date()) + ".kofbak"
 
 // ---------------------------------------------------------------- 小部件
 
