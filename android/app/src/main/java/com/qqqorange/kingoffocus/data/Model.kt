@@ -177,6 +177,20 @@ data class UpdateCfg(
     val skippedVersion: String = "",
     /** 自动检查的最小间隔（小时） */
     val intervalHours: Int = 6,
+    /**
+     * GitHub 个人访问令牌（fine-grained / classic 都行，只需要 public repo 读权限）。
+     *
+     * 为什么需要：GitHub 的 REST API 匿名调用**每小时只有 60 次**，一个共享出口 IP
+     * （公司/校园网/CGNAT）很容易被别人用光，这时检查更新的报错会是 403。
+     * 带上令牌是每小时 5000 次，基本不可能撞上限。
+     *
+     * **只保存在本机**：不进备份、不进云同步（`Portable.toDoc` 不序列化 update 配置），
+     * 界面上也永远不回显（输入框是暗文、只显示"已设置"）。
+     */
+    val token: String = "",
+    /** 最近一次查到的 API 配额（只用于显示；-1 = 还没查过） */
+    val quotaLeft: Int = -1,
+    val quotaLimit: Int = -1,
 )
 
 @Serializable
@@ -593,6 +607,9 @@ fun normalize(cfg: Config): Config {
         update = cfg.update.copy(
             intervalHours = cfg.update.intervalHours.coerceIn(1, 168),
             lastCheck = cfg.update.lastCheck.coerceAtLeast(0),
+            // 令牌去掉首尾空白：从浏览器复制时经常带一个换行，带着它会让
+            // Authorization 头非法，GitHub 直接回 401（看起来像"令牌无效"）
+            token = cfg.update.token.trim(),
         ),
         lock = cfg.lock.copy(
             mode = if (cfg.lock.mode == "strict") "strict" else "gentle",

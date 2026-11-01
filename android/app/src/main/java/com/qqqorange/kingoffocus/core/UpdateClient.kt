@@ -44,6 +44,46 @@ object UpdateClient {
         val source: String,
     )
 
+    /** GitHub API 配额（每小时能调多少次） */
+    data class Quota(val remaining: Int, val limit: Int)
+
+    /**
+     * 查一次配额。**失败返回 null 而不是抛异常**——这只是给界面显示"还能查几次"的
+     * 附加信息，查不到不该让整个更新流程失败。
+     */
+    fun quota(token: String): Quota? = try {
+        val text = getText("https://api.github.com/rate_limit", token)
+        val core = json.parseToJsonElement(text).jsonObject["resources"]
+            ?.jsonObject?.get("core")?.jsonObject
+        val remain = core?.get("remaining")?.jsonPrimitive?.content?.toIntOrNull() ?: -1
+        val limit = core?.get("limit")?.jsonPrimitive?.content?.toIntOrNull() ?: -1
+        if (limit > 0) Quota(remain, limit) else null
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * 把 HTTP 状态码翻译成"人话 + 该怎么办"。
+     *
+     * 401 / 403 是最容易让人一头雾水的两种：都只显示"HTTP 403"，
+     * 用户看不出是**令牌错了**还是**被别人把配额用完了**。
+     */
+    fun httpMessage(code: Int, hasToken: Boolean): String? = when (code) {
+        401 -> "GitHub 令牌无效或已过期，请到「版本与更新」重新填一个"
+        403 -> if (hasToken) {
+            "GitHub API 次数用尽（带令牌是每小时 5000 次），过一会儿再试"
+        } else {
+            "GitHub API 次数用尽（匿名每小时只有 60 次，共用网络时很容易被用光）。" +
+                "填一个个人访问令牌可以提到 5000 次"
+        }
+        429 -> "请求太频繁，被 GitHub 临时限流，过一分钟再试"
+        else -> null
+    }
+
+    /** 从异常信息里认出 HTTP 状态码（getText 抛的是 "HTTP 403" 这种） */
+    fun httpCodeOf(message: String?): Int? =
+        Regex("HTTP (\\d{3})").find(message.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
+
     private fun fail(current: String, code: String, message: String): Result = Result(
         ok = false, hasUpdate = false, current = current, latest = "", notes = "",
         url = null, file = "", size = 0, sha256 = "", code = code, message = message,
@@ -58,10 +98,17 @@ object UpdateClient {
             getText(relUrl, token)
         } catch (e: Exception) {
             // 404 = 还没发 Release（只有 tag）。这种情况明确说清楚，不要伪装成"已是最新"。
-            return if (e.message?.contains("404") == true) {
-                fail(current, "E_NO_RELEASE", "仓库还没有发布 Release（只有标签），无法自动更新")
-            } else {
-                fail(current, "E_NETWORK", "连不上 GitHub：${e.message ?: "未知错误"}")
+            val http = httpCodeOf(e.message)
+            return when {
+                http == 404 -> fail(
+                    current, "E_NO_RELEASE", "仓库还没有发布 Release（只有标签），无法自动更新",
+                )
+                http == 401 || http == 403 || http == 429 -> fail(
+                    current,
+                    if (http == 401) "E_AUTH" else "E_RATE",
+                    httpMessage(http, token.isNotBlank()) ?: "GitHub 拒绝了请求（HTTP $http）",
+                )
+                else -> fail(current, "E_NETWORK", "连不上 GitHub：${e.message ?: "未知错误"}")
             }
         }
         val rel = try {
@@ -104,7 +151,10 @@ object UpdateClient {
         }
 
         val manText = try {
-            getText(manUrl, token)
+            // 清单走的是浏览器下载地址（会 302 到 objects.githubusercontent.com），
+            // **不要把令牌带过去**：令牌只该发给 api.github.com。
+            // 这个地址是公开的、也不计入 API 配额，带过去只会多一次泄露面。
+            getText(manUrl, "")
         } catch (e: Exception) {
             return fail(current, "E_MANIFEST_FETCH", "读不到更新清单：${e.message}")
         }

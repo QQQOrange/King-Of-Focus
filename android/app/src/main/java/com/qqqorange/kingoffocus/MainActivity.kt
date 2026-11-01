@@ -113,10 +113,22 @@ class MainActivity : ComponentActivity() {
                 val nowSec = System.currentTimeMillis() / 1000
                 if (!UpdateHub.due(c.update.lastCheck, c.update.intervalHours, nowSec)) return@launch
                 UpdateHub.busy.value = true
+                // 令牌跟着一起发：匿名每小时只有 60 次，共用网络时经常被别人用光
+                val token = c.update.token
                 val r = withContext(Dispatchers.IO) {
-                    UpdateClient.check(UpdateHub.REPO, appVersion(this@MainActivity))
+                    UpdateClient.check(UpdateHub.REPO, appVersion(this@MainActivity), token)
                 }
-                Store.update { it.copy(update = it.update.copy(lastCheck = nowSec)) }
+                // 配额顺带查一次，存下来给设置页显示"还能查几次"
+                val q = withContext(Dispatchers.IO) { UpdateClient.quota(token) }
+                Store.update {
+                    it.copy(
+                        update = it.update.copy(
+                            lastCheck = nowSec,
+                            quotaLeft = q?.remaining ?: it.update.quotaLeft,
+                            quotaLimit = q?.limit ?: it.update.quotaLimit,
+                        ),
+                    )
+                }
                 UpdateHub.last.value = r
                 UpdateHub.busy.value = false
             }
@@ -358,8 +370,9 @@ internal fun UpdateSection(cfg: Config) {
     fun checkNow() = scope.launch {
         UpdateHub.busy.value = true
         setStatus("正在检查…")
+        val token = Store.current.update.token
         val r = try {
-            withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current) }
+            withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current, token) }
         } catch (e: Exception) {
             // 兜底：检查里任何没被接住的异常都不能让 busy 永远卡住
             android.util.Log.e("KofUpdate", "检查更新时出错", e)
@@ -367,7 +380,16 @@ internal fun UpdateSection(cfg: Config) {
             setStatus("更新失败：${e.message}", true)
             return@launch
         }
-        Store.update { it.copy(update = it.update.copy(lastCheck = System.currentTimeMillis() / 1000)) }
+        val q = withContext(Dispatchers.IO) { UpdateClient.quota(token) }
+        Store.update {
+            it.copy(
+                update = it.update.copy(
+                    lastCheck = System.currentTimeMillis() / 1000,
+                    quotaLeft = q?.remaining ?: it.update.quotaLeft,
+                    quotaLimit = q?.limit ?: it.update.quotaLimit,
+                ),
+            )
+        }
         UpdateHub.last.value = r
         res = r
         UpdateHub.busy.value = false
@@ -443,6 +465,86 @@ internal fun UpdateSection(cfg: Config) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+    // —— GitHub 个人访问令牌 ——
+    //
+    // 为什么要让用户填：匿名调用 GitHub API 每小时只有 60 次，公司 / 校园网 / CGNAT
+    // 这种共享出口最常见的情况是"我什么都没干就被限流了"。带令牌是 5000 次/小时。
+    // 令牌只存本机：不进备份、不进云同步，界面也永远不回显（暗文 + 只显示"已设置"）。
+    var tokenDraft by remember { mutableStateOf("") }
+    val hasToken = cfg.update.token.isNotBlank()
+    Text("GitHub 个人访问令牌", fontSize = 13.sp)
+    Text(
+        if (hasToken) {
+            "已设置（只在本机，界面不回显）。留空表示不修改；点「清除」可以删掉。"
+        } else {
+            "选填。匿名调用每小时只有 60 次，共用网络时很容易被用光；填了是每小时 5000 次。"
+        },
+        fontSize = 10.5.sp,
+        lineHeight = 15.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = tokenDraft,
+        onValueChange = { tokenDraft = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+        visualTransformation = PasswordVisualTransformation(),
+        placeholder = {
+            Text(
+                if (hasToken) "已设置（留空则不修改）" else "粘贴 ghp_… 或 github_pat_… 令牌",
+                fontSize = 12.sp,
+            )
+        },
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = {
+                val t = tokenDraft.trim()
+                if (t.isEmpty()) {
+                    toast(ctx, "先粘贴令牌")
+                    return@Button
+                }
+                // 保存后清空输入框：不把令牌留在界面上（截屏 / 录屏都不该带出去）
+                Store.update { it.copy(update = it.update.copy(token = t)) }
+                tokenDraft = ""
+                toast(ctx, "令牌已保存（只在本机）")
+            },
+            enabled = tokenDraft.isNotBlank(),
+        ) { Text("保存令牌", fontSize = 12.5.sp) }
+        OutlinedButton(
+            onClick = {
+                Store.update { it.copy(update = it.update.copy(token = "")) }
+                tokenDraft = ""
+                toast(ctx, "令牌已清除，回到匿名调用（每小时 60 次）")
+            },
+            enabled = hasToken,
+        ) { Text("清除", fontSize = 12.5.sp) }
+        TextButton(onClick = {
+            runCatching {
+                ctx.startActivity(
+                    Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse(
+                            "https://docs.github.com/zh/authentication/" +
+                                "keeping-your-account-and-data-secure/" +
+                                "managing-your-personal-access-tokens",
+                        ),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }) { Text("怎么获取？", fontSize = 12.5.sp) }
+    }
+    Text(
+        if (cfg.update.quotaLimit > 0) {
+            "API 配额：剩余 ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} 次（每小时）"
+        } else {
+            "API 配额：还没查过（检查一次更新就会一并查询）"
+        },
+        fontSize = 10.5.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { checkNow() }, enabled = !busy, modifier = Modifier.weight(1f)) {
             Text(if (busy) "处理中…" else "立即检查")
@@ -515,6 +617,22 @@ internal fun UpdateSection(cfg: Config) {
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { download(r) }, enabled = !busy) { Text("下载并安装") }
+                    // 应用内下载走的是同一个 GitHub 域名，某些网络下会被掐断；
+                    // 留一个"交给浏览器"的出口，总比只能干看错误强
+                    if (!r.url.isNullOrBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(r.url))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }
+                            },
+                        ) { Text("用浏览器打开") }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
                             Store.update { it.copy(update = it.update.copy(skippedVersion = r.latest)) }
