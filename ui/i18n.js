@@ -43,6 +43,14 @@
     '按秒': 'per second',
     '口径说明': 'How this is measured',
     '周复盘': 'Weekly review',
+    '新手引导': 'Setup wizard',
+    '重新走一遍': 'Run it again',
+    '三步：什么时候学 / 哪些不该开 / 试 25 分钟。重走一遍不会删掉你已经排好的时段和规则，只会覆盖向导自己写的那一套。':
+      'Three steps: when to study, what to block, try 25 minutes. Re-running only overwrites the schedule and rule the wizard itself created.',
+    '换电脑、换作息，或者想把家人也教会时用它':
+      'Useful on a new PC, when your routine changes, or to show someone else how it works',
+    '以后想再看，在「设置 → 新手引导」里重新打开':
+      'To see it again later: Settings -> Setup wizard',
     '明白了': 'Got it',
     '复盘已保存：下周打开还能看到这几句': 'Review saved. Open the same week later to compare.',
     '，上周': ', last week ',

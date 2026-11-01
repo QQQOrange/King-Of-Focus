@@ -3779,6 +3779,248 @@ function peerBanner() {
 }
 
 
+
+/* ============================================================
+   首用向导（B6）
+   ------------------------------------------------------------
+   装完软件是"空"的：十几个页面每个都能点，但不知道先做哪一件。
+   多数人在这一步流失——不是功能不够，是不知道从哪开始。
+   所以这里只问三个问题，而且每个答案都直接落到既有结构里：
+     ① 几点学   → 一套 ClockProfile（「自律时段」页里那套）
+     ② 哪些别开 → 一条 Rule（「自律规则」页里那条）
+     ③ 试 25 分钟 → 一套**一次性**时段方案，到点由后台删掉并还原
+
+   文案全部走 w('中','en')：这些句子都带插值，进 i18n 词典会被切成碎片，
+   直接在渲染时选语言更可靠，也顺手满足"英文界面零残留中文"。
+   ============================================================ */
+const WIZ_DAYS = ['一', '二', '三', '四', '五', '六', '日'];
+const WIZ_DAYS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function w() {
+  return I18N.getLang() === 'en' ? 1 : 0;
+}
+/** 二选一取文案：w2('中文', 'English') */
+function w2(zh, en) {
+  return I18N.getLang() === 'en' ? en : zh;
+}
+
+function wizState() {
+  if (!S.wizard) {
+    S.wizard = { step: 0, days: [0, 1, 2, 3, 4], from: 20, to: 22, apps: [], list: null, busy: false };
+  }
+  return S.wizard;
+}
+
+function wizOpen() {
+  S.wizard = { step: 0, days: [0, 1, 2, 3, 4], from: 20, to: 22, apps: [], list: null, busy: false };
+  wizRender();
+  wizLoadApps();
+}
+
+function wizClose() {
+  S.wizard = null;
+  // 直接清空即可：Layer 的 sync() 会比对 #modalRoot 的现状，
+  // 消失的弹层自动出栈（见 Layer 的注释），不必手工 closeModal。
+  // 不要改成 closeModal：它 120ms 后才清 DOM，而调用方紧接着就 render 了，
+  // 实测这样会让自动化用例直接卡住。
+  const root = $('#modalRoot');
+  if (root) root.innerHTML = '';
+}
+
+/** 读当前打开的程序，供第二步勾选（读不到不是错误，只是列表为空） */
+async function wizLoadApps() {
+  const w0 = S.wizard;
+  if (!w0) return;
+  try {
+    const list = await invoke('list_windows');
+    const seen = new Set();
+    w0.list = (list || [])
+      .filter((a) => a && a.path && !/king[-. ]?of[-. ]?focus/i.test(String(a.name || '')))
+      .filter((a) => {
+        const k = String(a.path).toLowerCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .slice(0, 12);
+  } catch (e) {
+    w0.list = [];
+  }
+  if (S.wizard) wizRender();
+}
+
+function wizHours() {
+  const st = wizState();
+  const mins = st.days.length * Math.max(0, st.to - st.from) * 60;
+  return { mins };
+}
+
+function wizDayLabel(d) {
+  return I18N.getLang() === 'en' ? WIZ_DAYS_EN[d] : WIZ_DAYS[d];
+}
+
+/** 周一~周五 / 每天 这种人话摘要 */
+function wizDaysText(days) {
+  const d = days.slice().sort((a, b) => a - b);
+  const key = d.join(',');
+  if (key === '0,1,2,3,4') return w2('工作日', 'Weekdays');
+  if (key === '0,1,2,3,4,5,6') return w2('每天', 'Every day');
+  if (key === '5,6') return w2('周末', 'Weekends');
+  if (!d.length) return w2('还没选', 'Nothing selected');
+  return d.map(wizDayLabel).join(' ');
+}
+
+function wizRender() {
+  const st = wizState();
+  const root = $('#modalRoot');
+  if (!root) return;
+  const M = wizStepHtml(st);
+  root.innerHTML = `
+  <div class="modal-mask wiz-mask">
+    <div class="modal wiz">
+      <div class="wiz-top">
+        <div class="wiz-dots">${[0, 1, 2].map((i) =>
+          `<i class="${i === st.step ? 'on' : ''}${i < st.step ? ' done' : ''}"></i>`).join('')}</div>
+        <button class="close-x" data-act="wiz-close" title="${w2('关闭（下次启动还会出现）', 'Close (comes back next launch)')}">×</button>
+      </div>
+      <div class="wiz-bd">${M.body}</div>
+      <div class="wiz-foot">
+        ${st.step > 0
+          ? `<button class="btn btn-sm" data-act="wiz-back">${w2('上一步', 'Back')}</button>`
+          : `<button class="btn btn-sm" data-act="wiz-skip">${w2('跳过引导', 'Skip setup')}</button>`}
+        <span style="flex:1"></span>
+        ${M.foot}
+      </div>
+    </div>
+  </div>`;
+}
+
+function wizStepHtml(st) {
+  if (st.step === 0) {
+    const { mins } = wizHours();
+    const opt = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i)
+      .map((h) => `<option value="${h}" ${(h === (a === 6 ? st.from : st.to)) ? 'selected' : ''}>${pad(h)}:00</option>`)
+      .join('');
+    return {
+      body: `
+      <div class="wiz-h">${w2('你打算什么时候学？', 'When do you plan to study?')}</div>
+      <div class="wiz-sub">${w2(
+        '这段时间里，「不该开的东西」会被挡住；需要的话，桌面也可以被遮罩盖住。先选一个你真能做到的时间——小一点没关系。',
+        'During this window the things you pick get blocked, and the desktop can be masked. Pick something you can actually keep — small is fine.'
+      )}</div>
+      <div class="wiz-days">
+        ${WIZ_DAYS.map((_, i) => `<button class="wiz-day${st.days.includes(i) ? ' on' : ''}"
+          data-act="wiz-day" data-d="${i}">${wizDayLabel(i)}</button>`).join('')}
+      </div>
+      <div class="row" style="align-items:center;gap:10px;margin-top:14px">
+        <span class="hint">${w2('从', 'From')}</span>
+        <select class="input" id="wizFrom" data-act="wiz-time" data-k="from" style="max-width:110px">${opt(6, 23)}</select>
+        <span class="hint">${w2('到', 'to')}</span>
+        <select class="input" id="wizTo" data-act="wiz-time" data-k="to" style="max-width:110px">${opt(7, 24)}</select>
+      </div>
+      <div class="wiz-sum">${w2(
+        `${wizDaysText(st.days)} ${pad(st.from)}:00–${pad(st.to)}:00 · 每天 ${Math.floor((st.to - st.from))} 小时`,
+        `${wizDaysText(st.days)} ${pad(st.from)}:00–${pad(st.to)}:00 · ${(st.to - st.from)}h per day`
+      )}${mins ? '' : ''}</div>`,
+      foot: `<button class="btn btn-primary btn-sm" data-act="wiz-next" ${st.days.length ? '' : 'disabled'}>${w2('下一步', 'Next')}</button>`,
+    };
+  }
+
+  if (st.step === 1) {
+    const list = st.list;
+    const rows = list === null
+      ? `<div class="hint">${w2('正在读取当前打开的程序…', 'Reading open programs…')}</div>`
+      : list.length
+        // data-act 放在 label 上：点文字也能选中（放在 input 上时点标签文字没反应）
+        ? list.map((a) => `<label class="wiz-app${st.apps.includes(a.path) ? ' on' : ''}"
+            data-act="wiz-app" data-path="${esc(a.path)}">
+            <input type="checkbox" ${st.apps.includes(a.path) ? 'checked' : ''} tabindex="-1" />
+            <span class="n">${esc(a.name)}</span>
+            <span class="t">${esc(a.title || '')}</span>
+          </label>`).join('')
+        : `<div class="hint">${w2(
+            '没读到现在打开的程序（有时需要管理员权限）。这一步可以跳过，以后在「自律规则」里随时能加。',
+            'No open programs found (this sometimes needs admin). You can skip and add them later in Rules.'
+          )}</div>`;
+    return {
+      body: `
+      <div class="wiz-h">${w2('这些时候，哪些不该打开？', 'Which ones should stay closed then?')}</div>
+      <div class="wiz-sub">${w2(
+        '只在你刚选的时间段里挡住它们，别的时间照常使用。想挡的东西没开？先打开它再回来勾。',
+        'Only blocked during the window you just picked. Missing something? Open it, then come back.'
+      )}</div>
+      <div class="wiz-apps">${rows}</div>`,
+      foot: `<button class="btn btn-primary btn-sm" data-act="wiz-next">${w2('下一步', 'Next')}</button>`,
+    };
+  }
+
+  const hrs = Math.max(0, st.to - st.from) * st.days.length;
+  return {
+    body: `
+    <div class="wiz-h">${w2('就这样，可以开始了', 'That is it — you can start')}</div>
+    <div class="wiz-sub">${w2(
+      '到点会自动开始：被选的软件会被挡住，桌面可以被遮罩盖住。之后想改，随时到「自律时段」和「自律规则」里改。',
+      'It starts on its own: blocked apps get stopped and the desktop can be masked. Change anything later in Schedule and Rules.'
+    )}</div>
+    <div class="wiz-plan">
+      <div><b>${wizDaysText(st.days)} ${pad(st.from)}:00–${pad(st.to)}:00</b>
+        <span class="hint">${w2(`每周约 ${hrs} 小时`, `~${hrs}h per week`)}</span></div>
+      <div>${st.apps.length
+        ? w2(`挡住 ${st.apps.length} 个软件`, `${st.apps.length} apps blocked`)
+        : w2('这一步先跳过（以后可以加）', 'No apps for now')}</div>
+      <div>${w2('到点自动打开遮罩：开', 'Mask opens automatically: on')}</div>
+    </div>`,
+    foot: `
+      <button class="btn btn-sm" data-act="wiz-try">${w2('先试 25 分钟', 'Try 25 minutes')}</button>
+      <button class="btn btn-primary btn-sm" data-act="wiz-done">${w2('完成', 'Done')}</button>`,
+  };
+}
+
+/** 保存（完成 / 试一下都要先保存） */
+async function wizSave() {
+  const st = wizState();
+  if (st.busy) return false;
+  st.busy = true;
+  let ok = false;
+  try {
+    await invoke('onboard_finish', {
+      days: st.days,
+      fromHour: st.from,
+      toHour: st.to,
+      apps: st.apps,
+    });
+    ok = true;
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
+  st.busy = false;
+  return ok;
+}
+
+async function wizDone() {
+  if (!(await wizSave())) return;
+  wizClose();
+  await pull();
+  render();
+  toast(w2('设置好了。到点会自动开始。', 'All set. It starts on its own when the time comes.'), 'ok');
+}
+
+async function wizTry() {
+  if (!(await wizSave())) return;
+  try {
+    const r = await invoke('onboard_try', { minutes: 25 });
+    wizClose();
+    await pull();
+    render();
+    toast(w2(
+      `试的这 25 分钟已开始，${new Date((r.until || 0) * 1000).toLocaleTimeString()} 自动结束并还原。`,
+      `25-minute trial started; it ends and restores itself at ${new Date((r.until || 0) * 1000).toLocaleTimeString()}.`
+    ), 'ok');
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
+}
+
 /* ============================================================
    口径说明（B7）
    ------------------------------------------------------------
@@ -4907,6 +5149,15 @@ function viewSettings() {
       <button class="${langPref() === 'en' ? 'active gold' : ''}" data-act="lang" data-v="en">English</button>
     </div>
     <div class="hint" style="margin-top:8px">浏览器插件会跟随这里的语言；默认简体中文。</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">新手引导</div>
+    <div class="card-sub">三步：什么时候学 / 哪些不该开 / 试 25 分钟。重走一遍不会删掉你已经排好的时段和规则，只会覆盖向导自己写的那一套。</div>
+    <div class="row" style="align-items:center;gap:10px">
+      <button class="btn btn-sm" data-act="wiz-open">重新走一遍</button>
+      <span class="hint">换电脑、换作息，或者想把家人也教会时用它</span>
+    </div>
   </div>
 
   <div class="card">
@@ -9198,6 +9449,45 @@ document.addEventListener('click', async (e) => {
   if (!el) return;
   const act = el.dataset.act;
 
+  // ---- 首用向导 ----
+  if (act === 'wiz-open') { wizOpen(); return; }
+  if (act === 'wiz-close') { wizClose(); return; }
+  if (act === 'wiz-skip') {
+    try { await invoke('onboard_skip'); } catch (e) { /* 跳过失败也无所谓 */ }
+    wizClose();
+    await pull();
+    toast('以后想再看，在「设置 → 新手引导」里重新打开', 'ok');
+    return;
+  }
+  if (act === 'wiz-day') {
+    const st = wizState();
+    const d = Number(el.dataset.d);
+    st.days = st.days.includes(d) ? st.days.filter((x) => x !== d) : st.days.concat([d]).sort((a, b) => a - b);
+    wizRender();
+    return;
+  }
+  if (act === 'wiz-app') {
+    const st = wizState();
+    const p2 = el.dataset.path;
+    st.apps = st.apps.includes(p2) ? st.apps.filter((x) => x !== p2) : st.apps.concat([p2]);
+    wizRender();
+    return;
+  }
+  if (act === 'wiz-next') {
+    const st = wizState();
+    st.step = Math.min(2, st.step + 1);
+    wizRender();
+    return;
+  }
+  if (act === 'wiz-back') {
+    const st = wizState();
+    st.step = Math.max(0, st.step - 1);
+    wizRender();
+    return;
+  }
+  if (act === 'wiz-done') { await wizDone(); return; }
+  if (act === 'wiz-try') { await wizTry(); return; }
+
   // ---- 口径说明 ----
   if (act === 'tip') { showTip(el.dataset.k); return; }
   if (act === 'review-save') { await reviewSave(); return; }
@@ -11442,6 +11732,19 @@ document.addEventListener('change', (e) => {
 });
 
 /* 完整图表的「显示范围」下拉：改完立刻重画（纯显示参数，不需要二次确认） */
+/* 首用向导的起止小时：select 只走 change，不走 click ——
+ * 点击那一刻重渲染会把下拉立刻收起来。 */
+document.addEventListener('change', (e) => {
+  const el = e.target.closest('[data-act="wiz-time"]');
+  if (!el || !S.wizard) return;
+  const st = wizState();
+  const v = Number(el.value) || 0;
+  // 起止撞在一起时把另一端推开一格：留着"开始 ≥ 结束"等于什么都没排
+  if (el.dataset.k === 'from') st.from = Math.max(6, Math.min(v, st.to - 1));
+  else st.to = Math.max(st.from + 1, Math.min(v, 24));
+  wizRender();
+});
+
 document.addEventListener('change', async (e) => {
   const el = e.target.closest('[data-act="clock-view"]');
   if (!el) return;
@@ -11483,6 +11786,9 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   window.addEventListener('focus', () => { pull(); });
   // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导
   promptBrowserSetup();
+  // 新装第一次启动：直接把向导弹出来，而不是让人自己找
+  // （老配置里没有 onboarded 这个键 → undefined，不算 false，所以老用户不会被弹）
+  if ((((S.data.config || {}).settings || {}).onboarded) === false) wizOpen();
 
   // 下载进度
   if (T && T.event) {

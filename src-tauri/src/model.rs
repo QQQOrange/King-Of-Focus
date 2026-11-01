@@ -1421,6 +1421,16 @@ pub struct Settings {
     pub stats: StatsCfg,
     /// 分心事件（学习当中冒出来的零散想法）
     pub distract: DistractCfg,
+    /// 首用向导走没走过。
+    ///
+    /// `None` = 老配置里没这个键 → **视为已走过**（不能让升级把老用户弹一遍）；
+    /// `Some(false)` = 新装（`Config::default` 给的）→ 启动时弹向导；
+    /// `Some(true)` = 走过 / 主动跳过。
+    #[serde(default)]
+    pub onboarded: Option<bool>,
+    /// 正在进行的"试用 25 分钟"（到点由 `onboard::tick_trial` 收尾）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<crate::onboard::Trial>,
     /// 云同步
     pub sync: SyncCfg,
     /// 自动更新
@@ -1471,6 +1481,9 @@ impl Default for Settings {
             focus_clock: ClockCfg::default(),
             sweep: SweepCfg::default(),
             distract: DistractCfg::default(),
+            // 新装默认没走过向导；老配置读到的是 None（= 已走过）
+            onboarded: Some(false),
+            trial: None,
             sleep: SleepCfg::default(),
             stats: StatsCfg::default(),
             sync: SyncCfg::default(),

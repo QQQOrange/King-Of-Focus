@@ -1912,6 +1912,38 @@ pub fn stake_place(shared: State<'_, Arc<Shared>>, amount: Option<i64>) -> Resul
     Ok(json!(s))
 }
 
+// ---------------- 首用向导 ----------------
+
+/// 第三步：写时段 + 写规则（`apps` 是 exe 路径，空 = 这一步跳过）
+#[tauri::command]
+pub fn onboard_finish(
+    shared: State<'_, Arc<Shared>>,
+    days: Vec<u32>,
+    from_hour: u32,
+    to_hour: u32,
+    apps: Vec<String>,
+) -> Result<Value, String> {
+    crate::onboard::apply(&shared, days, from_hour, to_hour, apps)
+}
+
+/// 现在就试 25 分钟（一次性方案，到点自动删掉并还原）
+#[tauri::command]
+pub fn onboard_try(shared: State<'_, Arc<Shared>>, minutes: Option<u32>) -> Result<Value, String> {
+    crate::onboard::trial(&shared, minutes.unwrap_or(25))
+}
+
+/// 跳过向导（以后不再自动弹）
+#[tauri::command]
+pub fn onboard_skip(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    crate::onboard::set_done(&shared, true)
+}
+
+/// 设置页里的"重新走一遍引导"
+#[tauri::command]
+pub fn onboard_reset(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    crate::onboard::set_done(&shared, false)
+}
+
 // ---------------- 周复盘 ----------------
 
 /// 某一周的数据快照 + 已保存的回答（offset 0 = 本周，1 = 上周）

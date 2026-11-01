@@ -21,6 +21,7 @@ mod model;
 mod monitor;
 mod net;
 mod notify;
+mod onboard;
 mod portable;
 mod proc;
 mod quotes;
@@ -497,6 +498,10 @@ fn main() {
             cmds::stake_place,
             cmds::review_week,
             cmds::review_save,
+            cmds::onboard_finish,
+            cmds::onboard_skip,
+            cmds::onboard_reset,
+            cmds::onboard_try,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,

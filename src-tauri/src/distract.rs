@@ -381,6 +381,8 @@ pub fn start(app: tauri::AppHandle, shared: std::sync::Arc<Shared>) {
             // 质押到点结算（自然跑完退本金，干净跑完再加奖励）。
             // 放在这一拍里做：机器休眠错过也不怕，回来补上就行。
             crate::focus::tick_settle(&shared);
+            // 试用的时段方案到点收尾（删方案 + 还原 active）；关过程序也能在下次启动补上
+            crate::onboard::tick_trial(&shared);
 
             let focusing = crate::clock::state(&cfg).map(|s| s.focusing()).unwrap_or(false);
             let was = WAS_FOCUS.swap(focusing, std::sync::atomic::Ordering::Relaxed);

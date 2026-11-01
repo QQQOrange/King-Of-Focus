@@ -280,6 +280,17 @@ window.__TAURI__ = {
       };
     }
     if (cmd === 'review_save') { window.__reviewSaved = args; return null; }
+    // 首用向导：窗口列表里塞一条自家的，用来验证"不会把自己列进可挡名单"
+    if (cmd === 'list_windows') {
+      return [
+        { pid: 11, name: 'Steam', title: 'Steam', path: 'C:////Games////Steam////steam.exe' },
+        { pid: 12, name: 'Code', title: 'app.js - Visual Studio Code', path: 'C:////VSCode////Code.exe' },
+        { pid: 13, name: 'king-of-focus', title: 'King Of Focus', path: 'C:////kof.exe' },
+      ];
+    }
+    if (cmd === 'onboard_finish') { window.__onbFinish = args; return { onboarded: true }; }
+    if (cmd === 'onboard_try') { window.__onbTry = args; return { until: 1793500000, minutes: args.minutes || 25 }; }
+    if (cmd === 'onboard_skip') { window.__onbSkip = 1; return null; }
     return null;
   } },
   event: { listen: async () => () => {} },
@@ -4014,6 +4025,53 @@ window.__itest = async () => {
 
     await Act.nav('settings');
     await wait(250);
+  }
+
+  // ---- 26e. 首用向导：三步 + 落库 ----
+  {
+    await Act.nav('settings');
+    await wait(320);
+    const openBtn = document.querySelector('[data-act="wiz-open"]');
+    out.push(['设置页有新手引导入口', !!openBtn, true]);
+    openBtn.click();
+    await wait(280);
+    out.push(['向导弹出来了', !!document.querySelector('#modalRoot .modal.wiz'), true]);
+    out.push(['三步进度条', document.querySelectorAll('.wiz-dots i').length, 3]);
+    out.push(['第一天就问"什么时候学"',
+      /什么时候学/.test((document.querySelector('.wiz-h') || {}).textContent || ''), true]);
+    out.push(['七个星期可选', document.querySelectorAll('.wiz-day').length, 7]);
+    // 默认工作日
+    out.push(['默认选工作日', S.wizard.days.join(','), '0,1,2,3,4']);
+    // 点周六：加上去
+    document.querySelectorAll('.wiz-day')[5].click();
+    await wait(160);
+    out.push(['点一下能加一天', S.wizard.days.join(','), '0,1,2,3,4,5']);
+    out.push(['摘要跟着变', /每天/.test((document.querySelector('.wiz-sum') || {}).textContent || ''), true]);
+
+    document.querySelector('[data-act="wiz-next"]').click();
+    await wait(320);
+    out.push(['第二步问"哪些不该打开"',
+      /不该打开/.test((document.querySelector('.wiz-h') || {}).textContent || ''), true]);
+    // 自家的进程不能出现在可挡名单里
+    out.push(['列表里没有自己', document.querySelectorAll('.wiz-app').length, 2]);
+    document.querySelectorAll('.wiz-app')[0].click();
+    await wait(200);
+    out.push(['勾一个软件', S.wizard.apps.length, 1]);
+    out.push(['勾上后有选中态', document.querySelectorAll('.wiz-app.on').length, 1]);
+
+    document.querySelector('[data-act="wiz-next"]').click();
+    await wait(260);
+    out.push(['第三步给摘要', !!document.querySelector('.wiz-plan'), true]);
+    out.push(['有"先试 25 分钟"和"完成"',
+      !!document.querySelector('[data-act="wiz-try"]') && !!document.querySelector('[data-act="wiz-done"]'), true]);
+
+    document.querySelector('[data-act="wiz-done"]').click();
+    await wait(320);
+    const fin = window.__onbFinish || {};
+    out.push(['完成时把星期传上去', (fin.days || []).join(','), '0,1,2,3,4,5']);
+    out.push(['完成时把起止小时传上去', `${fin.fromHour}-${fin.toHour}`, '20-22']);
+    out.push(['完成时把勾的软件传上去', (fin.apps || []).length, 1]);
+    out.push(['完成之后向导关掉', !!document.querySelector('#modalRoot .modal.wiz'), false]);
   }
 
   // ---- 26f. 统计口径自解释（每个数字旁一个问号）----
