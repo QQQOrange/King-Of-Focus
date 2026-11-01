@@ -74,6 +74,10 @@ object StakeStore {
     private fun epoch(dt: LocalDateTime): Long =
         dt.atZone(ZoneId.systemDefault()).toEpochSecond()
 
+    /** 全部质押记录（周复盘用） */
+    @Synchronized
+    fun all(): List<Stake> = list
+
     /** 当前这一段押的那笔（没押 / 已结算 → null） */
     @Synchronized
     fun current(cfg: Config, now: LocalDateTime = LocalDateTime.now()): Stake? {

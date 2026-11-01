@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -95,6 +96,10 @@ fun StatsScreen(cfg: Config) {
     var bump by remember { mutableStateOf(0) }
     val now = LocalDateTime.now()
     val today = now.toLocalDate()
+
+    // 口径说明：统计页最容易被误读的不是数字，是"这个数字是什么意思"。
+    // 误读一次，用户就会开始怀疑整套数据，然后关掉统计。
+    var help by remember { mutableStateOf(false) }
 
     // 双轨：true = 自律生效中，false = 时段外，null = 汇总
     var tab by remember { mutableStateOf<Boolean?>(null) }
@@ -241,6 +246,48 @@ fun StatsScreen(cfg: Config) {
                     picked = null
                 }
             }
+            // 小问号：必须"在但不抢眼"，一旦做得醒目，用户会先点它而不是先看数据
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), CircleShape)
+                    .clickable { help = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("?", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        if (help) {
+            AlertDialog(
+                onDismissRequest = { help = false },
+                confirmButton = { TextButton(onClick = { help = false }) { Text("明白了") } },
+                title = { Text("这些数字是怎么来的") },
+                text = {
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        HelpBlock(
+                            "为什么分成两条轨",
+                            "只有一秒里满足下面任一条件，才记到「自律时段内」：" +
+                                "① 有自律规则正在生效；② 正在自律时段里（番茄休息也算）；③ 正处于锁机中。" +
+                                "其余全部记到「时段外」。两条轨完全隔离、绝不相加——" +
+                                "「自律 2 小时」的意思是“有 2 小时是在自律状态下的使用时间”，不是“学了 2 小时”。",
+                        )
+                        HelpBlock(
+                            "这些秒数是怎么来的",
+                            "每 15 秒采样一次前台应用，累计成秒数。它统计的是“应用在前台的时间”，" +
+                                "不是“你有多专注”。想看专注质量，去看「分心事件」和被打断次数。",
+                        )
+                        HelpBlock(
+                            "离开的时间去哪了",
+                            "熄屏、锁屏、停在桌面、停在本软件自己身上，都不计时。" +
+                                "所以“看了两小时视频”可能只记几分钟——这是这套统计最容易被误读的地方。",
+                        )
+                    }
+                },
+            )
         }
 
         // —— 视图 + 周期 ——
@@ -1348,5 +1395,16 @@ private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
             lineHeight = 14.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+
+}
+
+/** 口径说明里的一小段：标题 + 正文 */
+@Composable
+private fun HelpBlock(title: String, body: String) {
+    Column {
+        Text(title, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(3.dp))
+        Text(body, fontSize = 11.5.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

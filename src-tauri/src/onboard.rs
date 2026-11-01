@@ -242,11 +242,15 @@ pub fn trial(shared: &Shared, minutes: u32) -> Result<Value, String> {
 /// 后台每拍调用：试用到点就收尾（删方案、还原 active）。
 ///
 /// 放在循环里而不是"起一个定时器"：程序关掉再打开，这条照样能把过期试用收干净。
-pub fn tick_trial(shared: &Shared) {
+/// 返回值 = 这一拍真的收尾了（调用方据此说一句"试用结束，已还原"）。
+///
+/// 为什么要有这句话：试用结束后遮罩会自己关掉。没有任何提示的话，
+/// 用户只会觉得"它自己坏了"，而不是"试用的 25 分钟到了"。
+pub fn tick_trial(shared: &Shared) -> bool {
     let c = shared.config();
-    let Some(t) = c.settings.trial.clone() else { return };
+    let Some(t) = c.settings.trial.clone() else { return false };
     if Local::now().timestamp() < t.until {
-        return;
+        return false;
     }
     let mut c = c;
     c.settings.focus_clock.profiles.retain(|p| p.id != TRIAL_ID);
@@ -262,6 +266,7 @@ pub fn tick_trial(shared: &Shared) {
     c.settings.trial = None;
     let _ = save_cfg(shared, c);
     crate::mask::wake();
+    true
 }
 
 /// 标记"走过了"（跳过）或"重来一遍"（设置页里的入口）

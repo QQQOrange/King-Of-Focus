@@ -93,6 +93,7 @@ fun AppRoot() {
     // 分心事件是一整页（日历 + 清单），不占底部导航的格子：
     // 底部已经 5 个 tab，再加就把每一项挤到看不清字了。
     var showDistract by remember { mutableStateOf(false) }
+    var showReview by remember { mutableStateOf(false) }
 
     // 新装第一次打开：向导盖住整个界面（onboarded 只有新装是 false，
     // 老配置读到 null = 已走过，所以升级用户不会突然被弹一次）
@@ -104,6 +105,19 @@ fun AppRoot() {
     if (showDistract) {
         Surface(color = MaterialTheme.colorScheme.background) {
             DistractScreen(cfg = cfg, onBack = { showDistract = false })
+        }
+        return
+    }
+
+    if (showReview) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            ReviewScreen(
+                onBack = { showReview = false },
+                onOpenDistract = {
+                    showReview = false
+                    showDistract = true
+                },
+            )
         }
         return
     }
@@ -140,7 +154,11 @@ fun AppRoot() {
                 Tab.Schedule -> ScheduleScreen(cfg)
                 Tab.Rules -> RulesScreen(cfg)
                 Tab.Stats -> StatsScreen(cfg)
-                Tab.Settings -> SettingsScreen(cfg, onOpenDistract = { showDistract = true })
+                Tab.Settings -> SettingsScreen(
+                    cfg,
+                    onOpenDistract = { showDistract = true },
+                    onOpenReview = { showReview = true },
+                )
             }
         }
     }

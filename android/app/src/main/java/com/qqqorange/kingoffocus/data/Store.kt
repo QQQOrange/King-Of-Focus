@@ -42,6 +42,7 @@ object Store {
         GoalStore.init(ctx.applicationContext)
         LedgerStore.init(ctx.applicationContext)
         StakeStore.init(ctx.applicationContext)
+        ReviewStore.init(ctx.applicationContext)
         // 权限状态机要把"首次拿到"记下来（用来区分"从没给过"和"被回收"）
         com.qqqorange.kingoffocus.core.UsageAccess.bind { block -> update(block) }
     }

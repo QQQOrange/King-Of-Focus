@@ -78,7 +78,11 @@ import com.qqqorange.kingoffocus.ui.rememberNotificationRequester
  * （云同步、备份、更新），最后是危险操作（重置）。
  */
 @Composable
-fun SettingsScreen(cfg: Config, onOpenDistract: () -> Unit = {}) {
+fun SettingsScreen(
+    cfg: Config,
+    onOpenDistract: () -> Unit = {},
+    onOpenReview: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     var confirmReset by remember { mutableStateOf(false) }
 
@@ -479,6 +483,25 @@ fun SettingsScreen(cfg: Config, onOpenDistract: () -> Unit = {}) {
                 cfg.distract.enabled,
             ) { v ->
                 Store.update { it.copy(distract = it.distract.copy(enabled = v)) }
+            }
+        }
+
+        // ---------------- 每周复盘 ----------------
+        SectionTitle("每周复盘")
+        Panel {
+            Row(
+                Modifier.fillMaxWidth().clickable { onOpenReview() }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("打开本周复盘", fontSize = 14.sp)
+                    Text(
+                        "五个问题 + 这一周的数字：自律时长 / 被打断 / 目标完成 / 分心事件 / 质押",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("›", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 

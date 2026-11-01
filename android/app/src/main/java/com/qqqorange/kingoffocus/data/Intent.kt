@@ -36,6 +36,15 @@ data class GoalDoc(
     val goals: List<Goal> = emptyList(),
 )
 
+/** 一段日子里的目标完成情况 */
+data class GoalStat(
+    val total: Int = 0,
+    val done: Int = 0,
+    val partial: Int = 0,
+    val missed: Int = 0,
+    val none: Int = 0,
+)
+
 object GoalStore {
     /** 三档判定 + 空串（撤销）；写别的会让完成率变成假的 */
     private val STATE_OK = setOf("", "done", "partial", "missed")
@@ -88,6 +97,27 @@ object GoalStore {
         save()
         return true
     }
+
+    /** 目标在某段日子里的完成情况：(总, 做完, 一半, 没做成, 没答)，只算写了目标的段 */
+    @Synchronized
+    fun stats(from: String, to: String): GoalStat {
+        val goals = list.filter { it.day >= from && it.day <= to && it.text.isNotBlank() }
+        return GoalStat(
+            total = goals.size,
+            done = goals.count { it.state == "done" },
+            partial = goals.count { it.state == "partial" },
+            missed = goals.count { it.state == "missed" },
+            none = goals.count { it.state !in STATES },
+        )
+    }
+
+    /** 写了目标的那些天（周复盘要回答"有几天写了"） */
+    @Synchronized
+    fun daysWithGoal(from: String, to: String): Int =
+        list.filter { it.day >= from && it.day <= to && it.text.isNotBlank() }
+            .map { it.day }
+            .distinct()
+            .size
 
     /** 写/清空某一段的目标；返回写完之后的文本 */
     @Synchronized
