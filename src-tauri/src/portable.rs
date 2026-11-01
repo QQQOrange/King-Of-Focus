@@ -12,24 +12,38 @@
 //!   "format": "kof-portable",
 //!   "schema": 1,                 // 结构版本；将来加字段只做加法
 //!   "createdAt": 1793500000,     // 备份生成时间（unix 秒）
-//!   "source": "desktop",         // desktop | android
+//!   "source": "desktop",         // desktop | android（**只是出处标签，不参与读写**）
 //!   "device": "DESKTOP-XXXX",
-//!   "appVersion": "0.1.51",
+//!   "appVersion": "0.1.70",
 //!   "rules":   [ { id, name, enabled, mode, apps[], sites[], ... } ],
 //!   "clock":   { enabled, applyRules, granularity, active, profiles[{ id, name, days[7][24] }] },
-//!   "points":  { balance, totalEarned, unlockUntil, ... },
-//!   "settings":{ lang, theme, notify{...} }
+//!   "points":  { balance, totalEarned, unlockUntil, sleepUnlockUntil },
+//!   "settings":{ lang, theme, notify{ enabled, workBefore, breakBefore, breakNotify } },
+//!   "stats":   { schema, source, device, at, days[{ day, total, on, top[] }] }
 //! }
 //! ```
 //!
-//! 三条硬约束（两端实现必须一致，否则"互通"就是一句空话）：
-//! 1. **只读自己认识的字段**：多出来的键一律忽略，缺的键一律用默认值。
-//!    这样任何一端升级加了字段，另一端不会因此报错。
-//! 2. **覆盖 = 文档里的都换掉，文档里没有的不动**。平台专属设置
+//! 四条硬约束（两端实现必须一致，否则"互通"就是一句空话）：
+//! 1. **只读自己认识的字段**：多出来的键一律忽略，缺的键一律按"没意见"处理。
+//!    这样任何一端升级加了字段，另一端不会因此报错，也不会把对方的设置改坏。
+//! 2. **覆盖 = 文档里有的换掉，文档里没有的不动**。平台专属设置
 //!    （桌面的遮罩 / HUD / 端口、手机的拦截页文案）不在文档里，所以
 //!    不会被另一端的备份擦掉。
 //! 3. **合并只做加法**：绝不改写本机已有的规则与时段，只补缺的；
 //!    同 id 或同内容视为"已存在"跳过，同名不同内容才改名并列并计入冲突。
+//! 4. **不认来源**：`source` / `device` 只用于界面显示"这份来自哪台机器"，
+//!    读写路径上一个分支都不许看它。手机导出的文件在电脑上恢复、电脑导出的
+//!    文件在手机上恢复，走的是同一条 `parse → to_config / merge` 流水线。
+//!
+//! 字段为什么只有这些：文档只放**两端都说得通**的概念。桌面专属的
+//! `Settings.mask / hud / port`、手机的拦截页文案 / 通知细项都不进来；
+//! 反过来，`points` 里的"今日解锁次数"这种本机记账也不进来——它不是配置，
+//! 是"这台机器今天花了几次"，跟着备份跑到另一台机器上只会算错。
+//!
+//! 结构一致性由测试钉死：`tools/fixtures/portable-canon.json` 是两端共用的
+//! 参考文档，`portable-shape.txt` 是它的**字段签名**（每个键的路径与类型）。
+//! 桌面与手机各有一条测试拿自己导出的文档去比这份签名——任何一端私改字段名、
+//! 悄悄少写一个键，自己那条测试立刻红。见文件末尾 `export_shape_matches_reference`。
 
 use crate::model::*;
 use serde::{Deserialize, Serialize};
@@ -48,24 +62,70 @@ pub const MAX_RULES: usize = 200;
 ///
 /// 只放"换个设备也说得通"的项：界面语言、配色、提醒。像窗口位置、进程名、
 /// 端口这种出去了就没意义的东西不进来。
+///
+/// `lang` / `theme` 用**空串表示"这台设备没有这个概念"**（手机端没有语言切换）。
+/// 空串不是"恢复成默认值"，读的时候当没写，本机保持原样——否则一份手机备份
+/// 就能把桌面用户特意调好的英文界面 + 深色配色一键改回去。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PtSettings {
-    /// zh-CN | en
+    /// zh-CN | en | ""（不知道，别改）
     pub lang: String,
-    /// system | dark | light
+    /// system | dark | light | ""（不知道，别改）
     pub theme: String,
-    pub notify: NotifyCfg,
+    /// 缺省 = 本机不动
+    pub notify: Option<PtNotify>,
 }
 
 impl Default for PtSettings {
     fn default() -> Self {
+        // 默认是"没意见"，不是某个具体值：文档里缺这段时，本机的语言/配色不许被改。
+        // 真正导出时 `from_config` 会填上本机的实际值。
         PtSettings {
-            lang: "zh-CN".into(),
-            theme: "system".into(),
-            notify: NotifyCfg::default(),
+            lang: String::new(),
+            theme: String::new(),
+            notify: None,
         }
     }
+}
+
+/// 提醒设置里**两端都有**的四项。
+///
+/// 桌面的 `focusWindow`（提醒时把窗口拉到前台）不进文档：手机端没有"主窗口"，
+/// 写进去只会让另一端以为它是共享字段，一恢复就把本机的勾选改掉。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PtNotify {
+    pub enabled: bool,
+    pub work_before: u32,
+    pub break_before: u32,
+    pub break_notify: bool,
+}
+
+impl Default for PtNotify {
+    fn default() -> Self {
+        PtNotify {
+            enabled: true,
+            work_before: 5,
+            break_before: 2,
+            break_notify: true,
+        }
+    }
+}
+
+/// 积分账户里**两端都有**的四项。
+///
+/// `unlockCountToday` / `day` 是本机记账（"今天花了几次积分解锁"），
+/// 跟着备份跑到另一台设备上毫无意义，还会被当成"今天已经用过了"。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PtPoints {
+    pub balance: i64,
+    pub total_earned: i64,
+    /// 用积分解锁「自律固化」到什么时候（unix 秒）
+    pub unlock_until: i64,
+    /// 用积分解锁「睡眠时段」到什么时候（两端都有这个概念）
+    pub sleep_unlock_until: i64,
 }
 
 /// 一份跨设备备份文档
@@ -82,7 +142,7 @@ pub struct Doc {
     pub app_version: String,
     pub rules: Vec<Rule>,
     pub clock: ClockCfg,
-    pub points: Points,
+    pub points: PtPoints,
     pub settings: PtSettings,
     /// **另一台设备的统计摘要**（转义：不是本机的原始统计）。
     ///
@@ -104,7 +164,7 @@ impl Default for Doc {
             app_version: String::new(),
             rules: Vec::new(),
             clock: ClockCfg::default(),
-            points: Points::default(),
+            points: PtPoints::default(),
             settings: PtSettings::default(),
             stats: None,
         }
@@ -132,11 +192,21 @@ impl Doc {
             app_version: crate::version::VERSION.into(),
             rules: c.rules.clone(),
             clock: c.settings.focus_clock.clone(),
-            points: c.points.clone(),
+            points: PtPoints {
+                balance: c.points.balance,
+                total_earned: c.points.total_earned,
+                unlock_until: c.points.unlock_until,
+                sleep_unlock_until: c.points.sleep_unlock_until,
+            },
             settings: PtSettings {
                 lang: c.settings.lang.clone(),
                 theme: c.settings.theme.clone(),
-                notify: c.settings.notify.clone(),
+                notify: Some(PtNotify {
+                    enabled: c.settings.notify.enabled,
+                    work_before: c.settings.notify.work_before,
+                    break_before: c.settings.notify.break_before,
+                    break_notify: c.settings.notify.break_notify,
+                }),
             },
             stats: Some(PeerStats {
                 schema: 1,
@@ -182,23 +252,41 @@ impl Doc {
         serde_json::to_string_pretty(&me).map_err(|e| e.to_string())
     }
 
+    /// 与 `render` 同源，但要给"形状比对"用：同一份文档的 `Value` 形态
+    pub fn to_value(&self) -> Result<Value, String> {
+        let mut me = self.clone();
+        me.kof = KOF_MARK.into();
+        me.format = FORMAT.into();
+        me.schema = SCHEMA;
+        serde_json::to_value(&me).map_err(|e| e.to_string())
+    }
+
     /// **覆盖模式**：文档里有的统统换掉，文档里没有的本机设置原样保留。
     pub fn to_config(&self, base: &Config) -> Config {
         let stats = self.adopt_stats(base);
         let mut out = base.clone();
         out.rules = normalize_rules(&self.rules);
         out.settings.focus_clock = self.clock.clone();
-        out.points = self.points.clone();
+        // 积分：只搬四个共享项。「今天用了几次」是本机记账，恢复备份不该把它清零
+        out.points.balance = self.points.balance;
+        out.points.total_earned = self.points.total_earned;
+        out.points.unlock_until = self.points.unlock_until;
+        out.points.sleep_unlock_until = self.points.sleep_unlock_until;
+        // 空串 = 这台设备没有这个概念（手机端没有语言/配色切换），保持本机原样。
+        // 不这么写的话，一份手机备份就能把桌面调好的英文界面改回中文。
         if matches!(self.settings.lang.as_str(), "zh-CN" | "en") {
             out.settings.lang = self.settings.lang.clone();
         }
         if matches!(self.settings.theme.as_str(), "system" | "dark" | "light") {
             out.settings.theme = self.settings.theme.clone();
         }
-        // 提醒：只搬共用的这几项，"提醒时把窗口拉到前台"是桌面专属
-        let focus_window = out.settings.notify.focus_window;
-        out.settings.notify = self.settings.notify.clone();
-        out.settings.notify.focus_window = focus_window;
+        // 提醒：只搬共用的四项，"提醒时把窗口拉到前台"是桌面专属
+        if let Some(n) = &self.settings.notify {
+            out.settings.notify.enabled = n.enabled;
+            out.settings.notify.work_before = n.work_before;
+            out.settings.notify.break_before = n.break_before;
+            out.settings.notify.break_notify = n.break_notify;
+        }
         crate::cfg::sanitize(&mut out);
         if let Some(st) = stats {
             out.settings.peer_stats = st;
@@ -327,6 +415,58 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         });
     }
     Err("这不是 King Of Focus 的备份内容".into())
+}
+
+/// 文档的「字段签名」：每个键的路径 + 类型，按路径排序、一行一个。
+///
+/// 为什么需要它：只对比 "能不能读" 是不够的——一端悄悄少写一个键，另一端
+/// 照样能用默认值读出来，于是"两端的备份结构一致"就成了一句自我安慰。
+/// 签名把每个键钉在纸面上：桌面与手机各有一条测试，拿自己导出的文档去比
+/// `tools/fixtures/portable-shape.txt`，少一个键、多一个键、类型变了，立刻红。
+///
+/// 数组统一记成 `path[]`，元素是对象/数组时继续往里走（同一个数组里的
+/// 多个元素取并集），所以签名与"这次数据里有几条"无关。
+pub fn shape(v: &Value) -> String {
+    let mut out = std::collections::BTreeSet::new();
+    walk(v, "", &mut out);
+    out.into_iter().collect::<Vec<_>>().join("\n")
+}
+
+fn walk(v: &Value, path: &str, out: &mut std::collections::BTreeSet<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, x) in m {
+                let p = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                walk(x, &p, out);
+            }
+        }
+        Value::Array(a) => {
+            out.insert(format!("{path}[]"));
+            let p = format!("{path}[]");
+            for x in a {
+                match x {
+                    Value::Object(_) | Value::Array(_) => walk(x, &p, out),
+                    other => {
+                        out.insert(format!("{p}:{}", type_of(other)));
+                    }
+                }
+            }
+        }
+        other => {
+            out.insert(format!("{path}:{}", type_of(other)));
+        }
+    }
+}
+
+fn type_of(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 /// 规则的"内容指纹"：只认 名称 + 模式 + 名单。
@@ -788,5 +928,183 @@ mod tests {
         let out = q.doc.to_config(&Config::default());
         assert_eq!(out.rules.len(), 1);
         assert_eq!(out.rules[0].apps[0].value, "com.example.doomscroll");
+    }
+
+    // ------------------------------------------------------------ 两端同构
+
+    /// 一份"什么都有"的配置：用来生成跨端参考文档（canon）。
+    ///
+    /// 刻意把每个可选分支都填上（多段窗口、方案绑定、网站例外、锁机文案、
+    /// 自动打开、统计摘要），这样导出的文档里每个键都会出现一次，
+    /// `portable-shape.txt` 才是完整的签名，而不是"这次碰巧没写那几个键"。
+    fn rich_config() -> Config {
+        let mut c = Config::default();
+        c.settings.lang = "en".into();
+        c.settings.theme = "dark".into();
+        c.settings.notify.enabled = true;
+        c.settings.notify.work_before = 7;
+        c.settings.notify.break_before = 3;
+        c.settings.notify.break_notify = false;
+        c.settings.notify.focus_window = true;
+        c.points.balance = 120;
+        c.points.total_earned = 300;
+        c.points.unlock_until = 1_793_600_000;
+        c.points.sleep_unlock_until = 1_793_700_000;
+        c.points.unlock_count_today = 2;
+        c.points.day = "2026-11-01".into();
+
+        let mut r1 = rule("r-work", "工作类", &["D:/Apps/code.exe"]);
+        r1.mode = "whitelist".into();
+        r1.apps.push(AppEntry {
+            id: "a2".into(),
+            kind: "pkg".into(),
+            value: "com.tencent.mm".into(),
+            label: "微信".into(),
+        });
+        r1.schedule[0] = vec![Slot { start: 540, end: 720 }];
+        r1.color = "#4dabf7".into();
+        r1.extra_protected = vec!["explorer.exe".into()];
+        r1.brk = BreakCfg { kind: "pomodoro".into(), work_min: 50, break_min: 10 };
+        r1.lock = Lock { kind: "text".into(), until: 0, password: String::new(), chars: 12 };
+        r1.autolaunch = AutoLaunchCfg {
+            enabled: true,
+            items: vec![LaunchItem {
+                id: "l1".into(),
+                kind: "app".into(),
+                target: "D:/Apps/code.exe".into(),
+                args: String::new(),
+                window: "max".into(),
+                browser: String::new(),
+            }],
+        };
+        let mut r2 = rule("r-night", "夜间自律", &[]);
+        r2.sites = vec![SiteEntry {
+            id: "s1".into(),
+            pattern: "*.bilibili.com".into(),
+            label: "B 站".into(),
+        }];
+        r2.exceptions = vec!["*.bilibili.com/learn".into()];
+        c.rules = vec![r1, r2];
+
+        // 两套方案：一套有排班（还含"一小时两段"），一套空着
+        let mut p1 = ClockProfile::default();
+        p1.id = "p-work".into();
+        p1.name = "工作日".into();
+        p1.def_work = 25;
+        p1.def_brk = 5;
+        p1.def_cap = 15;
+        p1.bound = vec!["r-work".into()];
+        for h in 9..12usize {
+            p1.days[0][h] = HourPlan {
+                on: true,
+                work: 25,
+                brk: 5,
+                from: 0,
+                to: 60,
+                seg: "s-morning".into(),
+                wins: vec![],
+            };
+        }
+        p1.days[2][14] = HourPlan {
+            on: true,
+            work: 30,
+            brk: 10,
+            from: 0,
+            to: 60,
+            seg: String::new(),
+            wins: vec![
+                HourWin { from: 0, to: 15, seg: "s-a".into() },
+                HourWin { from: 30, to: 45, seg: "s-b".into() },
+            ],
+        };
+        let mut p2 = ClockProfile::default();
+        p2.id = "p-weekend".into();
+        p2.name = "周末".into();
+        p2.def_work = 45;
+        p2.def_brk = 15;
+        c.settings.focus_clock.enabled = true;
+        c.settings.focus_clock.granularity = 15;
+        c.settings.focus_clock.active = "p-work".into();
+        c.settings.focus_clock.profiles = vec![p1, p2];
+        c
+    }
+
+    fn rich_doc() -> Doc {
+        let mut d = Doc::from_config(&rich_config());
+        d.stats = Some(PeerStats {
+            schema: 1,
+            source: "android".into(),
+            device: "Pixel".into(),
+            at: 1_793_510_000,
+            days: vec![PeerDay {
+                day: "2026-11-01".into(),
+                total: 7200,
+                on: 3600,
+                top: vec![PeerApp { name: "微信".into(), secs: 1800 }],
+            }],
+        });
+        d
+    }
+
+    /// 一次性工具：生成两端共用的参考文档与字段签名。
+    ///
+    /// 跑法：`cargo test --offline __gen_canon_fixture -- --ignored`
+    /// **改了 `Doc` / `Rule` / `ClockCfg` 的字段之后要重跑它**，否则两端那条
+    /// `export_shape_matches_reference` 会红——这正是它存在的意义。
+    #[test]
+    #[ignore]
+    fn __gen_canon_fixture() {
+        let d = rich_doc();
+        let json = d.render().unwrap();
+        std::fs::write("../tools/fixtures/portable-canon.json", &json).unwrap();
+        let shape = shape(&d.to_value().unwrap());
+        std::fs::write("../tools/fixtures/portable-shape.txt", shape + "\n").unwrap();
+    }
+
+    /// 桌面端导出的文档必须与参考签名**逐键一致**。
+    ///
+    /// 手机端 `PortableTest.exportShapeMatchesReference` 比的是同一份文件：
+    /// 两端各自"对着同一把尺子量自己"，传递下去就等于两端互相比对。
+    #[test]
+    fn export_shape_matches_reference() {
+        let want = include_str!("../../tools/fixtures/portable-shape.txt").trim_end();
+        let got = shape(&rich_doc().to_value().unwrap());
+        assert_eq!(got, want, "导出的字段集合变了；改字段就该同步参考样例与两端实现");
+    }
+
+    /// 参考文档本身必须能被解析，并且解析回来的形状不变（读写对称）
+    #[test]
+    fn canon_fixture_roundtrips_to_same_shape() {
+        let text = include_str!("../../tools/fixtures/portable-canon.json");
+        let p = parse(text).expect("参考文档必须合法");
+        let again = p.doc.to_value().unwrap();
+        assert_eq!(shape(&again), shape(&serde_json::from_str::<Value>(text).unwrap()));
+    }
+
+    /// 空串 = "这台设备没有这个概念"：不能把对端的语言/配色改回默认值。
+    ///
+    /// 手机端没有语言切换，导出时写的是 `lang: ""` / `theme: ""`。
+    /// 以前它硬写 `zh-CN` / `system`，于是桌面用户把界面调成英文 + 深色之后，
+    /// 只要恢复一次手机备份就被"一键还原"，用户会以为自己的设置被吃了。
+    #[test]
+    fn empty_lang_and_theme_keep_local_values() {
+        let mut local = Config::default();
+        local.settings.lang = "en".into();
+        local.settings.theme = "dark".into();
+        local.points.unlock_count_today = 3;
+        local.points.day = "2026-11-01".into();
+
+        let mut d = Doc::default();
+        d.settings.lang = String::new();
+        d.settings.theme = String::new();
+        d.settings.notify = None;
+        d.rules = vec![rule("x", "手机规则", &["com.a.b"])];
+
+        let out = d.to_config(&local);
+        assert_eq!(out.settings.lang, "en", "手机没有语言概念，不能改本机的");
+        assert_eq!(out.settings.theme, "dark");
+        assert!(out.settings.notify.enabled, "文档没带提醒设置时本机不动");
+        assert_eq!(out.points.unlock_count_today, 3, "本机记账不跟着备份走");
+        assert_eq!(out.rules.len(), 1, "规则照常覆盖");
     }
 }

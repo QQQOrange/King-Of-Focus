@@ -2,6 +2,8 @@ package com.qqqorange.kingoffocus.data
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -54,11 +56,18 @@ object Portable {
         device: String,
         appVersion: String,
         now: Long = System.currentTimeMillis() / 1000,
+        /**
+         * 统计摘要。默认读本机统计；测试里可以注入固定的一份，
+         * 这样"两端导出的形状是否一致"才能不依赖真实使用数据。
+         */
+        digest: List<PeerDay> = com.qqqorange.kingoffocus.core.PeerDigest.of(),
     ): JsonObject = buildJsonObject {
         put("kof", KOF)
         put("format", FORMAT)
         put("schema", SCHEMA)
         put("createdAt", now)
+        // `source` / `device` 只是"这份来自哪台机器"的标签：读写路径上一处都不许
+        // 拿它做分支，否则就又变成"只有生成备份的设备能读"了。
         put("source", "android")
         put("device", device)
         put("appVersion", appVersion)
@@ -74,7 +83,7 @@ object Portable {
                 put(
                     "days",
                     JsonArray(
-                        com.qqqorange.kingoffocus.core.PeerDigest.of().map { d ->
+                        digest.map { d ->
                             buildJsonObject {
                                 put("day", d.day)
                                 put("total", d.total)
@@ -107,6 +116,11 @@ object Portable {
                 // 手机端的刻度（10/15）原样带出去：桌面端读同一份清单，
                 // 打开网格时用的就是手机这边设的刻度
                 put("granularity", cfg.granularity)
+                // 桌面端的"图上只看这段""整屏铺满"是**纯展示**参数，手机端没有；
+                // 但键必须写（值取桌面端的默认），否则两端的文件在字段上就不一样了。
+                put("viewFrom", 0)
+                put("viewTo", 1440)
+                put("fitAll", true)
                 // 多套方案原样带出去：桌面端 `clock.profiles` 本来就是数组，
                 // 只导当前这一套等于把用户在手机上排的其它方案丢掉。
                 val exportPlans = cfg.plans.ifEmpty {
@@ -153,13 +167,20 @@ object Portable {
                 put("balance", cfg.points)
                 put("totalEarned", cfg.points)
                 put("unlockUntil", cfg.unlockUntil)
+                // 睡眠时段解锁：两端都有这个概念，不写的话"手机恢复桌面备份"
+                // 会顺手把桌面已经买断的睡眠解锁清掉。
+                put("sleepUnlockUntil", cfg.sleepUnlockUntil)
             },
         )
         put(
             "settings",
             buildJsonObject {
-                put("lang", "zh-CN")
-                put("theme", "system")
+                // 空串 = "这台设备没有这个概念"（手机端没有语言/配色切换）。
+                // **不能**写 "zh-CN" / "system"：那不是"没意见"，而是明确要求
+                // 对端改成中文 + 跟随系统，一份手机备份就能把桌面调好的
+                // 英文界面 + 深色配色一键还原。桌面端读到空串会保持原样。
+                put("lang", "")
+                put("theme", "")
                 put(
                     "notify",
                     buildJsonObject {
@@ -175,6 +196,50 @@ object Portable {
 
     /** 文档 → 文本（写盘前的内容） */
     fun render(doc: JsonObject): String = pretty.encodeToString(JsonObject.serializer(), doc)
+
+    /**
+     * 文档的「字段签名」：每个键的路径 + 类型，排序后一行一个。
+     *
+     * 桌面端有一份逐字对应的实现（`portable::shape`），两端拿**同一份**
+     * `tools/fixtures/portable-shape.txt` 当尺子：自己导出的文档必须量出同样的
+     * 签名。少写一个键、多写一个键、把类型改了，都会当场红——
+     * 否则"两端格式一致"只是一句没人验证的口号（少个键照样能用默认值读出来）。
+     *
+     * 数组统一记成 `path[]`，元素是对象/数组时继续往里走（同一数组的多个元素
+     * 取并集），所以签名与"这次数据里有几条"无关。
+     */
+    fun shape(el: JsonElement): String {
+        val out = sortedSetOf<String>()
+        walkShape(el, "", out)
+        return out.joinToString("\n")
+    }
+
+    private fun walkShape(el: JsonElement, path: String, out: MutableSet<String>) {
+        when (el) {
+            is JsonObject -> el.forEach { (k, v) ->
+                walkShape(v, if (path.isEmpty()) k else "$path.$k", out)
+            }
+            is JsonArray -> {
+                out += "$path[]"
+                for (v in el) {
+                    when (v) {
+                        is JsonNull -> out += "$path[]:null"
+                        is JsonObject, is JsonArray -> walkShape(v, "$path[]", out)
+                        is JsonPrimitive -> out += "$path[]:${typeOf(v)}"
+                    }
+                }
+            }
+            JsonNull -> out += "$path:null"
+            is JsonPrimitive -> out += "$path:${typeOf(el)}"
+        }
+    }
+
+    private fun typeOf(p: JsonPrimitive): String = when {
+        p.isString -> "string"
+        p.content == "true" || p.content == "false" -> "bool"
+        p.content == "null" -> "null"
+        else -> "number"
+    }
 
     /**
      * 解析文本：新格式文档、桌面端老格式（整份 Config）都认。
@@ -279,6 +344,10 @@ object Portable {
             peerStats = adoptStats(docStats(doc), base) ?: base.peerStats,
             points = (points?.int("balance", base.points) ?: base.points).coerceAtLeast(0),
             unlockUntil = points?.long("unlockUntil", base.unlockUntil) ?: base.unlockUntil,
+            // 睡眠时段的买断时间也要跟着备份走：不然"手机恢复桌面备份"会把
+            // 桌面已经花积分买断的那一段重新锁上。
+            sleepUnlockUntil = points?.long("sleepUnlockUntil", base.sleepUnlockUntil)
+                ?: base.sleepUnlockUntil,
             notify = if (notify == null) base.notify else NotifyCfg(
                 enabled = notify.bool("enabled", base.notify.enabled),
                 workBefore = notify.int("workBefore", base.notify.workBefore).coerceIn(0, 120),
@@ -487,6 +556,9 @@ object Portable {
         val localPkgs = if (r.mode == "both" && r.packages.isEmpty()) r.deny else r.packages
         val apps = kept + localPkgs.filter { it.isNotBlank() }.distinct().map {
             buildJsonObject {
+                // `id` 必须有：桌面端 `AppEntry` 的字段是 `{id, kind, value, label}`，
+                // 少一个键，两端导出的文件就不再是同一种结构了（前端按 id 定位）。
+                put("id", "")
                 put("kind", "pkg")
                 put("value", it)
                 put("label", "")
@@ -504,6 +576,39 @@ object Portable {
             else -> "whitelist"
         }
         return buildJsonObject {
+            // 先铺一层"桌面端 Rule 的完整形状"的默认值，再叠 carry，最后盖手机端
+            // 能改的几项。顺序不能反：没有 carry 的手机原生规则否则会缺
+            // schedule / lock / color / autolaunch 这些键，导出的文件就和桌面端
+            // 那份"长得不一样"，两端就不再是同一种备份了。
+            put("sites", JsonArray(emptyList()))
+            put("exceptions", JsonArray(emptyList()))
+            put("schedule", JsonArray(List(7) { JsonArray(emptyList()) }))
+            put(
+                "lock",
+                buildJsonObject {
+                    put("kind", "none")
+                    put("until", 0)
+                    put("password", "")
+                    put("chars", 20)
+                },
+            )
+            put("color", "#ff9f43")
+            put("extraProtected", JsonArray(emptyList()))
+            put(
+                "brk",
+                buildJsonObject {
+                    put("kind", "none")
+                    put("workMin", 25)
+                    put("breakMin", 5)
+                },
+            )
+            put(
+                "autolaunch",
+                buildJsonObject {
+                    put("enabled", false)
+                    put("items", JsonArray(emptyList()))
+                },
+            )
             base.forEach { (k, v) -> if (k !in OVERLAY_KEYS) put(k, v) }
             put("id", r.id)
             put("name", r.name)

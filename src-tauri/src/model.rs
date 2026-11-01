@@ -483,7 +483,10 @@ pub struct ClockProfile {
     /// 上限小于单次休息时，每次休息都被截到这个上限。
     ///
     /// 判定在 `clock::phase_at`，与手机端 `ScheduleEngine.phase` 是同一份算法。
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    ///
+    /// **不省略 0**：跨设备文档要与手机端逐字段对齐（`portable::shape` 拿它当签名），
+    /// 省略会让"这里没有上限"和"这个键不存在"长得不一样，另一端就分不清了。
+    #[serde(default)]
     pub def_cap: u32,
     /// 这套时段生效时，启用**哪些**自律规则（`Rule::id` 列表）。
     ///

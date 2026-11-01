@@ -448,7 +448,8 @@
     '邮箱 / 用户名': 'Email / user',
     '密码 / 应用密码': 'Password / app password',
     '备份密码': 'Backup password',
-    '留空 = 用本机 DPAPI 加密': 'Empty = encrypt with local DPAPI',
+    '留空 = 明文备份（两端都能读）': 'Empty = plaintext backup (readable on both platforms)',
+    '已改为明文备份：两端都能读，但请妥善保管': 'Switched to plaintext backup: readable anywhere, but keep it safe.',
     '本地备份': 'Local backup',
     '启动时自动备份': 'Auto backup on launch',
     '自动同步': 'Auto sync',
@@ -1442,10 +1443,17 @@
     '， 这里只决定"自律时间里不能打开什么"。':
       '; this only decides what cannot open during hours.',
     '，其余时间一律静默。': '; silent otherwise.',
-    '，写盘前加密（设了密码用 AES-256-GCM， 没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。':
-      ', encrypted before writing (AES-256-GCM with a password, DPAPI without). Only the latest 10 within 7 days are kept.',
-    '，写盘前就加密：设了密码用 AES-256-GCM（可跨机恢复）， 没设密码用本机 Windows DPAPI。只保留最近 10 份、且 7 天内的。':
-      ', encrypted before writing: AES-256-GCM with a password (restorable elsewhere) or Windows DPAPI without. Only the latest 10 within 7 days are kept.',
+    '，每一份都是跨设备文件。': ', and every one of them is a cross-device file.',
+    '设了备份密码就是 AES-256-GCM 密文（电脑、手机都能打开）；没设就是明文（生成时会提醒）。':
+      'With a backup password it is AES-256-GCM ciphertext (opens on PC and phone alike); without one it is plaintext (we warn you when creating it).',
+    '只保留最近 10 份、7 天内的。同一份文件拿到哪台设备都能恢复，没有「只认本机」那一档。':
+      'Only the latest 10 within 7 days are kept. The same file restores on any device — there is no "this-device-only" tier.',
+    '设了密码用 AES-256-GCM（两端都能开），没设密码就是明文 JSON（生成时会提醒）。':
+      'AES-256-GCM when a password is set (opens on either platform), plaintext JSON otherwise (we warn you).',
+    '只保留最近 10 份、7 天内的，超出自动删。':
+      'Only the latest 10 within 7 days are kept; anything older is deleted.',
+    '· 两端导出的是同一种文件：同样的字段、同样的加密信封，不区分来源设备。':
+      '· Both platforms export the very same file: same fields, same encryption envelope, no source-device distinction.',
     '，只留它可见、其他全压暗。 切换窗口时洞口平滑移过去，拖动 / 缩放时 1:1 完全跟手。':
       ', leaving it visible and dimming the rest. The hole follows switches and tracks drags 1:1.',
     '，可在设置里调整。报告可以随时点开回看，也可以手动删除。':

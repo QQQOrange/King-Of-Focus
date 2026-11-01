@@ -3,6 +3,8 @@ package com.qqqorange.kingoffocus
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.HourPlan
 import com.qqqorange.kingoffocus.data.HourWin
+import com.qqqorange.kingoffocus.data.PeerApp
+import com.qqqorange.kingoffocus.data.PeerDay
 import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Portable
 import com.qqqorange.kingoffocus.data.Rule
@@ -424,5 +426,56 @@ class PortableTest {
             back.days[0][9].seg,
         )
         assertEquals(listOf("r1"), back.plans.first { it.id == "p-a" }.bound)
+    }
+
+    /**
+     * **结构一致性**：手机端导出的文档必须和桌面端导出的逐键一致。
+     *
+     * 尺子是 `tools/fixtures/portable-shape.txt`（桌面端 `__gen_canon_fixture` 生成，
+     * 桌面端 `export_shape_matches_reference` 比的也是这一份）。
+     *
+     * 做法：读桌面端的参考文档 → 落到手机端配置 → 再导出 → 量签名。
+     * 一来一回还能量出同样的签名，才说明手机端"完整表达了那份文档"，
+     * 而不是读的时候悄悄丢几个键、写的时候再用默认值补上——
+     * 那种情况下文件看着能用，实际已经悄悄改掉对端的设置。
+     */
+    @Test
+    fun exportShapeMatchesReference() {
+        val doc = Portable.parse(fixture("portable-canon.json")).doc
+        val cfg = Portable.overwrite(doc, blank())
+        // 统计摘要注入固定值：形状与"这台机器今天有没有数据"无关
+        val digest = listOf(
+            PeerDay(
+                day = "2026-11-01",
+                total = 7200,
+                on = 3600,
+                top = listOf(PeerApp("微信", 1800)),
+            ),
+        )
+        val out = Portable.toDoc(cfg, "Pixel", "0.4.6", 1_793_510_000, digest)
+        assertEquals(
+            "导出的字段集合和桌面端不一致；改字段就该同步参考样例与两端实现",
+            fixture("portable-shape.txt").trim(),
+            Portable.shape(out),
+        )
+    }
+
+    /**
+     * 手机端没有语言/配色切换，导出时写空串。
+     *
+     * 桌面端读到空串会**保持本机原样**。以前这里硬写 `zh-CN` / `system`，
+     * 一份手机备份就能把桌面调好的英文界面 + 深色配色一键还原。
+     */
+    @Test
+    fun langAndThemeAreLeftEmptyOnPhone() {
+        val doc = Portable.toDoc(blank(), "Pixel", "0.4.6", 1_793_510_000, emptyList())
+        val st = doc["settings"]!!.jsonObject
+        assertEquals("", st["lang"]!!.jsonPrimitive.content)
+        assertEquals("", st["theme"]!!.jsonPrimitive.content)
+        // 提醒是两端共有项，照常写
+        assertEquals(
+            setOf("enabled", "workBefore", "breakBefore", "breakNotify"),
+            st["notify"]!!.jsonObject.keys,
+        )
     }
 }
