@@ -123,6 +123,15 @@ const STATE = {
     crx: 'D:\\software\\myself\\KingOfFocus-Extension.crx', exeDir: 'D:\\software\\myself',
     source: '程序同级 extension' },
   pid: 1, points: { balance: 12, earned: 40, unlockUntil: 0, count: 0, price: 15 },
+  // 总览「今天三件套」读的那一小包：给一段"已结束、有目标、还没答"的，
+  // 才能验"做到了吗"那三档真的会出现在页面上。
+  brief: {
+    today: '2026-10-27', inSegment: false, segLabel: '', segLeft: 0, goal: '',
+    blocks: 0, nextInSecs: 0, nextLabel: '', nextAt: '', planMin: 0, onMin: 0,
+    points: 12, goalState: '',
+    // 目标文案用英文：这是**用户数据**，英文界面残留中文的断言不该被它触发
+    review: { seg: 1793500000, end: 1793503600, goal: 'finish the login page', state: '' },
+  },
   version: '0.1.0', buildDate: '2026-10-28', developer: 'QQQOrange',
   repoUrl: 'https://github.com/QQQOrange/King-Of-Focus', tokenDocUrl: '',
   appName: 'King Of Focus', hasToken: false, configPath: 'D:\\x\\config.json',
@@ -274,6 +283,8 @@ window.__TAURI__ = {
         bestDay: '2026-10-21', bestOn: 7200,
         diversions: [{ label: 'Steam', n: 4, kind: 'app' }],
         diverTotal: 6, goalDays: 5,
+        goalTotal: 6, goalDone: 3, goalPartial: 1, goalMissed: 1, goalNone: 1,
+
         staked: 3, stakeClean: 2, stakeVoid: 1,
         distractTotal: 7, distractDone: 4,
         answers: ['', '', '', '', ''], qCount: 5,
@@ -291,6 +302,11 @@ window.__TAURI__ = {
     if (cmd === 'onboard_finish') { window.__onbFinish = args; return { onboarded: true }; }
     if (cmd === 'onboard_try') { window.__onbTry = args; return { until: 1793500000, minutes: args.minutes || 25 }; }
     if (cmd === 'onboard_skip') { window.__onbSkip = 1; return null; }
+    if (cmd === 'focus_goal_state') {
+      (window.__goalState = window.__goalState || []).push(args);
+      if (STATE.brief && STATE.brief.review) STATE.brief.review.state = args.state || '';
+      return { seg: args.seg, state: args.state };
+    }
     return null;
   } },
   event: { listen: async () => () => {} },
@@ -4121,6 +4137,22 @@ window.__itest = async () => {
     out.push(['三件套里有主按钮',
       !!document.querySelector('.today-bar [data-act="today-mask"], .today-bar [data-act="today-clock"]'), true]);
     out.push(['有今日进度条', !!document.querySelector('.today-bar .tb-track i'), true]);
+    // 上一段有目标 → 三档判定出现在总览上（A5：目标有了"做完没有"）
+    out.push(['有"做到了吗"三档', document.querySelectorAll('.rv-btn').length, 3]);
+    {
+      const done = document.querySelector('.rv-btn[data-st="done"]');
+      out.push(['三档带的是那一段的编号', done ? done.dataset.seg : '', '1793500000']);
+      done.click();
+      await wait(280);
+      const calls = window.__goalState || [];
+      out.push(['点"做完了"会记到后端', (calls[0] || {}).state, 'done']);
+      out.push(['点完变成选中态', document.querySelectorAll('.rv-btn.on').length, 1]);
+      // 再点同一个 = 撤销（填错 / 想重新判断）
+      document.querySelector('.rv-btn.on').click();
+      await wait(280);
+      out.push(['再点一次是撤销', (window.__goalState[1] || {}).state, '']);
+    }
+
     // 空闲时按钮是"去排时段"，点它会切到时段页
     const btn = document.querySelector('.today-bar [data-act="today-clock"]');
     if (btn) {

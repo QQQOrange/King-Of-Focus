@@ -1986,6 +1986,13 @@ pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Va
     Ok(json!(g))
 }
 
+/// 给某一段的目标打勾（done / partial / missed；空串 = 撤销）
+#[tauri::command]
+pub fn focus_goal_state(seg: i64, state: String) -> Result<Value, String> {
+    let g = crate::focus::set_state(seg, &state)?;
+    Ok(json!(g))
+}
+
 /// 某天的段目标（按段起点升序），给统计/复盘用
 #[tauri::command]
 pub fn focus_goal_day(day: Option<String>) -> Value {

@@ -491,6 +491,7 @@ fn main() {
             cmds::distract_save,
             cmds::distract_auto_mask,
             cmds::focus_goal_set,
+            cmds::focus_goal_state,
             cmds::focus_goal_day,
             cmds::focus_snapshot,
             cmds::ledger_today,

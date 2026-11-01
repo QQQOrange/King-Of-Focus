@@ -3047,3 +3047,37 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
   display: flex; align-items: center; gap: 8px;
   padding: 12px 18px 16px;
 }
+
+/* ---------- 上一段：做到了吗 ----------
+ * 三档按钮挤在目标行下面一行。选中的那个变成实心——
+ * 用户需要的是"我答过了"，而不是"我刚才点了一下"。
+ */
+.tb-review {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 7px; flex-wrap: wrap;
+}
+.tb-rv-goal {
+  max-width: 42%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--text-3);
+}
+.rv-btn {
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
+}
+.rv-btn:hover { border-color: var(--gold); color: var(--gold); }
+.rv-btn.on { background: var(--gold); border-color: var(--gold); color: #1a1a1a; font-weight: 600; }
+
+/* 时段分组里的目标判定：小到只够辨认，不与条数抢注意力 */
+.dx-st {
+  font-size: 9.5px; padding: 0 6px; border-radius: var(--r-pill);
+  border: 1px solid var(--line-2); color: var(--text-3);
+}
+.dx-st.done { color: var(--green); border-color: var(--green); }
+.dx-st.missed { color: var(--red); border-color: var(--red); }

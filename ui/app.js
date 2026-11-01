@@ -452,6 +452,18 @@ function viewOverview() {
   const nextAt = br.nextAt || '';
   const nextIn = br.nextInSecs > 0 ? br.nextInSecs : 0;
   const brState = segOn ? (rt.breakOn ? '休息中' : '专注中') : '空闲';
+  // 上一段（已结束、写过目标、6 小时内）：总览上直接问"做到了吗"。
+  // 为什么不等周复盘：记忆是有保质期的，隔一天再问，答案就不准了。
+  const rv = br.review || null;
+  const rvState = rv ? (rv.state || '') : '';
+  const rvRow = rv && (!segOn || Number(rv.seg) !== undefined && rv.seg !== br.seg)
+    ? `<div class="tb-review">
+        <span class="tb-rv-goal" title="${esc(rv.goal)}">${en ? 'Last window' : '上一段'}「${esc(rv.goal)}」</span>
+        ${[['done', en ? 'Done' : '做完了'], ['partial', en ? 'Half' : '做了一半'], ['missed', en ? 'Not done' : '没做成']]
+          .map(([v, t]) => `<button class="rv-btn${rvState === v ? ' on' : ''}" data-act="goal-state" data-seg="${rv.seg}" data-st="${v}"${rvState === v ? ' data-on="1"' : ''}>${t}</button>`)
+          .join('')}
+      </div>`
+    : '';
   const brLine = segOn
     ? `<span class="tb-left">${br.segLabel ? esc(br.segLabel) + ' · ' : ''}还剩 ${fmtDurShort(segLeft)}</span>`
     : nextAt
@@ -471,6 +483,7 @@ function viewOverview() {
       }">${goal ? esc(goal) : (segOn
         ? (en ? 'No goal yet — click that line on the HUD' : '还没写这一段的目标（在 HUD 上点一下就能写）')
         : (en ? 'Goals are written on the HUD' : '这一段的目标可以在 HUD 上写'))}</div>
+      ${rvRow}
     </div>
     <div class="tb-p">
       <div class="tb-num">${fmtDurShort(onMin * 60)}<span class="muted"> / ${
@@ -4311,11 +4324,18 @@ function reviewCard() {
       ph: en ? 'e.g. uninstall it / only allow it after 21:00' : '例如：卸载掉 / 只在 21 点后允许',
     },
     {
-      data: en
-        ? `Wrote a goal on <b>${d.goalDays}/7</b> days.`
-        : `有 <b>${d.goalDays}/7</b> 天写了段目标。`,
-      ask: en ? 'On the days without a goal, what were you actually doing?' : '没写目标的那几天，你其实在做什么？',
-      ph: en ? 'e.g. just opening things, no real task' : '例如：只是在随便点，没有真的任务',
+      data: d.goalTotal
+        ? (en
+            ? `Wrote <b>${d.goalTotal}</b> goals: <b>${d.goalDone}</b> done, <b>${d.goalPartial}</b> half, <b>${d.goalMissed}</b> not done, <b>${d.goalNone}</b> unanswered.`
+            : `写了 <b>${d.goalTotal}</b> 个段目标：做完 <b>${d.goalDone}</b>、做了一半 <b>${d.goalPartial}</b>、没做成 <b>${d.goalMissed}</b>、还没答 <b>${d.goalNone}</b>。`)
+        : (en
+            ? 'No goals written this week — the session length was all you measured.'
+            : '这周一个段目标都没写——你量到的只有"坐了多久"。'),
+      ask: d.goalMissed || d.goalNone
+        ? (en ? 'Of the goals you did not finish, were they too big, or was the time wrong?'
+              : '没做成 / 还没答的那几个，是目标定太大了，还是时间选得不对？')
+        : (en ? 'What made the finished ones finishable?' : '做完的那几个，凭什么做得完？'),
+      ph: en ? 'e.g. "写登录页" is doable in 2h, "学完前端" is not' : '例如：「写完登录页」两小时能做完，「学完前端」不能',
     },
     {
       data: en
@@ -6129,7 +6149,11 @@ function viewDistract() {
     ? groups.map((g) => `<div class="dx-group">
           <div class="dx-seg"><b>${esc(segLabel(g.label))}</b>${
             g.goal ? `<span class="dx-goal" title="这一段开始前写的目标">${esc(g.goal)}</span>` : ''
-          }<span class="ln"></span><span>${g.items.length} ${en ? 'items' : '条'}</span></div>
+          }${g.state ? `<span class="dx-st ${esc(g.state)}">${
+            g.state === 'done' ? (en ? 'done' : '做完了')
+            : g.state === 'partial' ? (en ? 'half' : '一半')
+            : (en ? 'not done' : '没做成')
+          }</span>` : ''}<span class="ln"></span><span>${g.items.length} ${en ? 'items' : '条'}</span></div>
           ${g.items.map(dxRow).join('')}
         </div>`).join('')
     : `<div class="empty"><span class="ico">✎</span>这天还没有记录。<br>
@@ -9499,6 +9523,22 @@ document.addEventListener('click', async (e) => {
   }
 
   // ---- 今天三件套 ----
+  if (act === 'goal-state') {
+    const seg = Number(el.dataset.seg) || 0;
+    const now = el.dataset.st || '';
+    // 再点一次同一个 = 撤销（填错、或者想重新判断一次）
+    const state = (Number(el.dataset.on) === 1) ? '' : now;
+    try {
+      await invoke('focus_goal_state', { seg, state });
+      await pull();
+      render();
+      toast(state === 'done' ? '记下了：这一段做完了'
+        : state === 'partial' ? '记下了：做了一半'
+        : state === 'missed' ? '记下了：这一段没做成。下次把目标切小一点。'
+        : '已撤销判定', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+    return;
+  }
   if (act === 'stake') {
     try {
       const r = await invoke('stake_place', { amount: (S.data.stake || {}).stake || 10 });

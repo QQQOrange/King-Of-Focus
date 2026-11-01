@@ -163,7 +163,7 @@ pub fn week(offset: i64) -> Value {
         .collect();
     let diver_total: u32 = crate::ledger::range(&s, &e).iter().map(|h| h.n).sum();
 
-    // 段目标：写了几个
+    // 段目标：写了几个、做完几个
     let mut goal_days = 0;
     let mut cur = start;
     while cur <= end {
@@ -172,6 +172,8 @@ pub fn week(offset: i64) -> Value {
         }
         cur += Duration::days(1);
     }
+    let (goal_total, goal_done, goal_partial, goal_missed, goal_none) =
+        crate::focus::goal_stats(&s, &e);
 
     // 质押：这一周结算了几笔、其中几笔干净跑完、几笔被没收
     let (from_ts, to_ts) = (day_start_ts(start), day_start_ts(end + Duration::days(1)));
@@ -202,6 +204,12 @@ pub fn week(offset: i64) -> Value {
         "diversions": diversions,
         "diverTotal": diver_total,
         "goalDays": goal_days,
+        // 成果账本：不是"坐了多久"，而是"写的目标做完几个"
+        "goalTotal": goal_total,
+        "goalDone": goal_done,
+        "goalPartial": goal_partial,
+        "goalMissed": goal_missed,
+        "goalNone": goal_none,
         "staked": staked,
         "stakeClean": clean,
         "stakeVoid": voided,
@@ -239,6 +247,9 @@ mod tests {
     /// 回答补齐到固定条数：前端少传不会被当成"格式坏了"
     #[test]
     fn answers_are_padded_and_trimmed() {
+        // 这个测试会真的写盘（`path()` 指向用户的数据目录），
+        // 所以先备份、跑完还原：测试不能把人家这周的复盘删掉。
+        let bak = std::fs::read(path()).ok();
         let week = "2026-10-26";
         save_answers(week, vec!["  写登录页  ".into(), "".into()]).unwrap();
         let a = answers_of(week);
@@ -248,7 +259,14 @@ mod tests {
         // 重复保存是覆盖，不是追加
         save_answers(week, vec!["改一条".into()]).unwrap();
         assert_eq!(answers_of(week)[0], "改一条");
-        let _ = std::fs::remove_file(path());
+        match bak {
+            Some(b) => {
+                let _ = std::fs::write(path(), b);
+            }
+            None => {
+                let _ = std::fs::remove_file(path());
+            }
+        }
     }
 
     /// 坏日期要报错，不能悄悄写进一个不存在的周

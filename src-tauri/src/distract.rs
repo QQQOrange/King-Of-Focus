@@ -479,6 +479,8 @@ pub fn view_day(day: &str) -> Value {
             "segStart": k, "label": label, "items": items,
             // 这一段当时写的目标：让"我要做什么 → 结果记了什么"在同一行里对得上
             "goal": if *k > 0 { crate::focus::goal_of(*k) } else { String::new() },
+            // 这一段做完没有：让"我要做什么 → 记了什么 → 做成没有"在同一行对得上
+            "state": if *k > 0 { crate::focus::state_of(*k) } else { String::new() },
         })).collect::<Vec<_>>(),
         "month": month_map(&st, &day[..day.len().min(7)]),
     })

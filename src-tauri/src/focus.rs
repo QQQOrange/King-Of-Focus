@@ -30,6 +30,12 @@ pub struct Goal {
     pub text: String,
     pub at: i64,
     pub day: String,
+    /// 这一段做完没有：""（还没答）/ done / partial / missed
+    ///
+    /// 为什么只要这三档、不做"进度条 + 数量"：那会变成一个小型任务管理器，
+    /// 而这份软件要给的是"这一段有没有真的做出东西"，不是又一个待办清单。
+    /// 「做完这套卷」本来就是二元的；确实只做了一半，用 partial 也够。
+    pub state: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -81,17 +87,20 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
         return Err("一句目标最多 200 个字".into());
     }
     let mut st = load();
+    let prev_state = st.goals.iter().find(|x| x.seg == seg).map(|x| x.state.clone()).unwrap_or_default();
     st.goals.retain(|g| g.seg != seg);
     if t.is_empty() {
         save(&st)?;
         brief_invalidate();
-        return Ok(Goal { seg, text: String::new(), at: 0, day: String::new() });
+        return Ok(Goal { seg, text: String::new(), at: 0, day: String::new(), state: String::new() });
     }
     let g = Goal {
         seg,
         text: t.to_string(),
         at: Local::now().timestamp(),
         day: Local::now().format("%Y-%m-%d").to_string(),
+        // 改文案不清掉已有判定：用户可能只是把"写登录页"改成"写完登录页"
+        state: prev_state,
     };
     st.goals.push(g.clone());
     brief_invalidate();
@@ -117,6 +126,81 @@ pub fn goal_of(seg: i64) -> String {
 /// 当前这一段的目标
 pub fn goal_now(cfg: &Config) -> String {
     seg_now(cfg).map(|(s, _, _)| goal_of(s)).unwrap_or_default()
+}
+
+/// 三档判定里合法的取值（空串 = 还没答，允许写回去表示"撤销"）
+const STATES: [&str; 3] = ["done", "partial", "missed"];
+
+pub fn valid_state(s: &str) -> bool {
+    s.is_empty() || STATES.contains(&s)
+}
+
+/// 给某一段的目标打勾/改判。
+///
+/// 只允许改**有目标**的段：没写目标的段没有"做没做完"可言，
+/// 给它记一个状态只会让完成率变成假的。
+pub fn set_state(seg: i64, state: &str) -> Result<Goal, String> {
+    if seg <= 0 {
+        return Err("这一段的编号不对".into());
+    }
+    if !valid_state(state) {
+        return Err("只能记成 done / partial / missed".into());
+    }
+    let mut st = load();
+    let Some(g) = st.goals.iter_mut().find(|x| x.seg == seg) else {
+        return Err("这一段没有写目标，先写一句再标记".into());
+    };
+    g.state = state.to_string();
+    let out = g.clone();
+    save(&st)?;
+    brief_invalidate();
+    Ok(out)
+}
+
+/// 某一段的判定（没写目标 / 没答 → 空串）
+pub fn state_of(seg: i64) -> String {
+    load()
+        .goals
+        .into_iter()
+        .find(|g| g.seg == seg)
+        .map(|g| g.state)
+        .unwrap_or_default()
+}
+
+/// 目标在 [start, end] 天内的完成情况：(总数, 做完, 部分, 没做成, 没答)
+pub fn goal_stats(start: &str, end: &str) -> (u32, u32, u32, u32, u32) {
+    goal_stats_of(&load().goals, start, end)
+}
+
+/// 同上，但吃一个切片（纯函数，测试用；也避免测试去动真实数据目录）
+pub fn goal_stats_of(all: &[Goal], start: &str, end: &str) -> (u32, u32, u32, u32, u32) {
+    let goals: Vec<&Goal> = all
+        .iter()
+        .filter(|g| g.day.as_str() >= start && g.day.as_str() <= end && !g.text.trim().is_empty())
+        .collect();
+    let mut done = 0;
+    let mut partial = 0;
+    let mut missed = 0;
+    let mut none = 0;
+    for g in &goals {
+        match g.state.as_str() {
+            "done" => done += 1,
+            "partial" => partial += 1,
+            "missed" => missed += 1,
+            _ => none += 1,
+        }
+    }
+    (goals.len() as u32, done, partial, missed, none)
+}
+
+/// 某一段的结束时刻（段早就过去也算得出来——按排班重算，不看"现在在不在里面"）
+pub fn seg_end_of(cfg: &Config, seg: i64) -> i64 {
+    let Some(dt) = chrono::TimeZone::timestamp_opt(&Local, seg, 0).single() else {
+        return seg;
+    };
+    distract::segment_bounds(cfg, dt.naive_local())
+        .map(|(_, e, _)| e)
+        .unwrap_or(seg)
 }
 
 /// 某天的全部目标（按段起点升序）
@@ -438,6 +522,13 @@ fn compute_brief(shared: &Shared) -> serde_json::Value {
         "segLeft": seg_left,
         "goal": seg.as_ref().map(|(s, _, _)| goal_of(*s)).unwrap_or_default(),
         "blocks": blocks_now(&cfg),
+        // 这一段的目标做完没有（""/done/partial/missed）
+        "goalState": seg.as_ref().map(|(s, _, _)| state_of(*s)).unwrap_or_default(),
+        // 上一段（已结束、有目标、6 小时内）：总览据此问"做到了吗"
+        "review": match last_ended_goal(&cfg, now.timestamp()) {
+            Some((s, e, t, st)) => json!({ "seg": s, "end": e, "goal": t, "state": st }),
+            None => serde_json::Value::Null,
+        },
         // 下一个还没开始的段：秒数 + 人话标签 + 起始 HH:MM
         "nextInSecs": next.as_ref().map(|x| x.0).unwrap_or(-1),
         "nextLabel": next.as_ref().map(|x| x.1.clone()).unwrap_or_default(),
@@ -446,6 +537,28 @@ fn compute_brief(shared: &Shared) -> serde_json::Value {
         "onMin": on_min,
         "points": cfg.points.balance,
     })
+}
+
+/// 上一次**已经结束、而且写了目标**的那一段（6 小时内）。
+///
+/// 总览上那句"上一段：写登录页 —— 做到了吗"问的就是它。
+/// 只回溯 6 小时：早上那一段到晚上还追着问，那不叫复盘，叫骚扰。
+fn last_ended_goal(cfg: &Config, now: i64) -> Option<(i64, i64, String, String)> {
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let mut best: Option<(i64, i64, String, String)> = None;
+    for g in goals_of_day(&today) {
+        if g.text.trim().is_empty() {
+            continue;
+        }
+        let end = seg_end_of(cfg, g.seg);
+        if end > now || now - end > 6 * 3600 {
+            continue;
+        }
+        if best.as_ref().map(|(s, _, _, _)| g.seg > *s).unwrap_or(true) {
+            best = Some((g.seg, end, g.text, g.state));
+        }
+    }
+    best
 }
 
 /// 往后找"下一个还没开始的段"：(还有多少秒, 标签, 起始时刻)
@@ -523,6 +636,7 @@ mod tests {
                 text: t.into(),
                 at: 1,
                 day: "2026-11-02".into(),
+                state: String::new(),
             });
         }
         assert_eq!(st.goals.len(), 1);
@@ -544,6 +658,39 @@ mod tests {
         // 结算过的账不再动
         let done = Stake { settled_at: 4000, ..x.clone() };
         assert_eq!(settle_decision(&done, false, 5000, 0), None);
+    }
+
+    /// 判定只认三档 + 空串：写进奇怪的字符串会让完成率变成假的
+    #[test]
+    fn only_three_states_are_valid() {
+        for ok in ["", "done", "partial", "missed"] {
+            assert!(valid_state(ok), "{ok} 应该合法");
+        }
+        for bad in ["ok", "DONE", "false", "1"] {
+            assert!(!valid_state(bad), "{bad} 不该被接受");
+        }
+    }
+
+    /// 完成率只数"写了目标"的段：空目标不该拉低分母
+    #[test]
+    fn goal_stats_count_only_real_goals() {
+        let g = |day: &str, text: &str, state: &str| Goal {
+            seg: 1,
+            text: text.into(),
+            at: 0,
+            day: day.into(),
+            state: state.into(),
+        };
+        let all = vec![
+            g("2026-10-26", "写完登录页", "done"),
+            g("2026-10-26", "", "done"),          // 空目标：不算
+            g("2026-10-27", "背 40 个词", "partial"),
+            g("2026-10-27", "看论文", "missed"),
+            g("2026-10-28", "整理笔记", ""),       // 没答
+            g("2026-11-02", "下周的", "done"),     // 区间外
+        ];
+        let (total, done, part, missed, none) = goal_stats_of(&all, "2026-10-26", "2026-11-01");
+        assert_eq!((total, done, part, missed, none), (4, 1, 1, 1, 1));
     }
 
     /// 段变了，打断计数就该归零（否则 HUD 会一直显示上一段的数字）

@@ -43,6 +43,10 @@
     '按秒': 'per second',
     '口径说明': 'How this is measured',
     '周复盘': 'Weekly review',
+    '个段目标：做完': ' goals: ',
+    '、做了一半': ' done, ',
+    '、没做成': ' half, ',
+    '、还没答': ' not done, ',
     '新手引导': 'Setup wizard',
     '重新走一遍': 'Run it again',
     '三步：什么时候学 / 哪些不该开 / 试 25 分钟。重走一遍不会删掉你已经排好的时段和规则，只会覆盖向导自己写的那一套。':
