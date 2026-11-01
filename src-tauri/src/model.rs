@@ -773,6 +773,66 @@ impl Default for HudCfg {
     }
 }
 
+/// 一天的统计摘要里的一个应用
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PeerApp {
+    pub name: String,
+    pub secs: u64,
+}
+
+/// 一天的统计摘要。
+///
+/// 只有四个数字：用了多少、其中自律时段多少、用得最多的三个应用。
+/// **故意不带逐应用逐小时的原始数据**：两端的存储结构不同（桌面是 acc/hours/spans，
+/// 手机是 24 小时桶），原样互传没人能解析；而摘要两边都能算出来、文件也小
+/// （30 天大约 3 KB），最重要的是——它天然不会重复计数。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PeerDay {
+    pub day: String,
+    pub total: u64,
+    pub on: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top: Vec<PeerApp>,
+}
+
+/// 另一台设备的统计摘要（随备份/云同步带过来）。
+///
+/// 存的是**对方**的数据，不并入本机统计：手机的使用时长和电脑的使用时长是两回事，
+/// 加在一起只会得到一个没意义的数字。界面上单独一行展示。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PeerStats {
+    pub schema: u32,
+    /// android | desktop
+    pub source: String,
+    pub device: String,
+    /// 这份摘要的生成时间（用来判断新旧，避免拿旧摘要覆盖新摘要）
+    pub at: i64,
+    pub days: Vec<PeerDay>,
+}
+
+impl PeerStats {
+    pub fn is_empty(&self) -> bool {
+        self.days.is_empty()
+    }
+
+    /// 最近 [n] 天的合计（界面上"另一台设备最近 7 天"就靠它）
+    pub fn last_days(&self, n: usize) -> (u64, u64) {
+        let mut d: Vec<&PeerDay> = self.days.iter().collect();
+        d.sort_by(|a, b| b.day.cmp(&a.day));
+        let take = d.into_iter().take(n);
+        let mut total = 0u64;
+        let mut on = 0u64;
+        for x in take {
+            total += x.total;
+            on += x.on;
+        }
+        (total, on)
+    }
+}
+
 /// 默认 WebDAV 目录（**手机端必须是同一个字符串**，见 Android `CloudSync.DEFAULT_URL`）。
 ///
 /// 为什么要有默认值：以前这个地址只出现在输入框的 placeholder 里（灰色示例文字），
@@ -1265,6 +1325,9 @@ pub struct Settings {
     pub site_close_browser: bool,
     /// 自律模式生效期间是否禁止打开任务管理器（固化锁定时始终禁止，与本开关无关）
     pub block_taskmgr: bool,
+    /// 另一台设备同步过来的统计摘要（不并入本机统计，单独展示）
+    #[serde(default, skip_serializing_if = "PeerStats::is_empty")]
+    pub peer_stats: PeerStats,
     /// 自律时段内是否允许退出程序。
     ///
     /// 开（默认，保持历史行为）：自律时段内仍可按 Ctrl+Alt+F4 / Alt+F4 退出，
@@ -1338,6 +1401,7 @@ impl Default for Settings {
         Settings {
             poll_ms: 1000,
             dry_run: false,
+            peer_stats: PeerStats::default(),
             guard_browser: true,
             grace_secs: 90,
             browser_guard: BrowserGuardCfg::default(),

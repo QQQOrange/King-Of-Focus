@@ -5,7 +5,7 @@
 //! 双轨：自律模式开启 / 未开启 两套 BTreeMap，完全独立，互不混合。
 
 use crate::cfg;
-use crate::model::Config;
+use crate::model::{Config, PeerApp, PeerDay};
 use crate::proc;
 use crate::shared::Shared;
 use chrono::{Datelike, Duration as CDur, Local, NaiveDate, Timelike};
@@ -162,6 +162,45 @@ struct SchedState {
     monthly: String,
     yearly: String,
     custom: String,
+}
+
+/// 最近 [days] 天的**统计摘要**（给跨设备同步用）。
+///
+/// 只取"有数据的那几天"：一天没开机就不放进列表，否则 30 天里 20 个 0
+/// 会把文件撑大、也会让"另一台设备最近 7 天"算进一堆空白天。
+///
+/// 每天的取法是 `load_day`（和统计页读同一份文件），所以**看到的数就是统计页的数**，
+/// 不存在"同步过去的和本机显示的不一样"。
+pub fn digest(days: u32) -> Vec<PeerDay> {
+    use chrono::Datelike as _;
+    let n = days.clamp(1, 120);
+    let today = chrono::Local::now().date_naive();
+    let mut out: Vec<PeerDay> = Vec::new();
+    for i in 0..n {
+        let d = today - chrono::Duration::days(i as i64);
+        let key = format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day());
+        let f = load_day(&key);
+        let on: u64 = f.on.values().map(|a| a.secs).sum();
+        let off: u64 = f.off.values().map(|a| a.secs).sum();
+        let total = on + off;
+        if total == 0 {
+            continue;
+        }
+        // 前三个应用：两轨合并同名后再排序（统计页饼图也是这个口径）
+        let mut merged: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for (k, a) in f.on.iter().chain(f.off.iter()) {
+            *merged.entry(k.clone()).or_insert(0) += a.secs;
+        }
+        let mut list: Vec<(String, u64)> = merged.into_iter().collect();
+        list.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<PeerApp> = list
+            .into_iter()
+            .take(3)
+            .map(|(name, secs)| PeerApp { name, secs })
+            .collect();
+        out.push(PeerDay { day: key, total, on, top });
+    }
+    out
 }
 
 pub fn stats_dir() -> PathBuf {

@@ -323,6 +323,43 @@ data class SleepCfg(
     val unlockPrice: Int = 1,
 )
 
+/** 统计摘要里的一个应用 */
+@Serializable
+data class PeerApp(val name: String = "", val secs: Long = 0L)
+
+/** 一天的统计摘要（总时长 / 自律时长 / 前三个应用） */
+@Serializable
+data class PeerDay(
+    val day: String = "",
+    val total: Long = 0L,
+    val on: Long = 0L,
+    val top: List<PeerApp> = emptyList(),
+)
+
+/**
+ * **另一台设备**同步过来的统计摘要。
+ *
+ * 为什么不带原始统计：两端的日文件结构不同（桌面是 acc/hours/spans，手机是 24 小时桶），
+ * 原样互传没人读得懂；而摘要两边都能算，且天然不会重复计数。
+ * 本机统计一个字节都不动，只在统计页顶部单独一行展示。
+ */
+@Serializable
+data class PeerStats(
+    val schema: Int = 1,
+    /** android | desktop */
+    val source: String = "",
+    val device: String = "",
+    /** 这份摘要生成的时间（判断新旧用） */
+    val at: Long = 0L,
+    val days: List<PeerDay> = emptyList(),
+)
+
+/** 最近 [n] 天的合计（秒） */
+fun PeerStats.lastDays(n: Int): Pair<Long, Long> {
+    val sorted = days.sortedByDescending { it.day }.take(n)
+    return sorted.sumOf { it.total } to sorted.sumOf { it.on }
+}
+
 /**
  * WebDAV 云同步（与桌面端同一个目录、同一份 config 语义）。
  *
@@ -430,6 +467,8 @@ data class Config(
     val stats: StatsCfg = StatsCfg(),
     /** 睡眠时段用积分解锁到什么时候（unix 秒） */
     val sleepUnlockUntil: Long = 0L,
+    /** 另一台设备同步过来的统计摘要（不并入本机统计，单独展示） */
+    val peerStats: PeerStats = PeerStats(),
     /** 整份配置的最后修改时间（unix 秒）；云同步靠它判断谁新 */
     val updatedAt: Long = 0L,
 )

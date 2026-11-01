@@ -108,8 +108,20 @@ pub fn upload(shared: &Shared) -> Result<String, String> {
     if let Ok(mut w) = shared.cfg.write() {
         *w = live;
     }
+
+    // 顺带上传一份**跨设备备份**（.kofbak）。
+    //
+    // 为什么：手机端只认 .kofbak（它读不懂桌面的 king-of-focus.json），
+    // 所以只在桌面点「立即同步」时，手机上「立即同步」是看不到这份改动的。
+    // 这一步让"桌面点一下同步"和"手机能拿到"变成同一件事。
+    //
+    // 失败不影响主流程：配置已经传上去了，备份只是"顺手多带一份"。
+    let extra = match crate::backup::cloud_upload(shared) {
+        Ok(msg) => format!("；{msg}"),
+        Err(e) => format!("（附带备份未上传：{e}）"),
+    };
     Ok(format!(
-        "已上传到 {}（{} KB）",
+        "已上传到 {}（{} KB）{extra}",
         remote_url(&c.settings.sync),
         body.len() / 1024
     ))

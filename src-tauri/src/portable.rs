@@ -84,6 +84,12 @@ pub struct Doc {
     pub clock: ClockCfg,
     pub points: Points,
     pub settings: PtSettings,
+    /// **另一台设备的统计摘要**（转义：不是本机的原始统计）。
+    ///
+    /// 为什么不带原始数据：两端存储结构不同，原样互传没人读得懂；而摘要
+    /// （每天总时长 / 自律时长 / 前三个应用）两边都能算，且不会重复计数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<PeerStats>,
 }
 
 impl Default for Doc {
@@ -100,6 +106,7 @@ impl Default for Doc {
             clock: ClockCfg::default(),
             points: Points::default(),
             settings: PtSettings::default(),
+            stats: None,
         }
     }
 }
@@ -131,7 +138,36 @@ impl Doc {
                 theme: c.settings.theme.clone(),
                 notify: c.settings.notify.clone(),
             },
+            stats: Some(PeerStats {
+                schema: 1,
+                source: "desktop".into(),
+                device: host_device(),
+                at: chrono::Local::now().timestamp(),
+                // 30 天足够看出"另一台设备最近在干嘛"，再长会让备份文件翻倍
+                days: crate::stats::digest(30),
+            }),
         }
+    }
+
+    /// 把文档里的统计摘要收下（**只在自己那份更新时**）。
+    ///
+    /// 三条规则：
+    /// · 空的不要（对方刚装、还没数据）；
+    /// · 旧的不要（`at` 更小说明是本机已经收过的同一份或更早的版本）；
+    /// · **自己导出的不要**：同一台机器恢复自己的备份时，不该在"另一台设备"里
+    ///   看到自己 —— 那会让人以为还有一台不存在的设备。
+    fn adopt_stats(&self, base: &Config) -> Option<PeerStats> {
+        let s = self.stats.as_ref()?;
+        if s.days.is_empty() {
+            return None;
+        }
+        if s.at <= base.settings.peer_stats.at {
+            return None;
+        }
+        if s.source == "desktop" && s.device == host_device() {
+            return None;
+        }
+        Some(s.clone())
     }
 
     /// 序列化成可读 JSON（写盘 / 加密前的内容）
@@ -148,6 +184,7 @@ impl Doc {
 
     /// **覆盖模式**：文档里有的统统换掉，文档里没有的本机设置原样保留。
     pub fn to_config(&self, base: &Config) -> Config {
+        let stats = self.adopt_stats(base);
         let mut out = base.clone();
         out.rules = normalize_rules(&self.rules);
         out.settings.focus_clock = self.clock.clone();
@@ -163,6 +200,9 @@ impl Doc {
         out.settings.notify = self.settings.notify.clone();
         out.settings.notify.focus_window = focus_window;
         crate::cfg::sanitize(&mut out);
+        if let Some(st) = stats {
+            out.settings.peer_stats = st;
+        }
         out.updated_at = chrono::Local::now().timestamp();
         out
     }
@@ -174,6 +214,7 @@ impl Doc {
     /// 积分：取两边较大值，不累加（否则来回导入几次就能刷分）。
     /// 其余设置：不动。合并的承诺是"只会多，不会变"，动设置就违背了。
     pub fn merge(&self, base: &Config) -> (Config, MergeStats) {
+        let stats = self.adopt_stats(base);
         let mut st = MergeStats::default();
         let mut out = base.clone();
         out.rules = normalize_rules(&out.rules);
@@ -232,6 +273,11 @@ impl Doc {
         out.points.total_earned = out.points.total_earned.max(self.points.total_earned);
 
         crate::cfg::sanitize(&mut out);
+        // 统计摘要也收下：它不属于"规则/时段"，合并模式下收它不违背
+        // "只会多、不会变"的承诺（本机统计一个字节都不动，只是多了一份对端的）
+        if let Some(s2) = stats {
+            out.settings.peer_stats = s2;
+        }
         out.updated_at = chrono::Local::now().timestamp();
         (out, st)
     }
@@ -601,6 +647,125 @@ mod tests {
     }
 
     /// 两端共用的样例文件：这里必须能读，手机端测试读同一份。
+    /// 统计摘要：收下的规则（新、非空、不是自己导出的）
+    #[test]
+    fn stats_are_adopted_only_when_newer_and_not_mine() {
+        let base = Config::default();
+        let mut doc = Doc::default();
+        doc.stats = Some(PeerStats {
+            schema: 1,
+            source: "android".into(),
+            device: "Pixel".into(),
+            at: 100,
+            days: vec![PeerDay {
+                day: "2026-11-01".into(),
+                total: 3600,
+                on: 1800,
+                top: vec![PeerApp {
+                    name: "微信".into(),
+                    secs: 1200,
+                }],
+            }],
+        });
+
+        let out = doc.to_config(&base);
+        assert_eq!(out.settings.peer_stats.days.len(), 1);
+        assert_eq!(out.settings.peer_stats.last_days(7), (3600, 1800));
+
+        // 更旧的不覆盖
+        let mut older = doc.clone();
+        older.stats.as_mut().unwrap().at = 50;
+        let out2 = older.to_config(&out);
+        assert_eq!(out2.settings.peer_stats.at, 100, "旧摘要不该覆盖新摘要");
+
+        // 自己导出的不收（同一台机器恢复自己的备份）
+        let mut mine = doc.clone();
+        mine.stats.as_mut().unwrap().source = "desktop".into();
+        mine.stats.as_mut().unwrap().device = host_device();
+        assert!(
+            mine.to_config(&Config::default()).settings.peer_stats.is_empty(),
+            "自己导出的不该显示成「另一台设备」"
+        );
+
+        // 空的不收
+        let mut empty = doc.clone();
+        empty.stats.as_mut().unwrap().days.clear();
+        assert!(empty
+            .to_config(&Config::default())
+            .settings
+            .peer_stats
+            .is_empty());
+    }
+
+    /// 合并模式也要收摘要，但绝不碰本机的规则与时段
+    #[test]
+    fn merge_takes_stats_without_touching_rules() {
+        let mut doc = Doc::default();
+        doc.stats = Some(PeerStats {
+            schema: 1,
+            source: "android".into(),
+            device: "Pixel".into(),
+            at: 500,
+            days: vec![PeerDay {
+                day: "2026-11-01".into(),
+                total: 60,
+                on: 30,
+                top: vec![],
+            }],
+        });
+        let base = Config::default();
+        let (out, _st) = doc.merge(&base);
+        assert_eq!(out.settings.peer_stats.days.len(), 1);
+        assert_eq!(out.rules.len(), base.rules.len(), "合并不会动本机规则");
+    }
+
+    /// 桌面排好「当天」之后，另一端应用出来必须**一模一样**。
+    ///
+    /// 这份样例是两端共用的（Android 的 `PortableTest` 读同一个文件）：
+    /// 只要有一端把字段名改了，这条就会红——这正是"两端配置不一致"最省事的保险。
+    #[test]
+    fn desktop_day_fixture_applies_clock_rules_and_stats() {
+        let text = include_str!("../../tools/fixtures/portable-desktop-day.json");
+        let p = parse(text).expect("样例必须是合法的新格式");
+        let base = Config::default();
+        let out = p.doc.to_config(&base);
+
+        // —— 时段：周一 09:00–12:00，25/5，每小时休息上限 15 ——
+        let prof = out
+            .settings
+            .focus_clock
+            .profiles
+            .iter()
+            .find(|x| x.id == "p-day")
+            .expect("方案要一起搬过来");
+        assert_eq!(prof.name, "当天");
+        assert_eq!(prof.def_work, 25);
+        assert_eq!(prof.def_brk, 5);
+        assert_eq!(prof.def_cap, 15, "每小时休息上限也要带过来");
+        assert_eq!(prof.bound, vec!["r-work".to_string()], "方案绑定的规则不能丢");
+        for h in 9..12 {
+            assert!(prof.days[0][h].on, "周一 {h} 点应该是选中的");
+            assert_eq!(prof.days[0][h].work, 25);
+            assert_eq!(prof.days[0][h].brk, 5);
+        }
+        assert!(!prof.days[0][8].on, "8 点没选，不能凭空多出来");
+        assert!(!prof.days[0][12].on, "12 点没选，不能凭空多出来");
+        assert!(!prof.days[1][9].on, "周二不该被周一的排班溅到");
+        assert_eq!(out.settings.focus_clock.active, "p-day");
+        assert_eq!(out.settings.focus_clock.granularity, 15);
+
+        // —— 规则：白名单 + 绑定 ——
+        assert_eq!(out.rules.len(), 1);
+        assert_eq!(out.rules[0].name, "工作类");
+        assert_eq!(out.rules[0].mode, "whitelist");
+        assert_eq!(out.rules[0].apps.len(), 1);
+
+        // —— 统计摘要 ——
+        assert_eq!(out.settings.peer_stats.days.len(), 2);
+        assert_eq!(out.settings.peer_stats.last_days(7), (9000, 4500));
+        assert_eq!(out.settings.peer_stats.source, "desktop");
+    }
+
     #[test]
     fn shared_fixture_parses() {
         let text = include_str!("../../tools/fixtures/portable-v1.json");

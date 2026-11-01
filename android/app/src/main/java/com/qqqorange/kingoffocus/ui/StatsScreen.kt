@@ -169,6 +169,11 @@ fun StatsScreen(cfg: Config) {
     ) {
         PageHeader("使用统计", "只算你在用的时间：熄屏、锁屏、停在桌面都不计")
 
+        // —— 另一台设备 ——
+        // 云同步会带过来对方的统计摘要（每天总时长 / 自律时长）。**不并入本机统计**：
+        // 手机和电脑的使用时长是两回事，加在一起只会得到一个没意义的数字。
+        if (cfg.peerStats.days.isNotEmpty()) PeerCard(cfg.peerStats)
+
         // — 权限横幅 —
         //
         // 三种"没有"要三句话（见 UsageAccess 的注释）：从没给过 / 被回收 / 只靠无障碍。
@@ -1296,4 +1301,52 @@ private fun fmtShort(sec: Int): String {
     if (m < 60) return "${m}分"
     val h = m / 60f
     return if (h >= 10) "${h.toInt()}时" else String.format("%.1f时", h)
+}
+
+/**
+ * 统计页顶部那条「另一台设备」。
+ *
+ * 数据来自云同步 / 备份带过来的统计摘要（对方设备算好的小摘要，不是原始日文件）。
+ * 单独一张卡而不是并进上面的数字：并进去就等于把两台设备的时长相加，
+ * 那既不是"我用了多久"，也不是"某台设备用了多久"。
+ */
+@Composable
+private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
+    val last7 = peer.days.sortedByDescending { it.day }.take(7)
+    val total = last7.sumOf { it.total }.toInt()
+    val on = last7.sumOf { it.on }.toInt()
+    val who = if (peer.source == "android") "手机" else "桌面"
+    val pct = if (total > 0) on * 100 / total else 0
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("另一台设备", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                who + if (peer.device.isNotBlank()) "（${peer.device}）" else "",
+                fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "最近 ${last7.size} 天：总 ${com.qqqorange.kingoffocus.core.fmtDuration(total)} · " +
+                "其中自律时段 ${com.qqqorange.kingoffocus.core.fmtDuration(on)}（$pct%）",
+            fontSize = 11.5.sp,
+        )
+        val whenAt = peer.at
+        Text(
+            (if (whenAt > 0) {
+                "数据同步于 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
+                    .format(java.util.Date(whenAt * 1000)) + "；"
+            } else "") + "不计入上面的本机统计",
+            fontSize = 10.sp,
+            lineHeight = 14.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
