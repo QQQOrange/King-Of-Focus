@@ -1412,6 +1412,9 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         // HUD 自己的外观：页面按这个透明度自己调，改完立刻能看到
         "opacity": cfg.settings.hud.opacity_pct(),
         "corner": cfg.settings.hud.corner_norm(),
+        // 「记一笔」按钮：关掉模块就整个不出现（HUD 每秒拉一次，不在这里读盘）
+        "distractOn": cfg.settings.distract.enabled,
+        "distractCorner": cfg.settings.distract.button_corner,
     })
 }
 
@@ -1874,6 +1877,112 @@ pub fn backup_delete(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn backup_open_dir() {
     open_path(crate::backup::dir().to_string_lossy().to_string());
+}
+
+// ---------------- 分心事件 ----------------
+//
+// 一组很短的命令：加一条、看一天、勾一下、删一条。
+// 之所以不合并成一个"万能"命令：HUD 上的快捷记录只调 `distract_add`，
+// 它必须尽可能快（一次调用、一次落盘），不能为了复用去拼参数。
+
+/// 记一条（HUD 按钮 → 输入框 → 回车）
+#[tauri::command]
+pub fn distract_add(shared: State<'_, Arc<Shared>>, text: String) -> Result<Value, String> {
+    let c = shared.config();
+    let item = crate::distract::add(&c, &text)?;
+    let st = crate::distract::load();
+    let pending = st.items.iter().filter(|x| !x.done).count();
+    Ok(json!({ "item": item, "pending": pending }))
+}
+
+/// 某一天的全部事件（含按时段分组）+ 本月日历计数
+#[tauri::command]
+pub fn distract_day(day: Option<String>) -> Value {
+    let d = day.filter(|x| !x.trim().is_empty()).unwrap_or_else(crate::distract::today);
+    if !crate::distract::valid_day(&d) {
+        return json!({ "error": "日期不合法", "day": d, "items": [], "groups": [] });
+    }
+    crate::distract::view_day(&d)
+}
+
+/// 某个月的日历计数（周视图不需要它，月视图才拉）
+#[tauri::command]
+pub fn distract_month(month: String) -> Value {
+    let m = month.trim().to_string();
+    // 只认 yyyy-MM：别让前端传个奇怪的串进来把日历画崩
+    let ok = m.len() == 7
+        && m.as_bytes()[4] == b'-'
+        && m[..4].chars().all(|c| c.is_ascii_digit())
+        && m[5..].chars().all(|c| c.is_ascii_digit());
+    if !ok {
+        return json!({ "error": "月份不合法", "days": {} });
+    }
+    crate::distract::view_month(&m)
+}
+
+#[tauri::command]
+pub fn distract_toggle(id: String, done: bool) -> Result<Value, String> {
+    let hit = crate::distract::set_done(&id, done)?;
+    Ok(json!({ "ok": hit }))
+}
+
+#[tauri::command]
+pub fn distract_delete(id: String) -> Result<Value, String> {
+    let hit = crate::distract::delete(&id)?;
+    Ok(json!({ "ok": hit }))
+}
+
+/// 一键清掉某天已完成的条目
+#[tauri::command]
+pub fn distract_clear_done(day: String) -> Result<Value, String> {
+    if !crate::distract::valid_day(&day) {
+        return Err("日期不合法".into());
+    }
+    let n = crate::distract::clear_done(&day)?;
+    Ok(json!({ "cleared": n }))
+}
+
+/// 「自律时段一开始就盖上遮罩」——这是分心事件模块的前置条件：
+/// 记录按钮在 HUD 上，HUD 只在专注期间出现；而遮罩是"这段属于你"的视觉边界。
+/// 开关本身住在遮罩配置里（`mask.followSchedule`），这里只是给一个近路，
+/// 免得用户为了这个勾选跑一趟「专注遮罩」页。
+#[tauri::command]
+pub fn distract_auto_mask(shared: State<'_, Arc<Shared>>, on: bool) -> Result<(), String> {
+    let mut c = shared.config();
+    c.settings.mask.follow_schedule = on;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    // 立刻按新设置重算一次遮罩状态，不用等下一个轮询拍
+    crate::mask::wake();
+    Ok(())
+}
+
+/// 保存模块设置（间隔 / 上限天数 / 按钮位置 / 总开关）
+#[tauri::command]
+pub fn distract_save(
+    shared: State<'_, Arc<Shared>>,
+    enabled: bool,
+    remind_minutes: i64,
+    remind_max_days: i64,
+    button_corner: String,
+) -> Result<(), String> {
+    let mut c = shared.config();
+    let d = crate::model::DistractCfg {
+        enabled,
+        button_corner,
+        remind_minutes,
+        remind_max_days,
+    };
+    let d = d.sanitized();
+    // 间隔填 0 / 负数在界面上是"不重复提醒"，不是错误输入，所以这里不报错，只夹紧
+    c.settings.distract = d;
+    cfg::save(&c)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = c;
+    }
+    Ok(())
 }
 
 #[tauri::command]

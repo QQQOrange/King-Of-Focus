@@ -353,7 +353,9 @@ impl Default for MaskCfg {
             target_title: String::new(),
             hotkey: "Ctrl+Alt+K".into(),
             hotkey_label: "Ctrl+Alt+K".into(),
-            follow_schedule: false,
+            // 默认开：分心事件模块要求「自律时段一开始就盖上遮罩」，
+            // 否则记录按钮所在的那层根本没出现。老配置里有这个字段，不受影响。
+            follow_schedule: true,
             media_pause: false,
             auto: false,
             auto_apps: vec![],
@@ -906,9 +908,51 @@ impl Default for UpdateCfg {
     }
 }
 
-/// 使用时长统计配置
+/// 分心事件（就地记录 + 事后处理）
+///
+/// 为什么这些参数要放在设置里：每个人的"欠账耐心"完全不同——
+/// 有人希望两小时催一次，有人只想在时段结束时看一眼；间隔太密会变成新的打扰，
+/// 太疏又等于没提醒。所以间隔、上限天数、按钮位置都交给用户。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
+pub struct DistractCfg {
+    /// 模块总开关（关掉后 HUD 上不出现按钮，也不再提醒；已记下的条目仍在）
+    pub enabled: bool,
+    /// HUD "记一笔"按钮的位置：tl / tr / bl / br（默认左上角）
+    pub button_corner: String,
+    /// 未完成项的重复提醒间隔（分钟）。0 = 只在时段结束时提醒一次
+    pub remind_minutes: i64,
+    /// 超过这么多天的未完成项不再提醒（1–90）
+    pub remind_max_days: i64,
+}
+
+impl Default for DistractCfg {
+    fn default() -> Self {
+        DistractCfg {
+            enabled: true,
+            button_corner: "tl".into(),
+            // 两小时：够长，不至于在同一个专注段里反复打扰；够短，当天想得起来
+            remind_minutes: 120,
+            remind_max_days: 7,
+        }
+    }
+}
+
+impl DistractCfg {
+    /// 夹到合法范围：手改配置文件、老版本缺字段都不会让提醒变成"每 5 秒一次"
+    pub fn sanitized(&self) -> DistractCfg {
+        let mut c = self.clone();
+        if !matches!(c.button_corner.as_str(), "tl" | "tr" | "bl" | "br") {
+            c.button_corner = "tl".into();
+        }
+        c.remind_minutes = c.remind_minutes.clamp(0, 60 * 24 * 30);
+        c.remind_max_days = c.remind_max_days.clamp(1, 90);
+        c
+    }
+}
+
+/// 使用时长统计配置
+#[derive(Serialize, Deserialize, Clone, Debug)]#[serde(rename_all = "camelCase", default)]
 pub struct StatsCfg {
     pub enabled: bool,
     /// 无操作超过 60 秒是否仍计入（默认不计）
@@ -1375,6 +1419,8 @@ pub struct Settings {
     pub sleep: SleepCfg,
     /// 时长统计
     pub stats: StatsCfg,
+    /// 分心事件（学习当中冒出来的零散想法）
+    pub distract: DistractCfg,
     /// 云同步
     pub sync: SyncCfg,
     /// 自动更新
@@ -1424,6 +1470,7 @@ impl Default for Settings {
             mask: MaskCfg::default(),
             focus_clock: ClockCfg::default(),
             sweep: SweepCfg::default(),
+            distract: DistractCfg::default(),
             sleep: SleepCfg::default(),
             stats: StatsCfg::default(),
             sync: SyncCfg::default(),

@@ -2797,3 +2797,82 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
   .lk-main { flex-wrap: wrap; row-gap: 6px; }
   .lk-main input[type="text"] { flex: 1 1 100%; }
 }
+
+/* ============================================================
+   分心事件（dx）
+   左：当天清单（按时段分组）；右：日历 + 设置。
+   日历刻意不复用统计页那套（.dc-* 是按"应用色块"设计的），
+   这里的格子只需要"有没有、处理完没"，样式更轻。
+   ============================================================ */
+.dx-wrap { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 1180px) { .dx-wrap { grid-template-columns: 1fr; } }
+
+.dx-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.dx-wd {
+  text-align: center; font-size: 10px; color: var(--text-3);
+  padding-bottom: 2px; letter-spacing: .3px;
+}
+.dx-d {
+  position: relative;
+  height: 34px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  transition: background var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
+}
+.dx-d:hover { background: rgba(127, 127, 127, .1); }
+.dx-d.blank { border: none; background: none; cursor: default; }
+.dx-d.today { color: var(--gold); font-weight: 650; }
+.dx-d.sel { border-color: var(--gold); background: rgba(77, 141, 255, .12); color: var(--text); }
+.dx-d.has { color: var(--text); }
+.dx-d .dx-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--gold); }
+.dx-d.all-done .dx-dot { background: var(--green); }
+.dx-d .dx-n {
+  position: absolute; top: 1px; right: 2px;
+  font-size: 8.5px; color: var(--text-3); font-variant-numeric: tabular-nums;
+}
+
+.dx-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+.dx-wc {
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: 8px 4px; text-align: center; cursor: pointer;
+  transition: background var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
+}
+.dx-wc:hover { background: rgba(127, 127, 127, .1); }
+.dx-wc.sel { border-color: var(--gold); background: rgba(77, 141, 255, .12); }
+.dx-wc .w { font-size: 10px; color: var(--text-3); }
+.dx-wc .d { font-size: 14px; font-weight: 650; margin: 3px 0; font-variant-numeric: tabular-nums; }
+.dx-wc .c { font-size: 9.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+.dx-item {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.dx-item:last-child { border-bottom: none; }
+.dx-item .box {
+  flex: 0 0 15px; width: 15px; height: 15px; margin-top: 1px;
+  border-radius: 5px; border: 1px solid var(--line-2);
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: #fff; transition: background var(--mo-fast) var(--mo-ease);
+}
+.dx-item.done .box { background: var(--green); border-color: var(--green); }
+.dx-item .tx { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.5; word-break: break-word; }
+.dx-item.done .tx { color: var(--text-3); text-decoration: line-through; }
+.dx-item .meta { font-size: 10px; color: var(--text-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.dx-group { margin-top: 12px; }
+.dx-group:first-child { margin-top: 2px; }
+.dx-seg {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10.5px; color: var(--text-2); margin-bottom: 2px;
+}
+.dx-seg b { color: var(--text); font-weight: 600; font-size: 11px; }
+.dx-seg .ln { flex: 1; height: 1px; background: var(--line); }

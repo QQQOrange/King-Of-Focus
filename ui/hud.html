@@ -7,6 +7,17 @@
 </head>
 <body>
 <div class="card" data-tauri-drag-region>
+  <!-- 记一笔：写在遮罩之上、跟着 HUD 走，所以位置天然可拖；
+       具体落在哪个角由设置里的 buttonCorner 决定（默认左上角）。 -->
+  <button class="cap" id="capBtn" title="记一笔（想到什么就先放这儿）" aria-label="记一笔">
+    <span class="cap-ico">＋</span>
+    <span class="cap-n" id="capN"></span>
+  </button>
+  <div class="cap-panel" id="capPanel" hidden>
+    <input id="capInput" type="text" maxlength="500" autocomplete="off"
+      placeholder="刚冒出的想法，回车记下" />
+    <div class="cap-hint" id="capHint">回车记下 · Esc 关闭</div>
+  </div>
   <div class="top">
     <span class="dot"></span>
     <span class="label" id="label">专注中</span>

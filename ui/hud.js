@@ -121,7 +121,90 @@ async function tick() {
     }, 180);
   }
   document.getElementById('from').textContent = s.quoteFrom ? `—— ${s.quoteFrom}` : '';
+
+  // —— 记一笔：模块开着才有按钮，位置跟着设置走 ——
+  const on = !!s.distractOn;
+  document.body.classList.toggle('has-cap', on);
+  if (on) {
+    const corner = ['tl', 'tr', 'bl', 'br'].includes(s.distractCorner) ? s.distractCorner : 'tl';
+    ['tl', 'tr', 'bl', 'br'].forEach((c) => document.body.classList.toggle('cap-' + c, c === corner));
+    // 关掉模块时把已经打开的输入框也收起来，否则会留下一个没有按钮的空面板
+    if (!on && !panel.hidden) closeCapture();
+  } else if (!panel.hidden) {
+    closeCapture();
+  }
 }
+
+/* ---------------- 记一笔（分心事件） ----------------
+ * 交互只求快：点一下 + 输入 + 回车，然后立刻回到刚才的事上。
+ * 记下之后**不**切走、不弹详情、不要求分类——记录本身就是目的。
+ */
+const capBtn = document.getElementById('capBtn');
+const panel = document.getElementById('capPanel');
+const capInput = document.getElementById('capInput');
+const capHint = document.getElementById('capHint');
+let hintTimer = 0;
+let pending = 0;
+
+function setHint(text, cls) {
+  capHint.className = 'cap-hint' + (cls ? ' ' + cls : '');
+  capHint.textContent = text;
+}
+
+function openCapture() {
+  if (!panel.hidden) return;
+  panel.hidden = false;
+  document.body.classList.add('capturing');
+  setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
+  capInput.value = '';
+  capInput.focus();
+}
+
+function closeCapture() {
+  panel.hidden = true;
+  document.body.classList.remove('capturing');
+  capInput.blur();
+}
+
+async function saveCapture() {
+  const text = capInput.value.trim();
+  if (!text) {
+    closeCapture();
+    return;
+  }
+  try {
+    const r = await invoke('distract_add', { text });
+    pending = (r && r.pending) || 0;
+    document.getElementById('capN').textContent = pending > 99 ? '99+' : pending ? String(pending) : '';
+    capInput.value = '';
+    setHint(HUD_LANG === 'en' ? `Saved · ${pending} to process` : `已记下 · 待处理 ${pending} 条`, 'ok');
+    // 2 秒后回到默认提示，输入框留着——用户可能连着想到好几条
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
+    }, 2000);
+  } catch (e) {
+    setHint(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
+}
+
+capBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (panel.hidden) openCapture();
+  else closeCapture();
+});
+
+capInput.addEventListener('keydown', (e) => {
+  // 输入法组合中按回车是在选词，不能当成提交
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    saveCapture();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeCapture();
+  }
+});
 
 // HUD 是个桌面小挂件，右键不该弹出浏览器内核那套页面菜单
 document.addEventListener('contextmenu', (e) => e.preventDefault());

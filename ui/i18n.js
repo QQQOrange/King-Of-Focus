@@ -26,6 +26,50 @@
     '统计报告': 'Reports',
     '历史报告': 'History',
     '云同步': 'Cloud sync',
+    /* —— 分心事件 —— */
+    '分心事件': 'Distractions',
+    '记录时间：': 'Showing: ',
+    '周视图': 'Week',
+    '月视图': 'Month',
+    '月历': 'Month',
+    '这周': 'This week',
+    '今天': 'Today',
+    '当天清单': 'That day',
+    '清掉已完成': 'Clear done',
+    '这天还没有记录。': 'Nothing recorded on this day.',
+    '专注时想到什么，点 HUD 左上角的「＋」记下来就行。':
+      'When a thought pops up, hit "+" in the HUD corner and keep going.',
+    '点任意一天即可查看那天的全部记录；绿点表示当天都处理完了。':
+      'Click any day to see everything recorded then; a green dot means it is all processed.',
+    '记录按钮与提醒': 'Capture button & reminders',
+    '启用分心事件': 'Enable distractions',
+    '关掉后 HUD 上不出现「＋」，也不再提醒（已记的条目都还在）':
+      'Hides the "+" button and stops reminders. Recorded items are kept.',
+    '自律时段开始时自动开遮罩': 'Auto-open the mask when a window starts',
+    '时段一开始就把桌面盖住，「＋」才真的在你的视线里':
+      'Covers the desktop from the first minute so the "+" is actually in sight.',
+    '已开启：时段一开始就自动盖遮罩': 'On: the mask opens automatically when a window starts.',
+    '已关闭自动遮罩': 'Auto mask turned off.',
+    '按钮位置': 'Button corner',
+    '左上角': 'Top left',
+    '右上角': 'Top right',
+    '左下角': 'Bottom left',
+    '右下角': 'Bottom right',
+    '重复提醒': 'Repeat reminder',
+    '分钟一次，0 = 只在时段结束时提醒':
+      'minutes apart; 0 = only once when the window ends',
+    '最多追': 'Chase for',
+    '天，超过就不再提醒（避免陈年旧账天天弹）':
+      'days, then stop nagging (so old items do not haunt you)',
+    '保存设置': 'Save settings',
+    '间隔太密会变成新的打扰，建议 60–180 分钟':
+      'Too frequent becomes its own distraction; 60-180 min works well.',
+    '读取分心事件失败：': 'Failed to load distractions: ',
+    '已保存：HUD 按钮与提醒节奏立即生效':
+      'Saved. The HUD button and reminder rhythm apply immediately.',
+    '分心事件待处理': 'Distractions to process',
+    '这一段结束了': 'This window is over',
+    '删除': 'Delete',
     '设置': 'Settings',
     '帮助': 'Help',
     '使用手册': 'Manual',

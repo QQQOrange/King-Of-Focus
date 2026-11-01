@@ -172,6 +172,9 @@ fn sanitize_autolaunch(a: &mut crate::model::AutoLaunchCfg) {
 
 /// 兜底修正，避免前端传上来畸形数据把引擎搞坏
 pub fn sanitize(c: &mut Config) {
+    // 分心事件：间隔/上限/按钮位置都夹到合法范围。
+    // 手改配置写成 `remindMinutes: 0.001` 时，后台会每 3 秒催一次——比不分心还烦。
+    c.settings.distract = c.settings.distract.sanitized();
     for l in c.rules.iter_mut() {
         sanitize_autolaunch(&mut l.autolaunch);
         if l.schedule.len() != 7 {

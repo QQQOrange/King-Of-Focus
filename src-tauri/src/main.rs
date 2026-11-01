@@ -8,6 +8,7 @@ mod cfg;
 mod clock;
 mod cmds;
 mod discipline;
+mod distract;
 mod extpage;
 mod forcequit;
 mod guard;
@@ -399,6 +400,8 @@ fn main() {
 
             monitor::start(app.handle().clone(), shared.clone());
             crate::sleep::start(app.handle().clone(), shared.clone());
+            // 分心事件：段结束汇总 + 未完成项按间隔提醒
+            crate::distract::start(app.handle().clone(), shared.clone());
             server::start(app.handle().clone(), shared.clone());
 
             // 强制退出监听：Ctrl+Alt+F4（任意前台）/ Alt+F4（本程序在前台）
@@ -475,6 +478,14 @@ fn main() {
             cmds::backup_cloud_list,
             cmds::backup_cloud_upload,
             cmds::backup_cloud_restore,
+            cmds::distract_add,
+            cmds::distract_day,
+            cmds::distract_month,
+            cmds::distract_toggle,
+            cmds::distract_delete,
+            cmds::distract_clear_done,
+            cmds::distract_save,
+            cmds::distract_auto_mask,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,

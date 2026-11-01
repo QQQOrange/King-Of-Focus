@@ -109,3 +109,101 @@ html, body {
 /* 休息中换个色 */
 body.break .dot { background: #35d07f; box-shadow: 0 0 8px rgba(53, 208, 127, .5); }
 body.break .elapsed { color: #35d07f; }
+
+/* ---------- 记一笔（分心事件） ----------
+ * 为什么是一个悬浮小圆钮而不是一行：HUD 窗口只有 272×122 且不可缩放，
+ * 加一行会把报价挤掉。圆钮压在角上、只让相邻那一行让出 22px，
+ * 四个角都能放（设置里的「按钮位置」），默认左上角。
+ */
+.card { position: relative; }
+
+.cap {
+  position: absolute;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hud-line);
+  background: rgba(255, 255, 255, .05);
+  color: var(--hud-gold);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease, transform .12s ease;
+}
+body.has-cap .cap { display: flex; }
+.cap:hover { background: var(--hud-glow); }
+.cap:active { transform: scale(.92); }
+
+body.cap-tl .cap { top: 9px; left: 9px; }
+body.cap-tr .cap { top: 9px; right: 9px; }
+body.cap-bl .cap { bottom: 9px; left: 9px; }
+body.cap-br .cap { bottom: 9px; right: 9px; }
+
+/* 让出位置：只动挨着按钮的那一行，其它行一个像素都不挪 */
+body.cap-tl .top { padding-left: 24px; }
+body.cap-tr .until { padding-right: 24px; }
+body.cap-bl .from { padding-left: 24px; }
+body.cap-br .from { padding-right: 24px; }
+
+.cap-n {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--hud-gold);
+  color: #fff;
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.cap-n:empty { display: none; }
+
+.cap-panel {
+  position: absolute;
+  z-index: 4;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-line);
+  box-shadow: var(--hud-shadow);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+.cap-panel input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--hud-line);
+  background: rgba(127, 127, 127, .08);
+  color: var(--hud-text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  cursor: text;
+  user-select: text;
+}
+.cap-panel input::placeholder { color: var(--hud-dim); }
+.cap-hint {
+  margin-top: 5px;
+  font-size: 9.5px;
+  color: var(--hud-dim);
+  font-variant-numeric: tabular-nums;
+}
+.cap-hint.ok { color: #35d07f; }
+.cap-hint.err { color: #ff6b6b; }
+
+/* 输入时把下半部分让出来，别让报价和输入框叠在一起 */
+body.capturing .divider,
+body.capturing .quote,
+body.capturing .from { display: none; }
