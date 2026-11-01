@@ -3679,6 +3679,35 @@ function calEnsure() {
   calLoad();
 }
 
+/** 统计页顶部那条「另一台设备」。
+ *
+ *  为什么单独一条、不并进本机统计：手机的使用时长和电脑的使用时长是两回事，
+ *  加在一起只会得到一个没意义的数字（还会让人以为"我今天用了 20 小时"）。
+ *  数据来自云同步/备份带过来的统计摘要（见 portable::Doc.stats）。
+ */
+function peerBanner() {
+  const peer = (S.data && S.data.config.settings.peerStats) || null;
+  const days = (peer && peer.days) || [];
+  if (!days.length) return '';
+  const sorted = days.slice().sort((a, b) => String(b.day).localeCompare(String(a.day)));
+  const last7 = sorted.slice(0, 7);
+  const total = last7.reduce((n, x) => n + (+x.total || 0), 0);
+  const on = last7.reduce((n, x) => n + (+x.on || 0), 0);
+  const who = peer.source === 'android' ? '手机' : '桌面';
+  const name = peer.device ? '（' + esc(peer.device) + '）' : '';
+  const when = peer.at ? new Date(peer.at * 1000).toLocaleString() : '';
+  return `<div class="note" style="border-left-color:var(--blue);margin-bottom:14px">
+    <b>另一台设备</b>
+    <span class="hint" style="margin-left:6px">${who}${name}</span>
+    <div style="margin-top:6px;font-size:12px">
+      最近 ${last7.length} 天：总 ${fmtDur(total)} · 其中自律时段 ${fmtDur(on)}
+      ${on > 0 ? `（${Math.round((on / Math.max(1, total)) * 100)}%）` : ''}
+      ${when ? `<span class="hint"> · 数据同步于 ${esc(when)}</span>` : ''}
+    </div>
+    <div class="hint" style="margin-top:4px">这些数字来自对方设备，不计入上面的本机统计。</div>
+  </div>`;
+}
+
 function viewStats() {
   const st = S.stats;
   const cur = currentSlices();
@@ -3700,6 +3729,8 @@ function viewStats() {
     </div>
     <div class="hint">当前状态：<b>${S.data && S.data.runtime.disciplineOn ? '自律模式已开启' : '自律模式未开启'}</b></div>
   </div>
+
+  ${peerBanner()}
 
   <div class="range-row">
     ${ranges.map(([k, n]) => `<button class="chip-btn ${S.range === k ? 'active' : ''}" data-act="range" data-r="${k}">${n}</button>`).join('')}

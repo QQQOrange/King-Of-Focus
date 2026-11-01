@@ -326,6 +326,10 @@
     '外观': 'Appearance',
     '语言': 'Language',
     '语言 · Language': 'Language',
+    // 统计页的「另一台设备」（随同步带过来的对方统计摘要）
+    '另一台设备': 'Another device',
+    '这些数字来自对方设备，不计入上面的本机统计。':
+      'These numbers come from the other device and are not part of local stats.',
     // 弹层键盘与焦点（KOF-01 ~ KOF-07）
     '键盘与焦点自查': 'Keyboard & focus check',
     '打开一个弹窗，按 Tab 看焦点是否只在弹窗内循环':

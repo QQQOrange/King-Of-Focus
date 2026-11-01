@@ -62,6 +62,40 @@ object Portable {
         put("source", "android")
         put("device", device)
         put("appVersion", appVersion)
+        // 统计摘要：只带"每天用了多久/自律多久/前三个应用"，
+        // 不带原始日文件（两端结构不同，互传读不懂且会重复计数）。
+        put(
+            "stats",
+            buildJsonObject {
+                put("schema", 1)
+                put("source", "android")
+                put("device", device)
+                put("at", System.currentTimeMillis() / 1000)
+                put(
+                    "days",
+                    JsonArray(
+                        com.qqqorange.kingoffocus.core.PeerDigest.of().map { d ->
+                            buildJsonObject {
+                                put("day", d.day)
+                                put("total", d.total)
+                                put("on", d.on)
+                                put(
+                                    "top",
+                                    JsonArray(
+                                        d.top.map { a ->
+                                            buildJsonObject {
+                                                put("name", a.name)
+                                                put("secs", a.secs)
+                                            }
+                                        },
+                                    ),
+                                )
+                            }
+                        },
+                    ),
+                )
+            },
+        )
         put("rules", JsonArray(cfg.rules.map { ruleToDoc(it) }))
         put(
             "clock",
@@ -241,6 +275,8 @@ object Portable {
             plans = plans,
             activePlan = if (docPlans.isEmpty()) base.activePlan.ifBlank { "plan-default" } else docActive,
             rules = normalizeRules(docRules(doc)),
+            // 对方的统计摘要：本机统计一个字节都不动，只是多存一份"另一台设备"的
+            peerStats = adoptStats(docStats(doc), base) ?: base.peerStats,
             points = (points?.int("balance", base.points) ?: base.points).coerceAtLeast(0),
             unlockUntil = points?.long("unlockUntil", base.unlockUntil) ?: base.unlockUntil,
             notify = if (notify == null) base.notify else NotifyCfg(
@@ -316,6 +352,9 @@ object Portable {
             rules = rules,
             days = days,
             points = maxOf(base.points, docBalance).coerceAtLeast(0),
+            // 统计摘要也收下：它不属于"规则/时段"，收它不违背"只会多、不会变"
+            // 的承诺（本机统计一个字节都不动，只是多存了对方那份）
+            peerStats = adoptStats(docStats(doc), base) ?: base.peerStats,
         )
         return MergeOut(normalize(next), MergeStats(added, skipped, conflict, slots))
     }
@@ -565,6 +604,57 @@ object Portable {
     }
 
     /** 一套方案绑定的规则 id（空 = 全部） */
+    /**
+     * 解析文档里的**统计摘要**。
+     *
+     * 只在两端都有"每天总时长 / 自律时长"这个量级的概念时才谈得上互通；
+     * 逐应用逐小时的原始数据不解析——结构不同，硬塞会算错。
+     */
+    private fun docStats(doc: JsonObject): PeerStats? {
+        val s = doc.obj("stats") ?: return null
+        val days = s.arr("days").mapNotNull { it as? JsonObject }.mapNotNull { o ->
+            val day = o.str("day").trim()
+            if (day.isEmpty()) {
+                null
+            } else {
+                PeerDay(
+                    day = day,
+                    total = o.long("total", 0).coerceAtLeast(0),
+                    on = o.long("on", 0).coerceAtLeast(0),
+                    top = o.arr("top").mapNotNull { it as? JsonObject }.mapNotNull { a ->
+                        val n = a.str("name").trim()
+                        if (n.isEmpty()) null else PeerApp(n, a.long("secs", 0).coerceAtLeast(0))
+                    }.take(3),
+                )
+            }
+        }
+        if (days.isEmpty()) return null
+        return PeerStats(
+            schema = 1,
+            source = s.str("source").ifBlank { "desktop" },
+            device = s.str("device"),
+            at = s.long("at", 0),
+            days = days,
+        )
+    }
+
+    /**
+     * 收下对方的统计摘要，三条不收：
+     *  · 空的（对方刚装、还没数据）；
+     *  · 旧的（`at` 不比本机已有的新，说明看过了）；
+     *  · **自己导出的**（同型号手机恢复自己的备份，不该在"另一台设备"里看到自己）。
+     */
+    private fun adoptStats(st: PeerStats?, base: Config): PeerStats? {
+        if (st == null || st.days.isEmpty()) return null
+        if (st.at <= base.peerStats.at) return null
+        if (st.source == "android" && st.device.isNotBlank()
+            && st.device == (android.os.Build.MODEL ?: "")
+        ) {
+            return null
+        }
+        return st
+    }
+
     private fun docBound(prof: JsonObject): List<String> =
         prof.arr("bound").mapNotNull { (it as? JsonPrimitive)?.content }
             .filter { it.isNotBlank() }.distinct()
