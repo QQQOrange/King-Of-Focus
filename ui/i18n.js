@@ -28,6 +28,8 @@
     '云同步': 'Cloud sync',
     /* —— 分心事件 —— */
     '下一段': 'Next window',
+    '跑完退还本金；一次都没被打断再加 20%':
+      'The stake comes back when the window ends, plus 20% if nothing interrupted you.',
     '今天没有排时段': 'Nothing scheduled today',
     '打开遮罩': 'Open the mask',
     '去排时段': 'Plan a window',

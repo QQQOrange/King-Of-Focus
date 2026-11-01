@@ -378,6 +378,10 @@ pub fn start(app: tauri::AppHandle, shared: std::sync::Arc<Shared>) {
             let cfg = shared.config();
             let st = load();
             let now = Local::now().timestamp();
+            // 质押到点结算（自然跑完退本金，干净跑完再加奖励）。
+            // 放在这一拍里做：机器休眠错过也不怕，回来补上就行。
+            crate::focus::tick_settle(&shared);
+
             let focusing = crate::clock::state(&cfg).map(|s| s.focusing()).unwrap_or(false);
             let was = WAS_FOCUS.swap(focusing, std::sync::atomic::Ordering::Relaxed);
 

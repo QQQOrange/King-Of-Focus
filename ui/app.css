@@ -2937,3 +2937,8 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
 }
 .tb-track i { display: block; height: 100%; background: var(--gold); border-radius: 3px; transition: width var(--mo-slow) var(--mo-ease); }
 .tb-a { justify-self: end; }
+
+/* 质押：押了多少、跑完退多少。一行小字，不与主按钮抢视线 */
+.tb-a { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.tb-stake { font-size: 11px; color: var(--gold); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tb-stake .muted { color: var(--text-3); }

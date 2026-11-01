@@ -126,6 +126,209 @@ pub fn goals_of_day(day: &str) -> Vec<Goal> {
     v
 }
 
+// ---------------------------------------------------------------- 专注质押
+
+/// 一次质押：这一段押了多少分、结算了没有。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Stake {
+    pub seg: i64,
+    pub amount: i64,
+    pub at: i64,
+    /// 结算时间（0 = 还没结算）
+    pub settled_at: i64,
+    /// 返还了多少（含奖励）；提前退出时为 0
+    pub refunded: i64,
+    /// 是否被没收（积分解锁 = 提前退出）
+    pub void: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StakeStore {
+    pub schema: u32,
+    pub stakes: Vec<Stake>,
+}
+
+/// 一次押多少。固定值而不是让用户填：押注这一步不该出现输入框——
+/// 它有摩擦，而且"押多押少"会变成新的算术题。想押更多就下段再押。
+pub const STAKE: i64 = 10;
+/// 干净跑完（一次都没被打断）的返还比例：本金 + 20%
+pub const STAKE_BONUS: i64 = 2;
+
+pub fn stake_path() -> PathBuf {
+    crate::cfg::data_dir().join("stakes.json")
+}
+
+fn load_stakes() -> StakeStore {
+    let text = std::fs::read_to_string(stake_path()).unwrap_or_default();
+    let mut st: StakeStore = serde_json::from_str(&text).unwrap_or_default();
+    if st.schema == 0 {
+        st.schema = 1;
+    }
+    st
+}
+
+fn save_stakes(st: &StakeStore) -> Result<(), String> {
+    let p = stake_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let s = serde_json::to_string_pretty(st).map_err(|e| e.to_string())?;
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, s).map_err(|e| format!("写入质押失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| format!("写入质押失败: {e}"))
+}
+
+/// 当前这一段押的那笔（没押 / 已结算 → None）
+pub fn stake_now(cfg: &Config) -> Option<Stake> {
+    let (seg, _, _) = seg_now(cfg)?;
+    load_stakes()
+        .stakes
+        .into_iter()
+        .find(|x| x.seg == seg && x.settled_at == 0)
+}
+
+/// 押一笔。返回押注记录；余额不足 / 不在时段里 / 这段已经押过都会明确报错。
+pub fn stake_place(shared: &Shared, amount: i64) -> Result<Stake, String> {
+    let mut cfg = shared.config();
+    let Some((seg, _, _)) = seg_now(&cfg) else {
+        return Err("现在不在自律时段里，先开始一段再押".into());
+    };
+    let amount = amount.clamp(1, 100);
+    let mut st = load_stakes();
+    if st.stakes.iter().any(|x| x.seg == seg && x.settled_at == 0) {
+        return Err("这一段已经押过了".into());
+    }
+    if cfg.points.balance < amount {
+        return Err(format!("积分不够：押 {amount} 分，你现在有 {} 分", cfg.points.balance));
+    }
+    cfg.points.balance -= amount;
+    crate::cfg::save(&cfg)?;
+    if let Ok(mut w) = shared.cfg.write() {
+        *w = cfg;
+    }
+    let s = Stake {
+        seg,
+        amount,
+        at: Local::now().timestamp(),
+        settled_at: 0,
+        refunded: 0,
+        void: false,
+    };
+    st.stakes.push(s.clone());
+    if st.stakes.len() > 500 {
+        // 只留最近的 500 笔：更老的已经没有任何"还要结算"的可能
+        st.stakes.sort_by_key(|x| x.at);
+        let drop = st.stakes.len() - 500;
+        st.stakes.drain(0..drop);
+    }
+    save_stakes(&st)?;
+    brief_invalidate();
+    Ok(s)
+}
+
+/// 提前退出（积分解锁）：这一笔没收，不返还。
+pub fn stake_forfeit(shared: &Shared) {
+    let cfg = shared.config();
+    let Some((seg, _, _)) = seg_now(&cfg) else { return };
+    let mut st = load_stakes();
+    let mut hit = false;
+    for x in st.stakes.iter_mut() {
+        if x.seg == seg && x.settled_at == 0 {
+            x.settled_at = Local::now().timestamp();
+            x.void = true;
+            x.refunded = 0;
+            hit = true;
+        }
+    }
+    if hit {
+        let _ = save_stakes(&st);
+        brief_invalidate();
+    }
+}
+
+/// 到点结算：时段自然结束 → 退本金（干净跑完再加 20%）。
+///
+/// 为什么不在"结束提醒"那一刻做：那条路依赖 UI 是否在看，且机器休眠会错过。
+/// 这里每 20 秒扫一次"该结算的账"，什么时候回来都能补上。
+pub fn tick_settle(shared: &Shared) {
+    let now = Local::now().timestamp();
+    let mut st = load_stakes();
+    if !st.stakes.iter().any(|x| x.settled_at == 0 && x.seg > 0 && x.seg < now) {
+        return;
+    }
+    // seg 是段的**起点**，真正的结束时刻要重新算：这里用"下一段起点 > now"
+    // 近似会漏掉同日多段，所以直接看这笔账的段是否已经整个过去：
+    // 段起点 + 24h 一定过去；但我们要的是"这段已经结束"，判据见下。
+    let cfg = shared.config();
+    let mut refund_total = 0i64;
+    let mut changed = false;
+    for x in st.stakes.iter_mut() {
+        if x.settled_at != 0 || x.seg <= 0 {
+            continue;
+        }
+        // 这笔账对应的段是否已经结束：当前不在这个段里，且时间已过起点 1 分钟以上。
+        // （段内不会结算；跨段/跨天之后自然命中）
+        let in_this_seg = distract::segment_bounds(&cfg, Local::now().naive_local())
+            .map(|(s, _, _)| s == x.seg)
+            .unwrap_or(false);
+        if in_this_seg || now - x.seg < 60 {
+            continue;
+        }
+        let Some(back) = settle_decision(x, in_this_seg, now, blocks_of(x.seg)) else {
+            continue;
+        };
+        x.settled_at = now;
+        x.refunded = back;
+        refund_total += back;
+        changed = true;
+    }
+    if !changed {
+        return;
+    }
+    let _ = save_stakes(&st);
+    if refund_total > 0 {
+        let mut c = shared.config();
+        c.points.balance += refund_total;
+        c.points.total_earned += refund_total;
+        let _ = crate::cfg::save(&c);
+        if let Ok(mut w) = shared.cfg.write() {
+            *w = c;
+        }
+    }
+    brief_invalidate();
+}
+
+/// 结算判定（纯函数，方便单测）：该退多少分。
+///
+/// 三条：还没到点（仍在段内 / 记账不到一分钟）→ 不结算；
+/// 自然结束 → 退本金；一次都没被打断 → 再 +20%。
+fn settle_decision(x: &Stake, in_this_seg: bool, now: i64, blocks: u32) -> Option<i64> {
+    if x.settled_at != 0 || x.seg <= 0 {
+        return None;
+    }
+    if in_this_seg || now - x.seg < 60 {
+        return None;
+    }
+    Some(if blocks == 0 { x.amount + STAKE_BONUS } else { x.amount })
+}
+
+/// 给界面的一小包：当前这段押了多少、结算过几笔/// 给界面的一小包：当前这段押了多少、结算过几笔
+pub fn stake_snapshot(cfg: &Config) -> serde_json::Value {
+    let cur = stake_now(cfg);
+    let st = load_stakes();
+    let settled: Vec<&Stake> = st.stakes.iter().filter(|x| x.settled_at > 0).collect();
+    let last = settled.last();
+    json!({
+        "amount": cur.as_ref().map(|x| x.amount).unwrap_or(0),
+        "stake": STAKE,
+        "bonus": STAKE_BONUS,
+        "lastVoid": last.map(|x| x.void).unwrap_or(false),
+        "lastRefunded": last.map(|x| x.refunded).unwrap_or(0),
+    })
+}
+
 // ---------------------------------------------------------------- 打断计数
 
 /// 计数是按"段"走的：段一变就归零。放内存即可——
@@ -319,6 +522,23 @@ mod tests {
         }
         assert_eq!(st.goals.len(), 1);
         assert_eq!(st.goals[0].text, "先写登录页（改）");
+    }
+
+    /// 质押结算：段内不结、干净跑完加奖励、被打断过只退本金、已结算的跳过
+    #[test]
+    fn stake_settles_once_and_pays_bonus() {
+        let x = Stake { seg: 1000, amount: 10, at: 0, settled_at: 0, refunded: 0, void: false };
+        // 还在这一段里 → 不结算
+        assert_eq!(settle_decision(&x, true, 2000, 0), None);
+        // 刚过起点不到一分钟 → 不结算（避免"押完立刻退"）
+        assert_eq!(settle_decision(&x, false, 1030, 0), None);
+        // 干净跑完 → 本金 + 2
+        assert_eq!(settle_decision(&x, false, 5000, 0), Some(12));
+        // 被打断过 → 只退本金
+        assert_eq!(settle_decision(&x, false, 5000, 3), Some(10));
+        // 结算过的账不再动
+        let done = Stake { settled_at: 4000, ..x.clone() };
+        assert_eq!(settle_decision(&done, false, 5000, 0), None);
     }
 
     /// 段变了，打断计数就该归零（否则 HUD 会一直显示上一段的数字）

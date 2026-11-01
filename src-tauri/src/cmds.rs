@@ -171,6 +171,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "siteTitle": rt.site_title,
                 // 总览顶部那一块：现在/下一段/今日进度/目标/打断
                 "brief": crate::focus::today_brief(&shared),
+                // 这一段的质押状态（界面决定显示"押 10 分"还是"已押"）
+                "stake": crate::focus::stake_snapshot(&config),
                 "wakeNote": rt.wake_note,
                 "wakeAt": rt.wake_at,
                 "locked": rt.locked,
@@ -1315,6 +1317,8 @@ pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Val
         ));
     }
     c.points.balance -= price;
+    // 用积分买断 = 主动提前退出这一段：押的分没收（这是质押唯一的"惩罚"出口）
+    crate::focus::stake_forfeit(&shared);
     c.points.unlock_count_today += 1;
     c.points.unlock_until = chrono::Local::now().timestamp() + (minutes as i64) * 60;
     cfg::save(&c)?;
@@ -1899,6 +1903,13 @@ pub fn backup_delete(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn backup_open_dir() {
     open_path(crate::backup::dir().to_string_lossy().to_string());
+}
+
+/// 押一笔（默认 10 分）：跑完退本金，没被打断再加 20%
+#[tauri::command]
+pub fn stake_place(shared: State<'_, Arc<Shared>>, amount: Option<i64>) -> Result<Value, String> {
+    let s = crate::focus::stake_place(&shared, amount.unwrap_or(crate::focus::STAKE))?;
+    Ok(json!(s))
 }
 
 /// 今天的打断账本：谁打得最多

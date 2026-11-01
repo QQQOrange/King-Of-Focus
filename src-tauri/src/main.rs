@@ -493,6 +493,7 @@ fn main() {
             cmds::focus_snapshot,
             cmds::ledger_today,
             cmds::ledger_range,
+            cmds::stake_place,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,

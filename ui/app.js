@@ -439,6 +439,10 @@ function viewOverview() {
   // 以前是没有的：打开软件要先自己扫一遍才知道。这一块只回答三个问题。
   const en = I18N.getLang() === 'en';
   const br = d.brief || {};
+  const sk = d.stake || {};
+  const stakeAmt = sk.amount || 0;
+  const stakeUnit = sk.stake || 10;
+  const stakeBonus = sk.bonus || 2;
   const segOn = !!br.inSegment;
   const segLeft = br.segLeft || 0;
   const planMin = br.planMin || 0;
@@ -475,6 +479,15 @@ function viewOverview() {
       <div class="tb-track"><i style="width:${pct}%"></i></div>
     </div>
     <div class="tb-a">
+      ${segOn
+        ? (stakeAmt > 0
+            ? `<div class="tb-stake" title="跑完退还本金；一次都没被打断再加 20%">${
+                en ? `Staked ${stakeAmt} pts` : `已押 ${stakeAmt} 分`
+              }<span class="muted">${en ? ` · returns ${stakeAmt + stakeBonus}` : ` · 跑完退 ${stakeAmt + stakeBonus}`}</span></div>`
+            : `<button class="btn btn-sm" data-act="stake" title="押上 ${stakeUnit} 分：跑完退还，用积分解锁提前退出则没收">${
+                en ? `Stake ${stakeUnit}` : `押 ${stakeUnit} 分`
+              }</button>`)
+        : ''}
       ${segOn
         ? `<button class="btn btn-primary btn-sm" data-act="today-mask">打开遮罩</button>`
         : `<button class="btn btn-primary btn-sm" data-act="today-clock">去排时段</button>`}
@@ -8923,6 +8936,15 @@ document.addEventListener('click', async (e) => {
   const act = el.dataset.act;
 
   // ---- 今天三件套 ----
+  if (act === 'stake') {
+    try {
+      const r = await invoke('stake_place', { amount: (S.data.stake || {}).stake || 10 });
+      await pull();
+      render();
+      toast(`已押 ${r.amount} 分：跑完退 ${r.amount + ((S.data.stake || {}).bonus || 2)}`, 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+    return;
+  }
   if (act === 'today-clock') { await Act.nav('clock'); return; }
   if (act === 'today-mask') {
     const m = ((S.data.config.settings || {}).mask || {});
