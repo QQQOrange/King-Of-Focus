@@ -46,6 +46,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.core.LockEngine
@@ -137,6 +139,8 @@ fun ScheduleScreen(cfg: Config) {
     // "把通用时长套到已选时段"的二次确认（会改到已有计划，不能一点就干）
     var applyAsk by remember { mutableStateOf(false) }
 
+    // 画布上要写时间段文字（拖动中的块），用同一个测量器，别每帧新建
+    val tm = rememberTextMeasurer()
     val density = LocalDensity.current
     // 长按进入拖选时给一次触感：否则用户不知道"现在已经可以拖了"
     val haptic = LocalHapticFeedback.current
@@ -210,6 +214,13 @@ fun ScheduleScreen(cfg: Config) {
     var blockBase by remember { mutableStateOf<List<HourPlan>>(emptyList()) }
     /** 正在拖动的是哪一列（-1 = 没在拖），只用于把那一块画得显眼一点 */
     var dragDay by remember { mutableStateOf(-1) }
+    /**
+     * 拖动中这一块将落到哪里（占位用）。
+     *
+     * 拖动时除了把块本身画出来，还要在**落点**画一个虚线占位框：
+     * 不然用户只知道"我在拖"，不知道"松手会落在哪"——尤其重排时块会跳位置。
+     */
+    var dragTarget by remember { mutableStateOf<Slots.Block?>(null) }
 
     /**
      * 长按落在**已有块**里时进入哪种子模式。
@@ -236,6 +247,7 @@ fun ScheduleScreen(cfg: Config) {
         blockBase = d
         dragging = true
         dragDay = day
+        dragTarget = Slots.blocks(d).firstOrNull { it.seg == seg }
         val off = grabMin - blk.startMin
         return when {
             blk.minutes <= step -> "move"
@@ -250,9 +262,13 @@ fun ScheduleScreen(cfg: Config) {
         if (blockBase.isEmpty()) return
         val pMin = ((pos.y / rowPx).toFloat() * step).toInt()
         val cur = Slots.blocks(blockBase).firstOrNull { it.seg == blockSeg } ?: return
-        val delta = Slots.snap(pMin - blockGrab, step) - cur.startMin
-        val moved = Slots.moveBlock(blockBase, blockSeg, delta, cfg.defWork, cfg.defBrk)
+        val target = Slots.snap(pMin - blockGrab, step)
+        // 重排：越过别的块的中心就换顺序，没越过还是自由平移（见 Slots.dragBlock）。
+        // 用**当前落点**而不是增量，每一帧都从手势开始时的快照重算，避免越拖越飘。
+        val moved = Slots.dragBlock(blockBase, blockSeg, target, step, cfg.defWork, cfg.defBrk)
         draftState.value = draftState.value.toMutableList().also { it[blockDay] = moved }
+        // 占位框跟着"这一块实际会落到哪"走，重排后位置会变，占位框也要跟着变
+        dragTarget = Slots.blocks(moved).firstOrNull { it.seg == blockSeg }
     }
 
     /** 拉上下边界：落点吸附刻度，边界与冲突由 Slots.resizeBlock 收口 */
@@ -344,7 +360,8 @@ fun ScheduleScreen(cfg: Config) {
         PageHeader(
             "自律时段",
             "纵向是时间、横向是星期。点一格 = 选中/取消；长按空白处拖动 = 框选；" +
-                "长按色块 = 拖动整块（按在块的第一格拉起点、最后一格拉终点，中间整块平移）",
+                "长按色块中间 = 拖动整块（拖过相邻块一半就会换顺序），" +
+                "按在块的头/尾那一格 = 拉起点 / 终点",
         )
 
         // 专注段生效中：整页只读。这与桌面端一致——自律期间能改表，锁机就只是建议
@@ -584,6 +601,20 @@ fun ScheduleScreen(cfg: Config) {
             }
             Spacer(Modifier.height(4.dp))
 
+            // 拖动中把"你在移哪一段、松手会落到哪"写出来。
+            // 光靠颜色不够：用户要确认的是**整段**（04:00–05:00）在动，
+            // 而不是刚才按住的那 15 分钟。
+            val moving = dragTarget
+            if (dragging && moving != null && blockSeg.isNotEmpty()) {
+                Text(
+                    "正在移动 " + Slots.fmtBlock(moving) + " · 松手就放到这个位置",
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = cs.primary,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+            }
+
             Box(Modifier.fillMaxWidth().height(GRID_H)) {
                 Row(Modifier.fillMaxWidth().verticalScroll(vScroll)) {
                     // 时间轴（纵轴）：自己不吃手势，在这里滑就是滚动
@@ -716,6 +747,7 @@ fun ScheduleScreen(cfg: Config) {
                                     dragging = false
                                     dragSeg = ""
                                     dragDay = -1
+                                    dragTarget = null
                                     if (mode.isNotEmpty()) commit()
                                 }
                             },
@@ -744,30 +776,92 @@ fun ScheduleScreen(cfg: Config) {
                         //    Slots.blocks() 的合并结果画一个圆角矩形：
                         //    块内**没有缝隙、没有分割线**，跨小时也不会断成几截。
                         //    拖动中的块再加一圈描边，让用户知道动的是哪一块。
+                        // 2a) 落点占位：虚线框 + 淡填充。
+                        //     重排时块会跳到别的位置，没有占位框用户根本不知道松手会落在哪。
+                        val target = dragTarget
+                        if (isDragging && target != null && dragDay in 0..6) {
+                            val tTop = target.startMin * rowPx / step
+                            val tH = (target.endMin - target.startMin) * rowPx / step
+                            drawRoundRect(
+                                color = cs.primary.copy(alpha = 0.20f),
+                                topLeft = Offset(dragDay * colW + gap, tTop),
+                                size = Size(colW - gap * 2, tH.coerceAtLeast(1f)),
+                                cornerRadius = CornerRadius(5.dp.toPx()),
+                            )
+                            drawRoundRect(
+                                color = cs.primary.copy(alpha = 0.85f),
+                                topLeft = Offset(dragDay * colW + gap, tTop),
+                                size = Size(colW - gap * 2, tH.coerceAtLeast(1f)),
+                                cornerRadius = CornerRadius(5.dp.toPx()),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                    width = 1.2.dp.toPx(),
+                                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                                        floatArrayOf(6.dp.toPx(), 4.dp.toPx()),
+                                    ),
+                                ),
+                            )
+                        }
+
+                        // 2b) 已选：按块画。被拖的那一块单独处理：
+                        //     略微外扩 + 深色描边 + 投影，看起来是"浮起来的一整块"，
+                        //     而不是"某一格被选中"。
                         for (d in 0 until 7) {
                             val dayBlocks = Slots.blocks(grid.getOrNull(d).orEmpty())
                             for (b in dayBlocks) {
+                                val draggingThis = isDragging && d == dragDay && b.seg == blockSeg
                                 val top = b.startMin * rowPx / step
                                 val h = (b.endMin - b.startMin) * rowPx / step
-                                val draggingThis = isDragging && d == dragDay
+                                // 浮起：四周各外扩 1.5dp
+                                val lift = if (draggingThis) 1.5.dp.toPx() else 0f
+                                val left = d * colW + gap - lift
+                                val width = colW - gap * 2 + lift * 2
+                                val boxTop = top - lift
+                                val boxH = h.coerceAtLeast(1f) + lift * 2
+
+                                if (draggingThis) {
+                                    // 投影：往下偏移一点、半透明，制造"离开平面"的错觉
+                                    drawRoundRect(
+                                        color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.45f),
+                                        topLeft = Offset(left + 1.dp.toPx(), boxTop + 2.dp.toPx()),
+                                        size = Size(width, boxH),
+                                        cornerRadius = CornerRadius(7.dp.toPx()),
+                                    )
+                                }
                                 drawRoundRect(
-                                    color = if (draggingThis) {
-                                        cs.primary.copy(alpha = 0.86f)
-                                    } else {
-                                        cs.primary
-                                    },
-                                    topLeft = Offset(d * colW + gap, top),
-                                    size = Size(colW - gap * 2, h.coerceAtLeast(1f)),
-                                    cornerRadius = CornerRadius(4.dp.toPx()),
+                                    color = if (draggingThis) cs.primary else cs.primary,
+                                    topLeft = Offset(left, boxTop),
+                                    size = Size(width, boxH),
+                                    cornerRadius = CornerRadius(if (draggingThis) 7.dp.toPx() else 4.dp.toPx()),
                                 )
                                 if (draggingThis) {
+                                    // 高亮描边：用块自身的对比色，浅色主题下也看得见
                                     drawRoundRect(
                                         color = cs.onPrimary,
-                                        topLeft = Offset(d * colW + gap, top),
-                                        size = Size(colW - gap * 2, h.coerceAtLeast(1f)),
-                                        cornerRadius = CornerRadius(4.dp.toPx()),
-                                        style = androidx.compose.ui.graphics.drawscope.Stroke(1.4.dp.toPx()),
+                                        topLeft = Offset(left, boxTop),
+                                        size = Size(width, boxH),
+                                        cornerRadius = CornerRadius(7.dp.toPx()),
+                                        style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()),
                                     )
+                                    // 块上直接写时间段：这是"整车"而不是"一格"最直接的证据。
+                                    // 块太矮（一格）时不写，否则会糊成一团。
+                                    if (boxH >= 18.dp.toPx()) {
+                                        val layout = tm.measure(
+                                            androidx.compose.ui.text.AnnotatedString(Slots.fmtBlock(b)),
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = cs.onPrimary,
+                                            ),
+                                            maxLines = 1,
+                                        )
+                                        drawText(
+                                            textLayoutResult = layout,
+                                            topLeft = Offset(
+                                                left + (width - layout.size.width) / 2f,
+                                                boxTop + 2.dp.toPx(),
+                                            ),
+                                        )
+                                    }
                                 }
                             }
                         }
