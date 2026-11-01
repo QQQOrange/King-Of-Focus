@@ -1901,6 +1901,23 @@ pub fn backup_open_dir() {
     open_path(crate::backup::dir().to_string_lossy().to_string());
 }
 
+/// 今天的打断账本：谁打得最多
+#[tauri::command]
+pub fn ledger_today(limit: Option<usize>) -> Value {
+    crate::ledger::top_today(limit.unwrap_or(6))
+}
+
+/// 区间账本（报告用）
+#[tauri::command]
+pub fn ledger_range(start: String, end: String) -> Value {
+    if !crate::distract::valid_day(&start) || !crate::distract::valid_day(&end) {
+        return json!({ "error": "日期不合法", "items": [] });
+    }
+    let items = crate::ledger::range(&start, &end);
+    let total: u32 = items.iter().map(|x| x.n).sum();
+    json!({ "start": start, "end": end, "total": total, "items": items })
+}
+
 // ---------------- 段目标 / 打断计数 ----------------
 
 /// 写（或清空）当前这一段的目标。不在时段里时明确报错，不静默失败——

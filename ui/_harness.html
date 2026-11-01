@@ -4031,6 +4031,8 @@ window.__itest = async () => {
     out.push(['有周/月视图切换', document.querySelectorAll('[data-act="dx-view"]').length, 2]);
     out.push(['有当天清单卡', document.querySelectorAll('.dx-wrap .card').length >= 2, true]);
     out.push(['有提醒间隔输入框', !!document.querySelector('#dxMin') && !!document.querySelector('#dxDays'), true]);
+    out.push(['有「被什么打断」账本卡',
+      [...document.querySelectorAll('#content .card-title')].some((e) => e.textContent.includes('今天被什么打断')), true]);
     out.push(['按钮位置可选四个角',
       document.querySelectorAll('#dxCorner option').length, 4]);
     // 切周视图：应当渲染 7 张日卡

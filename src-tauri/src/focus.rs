@@ -134,7 +134,11 @@ static BLOCK_SEG: AtomicI64 = AtomicI64::new(0);
 static BLOCK_N: AtomicU32 = AtomicU32::new(0);
 
 /// 记一次拦截。调用点是"真的拦了"的两处：应用被送回 / 网页被关。
-pub fn note_block(shared: &Shared) {
+///
+/// 除了给 HUD 的"这一段被打断几次"，还顺手记进账本（`ledger`）——
+/// 总数只说明"被打断得多"，账本才说明"被谁打断"。
+pub fn note_block(shared: &Shared, kind: &str, key: &str, label: &str, rule: &str) {
+    crate::ledger::record(kind, key, label, rule);
     let cfg = shared.config();
     let Some((seg, _, _)) = seg_now(&cfg) else { return };
     let last = BLOCK_SEG.load(Ordering::Relaxed);

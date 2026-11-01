@@ -5493,6 +5493,7 @@ function dxState() {
     month: todayStr().slice(0, 7),
     data: null,
     monthData: null,
+    ledger: null,
     loading: false,
   };
   return S.dx;
@@ -5504,12 +5505,14 @@ async function dxLoad() {
   if (d.loading) return;
   d.loading = true;
   try {
-    const [day, mon] = await Promise.all([
+    const [day, mon, led] = await Promise.all([
       invoke('distract_day', { day: d.day }),
       invoke('distract_month', { month: d.month }),
+      invoke('ledger_today', { limit: 6 }),
     ]);
     d.data = day && !day.error ? day : { day: d.day, items: [], groups: [], total: 0, done: 0 };
     d.monthData = mon && !mon.error ? mon : { days: {}, pending: 0, today: todayStr() };
+    d.ledger = led && !led.error ? led : { total: 0, items: [] };
   } catch (e) {
     toast('读取分心事件失败：' + String(e).replace(/^Error:\s*/, ''), 'err');
   }
@@ -5595,6 +5598,7 @@ function viewDistract() {
   const total = data.total || 0;
   const done = data.done || 0;
   const pending = (d.monthData && d.monthData.pending) || 0;
+  const led = d.ledger || { total: 0, items: [] };
   const en = I18N.getLang() === 'en';
   // 自动遮罩是遮罩页的开关（mask.followSchedule），这里只是给个近路
   const autoMask = !!((S.data.config.settings || {}).mask || {}).followSchedule;
@@ -5700,6 +5704,25 @@ function viewDistract() {
         <span class="hint" style="margin-left:10px">间隔太密会变成新的打扰，建议 60–180 分钟</span>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title" style="font-size:13px">今天被什么打断
+      ${led.total ? `<span class="badge gold">${en ? `${led.total} hits` : `共 ${led.total} 次`}</span>` : ''}
+    </div>
+    <div class="card-sub">
+      只记<b>真的被拦下</b>的东西（应用被送回桌面、网页被关掉）。次数最多的那一个，
+      就是最值得关掉的那一个。
+    </div>
+    ${led.items && led.items.length
+      ? led.items.map((h) => `<div class="list-row">
+          <span class="badge ${h.kind === 'site' ? 'blue' : 'gold'}">${h.kind === 'site' ? (en ? 'site' : '网页') : (en ? 'app' : '软件')}</span>
+          <span class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.label)}">${esc(h.label)}</span>
+          <span class="hint" style="flex:0 0 auto">${esc(h.rule || '')}</span>
+          <b style="flex:0 0 auto;font-variant-numeric:tabular-nums">${h.n} ${en ? 'x' : '次'}</b>
+        </div>`).join('')
+      : `<div class="empty"><span class="ico">✓</span>${en
+          ? 'Nothing blocked today.' : '今天还没被拦过。要么很自律，要么规则没生效——去总览看看守护状态。'}</div>`}
   </div>`;
 }
 

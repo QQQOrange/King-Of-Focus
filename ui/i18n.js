@@ -35,6 +35,11 @@
     '还没选过目标窗口，先选一次；之后这里就能一键盖上':
       'No target window picked yet — pick one once, then this button works in one click.',
     '分心事件': 'Distractions',
+    '今天被什么打断': 'What interrupted you today',
+    '只记': 'Only ',
+    '真的被拦下': 'actually blocked',
+    '的东西（应用被送回桌面、网页被关掉）。次数最多的那一个， 就是最值得关掉的那一个。':
+      ' things are counted (apps sent back to the desktop, pages closed). The top one is the one worth turning off.',
     '这一段开始前写的目标': 'What you planned for this session',
     '记录时间：': 'Showing: ',
     '周视图': 'Week',

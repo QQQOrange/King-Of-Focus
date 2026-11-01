@@ -595,7 +595,7 @@ fn on_block(
         ));
         crate::notify::blocked_app(handle, &label, &rule.name);
         // 这一段的"被打断次数"：拦截是现成信号，以前发完通知就丢了
-        crate::focus::note_block(shared);
+        crate::focus::note_block(shared, "app", &app.name, &label, &rule.name);
         shared.log(
             "app",
             label.clone(),

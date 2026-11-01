@@ -13,6 +13,7 @@ mod extpage;
 mod focus;
 mod forcequit;
 mod guard;
+mod ledger;
 mod mask;
 mod matcher;
 mod media;
@@ -490,6 +491,8 @@ fn main() {
             cmds::focus_goal_set,
             cmds::focus_goal_day,
             cmds::focus_snapshot,
+            cmds::ledger_today,
+            cmds::ledger_range,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,
