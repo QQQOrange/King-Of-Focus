@@ -28,6 +28,7 @@
     '云同步': 'Cloud sync',
     /* —— 分心事件 —— */
     '分心事件': 'Distractions',
+    '这一段开始前写的目标': 'What you planned for this session',
     '记录时间：': 'Showing: ',
     '周视图': 'Week',
     '月视图': 'Month',

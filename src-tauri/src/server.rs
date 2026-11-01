@@ -383,6 +383,7 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                 shared.log("site", url.clone(), rule.clone(), "浏览器插件拦截".into());
                 // 先弹通知，插件端会在收到响应后延迟几百毫秒再关页面
                 crate::notify::blocked_site(app, &url, &rule);
+                crate::focus::note_block(shared);
                 // 网页被拦 → 同样把主程序拉到前台首页
                 crate::monitor::focus_main(app, shared);
             }

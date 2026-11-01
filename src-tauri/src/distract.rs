@@ -383,14 +383,34 @@ pub fn start(app: tauri::AppHandle, shared: std::sync::Arc<Shared>) {
 
             // —— 段结束：汇总这一段的收获 ——
             if was && !focusing && cfg.settings.distract.enabled {
+                // 刚结束的是哪一段：用"一分钟前"去算——翻面的这一刻，段已经不在范围里了
+                let prev = segment_bounds(&cfg, (Local::now() - Duration::seconds(60)).naive_local());
+                let (goal, blocks) = match prev {
+                    Some((seg_start, _, _)) => (crate::focus::goal_of(seg_start), crate::focus::blocks_of(seg_start)),
+                    None => (String::new(), 0),
+                };
                 let items = ended_segment_items(&st, now);
+
+                // 有目标 / 有打断 / 有想法 —— 三者任一都值得说一句。
+                // 只说"记了几条"会把这一节的大部分信息（我原本要干什么、被打断几次）丢掉。
+                let mut parts: Vec<String> = Vec::new();
+                if !goal.is_empty() {
+                    parts.push(format!("目标：{goal}"));
+                }
+                if blocks > 0 {
+                    parts.push(format!("被打断 {blocks} 次"));
+                }
                 if !items.is_empty() {
-                    let body = if items.len() == 1 {
-                        format!("记下了 1 条：{}", clip(&items[0].text))
+                    parts.push(if items.len() == 1 {
+                        format!("记下 1 条：{}", clip(&items[0].text))
                     } else {
-                        format!("记下了 {} 条想法，去「分心事件」逐条处理", items.len())
-                    };
-                    crate::notify::toast(&app, "app", "这一段结束了", &body, "分心事件", 8);
+                        format!("记下 {} 条想法，去「分心事件」逐条处理", items.len())
+                    });
+                }
+                if !parts.is_empty() {
+                    crate::notify::toast(&app, "app", "这一段结束了", &parts.join(" · "), "分心事件", 8);
+                }
+                if !items.is_empty() {
                     // 已经催过一次，重复提醒的间隔从现在开始算
                     mark_nudged(&items.iter().map(|x| x.id.clone()).collect::<Vec<_>>(), now);
                 }
@@ -451,6 +471,8 @@ pub fn view_day(day: &str) -> Value {
         "items": list,
         "groups": groups.iter().map(|(k, label, items)| json!({
             "segStart": k, "label": label, "items": items,
+            // 这一段当时写的目标：让"我要做什么 → 结果记了什么"在同一行里对得上
+            "goal": if *k > 0 { crate::focus::goal_of(*k) } else { String::new() },
         })).collect::<Vec<_>>(),
         "month": month_map(&st, &day[..day.len().min(7)]),
     })

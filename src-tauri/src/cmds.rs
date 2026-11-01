@@ -1366,6 +1366,14 @@ pub fn hud_set_look(
     Ok(())
 }
 
+/// `hud_state` 里要用的几个标量（从 Value 里挖出来，避免在 json! 里做两遍）
+struct FocusBits {
+    in_segment: bool,
+    goal: String,
+    seg_label: String,
+    blocks: u32,
+}
+
 #[tauri::command]
 pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
     let now = chrono::Local::now().timestamp();
@@ -1394,6 +1402,13 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
     } else {
         break_left > 0 && break_left as i64 <= cfg.settings.notify.work_before.min(120) as i64 * 60
     };
+    let focus = crate::focus::snapshot(&cfg);
+    let focus = FocusBits {
+        in_segment: focus["inSegment"].as_bool().unwrap_or(false),
+        goal: focus["goal"].as_str().unwrap_or("").to_string(),
+        seg_label: focus["segLabel"].as_str().unwrap_or("").to_string(),
+        blocks: focus["blocks"].as_u64().unwrap_or(0) as u32,
+    };
     json!({
         "on": on,
         "locked": locked,
@@ -1413,6 +1428,11 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "opacity": cfg.settings.hud.opacity_pct(),
         "corner": cfg.settings.hud.corner_norm(),
         // 「记一笔」按钮：关掉模块就整个不出现（HUD 每秒拉一次，不在这里读盘）
+        // 段目标与打断计数：HUD 用它替换掉"语录"那一行（专注时目标比格言有用）
+        "inSegment": focus.in_segment,
+        "goal": focus.goal,
+        "segLabel": focus.seg_label,
+        "blocks": focus.blocks,
         "distractOn": cfg.settings.distract.enabled,
         "distractCorner": cfg.settings.distract.button_corner,
     })
@@ -1877,6 +1897,35 @@ pub fn backup_delete(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn backup_open_dir() {
     open_path(crate::backup::dir().to_string_lossy().to_string());
+}
+
+// ---------------- 段目标 / 打断计数 ----------------
+
+/// 写（或清空）当前这一段的目标。不在时段里时明确报错，不静默失败——
+/// 静默失败会让人以为"写了但没生效"，比不让写更糟。
+#[tauri::command]
+pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Value, String> {
+    let c = shared.config();
+    let g = crate::focus::set_goal(&c, &text)?;
+    Ok(json!(g))
+}
+
+/// 某天的段目标（按段起点升序），给统计/复盘用
+#[tauri::command]
+pub fn focus_goal_day(day: Option<String>) -> Value {
+    let d = day.filter(|x| !x.trim().is_empty()).unwrap_or_else(crate::distract::today);
+    if !crate::distract::valid_day(&d) {
+        return json!({ "error": "日期不合法", "goals": [] });
+    }
+    let goals = crate::focus::goals_of_day(&d);
+    json!({ "day": d, "goals": goals })
+}
+
+/// HUD / 主页共用的一小包：在不在段里、目标、被打断几次
+#[tauri::command]
+pub fn focus_snapshot(shared: State<'_, Arc<Shared>>) -> Value {
+    let c = shared.config();
+    crate::focus::snapshot(&c)
 }
 
 // ---------------- 分心事件 ----------------

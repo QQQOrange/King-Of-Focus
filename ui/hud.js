@@ -109,18 +109,38 @@ async function tick() {
     remain.textContent = L('noEnd');
   }
 
-  const q = s.quote || '';
-  if (q && q !== lastQuote) {
-    lastQuote = q;
-    const el = document.getElementById('quote');
-    el.style.opacity = '0';
-    setTimeout(() => {
-      el.textContent = q;
-      el.style.transition = 'opacity .45s ease';
-      el.style.opacity = '1';
-    }, 180);
+  const qEl = document.getElementById('quote');
+  const goal = s.goal || '';
+  // 专注中：这一行显示"这一段要做什么"（没写就是一行虚线提示，点一下就能写）。
+  // 为什么占用格言的位置而不是加一行：HUD 只有 272×122，加行会把下面的东西挤没；
+  // 而专注时"我原本要做的事"比一句格言有用得多。
+  if (s.inSegment) {
+    qEl.classList.toggle('ghost', !goal);
+    qEl.dataset.goal = '1';
+    if (qEl.textContent !== (goal || goalPh())) qEl.textContent = goal || goalPh();
+    document.getElementById('from').textContent = s.segLabel ? `—— ${s.segLabel}` : '';
+    lastQuote = '';
+  } else {
+    delete qEl.dataset.goal;
+    qEl.classList.remove('ghost');
+    const q = s.quote || '';
+    if (q && q !== lastQuote) {
+      lastQuote = q;
+      qEl.style.opacity = '0';
+      setTimeout(() => {
+        qEl.textContent = q;
+        qEl.style.transition = 'opacity .45s ease';
+        qEl.style.opacity = '1';
+      }, 180);
+    }
+    document.getElementById('from').textContent = s.quoteFrom ? `—— ${s.quoteFrom}` : '';
   }
-  document.getElementById('from').textContent = s.quoteFrom ? `—— ${s.quoteFrom}` : '';
+
+  // 被打断次数：只在非零时出现在顶部那一行
+  const blk = document.getElementById('blk');
+  blk.textContent = s.blocks > 0
+    ? (HUD_LANG === 'en' ? `· ${s.blocks} interrupts` : `· 打断 ${s.blocks}`)
+    : '';
 
   // —— 记一笔：模块开着才有按钮，位置跟着设置走 ——
   const on = !!s.distractOn;
@@ -145,18 +165,33 @@ const capInput = document.getElementById('capInput');
 const capHint = document.getElementById('capHint');
 let hintTimer = 0;
 let pending = 0;
+/** 面板当前在干嘛：'distract' = 记一笔；'goal' = 写这一段的目标 */
+let mode = 'distract';
+let curGoal = '';
 
 function setHint(text, cls) {
   capHint.className = 'cap-hint' + (cls ? ' ' + cls : '');
   capHint.textContent = text;
 }
 
-function openCapture() {
+function goalPh() {
+  return HUD_LANG === 'en' ? 'Click: what is this session for?' : '点这里写下这段要做什么';
+}
+
+function openCapture(which) {
+  mode = which || 'distract';
   if (!panel.hidden) return;
   panel.hidden = false;
   document.body.classList.add('capturing');
-  setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
-  capInput.value = '';
+  if (mode === 'goal') {
+    capInput.placeholder = HUD_LANG === 'en' ? 'What are you doing in this session?' : '这一段要做什么？';
+    setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
+    capInput.value = curGoal;
+  } else {
+    capInput.placeholder = HUD_LANG === 'en' ? 'A thought just popped up' : '刚冒出的想法，回车记下';
+    setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
+    capInput.value = '';
+  }
   capInput.focus();
 }
 
@@ -169,7 +204,21 @@ function closeCapture() {
 async function saveCapture() {
   const text = capInput.value.trim();
   if (!text) {
+    // 目标允许清空（= 这段不写目标）；记一笔则是"什么都没写，关掉就是"
+    if (mode === 'goal') {
+      try { await invoke('focus_goal_set', { text: '' }); curGoal = ''; } catch (e) { /* 忽略 */ }
+    }
     closeCapture();
+    return;
+  }
+  if (mode === 'goal') {
+    try {
+      const r = await invoke('focus_goal_set', { text });
+      curGoal = (r && r.text) || text;
+      closeCapture();
+    } catch (e) {
+      setHint(String(e).replace(/^Error:\s*/, ''), 'err');
+    }
     return;
   }
   try {
@@ -187,6 +236,10 @@ async function saveCapture() {
     setHint(String(e).replace(/^Error:\s*/, ''), 'err');
   }
 }
+
+document.getElementById('quote').addEventListener('click', () => {
+  if (document.getElementById('quote').dataset.goal) openCapture('goal');
+});
 
 capBtn.addEventListener('click', (e) => {
   e.stopPropagation();

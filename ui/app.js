@@ -5554,7 +5554,9 @@ function viewDistract() {
   const segLabel = (l) => (en && l === '不在自律时段内' ? 'Outside any window' : l);
   const list = groups.length
     ? groups.map((g) => `<div class="dx-group">
-          <div class="dx-seg"><b>${esc(segLabel(g.label))}</b><span class="ln"></span><span>${g.items.length} ${en ? 'items' : '条'}</span></div>
+          <div class="dx-seg"><b>${esc(segLabel(g.label))}</b>${
+            g.goal ? `<span class="dx-goal" title="这一段开始前写的目标">${esc(g.goal)}</span>` : ''
+          }<span class="ln"></span><span>${g.items.length} ${en ? 'items' : '条'}</span></div>
           ${g.items.map(dxRow).join('')}
         </div>`).join('')
     : `<div class="empty"><span class="ico">✎</span>这天还没有记录。<br>

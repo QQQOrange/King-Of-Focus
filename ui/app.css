@@ -2876,3 +2876,14 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
 }
 .dx-seg b { color: var(--text); font-weight: 600; font-size: 11px; }
 .dx-seg .ln { flex: 1; height: 1px; background: var(--line); }
+
+/* 段目标：跟在时段标签后面，压暗，不与"几条"抢注意力 */
+.dx-goal {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--gold);
+  opacity: .85;
+}

@@ -207,3 +207,21 @@ body.cap-br .from { padding-right: 24px; }
 body.capturing .divider,
 body.capturing .quote,
 body.capturing .from { display: none; }
+
+/* 这一段被打断了几次：小、暗、只在非零时出现 */
+.blk {
+  font-size: 10px;
+  color: var(--hud-dim);
+  font-variant-numeric: tabular-nums;
+  opacity: .9;
+}
+.blk:empty { display: none; }
+
+/* 专注时 quote 那一行显示"这一段的目标"；没写时是一行虚线占位提示 */
+.quote.ghost {
+  color: var(--hud-dim);
+  border-bottom: 1px dashed var(--hud-line);
+  padding-bottom: 1px;
+  cursor: text;
+}
+.quote[data-goal] { cursor: text; }

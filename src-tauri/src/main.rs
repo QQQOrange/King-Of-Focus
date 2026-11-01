@@ -10,6 +10,7 @@ mod cmds;
 mod discipline;
 mod distract;
 mod extpage;
+mod focus;
 mod forcequit;
 mod guard;
 mod mask;
@@ -486,6 +487,9 @@ fn main() {
             cmds::distract_clear_done,
             cmds::distract_save,
             cmds::distract_auto_mask,
+            cmds::focus_goal_set,
+            cmds::focus_goal_day,
+            cmds::focus_snapshot,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,
