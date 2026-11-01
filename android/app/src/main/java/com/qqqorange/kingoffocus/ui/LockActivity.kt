@@ -939,12 +939,23 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
     // 被拦下的那一刻，最该看到的不是"你不能用这个"，而是"你本来要干什么"。
     // 段目标就存在本机，读一次即可（这一页活不过几秒，不必缓存）。
     val cfg = com.qqqorange.kingoffocus.data.Store.current
-    val goal = remember {
-        val seg = com.qqqorange.kingoffocus.core.DistractMath.segmentBounds(
-            cfg, java.time.LocalDateTime.now(),
-        )
-        seg?.let { com.qqqorange.kingoffocus.data.GoalStore.of(it.start) }.orEmpty()
+    // 段目标 + 这一节被打断几次。被拦下的这一刻，"这是第 3 次"比任何说教都管用——
+    // 计数用账本口径（同一目标 30 秒内只算一次），和质押结算问的是同一个数。
+    val segInfo = remember {
+        val at = java.time.LocalDateTime.now()
+        val seg = com.qqqorange.kingoffocus.core.DistractMath.segmentBounds(cfg, at)
+        if (seg == null) {
+            "" to 0
+        } else {
+            com.qqqorange.kingoffocus.data.GoalStore.of(seg.start) to
+                com.qqqorange.kingoffocus.data.LedgerStore.countBetween(
+                    seg.start,
+                    at.atZone(java.time.ZoneId.systemDefault()).toEpochSecond(),
+                )
+        }
     }
+    val goal = segInfo.first
+    val blocks = segInfo.second
     Column(
         Modifier.fillMaxSize().padding(horizontal = 28.dp),
         verticalArrangement = Arrangement.Center,
@@ -962,6 +973,12 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
         if (rule.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("命中规则「$rule」", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        }
+        // 被打断的次数就摆在被拦下的这一页：数字本身比"请专注"更有说服力，
+        // 而且它和时段结束时的汇总、周复盘的账本是同一个来源，不会被质疑"哪来的数"。
+        if (blocks > 0) {
+            Spacer(Modifier.height(8.dp))
+            Text("这一节第 $blocks 次被打断", fontSize = 12.sp, color = Color(0xFFE8A9A0))
         }
         // 替代动作：把"那我该做什么"直接写在页面上
         Spacer(Modifier.height(16.dp))

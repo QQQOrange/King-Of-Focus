@@ -345,6 +345,29 @@ private fun HomeScreen(cfg: Config) {
         StatsMath.total(StatsStore.today(now), null)
     }
 
+    // 这一节被打断几次：账本口径（同一目标 30 秒内只算一次），
+    // 与质押结算「一次没被打断才给奖励」问的是同一个数。
+    // 段按分钟缓存：一小时里可能有两段（09:00–09:20、09:40–10:00），
+    // 所以不能只按小时缓存——那会让 09:45 还显示 09:10 那一段。
+    // 次数按 10 秒一档刷新：账本没有内存缓存，每秒读盘会影响滚动，
+    // 而这个数字快一拍慢一拍都不影响判断。
+    val segNow = remember(tick, todayKey, now.hour, now.minute) {
+        com.qqqorange.kingoffocus.core.DistractMath.segmentBounds(cfg, now)
+    }
+    val blocksNow = remember(tick, segNow?.start, now.second / 10) {
+        if (segNow == null) {
+            0
+        } else {
+            com.qqqorange.kingoffocus.data.LedgerStore.countBetween(
+                segNow.start,
+                now.atZone(java.time.ZoneId.systemDefault()).toEpochSecond(),
+            )
+        }
+    }
+    // 今日成果：写了几个目标、做完几个。时长是过程，这才是结果（与桌面 `goalTotal/goalDone` 同义）
+    val goalTotal = goalsToday.count { it.text.isNotBlank() }
+    val goalDone = goalsToday.count { it.text.isNotBlank() && it.state == "done" }
+
     // 今天排了多少自律——按**分钟**算，不是数整点。
     // 15 分钟刻度和"一小时多段"都必须算准：以前 `count { it.on }` 会把
     // 09:00–09:45 记成 1 小时，越精细的表错得越多。
@@ -423,6 +446,37 @@ private fun HomeScreen(cfg: Config) {
                 KV("积分", "${cfg.points}", MaterialTheme.colorScheme.secondary)
                 KV("今日使用", StatsMath.fmtDuration(todaySecs))
                 KV("今日自律", Slots.fmtMinutes(todayPlanMin))
+            }
+
+            // —— 现在 / 接下来 ——
+            // 桌面总览顶部那一行（`ui/app.js` 的 tb-left / tb-blk）在手机上落进状态卡：
+            // 手机没有横向空间铺一整条，但"下一段几点开始""这一节被打断几次"
+            // 正是自由时间里最想知道的两件事。
+            if (st == null && !sleeping && !locked) {
+                com.qqqorange.kingoffocus.core.BriefMath.nextSegment(cfg, now)?.let { nx ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "下一段 ${nx.at} 开始（${com.qqqorange.kingoffocus.core.BriefMath.fmtLeft(nx.inSecs)}后）",
+                        fontSize = 11.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (blocksNow > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "这一节已被打断 $blocksNow 次",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
+                )
+            }
+            if (goalTotal > 0) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "今日目标 $goalTotal 个 · 做完 $goalDone 个",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // 试用中：说清楚这是"临时的"，否则用户会以为排班被改了
