@@ -350,6 +350,67 @@ object Slots {
     }
 
     /**
+     * 拖动一整块到 [targetStart]（已吸附刻度）。
+     *
+     * 与 [moveBlock] 的区别就在**跨过邻居**：
+     *  · 落点没有越过任何块的"中心" → 还是自由平移（会在邻居边界处停住）；
+     *  · 落点越过了某块的中心 → **重排**：这一块插到那块前面/后面，
+     *    被影响的那一段（旧下标到新下标之间）按原顺序、原长度重新首尾排开。
+     *
+     * 为什么不是"push 邻居"：push 会把整天的窗口整体上移或下移
+     * （03–04、04–05 里把后者拖到最前，会变成 02–04），用户丢掉了自己选的时段。
+     * 重排则只是换顺序，总跨度不变——"把 04:00–05:00 拖到 03:00–04:00 之前"
+     * 的正确结果就是 03–04 归它、原来那段挪到 04–05。
+     *
+     * 重排区间从**这一段最早的起点**重新排布，所以中间原有的空隙会被合上
+     * （顺序变了，原来的"缝"属于被移动的那一块）。区间之外的块一秒都不动。
+     */
+    fun dragBlock(
+        day: List<HourPlan>,
+        seg: String,
+        targetStart: Int,
+        step: Int,
+        work: Int,
+        brk: Int,
+    ): List<HourPlan> {
+        val all = blocks(day)
+        val i = all.indexOfFirst { it.seg == seg }
+        if (i < 0) return day
+        val me = all[i]
+        val st = stepOf(step)
+        val start = snap(targetStart, st).coerceIn(0, (1440 - me.minutes).coerceAtLeast(0))
+        // 插入位置按"落点起点越过了几块的起点"来定，**不用中心点**：
+        // 长度不同时中心点会骗人——把 2 小时的段往上拖，它的中心永远压不过
+        // 上面那个 1 小时的段，于是"怎么拖都换不了位"（就是这次要修的现象）。
+        //
+        // 齐平时按方向决定：往上拖 → 排到它前面；往下拖 → 排到它后面。
+        // 这样"拖到 03:00"与"拖到 04:00"两个动作都有确定结果。
+        val movingUp = start < me.startMin
+        val drop = all.indices.filter { it != i }.count { k ->
+            val o = all[k]
+            if (movingUp) o.startMin < start else o.startMin <= start
+        }
+        if (drop == i) {
+            // 没有跨过任何块：维持原来的自由平移（仍会在邻居边界停住）
+            return moveBlock(day, seg, start - me.startMin, work, brk)
+        }
+        val ordered = all.toMutableList()
+        ordered.removeAt(i)
+        ordered.add(drop, me)
+        // 只重排"受影响的那一段"：它的起点和总长度都没变，
+        // 所以外面的块（在它前面 / 后面）不可能被挤到
+        val from = minOf(i, drop)
+        val to = maxOf(i, drop)
+        var cursor = all[from].startMin
+        for (k in from..to) {
+            val len = ordered[k].minutes
+            ordered[k] = ordered[k].copy(startMin = cursor, endMin = cursor + len)
+            cursor += len
+        }
+        return rebuild(day, ordered, work, brk)
+    }
+
+    /**
      * 拖块的上下边界改起止时间。
      *
      * `top = true` 改起点，否则改终点；[minute] 是拖到的位置（会被吸附到刻度）。

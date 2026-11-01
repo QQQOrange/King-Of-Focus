@@ -126,6 +126,98 @@ class SlotBlockTest {
         assertEquals(50, r[11].work) // 新占的小时用默认值
     }
 
+    /** 03:00–04:00 与 04:00–05:00：把后面那段拖到前面，应该**换位**而不是顶住不动 */
+    @Test
+    fun `把后一段拖到前一段之前 会交换位置`() {
+        val d = day(3 to HourWin(0, 60, "a"), 4 to HourWin(0, 60, "b"))
+        val r = Slots.dragBlock(d, "b", 3 * 60, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals("两段还是两段", 2, b.size)
+        assertEquals("被拖的那段占 03:00", 180, b[0].startMin)
+        assertEquals("b 现在在 03:00–04:00", "b", b[0].seg)
+        assertEquals("原来那段挪到 04:00", 240, b[1].startMin)
+        assertEquals("总跨度不变", 300, b[1].endMin)
+    }
+
+    @Test
+    fun `拖到最顶部会成为第一段`() {
+        val d = day(8 to HourWin(0, 60, "a"), 10 to HourWin(0, 60, "b"))
+        val r = Slots.dragBlock(d, "b", 0, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals("b 排到最前", "b", b[0].seg)
+        assertEquals("从这一段最早的起点开始排", 480, b[0].startMin)
+        assertEquals("a 跟着排到后面", 540, b[1].startMin)
+    }
+
+    @Test
+    fun `拖到最底部会成为最后一段`() {
+        val d = day(8 to HourWin(0, 60, "a"), 10 to HourWin(0, 60, "b"))
+        val r = Slots.dragBlock(d, "a", 1440, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals("b 变成第一段", "b", b[0].seg)
+        assertEquals("a 排到最后", "a", b[1].seg)
+        assertEquals("整体跨度不变", 600, b[1].endMin)
+    }
+
+    @Test
+    fun `跨过中间两块 落到手指所在的位置`() {
+        // a 从 03:00 拖到 05:00：落点正好是 c 的起点，所以 a 占 05:00，
+        // b、c 依次上移补位 —— 块会落在**手指松开的地方**，这是最不容易错的感觉
+        val d = day(
+            3 to HourWin(0, 60, "a"),
+            4 to HourWin(0, 60, "b"),
+            5 to HourWin(0, 60, "c"),
+        )
+        val r = Slots.dragBlock(d, "a", 5 * 60, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals(listOf("b", "c", "a"), b.map { it.seg })
+        assertEquals(listOf(180, 240, 300), b.map { it.startMin })
+        assertEquals("a 落在 05:00–06:00", 360, b[2].endMin)
+    }
+
+    @Test
+    fun `往上拖到中间起点时 排在它前面`() {
+        // c 从 05:00 拖到 04:00（b 的起点）：往上拖的齐平按"排到它前面"算
+        val d = day(
+            3 to HourWin(0, 60, "a"),
+            4 to HourWin(0, 60, "b"),
+            5 to HourWin(0, 60, "c"),
+        )
+        val r = Slots.dragBlock(d, "c", 4 * 60, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals(listOf("a", "c", "b"), b.map { it.seg })
+    }
+
+    @Test
+    fun `没越过别的块时还是自由平移`() {
+        val d = day(3 to HourWin(0, 60, "a"))
+        val r = Slots.dragBlock(d, "a", 5 * 60, 15, 50, 10)
+        assertEquals(300, Slots.blocks(r)[0].startMin)
+    }
+
+    @Test
+    fun `长度不同的相邻块重排后不重叠 总跨度不变`() {
+        // 03–04（1 小时）+ 04–06（2 小时）：把 2 小时那段拖到 03:00
+        val d = day(3 to HourWin(0, 60, "a"), 4 to HourWin(0, 60, "b"), 5 to HourWin(0, 60, "b"))
+        val r = Slots.dragBlock(d, "b", 3 * 60, 15, 50, 10)
+        val b = Slots.blocks(r)
+        assertEquals(2, b.size)
+        assertEquals("b 在前", "b", b[0].seg)
+        assertEquals(180, b[0].startMin)
+        assertEquals(300, b[0].endMin)
+        assertEquals("a 接在后面", 300, b[1].startMin)
+        assertEquals(360, b[1].endMin)
+    }
+
+    @Test
+    fun `拖出当天会被夹住`() {
+        val d = day(23 to HourWin(0, 60, "a"))
+        val r = Slots.dragBlock(d, "a", 5000, 15, 50, 10)
+        assertEquals(1380, Slots.blocks(r)[0].startMin)
+        val r2 = Slots.dragBlock(d, "a", -500, 15, 50, 10)
+        assertEquals(0, Slots.blocks(r2)[0].startMin)
+    }
+
     @Test
     fun `找不到段时原样返回`() {
         val d = day(9 to HourWin(0, 60, "s1"))
