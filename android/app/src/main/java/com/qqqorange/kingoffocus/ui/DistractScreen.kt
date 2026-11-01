@@ -158,6 +158,18 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             } else {
                 groups.forEachIndexed { gi, g ->
                     if (gi > 0) Spacer(Modifier.height(10.dp))
+                    // 这一段当时写的目标：让"我要做什么 → 结果记了什么"在同一处对得上
+                    val gGoal = com.qqqorange.kingoffocus.data.GoalStore.of(g.segStart)
+                    if (gGoal.isNotBlank()) {
+                        Text(
+                            "目标：$gGoal",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(g.label, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.width(8.dp))

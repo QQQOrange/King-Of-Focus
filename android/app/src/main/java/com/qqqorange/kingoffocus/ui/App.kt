@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Assessment
@@ -136,6 +138,65 @@ fun AppRoot() {
     }
 }
 
+/**
+ * 守护状态带。
+ *
+ * 三态：
+ *  · 权限齐备 + 服务在跑 → 绿色一行（"守护中"）；
+ *  · 缺权限 → 琥珀色，列出缺哪几个，点一下直达系统设置；
+ *  · 权限齐备但服务没在跑 → 琥珀色，点一下当场拉起来。
+ *
+ * 为什么不合并进下面的权限清单：清单是"逐项体检"，可以翻着看；
+ * 这一条是"总开关状态"，必须一眼可见——两者目的不同。
+ */
+@Composable
+private fun GuardStrip(missing: List<com.qqqorange.kingoffocus.core.PermItem>, running: Boolean) {
+    val ctx = LocalContext.current
+    val bad = missing.isNotEmpty() || !running
+    val accent = if (bad) Color(0xFFF5A524) else Color(0xFF3FBF7F)
+    val head = when {
+        missing.isNotEmpty() -> "现在没有在守护"
+        !running -> "守护服务没有在运行"
+        else -> "守护中"
+    }
+    val detail = when {
+        missing.isNotEmpty() -> missing.joinToString("、") { it.spec.title } + " 缺失"
+        !running -> "点一下立刻把它拉起来"
+        else -> "权限齐备 · 拦截与统计都在跑"
+    }
+    Surface(
+        color = accent.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier
+                .clickable {
+                    if (missing.isNotEmpty()) {
+                        missing.first().action?.let { runCatching { ctx.startActivity(it) } }
+                    } else if (!running) {
+                        GuardService.sync(ctx)
+                        GuardService.start(ctx)
+                    }
+                }
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(8.dp).background(accent, CircleShape))
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text(head, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = accent)
+                Text(
+                    detail,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (bad) Text("去修复", fontSize = 11.5.sp, color = accent)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 总览
 
 @Composable
@@ -198,6 +259,11 @@ private fun HomeScreen(cfg: Config) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         PageHeader("King Of Focus", "自律不是折磨自己，是把注意力还给你")
+
+        // 守护状态带：一眼看清"现在到底有没有在守"。
+        // 放在最顶上而不是塞进权限卡里，是因为 Android 上服务被 Doze/厂商清理后会
+        // **静默失效**——用户以为还在被管着，其实早就不拦了。这种事必须显眼。
+        GuardStrip(permissions.filter { it.needsAttention }, GuardService.isRunning())
 
         // —— 状态卡 ——
         Panel {

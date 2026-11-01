@@ -138,6 +138,7 @@ class GuardService : Service() {
     }
 
     override fun onCreate() {
+        running = true
         super.onCreate()
         Store.init(this)
         createChannels()
@@ -156,6 +157,7 @@ class GuardService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
         started = false
         handler.removeCallbacksAndMessages(null)
         StatsStore.flush()
@@ -634,16 +636,23 @@ class GuardService : Service() {
 
         // 1) 段结束：汇总这一段记下的
         if (wasFocusing && !focusing) {
+            // 刚结束的是哪一段：用"一分钟前"去算（翻面的这一刻，这一段已经不在范围里）
+            val prev = DistractMath.segmentBounds(cfg, now.minusMinutes(1))
+            val goal = if (prev != null) com.qqqorange.kingoffocus.data.GoalStore.of(prev.start) else ""
             val items = DistractMath.endedSegment(DistractStore.items.value, nowSec)
+            val parts = ArrayList<String>()
+            if (goal.isNotBlank()) parts += "目标：$goal"
             if (items.isNotEmpty()) {
-                val body = if (items.size == 1) {
-                    "记下了 1 条：" + items[0].text.take(18)
+                parts += if (items.size == 1) {
+                    "记下 1 条：" + items[0].text.take(18)
                 } else {
-                    "记下了 ${items.size} 条想法，去「分心事件」逐条处理"
+                    "记下 ${items.size} 条想法，去「分心事件」逐条处理"
                 }
-                notifyOnce(CH_ALERT, ID_DISTRACT_END, "这一段结束了", body, true)
-                DistractStore.markNudged(items.map { it.id }, nowSec)
             }
+            if (parts.isNotEmpty()) {
+                notifyOnce(CH_ALERT, ID_DISTRACT_END, "这一段结束了", parts.joinToString(" · "), true)
+            }
+            if (items.isNotEmpty()) DistractStore.markNudged(items.map { it.id }, nowSec)
         }
         wasFocusing = focusing
 
@@ -1079,6 +1088,18 @@ class GuardService : Service() {
     }
 
     companion object {
+        /**
+         * 服务是不是活着。
+         *
+         * 为什么要这个标志：Android 上没有可靠的"我的服务还在吗"查询
+         * （`getRunningServices` 对第三方应用早就废了），而"现在到底有没有在守护"
+         * 恰恰是用户最需要一眼看清的事——首页那条状态带读的就是它。
+         */
+        @Volatile
+        private var running = false
+
+        fun isRunning(): Boolean = running
+
         private const val TAG = "KofGuard"
         private const val CH_ONGOING = "kof_ongoing"
         private const val CH_ALERT = "kof_alert"

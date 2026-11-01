@@ -275,6 +275,19 @@ private fun DistractOverlay(kind: String) {
 
     var open by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
+    // 段目标：遮罩上也要能写/看到。每 30 秒重算一次"现在属于哪一段"，
+    // 免得跨段之后还显示上一段的目标。
+    var now by remember { mutableStateOf(java.time.LocalDateTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            now = java.time.LocalDateTime.now()
+        }
+    }
+    val seg = com.qqqorange.kingoffocus.core.DistractMath.segmentBounds(cfg, now)
+    val goal = seg?.let { com.qqqorange.kingoffocus.data.GoalStore.of(it.start) }.orEmpty()
+    var goalOpen by remember { mutableStateOf(false) }
+    var goalText by remember { mutableStateOf("") }
     val align = when (cfg.distract.buttonCorner) {
         "tr" -> Alignment.TopEnd
         "bl" -> Alignment.BottomStart
@@ -283,6 +296,27 @@ private fun DistractOverlay(kind: String) {
     }
 
     Box(Modifier.fillMaxSize().padding(16.dp)) {
+        // 目标条：顶部居中、压在按钮下面一行，避免和小圆钮抢位置
+        if (seg != null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 38.dp)
+                    .clickable {
+                        goalText = goal
+                        goalOpen = true
+                    },
+                shape = RoundedCornerShape(999.dp),
+                color = Color.White.copy(alpha = if (goal.isBlank()) 0.06f else 0.10f),
+            ) {
+                Text(
+                    if (goal.isBlank()) "＋ 写这一段的目标" else "目标：$goal",
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    fontSize = 12.sp,
+                    color = if (goal.isBlank()) Color(0xFFB9C0CC) else Color(0xFFEDEFF5),
+                )
+            }
+        }
         Surface(
             modifier = Modifier.align(align).clickable { open = true },
             shape = RoundedCornerShape(999.dp),
@@ -328,6 +362,47 @@ private fun DistractOverlay(kind: String) {
                 }) { Text("记下") }
             },
             dismissButton = { TextButton(onClick = { open = false }) { Text("取消") } },
+        )
+    }
+
+    if (goalOpen && seg != null) {
+        AlertDialog(
+            onDismissRequest = { goalOpen = false },
+            title = { Text("这一段要做什么") },
+            text = {
+                Column {
+                    Text(
+                        "写一句就够。时段结束时会把目标和被打断次数一起汇总给你。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = goalText,
+                        onValueChange = { if (it.length <= 200) goalText = it },
+                        placeholder = { Text("例如：把登录页写完") },
+                        maxLines = 2,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    com.qqqorange.kingoffocus.data.GoalStore.set(
+                        seg.start,
+                        goalText,
+                        day = now.toLocalDate().toString(),
+                    )
+                    goalOpen = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    // 清空 = 这一段不写目标，不是"删错了"
+                    com.qqqorange.kingoffocus.data.GoalStore.set(seg.start, "")
+                    goalOpen = false
+                }) { Text("清空") }
+            },
         )
     }
 }
