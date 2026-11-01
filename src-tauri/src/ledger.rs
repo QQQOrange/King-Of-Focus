@@ -44,6 +44,9 @@ pub struct Day {
 /// 一天最多留多少条（真到几百条也已经没有"看排名"的意义了）
 pub const MAX_HITS: usize = 200;
 
+/// 同一个目标多久算一次（与 Android `LedgerStore.DEDUP_SEC` 必须相同）
+const DEDUP_SECS: i64 = 30;
+
 pub fn dir() -> PathBuf {
     crate::cfg::data_dir().join("ledger")
 }
@@ -87,9 +90,23 @@ pub fn record(kind: &str, key: &str, label: &str, rule: &str) {
     let day = now.format("%Y-%m-%d").to_string();
     let mut d = load_day(&day);
     let ts = now.timestamp();
+    merge(&mut d, kind, key, label, rule, ts);
+    let _ = save_day(&d);
+}
+
+/// 把一次命中并进当天账本（纯内存，方便单测）。
+///
+/// 两条规则：
+/// 1. 同一个 key 累加次数、更新最近时间；
+/// 2. **30 秒内重复命中只算一次**——手机端每秒判定一次，不去重会记成
+///    "被打断 300 次"；桌面端调用点自己有节流，但两端口径必须一致，
+///    否则同样的行为在两端得到不同的数字。
+fn merge(d: &mut Day, kind: &str, key: &str, label: &str, rule: &str, ts: i64) {
     if let Some(h) = d.hits.iter_mut().find(|x| x.key == key) {
-        h.n = h.n.saturating_add(1);
-        h.last = ts;
+        if ts - h.last >= DEDUP_SECS {
+            h.n = h.n.saturating_add(1);
+        }
+        h.last = ts.max(h.last);
         h.rule = rule.to_string();
         if !label.is_empty() {
             h.label = label.to_string();
@@ -110,7 +127,6 @@ pub fn record(kind: &str, key: &str, label: &str, rule: &str) {
             rule: rule.to_string(),
         });
     }
-    let _ = save_day(&d);
 }
 
 /// 今天的账（按次数从高到低）
@@ -169,28 +185,29 @@ mod tests {
     #[test]
     fn merge_by_key() {
         let mut d = Day { schema: 1, day: "2026-11-02".into(), hits: vec![] };
-        let mut one = |key: &str, ts: i64| {
-            if let Some(h) = d.hits.iter_mut().find(|x| x.key == key) {
-                h.n += 1;
-                h.last = ts;
-            } else {
-                d.hits.push(Hit {
-                    key: key.into(),
-                    label: key.into(),
-                    kind: "app".into(),
-                    n: 1,
-                    last: ts,
-                    rule: "娱乐".into(),
-                });
-            }
-        };
-        one("bilibili.exe", 10);
-        one("bilibili.exe", 20);
-        one("steam.exe", 15);
+        merge(&mut d, "app", "bilibili.exe", "B站", "娱乐", 10);
+        merge(&mut d, "app", "steam.exe", "Steam", "娱乐", 15);
+        // 40 秒后再命中一次：超过去重窗口，正常累加
+        merge(&mut d, "app", "bilibili.exe", "B站", "娱乐", 50);
         assert_eq!(d.hits.len(), 2);
         let b = d.hits.iter().find(|x| x.key == "bilibili.exe").unwrap();
         assert_eq!(b.n, 2);
-        assert_eq!(b.last, 20, "最近一次时间要更新，排序才不会用旧值");
+        assert_eq!(b.last, 50, "最近一次时间要更新，排序才不会用旧值");
+    }
+
+    /// 30 秒内同一个目标只算一次：手机端每秒判定，不去重会把数字刷爆
+    #[test]
+    fn dedupes_within_window() {
+        let mut d = Day { schema: 1, day: "2026-11-02".into(), hits: vec![] };
+        merge(&mut d, "app", "steam.exe", "Steam", "娱乐", 100);
+        merge(&mut d, "app", "steam.exe", "Steam", "娱乐", 105);
+        merge(&mut d, "app", "steam.exe", "Steam", "娱乐", 120);
+        let h = &d.hits[0];
+        assert_eq!(h.n, 1, "30 秒内的重复命中不涨次数");
+        assert_eq!(h.last, 120, "但最近一次要往后挪");
+        // 跨过窗口才真的算第二次（窗口是从**最后一次命中**起算的）
+        merge(&mut d, "app", "steam.exe", "Steam", "娱乐", 160);
+        assert_eq!(d.hits[0].n, 2);
     }
 
     /// 日期不合法时不 panic、返回空（前端传了奇怪的串也不能把报告弄崩）

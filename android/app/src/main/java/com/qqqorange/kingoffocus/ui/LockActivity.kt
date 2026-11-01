@@ -64,6 +64,7 @@ import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.data.AppInfo
 import com.qqqorange.kingoffocus.data.DistractStore
+import com.qqqorange.kingoffocus.data.StakeStore
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.loadLaunchableApps
 import com.qqqorange.kingoffocus.toast
@@ -517,6 +518,39 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             Text("${cfg.points}", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF2F4F8))
             Text(" 分", fontSize = 13.sp, color = Color(0xFF9AA4B2))
         }
+        // 质押：押一笔，跑完退回来（一次没被打断还加一点）。
+        // 放在积分下面而不是藏进设置，是因为"押了没押"必须在锁机这一屏就能看见——
+        // 看不见的承诺不算承诺。
+        if (!sleep) {
+            val sn = StakeStore.snapshot(cfg, now)
+            Spacer(Modifier.height(8.dp))
+            if (sn.amount > 0) {
+                Text(
+                    "已押 ${sn.amount} 分 · 跑完退 ${sn.amount + sn.bonus}",
+                    fontSize = 11.5.sp,
+                    color = Color(0xFFF7C948),
+                )
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        val r = StakeStore.place(cfg, sn.unit)
+                        val ok = r.getOrNull()
+                        if (ok == null) {
+                            toast(ctx, r.exceptionOrNull()?.message ?: "押注失败")
+                        } else {
+                            Store.update { it.copy(points = (it.points - ok.amount).coerceAtLeast(0)) }
+                            toast(ctx, "已押 ${ok.amount} 分：跑完退 ${ok.amount + sn.bonus}")
+                        }
+                    },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
+                ) {
+                    Text(
+                        "押 ${sn.unit} 分 · 跑完退 ${sn.unit + sn.bonus}",
+                        fontSize = 11.5.sp,
+                    )
+                }
+            }
+        }
         if (LockEngine.isPaused(cfg, now)) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -581,6 +615,8 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                         lockPausedUntil = until,
                     )
                 }
+                // 花积分暂停 = 提前退出这一段：押的分没收（质押唯一的惩罚出口）
+                StakeStore.forfeit(Store.current)
                 toast(ctx, "已暂停 ${price.minutes} 分钟，扣 ${price.cost} 分")
                 if (!done) { done = true; onDone() }
             },
@@ -602,6 +638,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                         lockStoppedSeg = seg,
                     )
                 }
+                StakeStore.forfeit(Store.current)
                 toast(ctx, "已停止本次锁机，扣 $stopCost 分；下一段专注会重新锁机")
                 if (!done) { done = true; onDone() }
             },

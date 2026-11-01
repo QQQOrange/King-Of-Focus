@@ -40,6 +40,8 @@ object Store {
         // 分心事件是独立的事件流（不进备份），跟配置分开初始化
         DistractStore.init(ctx.applicationContext)
         GoalStore.init(ctx.applicationContext)
+        LedgerStore.init(ctx.applicationContext)
+        StakeStore.init(ctx.applicationContext)
         // 权限状态机要把"首次拿到"记下来（用来区分"从没给过"和"被回收"）
         com.qqqorange.kingoffocus.core.UsageAccess.bind { block -> update(block) }
     }

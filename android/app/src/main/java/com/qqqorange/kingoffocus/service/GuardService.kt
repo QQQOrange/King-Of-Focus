@@ -28,6 +28,8 @@ import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.core.StatsMath
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.data.DistractStore
+import com.qqqorange.kingoffocus.data.LedgerStore
+import com.qqqorange.kingoffocus.data.StakeStore
 import com.qqqorange.kingoffocus.core.StatsTrack
 import com.qqqorange.kingoffocus.core.KeepAlive
 import com.qqqorange.kingoffocus.core.UsageAccess
@@ -184,6 +186,8 @@ class GuardService : Service() {
         maybeDailySummary(cfg, now)
         // 分心事件：段结束汇总 + 未完成项按间隔提醒（与睡眠/锁机分支无关，先做）
         maybeDistract(cfg, now)
+        // 质押到点结算：不依赖界面在不在，关程序跨过结束时刻也能在下次启动补上
+        maybeStake(cfg, now)
 
         // 常驻通知里的今日进度：不必每秒重算（读日文件 + 数分钟），30 秒一次就够
         val progress = if (cfg.notify.enabled && cfg.notify.ongoingProgress) {
@@ -615,6 +619,27 @@ class GuardService : Service() {
         return (done to plan).also { progressCache = it }
     }
 
+    // ---------------- 专注质押 ----------------
+
+    /**
+     * 结算到点的质押。
+     *
+     * 手机端没有桌面那套 `totalEarned` 记账（积分只有一个余额），所以这里只加余额。
+     */
+    private fun maybeStake(cfg: Config, now: LocalDateTime) {
+        val back = StakeStore.settleDue(cfg, now)
+        if (back > 0) {
+            Store.update { it.copy(points = it.points + back) }
+            notifyOnce(
+                CH_ALERT,
+                ID_STAKE,
+                "这一段的押金退回来了",
+                "退回 $back 分（含干净跑完的奖励）",
+                true,
+            )
+        }
+    }
+
     // ---------------- 分心事件 ----------------
 
     /** 上一拍是不是在专注。段结束只在 true → false 的那一拍处理 */
@@ -729,7 +754,12 @@ class GuardService : Service() {
         } else {
             alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
         }
+        // 账本：只记**真的动手拦了**的这一处；"扫到但放过"不记，否则次数虚高
+        LedgerStore.record("app", pkg, label, rule.name)
     }
+
+    /** 只有专注期的拦截才进账本：睡眠期被拦是"该睡觉"，不算分心 */
+    private fun fnKind(kind: String): Boolean = kind == LockActivity.KIND_FOCUS
 
     private fun appLabel(pkg: String): String = runCatching {
         val pm = packageManager
@@ -795,6 +825,9 @@ class GuardService : Service() {
             imePkgs = imePkgs,
         )
         if (!decision.block) return
+        // 锁机把人拽出来也算一次"被打断"（账本自己做了 30 秒去重，
+        // 这里每秒判定一次不会把次数刷爆）
+        if (fnKind(kind)) LedgerStore.record("app", fg, appLabel(fg), decision.why)
         if (fg !in homePkgs) {
             goHome()
             // 给桌面一点时间完成切换，再压上遮罩；否则遮罩会盖在旧应用上
@@ -839,6 +872,7 @@ class GuardService : Service() {
             return
         }
         showLock(LockActivity.KIND_PAGE, rule)
+        LedgerStore.record("app", fg, appLabel(fg), rule)
     }
 
     /**
@@ -1109,6 +1143,7 @@ class GuardService : Service() {
         /** 分心事件的两条通知：固定 id，重复提醒只会覆盖不会堆一屏 */
         private const val ID_DISTRACT_END = 7411
         private const val ID_DISTRACT_DUE = 7412
+        private const val ID_STAKE = 7413
         /** 锁机提醒两个 id：提醒是"事件"，同一类只留最新一条 */
         private const val LOCK_PRE_ID = 4104
         private const val LOCK_END_ID = 4105

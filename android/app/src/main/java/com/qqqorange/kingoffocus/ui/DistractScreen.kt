@@ -39,6 +39,7 @@ import com.qqqorange.kingoffocus.core.DistractMath
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.DistractItem
 import com.qqqorange.kingoffocus.data.DistractStore
+import com.qqqorange.kingoffocus.data.LedgerStore
 import com.qqqorange.kingoffocus.data.Store
 import java.time.LocalDate
 import java.time.YearMonth
@@ -268,6 +269,58 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        // —— 账本：今天被什么打断 ——
+        // 与桌面端同一个概念，只是手机端的"拦下"是回桌面 / 盖拦截页。
+        SectionTitle("今天被什么打断")
+        Panel {
+            val today = DistractMath.today()
+            val hits = remember(items) { LedgerStore.day(today, 6) }
+            val total = hits.sumOf { it.n }
+            if (hits.isEmpty()) {
+                Text(
+                    "今天还没被拦过。要么很自律，要么规则没生效——去总览看看守护状态。",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "共 $total 次。次数最多的那一个，就是最值得关掉的那一个。",
+                    fontSize = 10.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                hits.forEach { h ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Pill(if (h.kind == "site") "网页" else "软件", MaterialTheme.colorScheme.secondary)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            h.label,
+                            fontSize = 12.5.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (h.rule.isNotBlank()) {
+                            Text(
+                                h.rule,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(
+                            "${h.n} 次",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(24.dp))
     }
