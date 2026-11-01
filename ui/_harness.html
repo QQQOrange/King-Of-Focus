@@ -354,6 +354,10 @@ window.__itest = async () => {
   const cell = (d, h) => document.querySelector(`.cc-cell[data-d="${d}"][data-h="${h}"]`);
   const fire = (type, el, opts = {}) =>
     el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...opts }));
+  /** 键盘事件：`fire` 造的是 MouseEvent（没有 key），按键一律走这个 */
+  const fireKey = (type, el, opts = {}) =>
+    (el || document.activeElement || document.body)
+      .dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, ...opts }));
   const fc = () => S.data.config.settings.focusClock;
   /** 当前生效方案 */
   const prof = () => { const c = fc(); return c.profiles.find((p) => p.id === c.active) || c.profiles[0]; };
@@ -5015,6 +5019,106 @@ window.__itest = async () => {
     out.push(['旧格式覆盖会注明整份恢复', /整份恢复/.test(restoreText({ mode: 'overwrite', rules: 3, legacy: true })), true]);
 
     S.backups = [];
+  }
+
+  // 28. 弹层键盘与焦点（KOF-01 ~ KOF-05）
+  //
+  //  全部用**合成键盘事件**验：确认的是"我们的处理逻辑有没有接管"，
+  //  而不是浏览器默认行为（合成事件本来就不会移动焦点）。
+  //  注意 `fire` 造的是 MouseEvent（没有 key），按键必须用 `fireKey`。
+  {
+    $('#modalRoot').innerHTML = '';
+    await wait(60);
+    out.push(['没有弹层时层栈为空', Layer.size(), 0]);
+
+    Act.keyCheck();
+    await wait(120);
+    out.push(['打开弹窗后层栈 = 1', Layer.size(), 1]);
+    out.push(['层名取自标题', Layer.info().name, '键盘与焦点自查']);
+    out.push(['层内可聚焦元素够多', Layer.probe().total >= 3, true]);
+    out.push(['打开后焦点已进入弹层', Layer.top().el.contains(document.activeElement), true]);
+
+    // Tab 循环：从最后一个往后 → 回到第一个（不跑出弹层）
+    const items = Layer.focusables(Layer.top().el);
+    items[items.length - 1].focus();
+    fireKey('keydown', document.activeElement, { key: 'Tab' });
+    await wait(30);
+    out.push(['末尾按 Tab 回到第一个', document.activeElement, items[0]]);
+
+    // Shift+Tab 反向：从第一个往前 → 到最后一个
+    items[0].focus();
+    fireKey('keydown', document.activeElement, { key: 'Tab', shiftKey: true });
+    await wait(30);
+    out.push(['开头按 Shift+Tab 绕到最后一个', document.activeElement, items[items.length - 1]]);
+
+    // 焦点被外部抢走：keyup 兜底把它拽回来
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    const escapesBefore = Layer.info().escapes;
+    outside.focus();
+    fireKey('keyup', outside, { key: 'Tab' });
+    await wait(40);
+    out.push(['焦点跑到层外后会被拽回', Layer.top().el.contains(document.activeElement), true]);
+    out.push(['拽回次数 +1', Layer.info().escapes > escapesBefore, true]);
+    outside.remove();
+
+    // 输入法组合中按 Enter 不提交；长按不重复提交
+    window.__saved = 0;
+    const origSave = Act.saveEditor;
+    Act.saveEditor = async () => { window.__saved += 1; };
+    const nm = document.createElement('input');
+    nm.id = 'ruleName';
+    Layer.top().el.appendChild(nm);
+    nm.focus();
+    fireKey('keydown', nm, { key: 'Enter', isComposing: true });
+    await wait(20);
+    out.push(['输入法组合中回车不提交', window.__saved, 0]);
+    fireKey('keydown', nm, { key: 'Enter' });
+    await wait(30);
+    out.push(['组合结束后的回车才提交', window.__saved, 1]);
+    fireKey('keydown', nm, { key: 'Enter', repeat: true });
+    await wait(20);
+    out.push(['长按回车不重复提交', window.__saved, 1]);
+    Act.saveEditor = origSave;
+    nm.remove();
+
+    // SubLayerChanged：层变化对外广播
+    window.__layerEvt = [];
+    const onLayer = (e) => window.__layerEvt.push(e.detail);
+    document.addEventListener('SubLayerChanged', onLayer);
+    Act.keyCheck();
+    await wait(120);
+    out.push(['层变化派发 SubLayerChanged', window.__layerEvt.length > 0, true]);
+    out.push(['事件里带层数', (window.__layerEvt[window.__layerEvt.length - 1] || {}).count, 1]);
+    document.removeEventListener('SubLayerChanged', onLayer);
+
+    // Esc 关闭（capture 阶段，一次只关一层）
+    fireKey('keydown', document.activeElement, { key: 'Escape' });
+    await wait(240);
+    out.push(['Esc 关掉弹层', Layer.size(), 0]);
+    out.push(['Esc 之后弹层内容清空', $('#modalRoot').innerHTML.trim(), '']);
+
+    // 两层叠加（模拟将来的嵌套弹窗）：Esc 只关最上面那层
+    const mk = (t) => {
+      const d = document.createElement('div');
+      d.className = 'modal-mask';
+      d.innerHTML = `<div class="modal"><div class="modal-hd"><h3>${t}</h3></div>
+        <div class="modal-bd"><button>a</button><button>b</button></div></div>`;
+      return d;
+    };
+    $('#modalRoot').appendChild(mk('下层'));
+    await wait(60);
+    $('#modalRoot').appendChild(mk('上层'));
+    await wait(60);
+    out.push(['两层时层栈 = 2', Layer.size(), 2]);
+    out.push(['栈顶是上层', Layer.info().name, '上层']);
+    fireKey('keydown', document.activeElement, { key: 'Escape' });
+    await wait(240);
+    out.push(['Esc 只关最上面那层', Layer.size(), 1]);
+    out.push(['剩下的还是下层', Layer.info().name, '下层']);
+    $('#modalRoot').innerHTML = '';
+    await wait(80);
+    out.push(['清空后层栈归零', Layer.size(), 0]);
   }
 
   const pre = document.createElement('pre');

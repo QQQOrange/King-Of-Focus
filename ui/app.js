@@ -3000,6 +3000,20 @@ function viewMask() {
       <button class="btn btn-sm" data-act="save-hotkey">保存</button>
       <span class="badge ${m.hotkeyOk ? 'green' : 'red'}">${m.hotkeyOk ? '已注册' : '未注册'}</span>
     </div>
+
+    <!-- KOF-06：提权与 UIPI。
+         低级键盘钩子在**未提权**时收不到更高完整性级别进程（管理员窗口）的按键，
+         这不是本程序的问题，是 Windows 的 UIPI 隔离。写清楚，别让用户以为"快捷键坏了"。 -->
+    ${!S.data.admin ? `<div class="hint" style="margin-top:8px;color:var(--red)">
+      当前是普通权限：强制退出用的全局键盘钩子收不到「以管理员身份运行」的窗口里的按键（Windows UIPI 隔离）。
+      这是系统限制，不是快捷键没注册——需要覆盖那种窗口时，用上面的「以管理员身份重启」。
+    </div>` : ''}
+
+    <!-- KOF-07：键盘自查。弹窗、Tab 循环、焦点是否逃逸，都在这里一眼看到 -->
+    <div class="row" style="margin-top:10px;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-sm" data-act="key-check">键盘与焦点自查</button>
+      <span class="hint" style="align-self:center">打开一个弹窗，按 Tab 看焦点是否只在弹窗内循环</span>
+    </div>
   </div>`;
 }
 
@@ -6595,6 +6609,8 @@ const Act = window.Act = {
   },
 
   async restartAdmin() { await invoke('restart_as_admin'); },
+  /** KOF-07：键盘/焦点自查（弹窗本身就是被检查的那一层） */
+  keyCheck() { renderKeyCheck(); },
   async openExt() { try { await invoke('open_extension_dir'); } catch (e) { toast(String(e), 'err'); } },
   async forceQuit() {
     // 强制退出不弹确认框（语义就是"立刻走"），但要有一次防误触的确认，
@@ -7992,8 +8008,16 @@ function closeModal() {
   if (box) box.classList.add('closing');
 
   let tid = 0;
-  const obs = new MutationObserver(() => {
-    // 期间有新内容写进来（新弹窗）→ 放弃这次清理
+  const obs = new MutationObserver((muts) => {
+    // 只有**新弹窗被插进来**才放弃清理。
+    //
+    // 以前这里是"任何 childList 变化都放弃"，代价是：弹窗里只要有会自己刷新的
+    // 内容（进度、实时读数、自查面板的 250ms 刷新），关闭就永远执行不到——
+    // 表现就是"按 Esc / 点关闭没反应，弹窗还在"。内部刷新不是新弹窗，别当成新弹窗。
+    const replaced = muts.some((m) => [...m.addedNodes].some((n) => n.nodeType === 1
+      && (n.classList && n.classList.contains('modal-mask')
+        || (n.querySelector && n.querySelector('.modal-mask')))));
+    if (!replaced) return;
     obs.disconnect();
     clearTimeout(tid);
   });
@@ -8002,6 +8026,293 @@ function closeModal() {
     obs.disconnect();
     if (root.querySelector('.modal-mask') === mask) root.innerHTML = '';
   }, 120);
+}
+
+/* ---------------- 弹层键盘与焦点管理（KOF-01 ~ KOF-05） ----------------
+
+   为什么需要这一层：`#modalRoot` 一直是"谁想弹就 innerHTML 直写"，没有任何
+   "当前是哪一层"的概念。于是出现三个真问题：
+
+   1. **Tab 会把焦点送到弹窗外面**——主界面的按钮一圈一圈地过，最后按 Esc
+      反而关掉了弹窗，用户以为"键盘坏了"；
+   2. **输入法组合中按 Enter 会提前提交**（拼音还没选字就点了保存）；
+   3. 某个子组件 `stopPropagation()` 之后 Esc 再也到不了 document，弹窗卡住。
+
+   这里刻意**不去改那十几处 innerHTML 写法**，而是用观察器盯着 #modalRoot：
+   谁写进去，谁就自动成为一名"层"。写法不用变，行为统一。
+
+   对外只暴露 `Layer`，并把层变化派发成 `SubLayerChanged` 事件
+   （`document.addEventListener('SubLayerChanged', e => ...)`），
+   任何子系统（拖选、快捷键面板、将来的键盘引擎）都能订阅，不用互相 import。 */
+
+const Layer = (() => {
+  /** 层栈，栈顶在最后。`{ el, name, at, focusBefore }` */
+  const stack = [];
+  /** 焦点被从层外拽回来的次数（自查面板显示，用来判断"是不是又逃了"） */
+  let escapes = 0;
+  /** 递增序号：同一时刻开两层也能分出新旧 */
+  let seq = 0;
+
+  const SEL = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled]):not([type="hidden"])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+
+  function visible(el) {
+    if (!el || !el.getClientRects) return false;
+    // 不用 getClientRects 判可见：弹窗刚插入、还没排版时它是 0，
+    // 那会让"第一下 Tab"因为找不到元素而被吃掉。
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+  }
+
+  function focusables(root) {
+    return [...root.querySelectorAll(SEL)].filter(
+      (el) => !el.disabled && el.tabIndex >= 0 && visible(el),
+    );
+  }
+
+  function nameOf(el) {
+    const h = el.querySelector('.modal-hd h3') || el.querySelector('h3');
+    const t = h ? (h.textContent || '').trim() : '';
+    return t || '（未命名弹层）';
+  }
+
+  function firstFocus(el) {
+    if (!el) return;
+    const marked = el.querySelector('[data-autofocus]');
+    const target = marked || focusables(el)[0];
+    if (target && target.focus) {
+      try { target.focus({ preventScroll: false }); } catch (_) { /* 老 WebView 不认参数 */ }
+      return;
+    }
+    // 一层里没有可聚焦元素（纯文字提示）：让容器自己可聚焦，
+    // 这样 Tab 至少有落点，不会直接跳回主界面。
+    if (el.tabIndex < 0) el.tabIndex = -1;
+    try { el.focus(); } catch (_) { /* 忽略 */ }
+  }
+
+  function emit() {
+    const top = stack.length ? stack[stack.length - 1] : null;
+    const detail = {
+      count: stack.length,
+      name: top ? top.name : '',
+      at: top ? top.at : 0,
+      escapes,
+    };
+    // 自查面板读它；顺便留在 window 上，方便排查时手输
+    try { S.uiLayer = detail; } catch (_) { /* S 还没初始化 */ }
+    document.dispatchEvent(new CustomEvent('SubLayerChanged', { detail }));
+  }
+
+  /** 把 #modalRoot 的现状同步成层栈（新增的入栈、消失的出栈） */
+  function sync() {
+    const root = document.getElementById('modalRoot');
+    if (!root) return;
+    const now = [...root.children].filter((el) => el.classList && el.classList.contains('modal-mask'));
+
+    // 出栈：从后往前，保证"关顶层"先被处理
+    for (let i = stack.length - 1; i >= 0; i -= 1) {
+      if (!now.includes(stack[i].el)) {
+        const gone = stack.splice(i, 1)[0];
+        // 只有关掉的是栈顶才把焦点还回去；关掉下层时焦点本来就在上层
+        if (i === stack.length && gone.focusBefore && document.contains(gone.focusBefore)) {
+          try { gone.focusBefore.focus(); } catch (_) { /* 元素可能已销毁 */ }
+        }
+      }
+    }
+    // 入栈：按 DOM 顺序补
+    now.forEach((el) => {
+      if (stack.some((l) => l.el === el)) return;
+      stack.push({ el, name: nameOf(el), at: ++seq, focusBefore: document.activeElement });
+      // 打开就把焦点送进去：否则第一下 Tab 是"从外面跳进来"，
+      // 在用户看来就是"焦点先跑了一下"。
+      const mine = stack[stack.length - 1];
+      queueMicrotask(() => {
+        if (stack[stack.length - 1] === mine) firstFocus(el);
+      });
+    });
+    emit();
+  }
+
+  /** 焦点必须在栈顶层里；跑到外面就拽回来（keyup / 窗口回焦时调） */
+  function ensureInside(why) {
+    const top = stack.length ? stack[stack.length - 1] : null;
+    if (!top) return;
+    const a = document.activeElement;
+    if (!a || a === document.body || a === document.documentElement) {
+      if (a && a !== document.body) return;
+      escapes += 1;
+      firstFocus(top.el);
+      emit();
+      return;
+    }
+    if (top.el.contains(a)) return;
+    escapes += 1;
+    if (why) top.why = why;
+    firstFocus(top.el);
+    emit();
+  }
+
+  /** 关掉栈顶那一层（Esc 用） */
+  function closeTop() {
+    const top = stack.length ? stack[stack.length - 1] : null;
+    if (!top) return false;
+    // 时段页的右键菜单有自己的收尾（清 hover、清边缘手柄），先让它走完
+    if (top.el.querySelector('.cc-modal') && typeof ccCloseMenu === 'function') {
+      ccCloseMenu();
+      return true;
+    }
+    // 只有一层：走原来的 closeModal，保留它那套退场动画
+    if (stack.length === 1) {
+      closeModal();
+      return true;
+    }
+    // 多层：**只摘掉栈顶**。
+    // closeModal 内部是 `root.querySelector('.modal-mask')`（第一个）+ 清空整个
+    // #modalRoot —— 那在嵌套时会把下面那层也一起关掉。所以这里自己移除。
+    const el = top.el;
+    el.classList.add('closing');
+    const box = el.querySelector('.modal');
+    if (box) box.classList.add('closing');
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 120);
+    return true;
+  }
+
+  return {
+    sync,
+    ensureInside,
+    closeTop,
+    focusables,
+    firstFocus,
+    top: () => (stack.length ? stack[stack.length - 1] : null),
+    size: () => stack.length,
+    info: () => ({
+      count: stack.length,
+      names: stack.map((l) => l.name),
+      name: stack.length ? stack[stack.length - 1].name : '',
+      escapes,
+    }),
+    /** 自查面板用：量化地看"这一层里有几个可聚焦点、当前在第几个" */
+    probe: () => {
+      const top = stack.length ? stack[stack.length - 1] : null;
+      if (!top) return { count: 0, index: -1, total: 0, name: '' };
+      const items = focusables(top.el);
+      return {
+        count: stack.length,
+        name: top.name,
+        total: items.length,
+        index: items.indexOf(document.activeElement),
+      };
+    },
+  };
+})();
+
+/* 观察器：谁往 #modalRoot 写，谁就自动成为一层 */
+(() => {
+  const root = document.getElementById('modalRoot');
+  if (!root || typeof MutationObserver === 'undefined') return;
+  new MutationObserver(() => Layer.sync()).observe(root, { childList: true });
+  Layer.sync();
+})();
+
+/* KOF-01：Tab 焦点陷阱（capture 阶段，子组件 stopPropagation 也拦不住） */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return;
+  const top = Layer.top();
+  if (!top) return;
+  // 输入法有时用 Tab 翻页选词，组合中不接管
+  if (e.isComposing || e.keyCode === 229) return;
+  const items = Layer.focusables(top.el);
+  // 关键：不 preventDefault 的话浏览器会把焦点送出弹窗，这就是"焦点连续跳"
+  e.preventDefault();
+  if (!items.length) return;
+  const cur = document.activeElement;
+  const i = items.indexOf(cur);
+  const forward = !e.shiftKey;
+  const next = i < 0
+    ? (forward ? 0 : items.length - 1)
+    : (i + (forward ? 1 : -1) + items.length) % items.length;
+  try { items[next].focus(); } catch (_) { /* 忽略 */ }
+}, true);
+
+/* KOF-03：Esc 也放 capture —— 子组件吞掉冒泡时仍然能关 */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (e.isComposing || e.keyCode === 229) return;
+  if (!Layer.top()) return;
+  // 标记一下，冒泡阶段的旧逻辑看到就跳过，避免一次 Esc 关两层
+  e.__kofEscHandled = true;
+  e.preventDefault();
+  Layer.closeTop();
+}, true);
+
+/* KOF-04：keyup / 窗口回焦兜底——层还在，焦点却不在了，就拽回来 */
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Tab' || e.key === 'Escape') Layer.ensureInside('keyup');
+}, true);
+window.addEventListener('focus', () => Layer.ensureInside('window-focus'));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) Layer.ensureInside('visible');
+});
+
+/* KOF-05：层变化对外广播。现有消费者：时段页拖选/悬停状态需要在弹层出现时收尾 */
+document.addEventListener('SubLayerChanged', (e) => {
+  const d = (e && e.detail) || {};
+  if (d.count > 0) {
+    try { if (typeof ccEdgeClear === 'function') ccEdgeClear(); } catch (_) { /* 不在时段页 */ }
+  }
+});
+
+/** KOF-07：键盘与焦点自查面板。
+ *
+ *  为什么要有个"自己测自己"的入口：Tab 逃出弹窗这种事，用户只能描述成
+ *  "焦点乱跳"，而开发这边没有现成的可观测值。这个面板把内部状态摊开：
+ *  当前几层、几个可聚焦点、焦点在第几个、被拽回了几次。
+ *  它自己也是一个层，所以"打开它就等于在测它自己"——很省事。 */
+function renderKeyCheck() {
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="width:520px">
+      <div class="modal-hd">
+        <h3>键盘与焦点自查</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div class="list-row"><span class="grow">弹层数 / 当前层</span><b id="kcLayer">—</b></div>
+        <div class="list-row"><span class="grow">可聚焦元素 / 焦点位置</span><b id="kcFocus">—</b></div>
+        <div class="list-row"><span class="grow">焦点被拽回次数</span><b id="kcEscapes">0</b></div>
+        <div class="list-row"><span class="grow">运行权限</span><b id="kcAdmin">—</b></div>
+        <div class="hint" style="margin-top:12px">在这一层里按 Tab / Shift+Tab：焦点应该只在这几个控件之间循环，不会跑到主界面上。上面的「焦点位置」会跟着变；显示 — 说明焦点当前不在这层的任何控件上。</div>
+        <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+          <input type="text" placeholder="在这里输入试试 Tab" style="flex:1" />
+          <button class="btn btn-sm">测试按钮 A</button>
+          <button class="btn btn-sm">测试按钮 B</button>
+        </div>
+        <div class="hint" style="margin-top:8px">Esc 关闭；打开期间如果焦点被外部抢走，会被自动拽回来（次数记在上面的「拽回次数」里）。</div>
+      </div>
+      <div class="modal-ft"><button class="btn" data-act="close-modal">关闭</button></div>
+    </div>
+  </div>`;
+
+  const paint = () => {
+    // 弹窗被关掉后停止刷新（节点没了就说明层已经不在）
+    if (!document.getElementById('kcLayer')) { clearInterval(timer); return; }
+    const p = Layer.probe();
+    const info = Layer.info();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('kcLayer', p.count ? `${p.count} · ${p.name}` : '没有弹层');
+    set('kcFocus', p.count ? `${p.index >= 0 ? p.index + 1 : '—'} / ${p.total}` : '—');
+    set('kcEscapes', String(info.escapes));
+    set('kcAdmin', S.data && S.data.admin ? '管理员' : '普通权限');
+  };
+  let timer = 0;
+  timer = setInterval(paint, 250);
+  paint();
 }
 
 function renderPicker() {
@@ -8477,6 +8788,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'lang') { await Act.setLang(el.dataset.v); return; }
   if (act === 'cycle-theme') { await Act.cycleTheme(); return; }
   if (act === 'restart-admin') { await Act.restartAdmin(); return; }
+  if (act === 'key-check') { Act.keyCheck(); return; }
   if (act === 'open-ext') { await Act.openExt(); return; }
   if (act === 'force-quit') { await Act.forceQuit(); return; }
   if (act === 'open-cfg') { await Act.openCfg(); return; }
@@ -10352,10 +10664,18 @@ document.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 'Escape') {
+    // 上面 capture 的处理器已经关过一层（它能穿过 stopPropagation）。
+    // 这里只兜"没有层栈"的情况，否则一次 Esc 会连关两层。
+    if (e.__kofEscHandled) return;
     if (typeof ccCloseMenu === 'function') ccCloseMenu();
     if ($('#modalRoot').innerHTML) { S.editing = null; closeModal(); }
   }
   if (e.key === 'Enter') {
+    // 输入法组合中（拼音还没选字）按 Enter 是"选词"，不是"提交"。
+    // 以前这里没有这道判断，中文输入法下回车会直接把半成品存下去。
+    if (e.isComposing || e.keyCode === 229) return;
+    // 长按回车只算一次：不然一按住就重复建了好几条规则
+    if (e.repeat) return;
     if (e.target.id === 'siteInput') { e.preventDefault(); Act.addSite(); }
     if (e.target.id === 'excInput') { e.preventDefault(); Act.addExc(); }
     if (e.target.id === 'ruleName') { e.preventDefault(); Act.saveEditor(); }
