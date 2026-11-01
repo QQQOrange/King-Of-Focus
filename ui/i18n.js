@@ -326,6 +326,30 @@
     '外观': 'Appearance',
     '语言': 'Language',
     '语言 · Language': 'Language',
+    // 弹层键盘与焦点（KOF-01 ~ KOF-07）
+    '键盘与焦点自查': 'Keyboard & focus check',
+    '打开一个弹窗，按 Tab 看焦点是否只在弹窗内循环':
+      'Open a dialog and press Tab to see whether focus stays inside it',
+    '弹层数 / 当前层': 'Layers / current layer',
+    '可聚焦元素 / 焦点位置': 'Focusable items / current position',
+    '焦点被拽回次数': 'Times focus was pulled back',
+    '运行权限': 'Privilege level',
+    '在这一层里按 Tab / Shift+Tab：焦点应该只在这几个控件之间循环，不会跑到主界面上。上面的「焦点位置」会跟着变；显示 — 说明焦点当前不在这层的任何控件上。':
+      'Press Tab / Shift+Tab inside this dialog: focus should cycle only among these controls and never '
+      + 'escape to the main UI. The position above follows along; "—" means focus is not on any control here.',
+    '在这里输入试试 Tab': 'Type here and try Tab',
+    '测试按钮 A': 'Test button A',
+    '测试按钮 B': 'Test button B',
+    'Esc 关闭；打开期间如果焦点被外部抢走，会被自动拽回来（次数记在上面的「拽回次数」里）。':
+      'Esc closes. If focus gets stolen while open, it is pulled back automatically '
+      + '(counted as "Times focus was pulled back").',
+    '没有弹层': 'No dialog open',
+    '管理员': 'Administrator',
+    '普通权限': 'Standard user',
+    '当前是普通权限：强制退出用的全局键盘钩子收不到「以管理员身份运行」的窗口里的按键（Windows UIPI 隔离）。 这是系统限制，不是快捷键没注册——需要覆盖那种窗口时，用上面的「以管理员身份重启」。':
+      'Running as a standard user: the global keyboard hook used for force-quit cannot see keys typed into '
+      + 'elevated windows (Windows UIPI isolation). This is an OS limitation, not a broken hotkey. '
+      + 'Restart as administrator if you need to cover such windows.',
     // WebDAV 默认地址（留空即默认；与 Android CloudSync.DEFAULT_URL 同一个目录）
     '留空 = 用默认地址（坚果云）': 'Leave blank to use the default (Nutstore)',
     '· 默认地址是 https://dav.jianguoyun.com/dav/KingOfFocus/（目录会自动创建）；换别的网盘就按 Nextcloud 的格式填 https://你的域名/remote.php/dav/files/用户名/目录/':
