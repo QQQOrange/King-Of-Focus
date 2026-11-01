@@ -188,6 +188,10 @@ class GuardService : Service() {
         maybeDistract(cfg, now)
         // 质押到点结算：不依赖界面在不在，关程序跨过结束时刻也能在下次启动补上
         maybeStake(cfg, now)
+        // 试用到点把原排班还回去（并说一句，否则用户以为它自己坏了）
+        if (com.qqqorange.kingoffocus.data.TrialRunner.restoreIfDue(now)) {
+            notifyOnce(CH_ALERT, ID_TRIAL, "试用结束", "已经还原你原来的时段", true)
+        }
 
         // 常驻通知里的今日进度：不必每秒重算（读日文件 + 数分钟），30 秒一次就够
         val progress = if (cfg.notify.enabled && cfg.notify.ongoingProgress) {
@@ -1144,6 +1148,7 @@ class GuardService : Service() {
         private const val ID_DISTRACT_END = 7411
         private const val ID_DISTRACT_DUE = 7412
         private const val ID_STAKE = 7413
+        private const val ID_TRIAL = 7414
         /** 锁机提醒两个 id：提醒是"事件"，同一类只留最新一条 */
         private const val LOCK_PRE_ID = 4104
         private const val LOCK_END_ID = 4105

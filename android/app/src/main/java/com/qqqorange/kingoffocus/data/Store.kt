@@ -34,7 +34,16 @@ object Store {
         if (::file.isInitialized) return
         val dir = File(ctx.applicationContext.filesDir, "kof").apply { mkdirs() }
         file = File(dir, "config.json")
-        _state.value = normalize(load())
+        // 试用状态要在读配置之前就位：读完之后要据此判断"是不是该还原了"
+        TrialStore.init(ctx.applicationContext)
+        var cfg = normalize(load())
+        val trial = TrialStore.get()
+        if (trial != null && trial.until <= System.currentTimeMillis() / 1000) {
+            // 上次试用中途被杀：这里补还原。不做这一步，用户手排的时段就被永久换掉了。
+            cfg = normalize(cfg.copy(days = trial.originalDays))
+            TrialStore.clear()
+        }
+        _state.value = cfg
         // 统计目录也在这里初始化：服务、界面、报告都从 StatsStore 读同一份
         com.qqqorange.kingoffocus.core.StatsStore.init(ctx.applicationContext)
         // 分心事件是独立的事件流（不进备份），跟配置分开初始化

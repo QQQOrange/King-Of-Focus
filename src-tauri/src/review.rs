@@ -117,8 +117,9 @@ pub fn week(offset: i64) -> Value {
     let prev_end = start - Duration::days(1);
     let prev_start = prev_end - Duration::days(6);
 
-    // 每天的自律/总时长：直接复用给"另一台设备"用的日摘要口径，避免两套算法
-    let digest = crate::stats::digest(60);
+    // 每天的自律/总时长：直接复用给"另一台设备"用的日摘要口径，避免两套算法。
+    // 只要两周（本周 + 上周对比）：以前写 60，等于每次都把两个月的日文件读一遍。
+    let digest = crate::stats::digest(14);
     let find = |day: &str| digest.iter().find(|d| d.day == day).cloned();
 
     let mut days: Vec<Value> = Vec::new();

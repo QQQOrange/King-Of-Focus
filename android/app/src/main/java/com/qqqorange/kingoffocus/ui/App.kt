@@ -29,6 +29,8 @@ import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -322,6 +324,12 @@ private fun HomeScreen(cfg: Config) {
     @Suppress("UNUSED_EXPRESSION")
     tick
 
+    // 试用 25 分钟：开始/结束都要立刻反映到页面上
+    var trialRev by remember { mutableStateOf(0) }
+    val trialLeft = remember(tick, trialRev) {
+        com.qqqorange.kingoffocus.data.TrialRunner.leftSeconds(now)
+    }
+
     // 上一段的目标判定：打完勾要立刻在页面上看到，所以自己记一个版本号
     var goalRev by remember { mutableStateOf(0) }
     val todayKey = now.toLocalDate().toString()
@@ -415,6 +423,46 @@ private fun HomeScreen(cfg: Config) {
                 KV("积分", "${cfg.points}", MaterialTheme.colorScheme.secondary)
                 KV("今日使用", StatsMath.fmtDuration(todaySecs))
                 KV("今日自律", Slots.fmtMinutes(todayPlanMin))
+            }
+
+            // 试用中：说清楚这是"临时的"，否则用户会以为排班被改了
+            if (trialLeft > 0) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "试用中 · 还剩 ${ScheduleEngine.fmtLeft(trialLeft)}，到点自动还原你原来的时段",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            // 空闲时才给这个入口：正在专注段里再插一段试用，会把"上一段做到了吗"搅乱
+            if (trialLeft <= 0 && st == null && !sleeping) {
+                Spacer(Modifier.height(10.dp))
+                HLine()
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("想现在试一下？", fontSize = 13.sp)
+                        Text(
+                            "立刻跑 25 分钟：规则照常生效、锁机遮罩也会盖上来，结束后自动还原",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            if (com.qqqorange.kingoffocus.data.TrialRunner.start(now)) {
+                                trialRev++
+                                GuardService.sync(ctx)
+                                toast(ctx, "已开始 25 分钟试用，到点自动还原")
+                            } else {
+                                toast(ctx, "现在正在专注段里，先跑完这一段")
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary,
+                        ),
+                    ) { Text("试 25 分钟", fontSize = 12.sp) }
+                }
             }
         }
 
