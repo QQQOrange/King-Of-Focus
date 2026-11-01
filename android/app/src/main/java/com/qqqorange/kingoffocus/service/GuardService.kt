@@ -19,6 +19,7 @@ import androidx.core.app.NotificationCompat
 import com.qqqorange.kingoffocus.MainActivity
 import com.qqqorange.kingoffocus.R
 import com.qqqorange.kingoffocus.core.Caps
+import com.qqqorange.kingoffocus.core.DistractMath
 import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.NotifyPlan
@@ -26,6 +27,7 @@ import com.qqqorange.kingoffocus.core.ScheduleEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.core.StatsMath
 import com.qqqorange.kingoffocus.core.StatsStore
+import com.qqqorange.kingoffocus.data.DistractStore
 import com.qqqorange.kingoffocus.core.StatsTrack
 import com.qqqorange.kingoffocus.core.KeepAlive
 import com.qqqorange.kingoffocus.core.UsageAccess
@@ -178,6 +180,8 @@ class GuardService : Service() {
         // 当日汇总与"现在是不是自律时间"无关：一天快过完了都该告诉用户今天用了多久。
         // 放在最前面，免得被下面的 sleep / locked 提前 return 掉。
         maybeDailySummary(cfg, now)
+        // 分心事件：段结束汇总 + 未完成项按间隔提醒（与睡眠/锁机分支无关，先做）
+        maybeDistract(cfg, now)
 
         // 常驻通知里的今日进度：不必每秒重算（读日文件 + 数分钟），30 秒一次就够
         val progress = if (cfg.notify.enabled && cfg.notify.ongoingProgress) {
@@ -609,6 +613,54 @@ class GuardService : Service() {
         return (done to plan).also { progressCache = it }
     }
 
+    // ---------------- 分心事件 ----------------
+
+    /** 上一拍是不是在专注。段结束只在 true → false 的那一拍处理 */
+    private var wasFocusing = false
+
+    /**
+     * 分心事件的两条提醒。
+     *
+     * 判据都用**时间**，不用"遮罩还在不在"：后者会被暂停 / 停止本段改写，
+     * 拿它当判据会出现"暂停时误报结束"（桌面端踩过）。
+     */
+    private fun maybeDistract(cfg: Config, now: LocalDateTime) {
+        if (!cfg.distract.enabled) {
+            wasFocusing = false
+            return
+        }
+        val focusing = ScheduleEngine.stateAt(cfg, now)?.focusing == true
+        val nowSec = System.currentTimeMillis() / 1000
+
+        // 1) 段结束：汇总这一段记下的
+        if (wasFocusing && !focusing) {
+            val items = DistractMath.endedSegment(DistractStore.items.value, nowSec)
+            if (items.isNotEmpty()) {
+                val body = if (items.size == 1) {
+                    "记下了 1 条：" + items[0].text.take(18)
+                } else {
+                    "记下了 ${items.size} 条想法，去「分心事件」逐条处理"
+                }
+                notifyOnce(CH_ALERT, ID_DISTRACT_END, "这一段结束了", body, true)
+                DistractStore.markNudged(items.map { it.id }, nowSec)
+            }
+        }
+        wasFocusing = focusing
+
+        // 2) 未完成项：间隔到点就再提醒一次
+        val due = DistractStore.due(cfg, nowSec)
+        if (due.isNotEmpty()) {
+            val first = due[0].text.take(18)
+            val body = if (due.size == 1) {
+                "「$first」还没处理"
+            } else {
+                "还有 ${due.size} 条没处理，最早一条：$first"
+            }
+            notifyOnce(CH_ALERT, ID_DISTRACT_DUE, "分心事件待处理", body, true)
+            DistractStore.markNudged(due.map { it.id }, nowSec)
+        }
+    }
+
     /** 发一条独立通知（可被用户划掉；没有通知权限时静默失败，不崩） */
     private fun notifyOnce(
         channel: String,
@@ -1033,6 +1085,9 @@ class GuardService : Service() {
         private const val CH_DONE = "kof_done"
         private const val CH_DAILY = "kof_daily"
         private const val CH_LOCK = "kof_lock"
+        /** 分心事件的两条通知：固定 id，重复提醒只会覆盖不会堆一屏 */
+        private const val ID_DISTRACT_END = 7411
+        private const val ID_DISTRACT_DUE = 7412
         /** 锁机提醒两个 id：提醒是"事件"，同一类只留最新一条 */
         private const val LOCK_PRE_ID = 4104
         private const val LOCK_END_ID = 4105

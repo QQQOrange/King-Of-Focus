@@ -28,6 +28,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -59,6 +63,7 @@ import com.qqqorange.kingoffocus.core.GuardEngine
 import com.qqqorange.kingoffocus.core.LockEngine
 import com.qqqorange.kingoffocus.core.SleepEngine
 import com.qqqorange.kingoffocus.data.AppInfo
+import com.qqqorange.kingoffocus.data.DistractStore
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.loadLaunchableApps
 import com.qqqorange.kingoffocus.toast
@@ -120,6 +125,7 @@ class LockActivity : ComponentActivity() {
         pageActive = kind == KIND_PAGE
         setContent {
             KofTheme {
+                Box(Modifier.fillMaxSize()) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF12151B)) {
                     when {
                         kind == KIND_END -> LockEndScreen(
@@ -134,6 +140,9 @@ class LockActivity : ComponentActivity() {
                         )
                         else -> LockScreen(kind = kind, onDone = { finish() })
                     }
+                }
+                // 记一笔浮在整个遮罩之上：位置四角可选（默认左上角）
+                DistractOverlay(kind)
                 }
             }
         }
@@ -245,6 +254,81 @@ private fun LockEndScreen(title: String, body: String, onDone: () -> Unit) {
                 Text("知道了")
             }
         }
+    }
+}
+
+/**
+ * 遮罩上的「记一笔」。
+ *
+ * 为什么按钮要浮在锁机页之上而不是画进锁机页里：锁机页本身是"你别动手机"
+ * 的全屏态度，任何多余元素都会削弱它；只有这一颗按钮是**明确邀请**用户动一下的，
+ * 所以单独一层、带明确边界，位置还能四角切换。
+ *
+ * 记录完立刻关闭对话框，不跳页、不追问分类——念头还在嘴里时，
+ * 多一次点击就多一次"算了不记了"。
+ */
+@Composable
+private fun DistractOverlay(kind: String) {
+    val cfg by Store.state.collectAsState()
+    // 只在"专注锁机"这一档出现：睡眠遮罩、轻档提示、结束页都不该有输入框
+    if (kind != LockActivity.KIND_FOCUS || !cfg.distract.enabled) return
+
+    var open by remember { mutableStateOf(false) }
+    var text by remember { mutableStateOf("") }
+    val align = when (cfg.distract.buttonCorner) {
+        "tr" -> Alignment.TopEnd
+        "bl" -> Alignment.BottomStart
+        "br" -> Alignment.BottomEnd
+        else -> Alignment.TopStart
+    }
+
+    Box(Modifier.fillMaxSize().padding(16.dp)) {
+        Surface(
+            modifier = Modifier.align(align).clickable { open = true },
+            shape = RoundedCornerShape(999.dp),
+            color = Color.White.copy(alpha = 0.10f),
+        ) {
+            Text(
+                "＋ 记一笔",
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                fontSize = 13.sp,
+                color = Color(0xFFEDEFF5),
+            )
+        }
+    }
+
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("记一笔") },
+            text = {
+                Column {
+                    Text(
+                        "想到什么先放这儿，记完就回到刚才那件事上。",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { if (it.length <= 500) text = it },
+                        placeholder = { Text("例如：查一下那个报错") },
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val added = DistractStore.add(cfg, text)
+                    if (added != null) {
+                        text = ""
+                        open = false
+                    }
+                }) { Text("记下") }
+            },
+            dismissButton = { TextButton(onClick = { open = false }) { Text("取消") } },
+        )
     }
 }
 

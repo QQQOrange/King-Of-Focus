@@ -78,7 +78,7 @@ import com.qqqorange.kingoffocus.ui.rememberNotificationRequester
  * （云同步、备份、更新），最后是危险操作（重置）。
  */
 @Composable
-fun SettingsScreen(cfg: Config) {
+fun SettingsScreen(cfg: Config, onOpenDistract: () -> Unit = {}) {
     val ctx = LocalContext.current
     var confirmReset by remember { mutableStateOf(false) }
 
@@ -448,6 +448,39 @@ fun SettingsScreen(cfg: Config) {
         // ---------------- 备份 / 更新 ----------------
         SectionTitle("备份与恢复")
         BackupSection(cfg)
+
+        // ---------------- 分心事件 ----------------
+        SectionTitle("分心事件")
+        Panel {
+            val items by com.qqqorange.kingoffocus.data.DistractStore.items.collectAsState()
+            val pending = items.count { !it.done }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenDistract() }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("打开分心事件", fontSize = 14.sp)
+                    Text(
+                        if (pending > 0) "日历 + 清单 · 还有 $pending 条没处理"
+                        else "日历 + 清单 · 暂时没有欠账",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("›", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HLine()
+            ToggleRow(
+                "启用分心事件",
+                "专注时遮罩上显示「记一笔」；关掉后不再提醒（已记的不受影响）",
+                cfg.distract.enabled,
+            ) { v ->
+                Store.update { it.copy(distract = it.distract.copy(enabled = v)) }
+            }
+        }
 
         SectionTitle("版本与更新")
         UpdateSection(cfg)

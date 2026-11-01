@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -86,6 +87,16 @@ enum class Tab(val label: String) {
 fun AppRoot() {
     val cfg by Store.state.collectAsState()
     var tab by remember { mutableStateOf(Tab.Home) }
+    // 分心事件是一整页（日历 + 清单），不占底部导航的格子：
+    // 底部已经 5 个 tab，再加就把每一项挤到看不清字了。
+    var showDistract by remember { mutableStateOf(false) }
+
+    if (showDistract) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            DistractScreen(cfg = cfg, onBack = { showDistract = false })
+        }
+        return
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -119,7 +130,7 @@ fun AppRoot() {
                 Tab.Schedule -> ScheduleScreen(cfg)
                 Tab.Rules -> RulesScreen(cfg)
                 Tab.Stats -> StatsScreen(cfg)
-                Tab.Settings -> SettingsScreen(cfg)
+                Tab.Settings -> SettingsScreen(cfg, onOpenDistract = { showDistract = true })
             }
         }
     }

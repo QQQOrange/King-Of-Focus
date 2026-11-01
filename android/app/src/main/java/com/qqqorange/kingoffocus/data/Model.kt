@@ -115,6 +115,24 @@ data class PermCfg(
     val notifBlocked: Boolean = false,
 )
 
+/**
+ * 分心事件（就地记录 + 事后处理）。
+ *
+ * 为什么这些参数交给用户：每个人的"欠账耐心"完全不同——有人希望两小时催一次，
+ * 有人只想在时段结束时看一眼。间隔太密会变成新的打扰，太疏等于没提醒。
+ */
+@Serializable
+data class DistractCfg(
+    /** 模块总开关：关掉后遮罩上不出现「记一笔」，也不再提醒（已记的条目都在） */
+    val enabled: Boolean = true,
+    /** 遮罩上「记一笔」按钮的位置：tl / tr / bl / br（默认左上角） */
+    val buttonCorner: String = "tl",
+    /** 未完成项的重复提醒间隔（分钟）。0 = 只在时段结束时提醒一次 */
+    val remindMinutes: Int = 120,
+    /** 超过这么多天的未完成项不再提醒（1–90） */
+    val remindMaxDays: Int = 7,
+)
+
 @Serializable
 data class NotifyCfg(
     /** 通知总开关（关掉后四类都不发；应用内状态照常显示） */
@@ -436,6 +454,8 @@ data class Config(
     /** 积分解锁到什么时候（unix 秒）；解锁期间所有拦截暂停 */
     val unlockUntil: Long = 0L,
     val notify: NotifyCfg = NotifyCfg(),
+    /** 分心事件（学习当中冒出的零散想法） */
+    val distract: DistractCfg = DistractCfg(),
     /** 权限申请历史（区分"从没问过"与"永久拒绝"） */
     val perm: PermCfg = PermCfg(),
     val overlay: OverlayCfg = OverlayCfg(),
@@ -609,12 +629,25 @@ fun normalize(cfg: Config): Config {
         if (b > 0) b.coerceAtMost(60 - defW) else b
     }
 
+    // 分心事件：间隔 / 上限天数 / 按钮位置都夹到合法范围。
+    // 手改配置文件写成 0 会被当成"不提醒"；写成 0.001 在整型里是 0，同样不会每 3 秒催一次。
+    val dc = cfg.distract.copy(
+        buttonCorner = if (cfg.distract.buttonCorner in listOf("tl", "tr", "bl", "br")) {
+            cfg.distract.buttonCorner
+        } else {
+            "tl"
+        },
+        remindMinutes = cfg.distract.remindMinutes.coerceIn(0, 60 * 24 * 30),
+        remindMaxDays = cfg.distract.remindMaxDays.coerceIn(1, 90),
+    )
+
     return cfg.copy(
         days = days,
         defWork = defW,
         defBrk = defB,
         defCap = cfg.defCap.coerceIn(0, 60),
         granularity = Slots.stepOf(cfg.granularity),
+        distract = dc,
         // 老的两份名单并成一份；迁移完 lockAllow 就永远是空的
         rules = normalizeRules(migrateLockAllow(cfg.rules, cfg.lockAllow)),
         plans = plans,
