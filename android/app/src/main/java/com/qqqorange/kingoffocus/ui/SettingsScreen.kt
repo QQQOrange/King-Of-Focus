@@ -482,6 +482,27 @@ fun SettingsScreen(cfg: Config, onOpenDistract: () -> Unit = {}) {
             }
         }
 
+        // ---------------- 新手引导 ----------------
+        SectionTitle("新手引导")
+        Panel {
+            Row(
+                Modifier.fillMaxWidth().clickable {
+                    Store.update { it.copy(onboarded = false) }
+                }.padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("重新走一遍引导", fontSize = 14.sp)
+                    Text(
+                        "三步：什么时候学 / 哪些不该开 / 完成。会覆盖向导自己写的那套时段与规则，不动你手建的",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("›", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
         SectionTitle("版本与更新")
         UpdateSection(cfg)
 

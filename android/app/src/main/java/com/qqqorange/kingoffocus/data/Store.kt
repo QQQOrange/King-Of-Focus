@@ -47,7 +47,10 @@ object Store {
     }
 
     private fun load(): Config {
-        if (!file.exists()) return Config()
+        // 全新安装：显式标记"没走过向导"。
+        // 用 null 表示"已走过"（老配置没这个键），所以这里必须写 false，
+        // 否则新装用户永远看不到引导。
+        if (!file.exists()) return Config(onboarded = false)
         // 读出来就归一化。
         //
         // 以前这里只 decode：老配置里 `cloud.url` 是空串，内存里就一直是空串——

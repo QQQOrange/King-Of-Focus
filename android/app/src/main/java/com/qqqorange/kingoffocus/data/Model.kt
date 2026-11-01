@@ -456,6 +456,14 @@ data class Config(
     val notify: NotifyCfg = NotifyCfg(),
     /** 分心事件（学习当中冒出的零散想法） */
     val distract: DistractCfg = DistractCfg(),
+    /**
+     * 首用向导走没走过。
+     *
+     * `null` = 老配置里没这个键 → **视为已走过**（升级不能把老用户弹一遍）；
+     * `false` = 新装（`Store.load` 在配置文件不存在时显式写 false）→ 启动就弹；
+     * `true` = 走过 / 主动跳过。
+     */
+    val onboarded: Boolean? = null,
     /** 权限申请历史（区分"从没问过"与"永久拒绝"） */
     val perm: PermCfg = PermCfg(),
     val overlay: OverlayCfg = OverlayCfg(),

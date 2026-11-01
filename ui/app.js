@@ -4376,8 +4376,13 @@ function reviewCard() {
         : '五个问题，数字已经填好。每题用一两句回答就行——那一两句才是复盘的全部产出。'}
     </div>
     ${rows}
-    <div class="row" style="margin-top:14px;align-items:center">
+    <div class="row" style="margin-top:14px;align-items:center;flex-wrap:wrap;gap:8px">
       <button class="btn btn-primary btn-sm" data-act="review-save">${en ? 'Save review' : '保存复盘'}</button>
+      ${left
+        ? `<button class="btn btn-sm" data-act="review-goto" data-view="distract">${
+            en ? `Process these ${left}` : `去处理这 ${left} 条`
+          }</button>`
+        : ''}
       <span class="hint" style="margin-left:10px">${en
         ? 'Stored locally; open the same week again to compare.'
         : '存在本机，下次打开这一周还能看到，用来对照'}</span>
@@ -9520,6 +9525,9 @@ document.addEventListener('click', async (e) => {
   // ---- 口径说明 ----
   if (act === 'tip') { showTip(el.dataset.k); return; }
   if (act === 'review-save') { await reviewSave(); return; }
+  // 复盘里问到"哪一条值得现在处理"，就得给一条能过去的路——
+  // 只提问不给出路，那一问等于白问。
+  if (act === 'review-goto') { await Act.nav(el.dataset.view || 'distract'); return; }
   if (act === 'review-week') {
     S.review = S.review || {};
     S.review.offset = Number(el.dataset.off) || 0;

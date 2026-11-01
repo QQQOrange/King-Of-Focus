@@ -4116,6 +4116,7 @@ window.__itest = async () => {
       document.querySelectorAll('#content textarea[id^="rvA"]').length, 5]);
     // 数字要在提问之前：先给材料，再问问题
     const first = document.querySelector('#content .rv-q');
+    out.push(['复盘里有"去处理"的出口', !!document.querySelector('[data-act="review-goto"]'), true]);
     out.push(['每题先给数字再提问',
       !!first && first.querySelector('.rv-data') !== null && first.querySelector('.rv-ask') !== null, true]);
     // 填一条并保存：假后端要收到 week + 5 条答案

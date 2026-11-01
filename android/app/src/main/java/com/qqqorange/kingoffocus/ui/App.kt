@@ -94,6 +94,13 @@ fun AppRoot() {
     // 底部已经 5 个 tab，再加就把每一项挤到看不清字了。
     var showDistract by remember { mutableStateOf(false) }
 
+    // 新装第一次打开：向导盖住整个界面（onboarded 只有新装是 false，
+    // 老配置读到 null = 已走过，所以升级用户不会突然被弹一次）
+    if (cfg.onboarded == false) {
+        OnboardScreen(cfg = cfg, onExit = { /* 写完配置后 cfg 变了，这里自然退出 */ })
+        return
+    }
+
     if (showDistract) {
         Surface(color = MaterialTheme.colorScheme.background) {
             DistractScreen(cfg = cfg, onBack = { showDistract = false })
