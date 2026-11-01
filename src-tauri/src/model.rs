@@ -773,6 +773,15 @@ impl Default for HudCfg {
     }
 }
 
+/// 默认 WebDAV 目录（**手机端必须是同一个字符串**，见 Android `CloudSync.DEFAULT_URL`）。
+///
+/// 为什么要有默认值：以前这个地址只出现在输入框的 placeholder 里（灰色示例文字），
+/// 配置里的 `url` 一直是空串。用户看到"地址已经填好了"，一保存/一同步却报
+/// "还没有填写 WebDAV 地址"——那句 placeholder 骗了他。
+///
+/// 目录要自动创建（`net::ensure_dir` 会 MKCOL），所以这里可以带子目录。
+pub const DEFAULT_SYNC_URL: &str = "https://dav.jianguoyun.com/dav/KingOfFocus/";
+
 /// WebDAV 云同步配置
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase", default)]
@@ -795,7 +804,7 @@ impl Default for SyncCfg {
     fn default() -> Self {
         SyncCfg {
             enabled: false,
-            url: String::new(),
+            url: DEFAULT_SYNC_URL.to_string(),
             username: String::new(),
             password: String::new(),
             auto: true,

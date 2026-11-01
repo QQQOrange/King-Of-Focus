@@ -4,7 +4,7 @@
 //! 自动同步：每 auto_minutes 分钟检查一次，只在本地有改动时上传。
 
 use crate::cfg;
-use crate::model::{Config, SyncCfg};
+use crate::model::{Config, SyncCfg, DEFAULT_SYNC_URL};
 use crate::net;
 use crate::shared::Shared;
 use serde_json::json;
@@ -23,13 +23,38 @@ fn join_url(base: &str, file: &str) -> String {
     format!("{}{}", b, file.trim().trim_start_matches('/'))
 }
 
+/// 实际使用的同步目录：配置里为空就落到默认值。
+///
+/// 这一层是**必须**的，不能只靠 `cfg::sanitize`：云同步下载回来的配置、
+/// 手工改过的 config.json、`sync_save` 收到空串——都可能让 `url` 变回空。
+/// 与其在每个调用点各判一次，不如在这里兜住（旧的"还没有填写 WebDAV 地址"
+/// 就是三处各判一次的结果，漏一处就同步不了）。
+pub fn url_of(c: &SyncCfg) -> String {
+    let u = c.url.trim();
+    if u.is_empty() {
+        DEFAULT_SYNC_URL.to_string()
+    } else {
+        u.to_string()
+    }
+}
+
+/// 地址必须带协议头。WebDAV 一律走 http(s)——写 `dav.jianguoyun.com/...`
+/// 这种裸域名以前会一路走到 ureq 才炸，报出来的是一句 "Bad Status"。
+fn check_url(u: &str) -> Result<(), String> {
+    if u.starts_with("http://") || u.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!("地址要以 http:// 或 https:// 开头：{u}"))
+    }
+}
+
 pub fn remote_url(c: &SyncCfg) -> String {
     let file = if c.remote_file.trim().is_empty() {
         "king-of-focus.json"
     } else {
         c.remote_file.trim()
     };
-    join_url(&c.url, file)
+    join_url(&url_of(c), file)
 }
 
 fn auth_of(c: &SyncCfg) -> Option<String> {
@@ -64,9 +89,10 @@ fn payload(config: &Config, device: &str) -> String {
 /// 上传本机配置（云端覆盖）
 pub fn upload(shared: &Shared) -> Result<String, String> {
     let c = shared.config();
-    if c.settings.sync.url.trim().is_empty() {
-        return Err("还没有填写 WebDAV 地址".into());
-    }
+    let base = url_of(&c.settings.sync);
+    check_url(&base)?;
+    // 目录不存在时 PUT 会 409；先尽力建一层（失败不拦，PUT 会给出真实原因）
+    net::ensure_dir(&base, auth_of(&c.settings.sync).as_deref());
     let mut c2 = c.clone();
     c2.updated_at = chrono::Local::now().timestamp();
     let body = payload(&c2, &c.settings.sync.device);
@@ -92,9 +118,7 @@ pub fn upload(shared: &Shared) -> Result<String, String> {
 /// 从云端拉取并覆盖本机配置
 pub fn download(shared: &Shared) -> Result<String, String> {
     let c = shared.config();
-    if c.settings.sync.url.trim().is_empty() {
-        return Err("还没有填写 WebDAV 地址".into());
-    }
+    check_url(&url_of(&c.settings.sync))?;
     let body = net::get_text(&remote_url(&c.settings.sync), auth_of(&c.settings.sync).as_deref(), None)?;
     let v: serde_json::Value =
         serde_json::from_str(&body).map_err(|_| "云端文件不是 King Of Focus 的配置".to_string())?;
@@ -136,9 +160,7 @@ pub fn download(shared: &Shared) -> Result<String, String> {
 /// 智能同步：谁新用谁
 pub fn smart(shared: &Shared) -> Result<String, String> {
     let c = shared.config();
-    if c.settings.sync.url.trim().is_empty() {
-        return Err("还没有填写 WebDAV 地址".into());
-    }
+    check_url(&url_of(&c.settings.sync))?;
     let auth = auth_of(&c.settings.sync);
     let url = remote_url(&c.settings.sync);
     let remote = net::get_text(&url, auth.as_deref(), None);
@@ -174,7 +196,10 @@ pub fn start_auto(shared: Arc<Shared>) {
         loop {
             let c = shared.config();
             let sy = &c.settings.sync;
-            if sy.enabled && sy.auto && !sy.url.trim().is_empty() {
+            // 地址恒有值（空 = 默认），所以这里只判两个开关。
+            // 以前多一个 `!sy.url.trim().is_empty()`，而 url 恰好就是空的 ——
+            // 自动同步一次都没跑过。
+            if sy.enabled && sy.auto {
                 let r = smart(&shared);
                 let mut c2 = shared.config();
                 c2.settings.sync.last_sync = chrono::Local::now().timestamp();
@@ -246,6 +271,72 @@ mod tests {
     }
 
     /// 没填文件名时用固定名，填了就用填的
+    /// 默认地址：空配置也能算出可用的 URL。
+    ///
+    /// 这条是这次 bug 的回归断言——以前 `url` 为空，`remote_url` 拼出来就是
+    /// `king-of-focus.json`（没有主机），而三处调用各自报"还没有填写 WebDAV 地址"。
+    #[test]
+    fn empty_url_falls_back_to_default() {
+        let mut c = SyncCfg::default();
+        assert_eq!(c.url, DEFAULT_SYNC_URL, "默认配置就该带默认地址");
+        assert_eq!(url_of(&c), DEFAULT_SYNC_URL);
+
+        c.url = "   ".into();
+        assert_eq!(url_of(&c), DEFAULT_SYNC_URL, "只有空白也算空");
+        assert!(remote_url(&c).starts_with("https://"));
+        assert!(remote_url(&c).ends_with("/king-of-focus.json"));
+    }
+
+    /// 自定义地址一个字都不许被默认值覆盖
+    #[test]
+    fn custom_url_is_kept_verbatim() {
+        let mut c = SyncCfg::default();
+        c.url = "  https://dav.example.com/dav/my/  ".into();
+        assert_eq!(url_of(&c), "https://dav.example.com/dav/my/");
+        assert_eq!(
+            remote_url(&c),
+            "https://dav.example.com/dav/my/king-of-focus.json"
+        );
+    }
+
+    /// 加载老配置（url 空）后被清洗成默认地址，而不是继续空着
+    #[test]
+    fn sanitize_fills_default_url() {
+        let mut c = Config::default();
+        c.settings.sync.url = String::new();
+        crate::cfg::sanitize(&mut c);
+        assert_eq!(c.settings.sync.url, DEFAULT_SYNC_URL);
+        // 自定义的不会被改
+        c.settings.sync.url = "https://dav.example.com/dav/".into();
+        crate::cfg::sanitize(&mut c);
+        assert_eq!(c.settings.sync.url, "https://dav.example.com/dav/");
+    }
+
+    /// 地址缺协议头要早报错，别一路走到网络层
+    #[test]
+    fn bare_host_is_rejected() {
+        assert!(check_url("dav.jianguoyun.com/dav/").is_err());
+        assert!(check_url("https://dav.jianguoyun.com/dav/").is_ok());
+        assert!(check_url("http://192.168.1.2:5005/dav/").is_ok());
+    }
+
+    /// 端到端：默认地址那种"带子目录且目录还不存在"的情况，能不能直接上传。
+    ///
+    /// 需要本地脚手架：`python tools/dav_stub.py shots/davprobe 8765`
+    /// 这条不进常规测试（要网络），用 `cargo test -- --ignored` 手动跑。
+    #[test]
+    #[ignore = "需要 tools/dav_stub.py 在 8765 端口运行"]
+    fn dav_roundtrip_creates_missing_dir() {
+        let mut c = SyncCfg::default();
+        // 故意指向一个还不存在的二级目录，模拟"默认地址第一次使用"
+        c.url = "http://127.0.0.1:8765/KingOfFocus/sub/".into();
+        let base = url_of(&c);
+        net::ensure_dir(&base, None);
+        net::put_text(&remote_url(&c), None, "{\"app\":\"king-of-focus\"}").expect("上传应成功");
+        let got = net::get_text(&remote_url(&c), None, None).expect("读回应成功");
+        assert!(got.contains("king-of-focus"), "读回的内容不对：{got}");
+    }
+
     #[test]
     fn remote_url_defaults_and_keeps_custom_name() {
         let mut c = SyncCfg::default();

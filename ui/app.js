@@ -3866,7 +3866,8 @@ function viewSync() {
       <div>
         <div class="hint" style="margin-bottom:6px">WebDAV 目录地址</div>
         <input type="text" id="davUrl" style="width:100%" value="${esc(sy.url || '')}"
-          placeholder="https://dav.jianguoyun.com/dav/KingOfFocus/" />
+          placeholder="留空 = 用默认地址（坚果云）" />
+        <div class="hint" style="margin-top:6px">默认是坚果云的公共目录，目录不存在会自动建；用别的网盘（Nextcloud / 群晖 / 阿里云盘）就把地址改成你自己的，改完点「保存配置」</div>
       </div>
       <div class="row">
         <div style="flex:1">
@@ -3947,7 +3948,6 @@ function viewSync() {
       <button class="btn btn-primary btn-sm" data-act="cloud-upload" ${sy.url ? '' : 'disabled'}>上传当前配置</button>
       <button class="btn btn-sm" data-act="cloud-list" ${sy.url ? '' : 'disabled'}>查看云端备份 / 恢复</button>
     </div>
-    ${sy.url ? '' : '<div class="hint" style="margin-top:10px">先在下面填写 WebDAV 地址</div>'}
   </div>
 
   <div class="card">
@@ -3958,8 +3958,7 @@ function viewSync() {
       · 「立即同步」会先读云端再比较：云端新就下载，本机新就上传，一样就跳过。<br>
       · 「云端 → 覆盖本机」是强制拉取，会丢掉本机未上传的改动，请谨慎使用。<br>
       · 账号密码只保存在本机配置文件里，不随配置上传。<br>
-      · 常见地址格式：坚果云 <code>https://dav.jianguoyun.com/dav/目录/</code>、
-        Nextcloud <code>https://你的域名/remote.php/dav/files/用户名/目录/</code>。
+      · 默认地址是 https://dav.jianguoyun.com/dav/KingOfFocus/（目录会自动创建）；换别的网盘就按 Nextcloud 的格式填 https://你的域名/remote.php/dav/files/用户名/目录/
     </div>
   </div>`;
 }
@@ -6618,12 +6617,17 @@ const Act = window.Act = {
     const autoMinutes = +(($('#davMins') || {}).value || 30);
     const auto = !!S.data.config.settings.sync.auto;
     try {
+      // 地址留空 = 默认地址（后端补）；「启用」看的是账号是否填了：
+      // 没有账号的匿名 PUT 只会在每半小时失败一次，那不如老实标成未启用。
       await invoke('sync_save', {
         url, username, password, auto, autoMinutes,
-        enabled: !!url.trim(),
+        enabled: !!username.trim(),
       });
       await pull(); render();
-      toast('同步配置已保存', 'ok');
+      // 回显**实际保存的地址**而不是再写一份默认值：
+      // 默认地址只有后端一个来源（model::DEFAULT_SYNC_URL），前端再抄一份迟早会漂。
+      const saved = (S.data.config.settings.sync.url || '').trim();
+      toast(saved ? '同步配置已保存：' + saved : '同步配置已保存', 'ok');
     } catch (e) { toast(String(e), 'err'); }
   },
   async syncRun(kind) {

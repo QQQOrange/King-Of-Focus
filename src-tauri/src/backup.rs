@@ -534,11 +534,12 @@ fn commit(shared: &Shared, next: Config) -> Result<(), String> {
 
 // ---------------- 云端备份（WebDAV） ----------------
 fn remote_base(c: &Config) -> Result<(String, Option<String>), String> {
-    let url = c.settings.sync.url.trim();
-    if url.is_empty() {
-        return Err("还没有填写 WebDAV 地址".into());
+    // 空 = 默认地址（与「立即同步」共用同一份兜底，见 `sync::url_of`）
+    let url = crate::sync::url_of(&c.settings.sync);
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("地址要以 http:// 或 https:// 开头：{url}"));
     }
-    let mut base = url.to_string();
+    let mut base = url;
     if !base.ends_with('/') {
         base.push('/');
     }
@@ -601,6 +602,9 @@ fn entries_from_xml(xml: &str, base: &str) -> Vec<Value> {
 pub fn cloud_list(shared: &Shared) -> Result<Vec<Value>, String> {
     let c = shared.config();
     let (base, auth) = remote_base(&c)?;
+    // 目录还不存在时 PROPFIND 回 404。首次用默认地址必然是这个状态，
+    // 不先建目录就会表现成"云端备份列表打不开"。
+    net::ensure_dir(&base, auth.as_deref());
     let body = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>"#;
     let mut req = net::agent()
         .request("PROPFIND", &base)
@@ -662,6 +666,8 @@ pub fn cloud_upload(shared: &Shared) -> Result<String, String> {
     let name = local["name"].as_str().unwrap_or("").to_string();
     let path = dir().join(&name);
     let env = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    // 默认地址带一层子目录，PUT 不会自动建目录 → 先尽力建（失败不拦）
+    net::ensure_dir(&base, auth.as_deref());
     net::put_text(&format!("{base}{name}"), auth.as_deref(), &env)?;
 
     // 云端保留策略（规则见 `prune_targets`）

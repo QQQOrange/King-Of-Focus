@@ -18,6 +18,9 @@ desktop.ini
 # 本地配置与数据（不要提交）
 config.json
 *.log
+
+# 本地测试产物：模拟器截图、临时配置、dav 脚手架数据（含测试账号，别进仓库）
+/shots
 shot*.png
 
 # 安装包

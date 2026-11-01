@@ -326,6 +326,14 @@
     '外观': 'Appearance',
     '语言': 'Language',
     '语言 · Language': 'Language',
+    // WebDAV 默认地址（留空即默认；与 Android CloudSync.DEFAULT_URL 同一个目录）
+    '留空 = 用默认地址（坚果云）': 'Leave blank to use the default (Nutstore)',
+    '· 默认地址是 https://dav.jianguoyun.com/dav/KingOfFocus/（目录会自动创建）；换别的网盘就按 Nextcloud 的格式填 https://你的域名/remote.php/dav/files/用户名/目录/':
+      '· The default is https://dav.jianguoyun.com/dav/KingOfFocus/ (the folder is created automatically); '
+      + 'for other drives use the Nextcloud form https://your-domain/remote.php/dav/files/username/folder/',
+    '默认是坚果云的公共目录，目录不存在会自动建；用别的网盘（Nextcloud / 群晖 / 阿里云盘）就把地址改成你自己的，改完点「保存配置」':
+      'The default is a public Nutstore folder; it is created automatically if missing. '
+      + 'For other drives (Nextcloud, Synology, Aliyun) put your own URL here and click Save',
     // WebDAV 示例地址里的中文占位符
     'https://dav.jianguoyun.com/dav/目录/': 'https://dav.jianguoyun.com/dav/folder/',
     'https://你的域名/remote.php/dav/files/用户名/目录/':
@@ -432,7 +440,6 @@
     '云端备份': 'Cloud backup',
     '还没有本地备份。点「立即备份」生成第一份。':
       'No local backups yet. Click Back up now to create the first one.',
-    '先在下面填写 WebDAV 地址': 'Fill in the WebDAV URL below first',
     '上传本机': 'Upload local',
     '下载到本机': 'Download to local',
     '数据在哪？': 'Where is my data?',
@@ -955,7 +962,6 @@
       '· "Cloud → Overwrite" force-pulls and discards local changes that were never uploaded.',
     '· 「立即同步」会先读云端再比较：云端新就下载，本机新就上传，一样就跳过。':
       '· Sync now reads the cloud first: newer cloud data is downloaded, newer local data is uploaded, identical data is skipped.',
-    '· 常见地址格式：坚果云': '· Common formats: Nutstore',
     '· 每份配置都带': '· Every config carries',
     '· 账号密码只保存在本机配置文件里，不随配置上传。':
       '· Credentials stay in the local config file and are never uploaded.',

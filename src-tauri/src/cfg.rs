@@ -220,6 +220,16 @@ pub fn sanitize(c: &mut Config) {
     sanitize_quote_feeds(&mut c.settings.quote_feeds, &mut c.settings.quote_feed);
     sanitize_custom_browsers(&mut c.settings.custom_browsers);
 
+    // 云同步地址：**空就是默认地址**。
+    //
+    // 以前这里是空的，而界面上只画了 placeholder，于是"看着有地址、其实没地址"，
+    // 同步永远报"还没有填写 WebDAV 地址"。现在空白一律补成默认值；
+    // 用户自己填的（哪怕长得不像默认）一个字都不改——自定义优先级最高。
+    c.settings.sync.url = c.settings.sync.url.trim().to_string();
+    if c.settings.sync.url.is_empty() {
+        c.settings.sync.url = crate::model::DEFAULT_SYNC_URL.to_string();
+    }
+
     // 语言只有两档；写错（或老配置没有这个键）一律回落简体中文
     if !matches!(c.settings.lang.as_str(), "zh-CN" | "en") {
         c.settings.lang = "zh-CN".into();

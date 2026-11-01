@@ -100,6 +100,21 @@ object CloudSync {
      * 桌面端的名字是 `kof-20261031-210000.kofbak`，手机端多一段 `-android`。
      * 两段都要认——否则手机端会把自己传的那几份排到最后（看起来像"没传上去"）。
      */
+    /**
+     * 默认 WebDAV 目录。**必须与桌面端 `model::DEFAULT_SYNC_URL` 一模一样**——
+     * 两端同一串字符，用户在一台机器上什么都不填，另一台也能看到同一批备份。
+     *
+     * 以前默认地址只写进了设置页输入框的 placeholder（灰字），配置里还是空串：
+     * 用户看着"地址有了"，一点上传就报"还没填 WebDAV 地址"。
+     */
+    const val DEFAULT_URL = "https://dav.jianguoyun.com/dav/KingOfFocus/"
+
+    /** 实际生效的地址：配置里空/空白 → 默认（与桌面端 `sync::url_of` 同义） */
+    fun urlOf(cfg: CloudCfg): String {
+        val u = cfg.url.trim()
+        return if (u.isEmpty()) DEFAULT_URL else u
+    }
+
     fun stampOf(name: String): Long {
         if (!name.startsWith(PREFIX)) return 0
         val body = name.removePrefix(PREFIX).removeSuffix(EXT)
@@ -108,6 +123,28 @@ object CloudSync {
         return runCatching { stampFmt.parse(head)?.time?.div(1000) ?: 0L }.getOrDefault(0L)
     }
 
+    /** 云端最新的一份（时间倒序第一条）；空列表 → null */
+    fun latest(entries: List<Entry>): Entry? = sortDesc(entries).firstOrNull()
+
+    /**
+     * 手动备份的清理目标（**只删本机传的**）。
+     *
+     * 与桌面端 `backup::prune_targets` 同一个思路：
+     *  · 桌面传的（`fromAndroid = false`）一律不动——那是另一台机器的备份；
+     *  · 自动备份（固定名覆盖）不动——它本来就不堆积；
+     *  · 本机手动传的，只保留最近 [keep] 份。
+     *
+     * 不清理的话，每次点「上传本机」都会多一份，几个月后云端几十个同名不同时间的
+     * 文件，用户根本分不清哪份是现在用的。
+     */
+    fun pruneTargets(entries: List<Entry>, keep: Int = KEEP_MANUAL): List<String> {
+        val mine = sortDesc(entries).filter { it.fromAndroid && !it.auto }
+        return mine.drop(keep.coerceAtLeast(1)).map { it.name }
+    }
+
+    /** 手动备份保留份数（与桌面端 KEEP_COUNT 同量级） */
+    const val KEEP_MANUAL = 5
+
     /** 时间新的在前；同时间按名字，保证刷新时顺序不跳动 */
     fun sortDesc(list: List<Entry>): List<Entry> =
         list.sortedWith(compareByDescending<Entry> { it.at }.thenByDescending { it.name })
@@ -115,12 +152,35 @@ object CloudSync {
     // ------------------------------------------------------------ HTTP
 
     private fun base(cfg: CloudCfg): String {
-        val url = cfg.url.trim()
-        if (url.isEmpty()) throw IllegalArgumentException("还没填 WebDAV 地址")
+        // 空 = 默认地址（不再抛"还没填地址"：那句报错以前在默认值缺失时必现）
+        val url = urlOf(cfg)
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
-            throw IllegalArgumentException("地址要以 http:// 或 https:// 开头")
+            throw IllegalArgumentException("地址要以 http:// 或 https:// 开头：$url")
         }
         return if (url.endsWith("/")) url else "$url/"
+    }
+
+    /**
+     * 逐一补建目录（MKCOL），**失败不报错**。
+     *
+     * 默认地址带一层子目录（`/dav/KingOfFocus/`），而 WebDAV 的 PUT 不会自动建父目录，
+     * 目录不在时服务端回 409 → 用户看到"上传失败"，却不知道要自己去网盘里建文件夹。
+     * 桌面端 `net::ensure_dir` 做的是同一件事。
+     */
+    private fun ensureDir(cfg: CloudCfg) {
+        val b = base(cfg)
+        val hostEnd = b.indexOf("://") + 3
+        val pathStart = b.indexOf('/', hostEnd)
+        if (hostEnd < 3 || pathStart < 0) return
+        val head = b.substring(0, pathStart + 1)
+        val segs = b.substring(pathStart + 1).split('/').filter { it.isNotEmpty() }
+        var acc = head
+        for (seg in segs) {
+            acc += seg + "/"
+            runCatching {
+                HttpRaw.request(URL(acc), "MKCOL", headers(cfg), null)
+            }
+        }
     }
 
     /** 文件名要编码：中文目录、空格、括号都会把 URL 弄坏 */
@@ -166,6 +226,9 @@ object CloudSync {
      * 不接受 PROPFIND 这个方法名。
      */
     fun list(cfg: CloudCfg): Outcome = wrap("列目录") {
+        // 先确保目录存在。首次使用默认地址时目录还没建，PROPFIND 会直接 404 ——
+        // 那会让"第一次点同步"永远失败，用户只能自己去网盘里手动建文件夹。
+        ensureDir(cfg)
         val body = """<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop>
 <d:getcontentlength/><d:getlastmodified/>
@@ -191,6 +254,7 @@ object CloudSync {
 
     fun put(cfg: CloudCfg, name: String, body: String): Outcome = wrap("上传") {
         if (!isBackup(name)) throw IllegalArgumentException("文件名不合法")
+        ensureDir(cfg)
         val r = HttpRaw.request(
             urlFor(cfg, name),
             "PUT",
