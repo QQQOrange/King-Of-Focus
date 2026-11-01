@@ -562,7 +562,16 @@ function viewOverview() {
       <div class="mini">
         <div class="l">自律时段</div>
         <div class="v" style="color:var(--gold)">${pts.price}<span style="font-size:12px;font-weight:400"> 分/分钟</span></div>
-        <div class="l" style="margin-top:6px">今天第 n 次 ×1.4（第 1 次 ${pts.price}，第 2 次 ${Math.round(pts.price * 1.4)}，第 3 次 ${Math.round(pts.price * 1.96)}）</div>
+        <div class="l" style="margin-top:6px">${en
+          ? `Unlock #${(pts.count || 0) + 1} today; price grows ×1.4 (15, 21, 29…)`
+          : `今天第 ${(pts.count || 0) + 1} 次，单价 ×1.4 递增（第 1 次 15，第 2 次 21，第 3 次 29）`}</div>
+        <div class="l" style="margin-top:4px;color:var(--gold)">${en
+          ? `${pts.price} pts/min · ${pts.balance >= pts.price
+              ? `you can buy ${Math.floor(pts.balance / pts.price)} min`
+              : `${pts.price - pts.balance} pts short of 1 min`}`
+          : `现在 ${pts.price} 分/分钟 · ${pts.balance >= pts.price
+              ? `余额够买 ${Math.floor(pts.balance / pts.price)} 分钟`
+              : `还差 ${pts.price - pts.balance} 分才能买 1 分钟`}`}</div>
       </div>
       <div class="mini">
         <div class="l">睡眠时段</div>
@@ -6092,6 +6101,7 @@ const Act = window.Act = {
    */
   openUnlock() {
     const p = S.data.points;
+    const en = I18N.getLang() === 'en';
     const rt = S.data.runtime || {};
     const st = rt.sleep || {};
     const inSleep = !!(st.enabled && st.inWindow && st.price > 0);
@@ -6111,10 +6121,15 @@ const Act = window.Act = {
       [5, 10, 15].forEach((m) => {
         const cost = p.price * m;
         const ok = p.balance >= cost;
+        // 把"买完还剩多少 / 还差多少"写在旁边：价格随次数涨，不写清就只能凭感觉点
+        const tail = ok
+          ? `${en ? 'left ' : '买完剩 '}${p.balance - cost}`
+          : `${en ? 'short ' : '还差 '}${cost - p.balance}`;
         rows.push(`<div class="list-row" style="cursor:pointer;${ok ? '' : 'opacity:.45'}"
             data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}">
           <span class="badge ${ok ? 'gold' : 'red'}">自律时段</span>
           <span class="grow">解锁 ${m} 分钟自由时间（只解现在这一轮，排班不动）</span>
+          <span class="hint" style="flex:0 0 auto">${tail}</span>
           <span class="tnum" style="color:${ok ? 'var(--gold)' : 'var(--red)'}">${cost} 分</span>
         </div>`);
       });

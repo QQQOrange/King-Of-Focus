@@ -898,6 +898,16 @@ internal object PageTimer {
 /** 轻档提示页：不拦人，只把"这个应用现在不能用"说清楚，5 秒后自己回桌面 */
 @Composable
 private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
+    val ctx = LocalContext.current
+    // 被拦下的那一刻，最该看到的不是"你不能用这个"，而是"你本来要干什么"。
+    // 段目标就存在本机，读一次即可（这一页活不过几秒，不必缓存）。
+    val cfg = com.qqqorange.kingoffocus.data.Store.current
+    val goal = remember {
+        val seg = com.qqqorange.kingoffocus.core.DistractMath.segmentBounds(
+            cfg, java.time.LocalDateTime.now(),
+        )
+        seg?.let { com.qqqorange.kingoffocus.data.GoalStore.of(it.start) }.orEmpty()
+    }
     Column(
         Modifier.fillMaxSize().padding(horizontal = 28.dp),
         verticalArrangement = Arrangement.Center,
@@ -915,6 +925,39 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
         if (rule.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("命中规则「$rule」", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        }
+        // 替代动作：把"那我该做什么"直接写在页面上
+        Spacer(Modifier.height(16.dp))
+        if (goal.isNotBlank()) {
+            Text(
+                "这一段要做的是",
+                fontSize = 11.sp,
+                color = Color(0xFF7C8798),
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                goal,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFFF2F4F8),
+                textAlign = TextAlign.Center,
+            )
+        } else {
+            OutlinedButton(
+                onClick = {
+                    // 打开主界面去写目标（这一页本来就要走了，不必留着）
+                    runCatching {
+                        ctx.startActivity(
+                            android.content.Intent(
+                                ctx,
+                                com.qqqorange.kingoffocus.MainActivity::class.java,
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                        onHome()
+                    }
+                },
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF9AA4B2)),
+            ) { Text("这一段还没写目标", fontSize = 11.sp) }
         }
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.Bottom) {
