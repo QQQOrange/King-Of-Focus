@@ -21,6 +21,13 @@ data class TrialCfg(
     val until: Long = 0,
     /** 试用之前的 7×24 表 */
     val originalDays: List<List<HourPlan>> = emptyList(),
+    /**
+     * 试用之前的「自律总开关」。
+     *
+     * 试用要能真的拦人，所以开始时会把它打开；但**用完必须放回去**——
+     * 否则用户本来就是关着自律在试，试完被静默打开，会突然开始被拦。
+     */
+    val originalEnabled: Boolean = true,
 )
 
 object TrialStore {
@@ -68,12 +75,6 @@ object TrialStore {
         if (!::file.isInitialized) return
         runCatching { if (file.exists()) file.delete() }
     }
-
-    /** 只在测试里用：把状态摆成"没有在试用" */
-    @Synchronized
-    internal fun resetForTest() {
-        cur = null
-    }
 }
 
 /**
@@ -99,6 +100,7 @@ object TrialRunner {
             TrialCfg(
                 until = epoch(now) + minutes * 60L,
                 originalDays = cfg.days,
+                originalEnabled = cfg.enabled,
             ),
         )
         Store.update { it.copy(days = grid, enabled = true) }
@@ -110,7 +112,7 @@ object TrialRunner {
     fun restoreIfDue(now: LocalDateTime = LocalDateTime.now()): Boolean {
         val t = TrialStore.get() ?: return false
         if (t.until > epoch(now)) return false
-        Store.update { it.copy(days = t.originalDays) }
+        Store.update { it.copy(days = t.originalDays, enabled = t.originalEnabled) }
         TrialStore.clear()
         return true
     }

@@ -40,7 +40,7 @@ object Store {
         val trial = TrialStore.get()
         if (trial != null && trial.until <= System.currentTimeMillis() / 1000) {
             // 上次试用中途被杀：这里补还原。不做这一步，用户手排的时段就被永久换掉了。
-            cfg = normalize(cfg.copy(days = trial.originalDays))
+            cfg = normalize(cfg.copy(days = trial.originalDays, enabled = trial.originalEnabled))
             TrialStore.clear()
         }
         _state.value = cfg

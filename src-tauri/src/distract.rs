@@ -118,7 +118,7 @@ pub fn segment_bounds(cfg: &Config, now: NaiveDateTime) -> Option<(i64, i64, Str
             break; // 当前段不是从整点开始的（09:15 那种），不再往前并
         }
         let prev = cursor - Duration::hours(1);
-        let Ok(hm) = u32::try_from(prev.hour()) else { break };
+        let hm = prev.hour();
         let Some(prev_wins) = crate::clock::plan_wins(cfg, prev.weekday().num_days_from_monday(), hm)
         else {
             break;
@@ -137,7 +137,7 @@ pub fn segment_bounds(cfg: &Config, now: NaiveDateTime) -> Option<(i64, i64, Str
         if cursor != cursor.date().and_hms_opt(cursor.hour(), 0, 0).unwrap_or(cursor) {
             break;
         }
-        let Ok(hm) = u32::try_from(cursor.hour()) else { break };
+        let hm = cursor.hour();
         let Some(next_wins) = crate::clock::plan_wins(cfg, cursor.weekday().num_days_from_monday(), hm)
         else {
             break;

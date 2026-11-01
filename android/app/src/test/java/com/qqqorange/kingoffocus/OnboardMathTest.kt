@@ -1,6 +1,8 @@
 package com.qqqorange.kingoffocus
 
 import com.qqqorange.kingoffocus.core.OnboardMath
+import com.qqqorange.kingoffocus.core.RULE_ID
+import com.qqqorange.kingoffocus.core.buildRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -59,5 +61,21 @@ class OnboardMathTest {
         val days = OnboardMath.buildDays(listOf(0), 9, 10)
         assertEquals(25, days[0][9].work)
         assertEquals(5, days[0][9].brk)
+    }
+
+    /**
+     * 向导建的规则**不能固化**：新手没有积分可解锁，固化等于到点把人锁在外面。
+     * 这是我在全盘审视里补的一条——`Rule` 的 hard 默认是 true，很容易漏。
+     */
+    @Test
+    fun onboardRuleIsNeverHard() {
+        val r = buildRule(listOf("com.example.a", "com.example.b"))
+        assertTrue("向导规则一旦固化，到点连关都关不掉", !r.hard)
+        assertTrue(r.enabled)
+        assertEquals("blacklist", r.mode)
+        assertEquals(2, r.packages.size)
+        assertEquals(RULE_ID, r.id)
+        // 一个都不选也要能建（第二步本来就允许跳过）
+        assertTrue(!buildRule(emptyList()).hard)
     }
 }

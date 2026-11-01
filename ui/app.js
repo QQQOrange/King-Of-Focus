@@ -4226,6 +4226,29 @@ function viewStats() {
     <div class="hlabels">${Array.from({ length: 24 }, (_, i) => `<span>${i}</span>`).join('')}</div>
   </div>` : ''}
 
+  ${(() => {
+    const led = S.statsLedger || { total: 0, items: [] };
+    if (!led.total) return '';
+    // 这段是整块拼出来的，词典命中不了 —— 直接按语言拼
+    const en2 = I18N.getLang() === 'en';
+    return `<div class="card">
+      <div class="card-title">${en2 ? 'What interrupted you' : '本期被什么打断'}
+        <span class="badge gold">${en2 ? `${led.total} hits` : `共 ${led.total} 次`}</span>
+      </div>
+      <div class="card-sub">${en2
+        ? 'Only <b>actual blocks</b> count (app sent home, page closed); the same target counts once per 30 seconds. The top one is the one worth turning off.'
+        : '只记<b>真的被拦下</b>的东西（应用被送回桌面、网页被关掉）；30 秒内同一个目标只算一次。次数最多的那一个，就是最值得关掉的那一个。'}</div>
+      ${led.items.slice(0, 8).map((h) => `<div class="list-row">
+        <span class="badge ${h.kind === 'site' ? 'blue' : 'gold'}">${
+          h.kind === 'site' ? (en2 ? 'site' : '网页') : (en2 ? 'app' : '软件')
+        }</span>
+        <span class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(h.label)}">${esc(h.label)}</span>
+        <span class="hint" style="flex:0 0 auto">${esc(h.rule || '')}</span>
+        <b style="flex:0 0 auto;font-variant-numeric:tabular-nums">${h.n} ${en2 ? 'x' : '次'}</b>
+      </div>`).join('')}
+    </div>`;
+  })()}
+
   <div class="note" style="margin-top:14px">
     <b>采集口径：</b>${qtip('idle')}每秒采样一次前台窗口。若前台是受支持的浏览器、且插件在 5 分钟内上报过当前标签页，
     这一秒记到<b>该域名</b>上；否则记到<b>该 exe</b>上。无操作超过 60 秒不计时（可在设置里改）。
@@ -4839,7 +4862,10 @@ function viewHelp() {
   </div>
 
   ${sec('1 · 三步开始', `
-    ① 到「自律规则」新建一条 → ② 加软件 / 加网站 → ③ 拖出它在自律时间内的生效范围。
+    <div>最省事的路：设置 → 新手引导</div>
+    <div>三步：什么时候学（写时段）/ 哪些不该打开（建一条规则）/ 可以先试 25 分钟。</div>
+    <div>它建的东西和你手建的是同一套，之后照样能在「自律时段」「自律规则」里改；重走一遍只覆盖向导写过的那一套。</div>
+    <div>手动来也行：① 到「自律规则」新建一条 → ② 加软件 / 加网站 → ③ 拖出它在自律时间内的生效范围。</div>
     打开开关后，<b>只有自律时间内</b>它才会拦；自律时间之外完全静默。
   `)}
 
@@ -8833,10 +8859,15 @@ async function saveConfigQuiet() {
 async function loadStats() {
   const [start, end] = boundsOf(S.range);
   try {
-    const r = await invoke('stats_range', { start, end });
+    // 账本和统计一起拉：两个请求互不依赖，串行只是白等一轮
+    const [r, led] = await Promise.all([
+      invoke('stats_range', { start, end }),
+      invoke('ledger_range', { start, end }).catch(() => null),
+    ]);
     // 只有真的拿到区间数据才替换：接口打嗝时保留上一次的图表，
     // 免得点一下日期整块统计突然变成"没有数据"
     if (r && Array.isArray(r.on)) S.stats = r;
+    S.statsLedger = led && !led.error ? led : { total: 0, items: [] };
   } catch (e) { console.error(e); }
 }
 async function loadReports() {

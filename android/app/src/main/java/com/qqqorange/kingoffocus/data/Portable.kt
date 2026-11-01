@@ -433,8 +433,8 @@ object Portable {
     /**
      * 加密信封。
      *
-     * - 密码为空 → 原样返回明文（桌面端的 DPAPI 出了那台机器就打不开，
-     *   所以"没密码"只能给明文，界面必须把这句话说出来）
+     * - 密码为空 → 原样返回明文（两端都一样：没密码就没有任何"绑定这台机器"的加密，
+     *   界面必须把这句话说出来）
      * - 有密码 → `{"kofEnc":3,"kdf":"pbkdf2-sha256",...}`，AES-256-GCM
      */
     fun seal(plain: String, pass: String, iter: Int = ITER): String {

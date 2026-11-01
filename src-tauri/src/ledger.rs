@@ -10,7 +10,6 @@
 //! 单文件几十条，读写都很轻；跨天不用清理，旧文件跟着统计一起被保留策略管。
 //! **不进跨设备备份**：这是本机的行为记录，跟分心事件、统计同类。
 
-use crate::model::Config;
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

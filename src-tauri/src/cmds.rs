@@ -1938,12 +1938,6 @@ pub fn onboard_skip(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
     crate::onboard::set_done(&shared, true)
 }
 
-/// 设置页里的"重新走一遍引导"
-#[tauri::command]
-pub fn onboard_reset(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
-    crate::onboard::set_done(&shared, false)
-}
-
 // ---------------- 周复盘 ----------------
 
 /// 某一周的数据快照 + 已保存的回答（offset 0 = 本周，1 = 上周）
@@ -1958,13 +1952,7 @@ pub fn review_save(week: String, answers: Vec<String>) -> Result<(), String> {
     crate::review::save_answers(&week, answers)
 }
 
-/// 今天的打断账本：谁打得最多
-#[tauri::command]
-pub fn ledger_today(limit: Option<usize>) -> Value {
-    crate::ledger::top_today(limit.unwrap_or(6))
-}
-
-/// 区间账本（报告用）
+/// 区间账本：报告/统计页的"本期被什么打断"
 #[tauri::command]
 pub fn ledger_range(start: String, end: String) -> Value {
     if !crate::distract::valid_day(&start) || !crate::distract::valid_day(&end) {
@@ -1973,6 +1961,12 @@ pub fn ledger_range(start: String, end: String) -> Value {
     let items = crate::ledger::range(&start, &end);
     let total: u32 = items.iter().map(|x| x.n).sum();
     json!({ "start": start, "end": end, "total": total, "items": items })
+}
+
+/// 今天的打断账本：谁打得最多
+#[tauri::command]
+pub fn ledger_today(limit: Option<usize>) -> Value {
+    crate::ledger::top_today(limit.unwrap_or(6))
 }
 
 // ---------------- 段目标 / 打断计数 ----------------
@@ -1991,24 +1985,6 @@ pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Va
 pub fn focus_goal_state(seg: i64, state: String) -> Result<Value, String> {
     let g = crate::focus::set_state(seg, &state)?;
     Ok(json!(g))
-}
-
-/// 某天的段目标（按段起点升序），给统计/复盘用
-#[tauri::command]
-pub fn focus_goal_day(day: Option<String>) -> Value {
-    let d = day.filter(|x| !x.trim().is_empty()).unwrap_or_else(crate::distract::today);
-    if !crate::distract::valid_day(&d) {
-        return json!({ "error": "日期不合法", "goals": [] });
-    }
-    let goals = crate::focus::goals_of_day(&d);
-    json!({ "day": d, "goals": goals })
-}
-
-/// HUD / 主页共用的一小包：在不在段里、目标、被打断几次
-#[tauri::command]
-pub fn focus_snapshot(shared: State<'_, Arc<Shared>>) -> Value {
-    let c = shared.config();
-    crate::focus::snapshot(&c)
 }
 
 // ---------------- 分心事件 ----------------

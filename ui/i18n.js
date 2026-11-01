@@ -48,6 +48,14 @@
     '、没做成': ' half, ',
     '、还没答': ' not done, ',
     '新手引导': 'Setup wizard',
+    '最省事的路：设置 → 新手引导': 'The quickest path: Settings -> Setup wizard',
+    '打开开关后，': 'Once enabled, ',
+    '三步：什么时候学（写时段）/ 哪些不该打开（建一条规则）/ 可以先试 25 分钟。':
+      'Three steps: when to study (a schedule) / what to block (one rule) / optionally try 25 minutes.',
+    '它建的东西和你手建的是同一套，之后照样能在「自律时段」「自律规则」里改；重走一遍只覆盖向导写过的那一套。':
+      'It creates the same structures you would build by hand, editable in Schedule and Rules; re-running only overwrites what the wizard made.',
+    '手动来也行：① 到「自律规则」新建一条 → ② 加软件 / 加网站 → ③ 拖出它在自律时间内的生效范围。':
+      'Or do it by hand: (1) create a rule, (2) add apps / sites, (3) drag its active range.',
     '重新走一遍': 'Run it again',
     '三步：什么时候学 / 哪些不该开 / 试 25 分钟。重走一遍不会删掉你已经排好的时段和规则，只会覆盖向导自己写的那一套。':
       'Three steps: when to study, what to block, try 25 minutes. Re-running only overwrites the schedule and rule the wizard itself created.',

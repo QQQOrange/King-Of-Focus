@@ -31,6 +31,16 @@ pub struct Trial {
     pub prev_active: String,
     /// 结束时刻（unix 秒）
     pub until: i64,
+    /// 试用之前「自律时段」总开关的状态（默认开，老数据缺这个键也说得通）
+    #[serde(default = "default_true")]
+    pub prev_clock_enabled: bool,
+    /// 试用之前「跟随自律模式自动开遮罩」的状态
+    #[serde(default = "default_true")]
+    pub prev_follow: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn clamp_hour(h: u32) -> u32 {
@@ -68,6 +78,20 @@ fn build_profile(days: &[u32], from_hour: u32, to_hour: u32, work: u32, brk: u32
         def_cap: 0,
         bound: Vec::new(),
     }
+}
+
+/// 向导建的那条规则（抽出来是为了能用单测钉住 `hard = false`）
+///
+/// **不能固化**：`Rule::default()` 的 `hard` 是 true，而写给新手的规则一旦固化，
+/// 到了点连关都关不掉（新用户还没有积分可解锁）——那不是自律，是陷阱。
+pub fn build_rule(apps: Vec<AppEntry>) -> Rule {
+    let mut r = Rule { id: RULE_ID.into(), name: "开始时选的".into(), ..Rule::default() };
+    r.enabled = true;
+    r.mode = "blacklist".into();
+    r.apps = apps;
+    r.color = "gold".into();
+    r.hard = false;
+    r
 }
 
 fn save_cfg(shared: &Shared, mut c: Config) -> Result<(), String> {
@@ -115,12 +139,8 @@ pub fn apply(
             }
         }
     }
-    c.settings.focus_clock.active = if c.settings.focus_clock.profiles.iter().any(|p| p.id == PROFILE_ID) {
-        PROFILE_ID.into()
-    } else {
-        // 走了"替换掉唯一空方案"那条路时，id 是原来那个
-        c.settings.focus_clock.profiles[0].id.clone()
-    };
+    // 两条路（覆盖 / 替换唯一的空方案）最后都落在同一个 id 上，直接写死更不容易看错
+    c.settings.focus_clock.active = PROFILE_ID.into();
     c.settings.focus_clock.enabled = true;
     c.settings.focus_clock.apply_rules = true;
 
@@ -136,11 +156,7 @@ pub fn apply(
         })
         .collect();
     if !list.is_empty() {
-        let mut r = Rule { id: RULE_ID.into(), name: "开始时选的".into(), ..Rule::default() };
-        r.enabled = true;
-        r.mode = "blacklist".into();
-        r.apps = list;
-        r.color = "gold".into();
+        let r = build_rule(list);
         match c.rules.iter_mut().find(|x| x.id == RULE_ID) {
             Some(x) => *x = r,
             None => c.rules.push(r),
@@ -154,6 +170,8 @@ pub fn apply(
 
     save_cfg(shared, c)?;
     crate::mask::wake();
+    // 排班变了：总览的"现在/下一段"要立刻跟着变，不能等 20 秒缓存过期
+    crate::focus::brief_invalidate();
     Ok(plan_summary(&shared.config()))
 }
 
@@ -230,12 +248,22 @@ pub fn trial(shared: &Shared, minutes: u32) -> Result<Value, String> {
         None => c.settings.focus_clock.profiles.push(prof),
     }
     c.settings.focus_clock.active = TRIAL_ID.into();
+    // 试用要真的生效，所以这两项临时打开；**原来的状态记下来，结束时放回去**。
+    // 不放回去的话，本来关着自律在试用的用户，试完会突然开始被拦。
+    let prev_clock_enabled = c.settings.focus_clock.enabled;
+    let prev_follow = c.settings.mask.follow_schedule;
     c.settings.focus_clock.enabled = true;
-    c.settings.trial = Some(Trial { prev_active: prev, until });
     c.settings.mask.follow_schedule = true;
+    c.settings.trial = Some(Trial {
+        prev_active: prev,
+        until,
+        prev_clock_enabled,
+        prev_follow,
+    });
 
     save_cfg(shared, c)?;
     crate::mask::wake();
+    crate::focus::brief_invalidate();
     Ok(json!({ "until": until, "minutes": m }))
 }
 
@@ -263,9 +291,13 @@ pub fn tick_trial(shared: &Shared) -> bool {
         };
         c.settings.focus_clock.active = back;
     }
+    // 时段开关与"自动开遮罩"都还原成试用之前的样子
+    c.settings.focus_clock.enabled = t.prev_clock_enabled;
+    c.settings.mask.follow_schedule = t.prev_follow;
     c.settings.trial = None;
     let _ = save_cfg(shared, c);
     crate::mask::wake();
+    crate::focus::brief_invalidate();
     true
 }
 
@@ -332,6 +364,22 @@ mod tests {
         assert!(!p.days[1][20].on, "没选周二就不能开");
         assert!(!p.days[0][19].on, "区间外不能开");
         assert!(!p.days[0][22].on, "to 是开区间上界");
+    }
+
+    /// 向导建的规则**不能固化**：新手没有积分，固化等于把人锁在外面
+    #[test]
+    fn onboard_rule_is_never_hard() {
+        let r = build_rule(vec![AppEntry {
+            id: String::new(),
+            kind: "exe".into(),
+            value: "C:////Games////steam.exe".into(),
+            label: "steam".into(),
+        }]);
+        assert!(!r.hard, "向导规则一旦固化，到点连关都关不掉");
+        assert!(r.enabled);
+        assert_eq!(r.mode, "blacklist");
+        assert_eq!(r.apps.len(), 1);
+        assert_eq!(r.id, RULE_ID);
     }
 
     /// 起止给反了 / 越界时不能写出空方案或越界方案

@@ -111,14 +111,6 @@ object GoalStore {
         )
     }
 
-    /** 写了目标的那些天（周复盘要回答"有几天写了"） */
-    @Synchronized
-    fun daysWithGoal(from: String, to: String): Int =
-        list.filter { it.day >= from && it.day <= to && it.text.isNotBlank() }
-            .map { it.day }
-            .distinct()
-            .size
-
     /** 写/清空某一段的目标；返回写完之后的文本 */
     @Synchronized
     fun set(seg: Long, text: String, day: String = "", now: Long = System.currentTimeMillis() / 1000): String {

@@ -91,6 +91,7 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
     st.goals.retain(|g| g.seg != seg);
     if t.is_empty() {
         save(&st)?;
+        goal_cache_clear();
         brief_invalidate();
         return Ok(Goal { seg, text: String::new(), at: 0, day: String::new(), state: String::new() });
     }
@@ -103,6 +104,7 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
         state: prev_state,
     };
     st.goals.push(g.clone());
+    goal_cache_clear();
     brief_invalidate();
     if st.goals.len() > MAX_GOALS {
         st.goals.sort_by_key(|x| x.at);
@@ -113,14 +115,39 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
     Ok(g)
 }
 
+/// 上一次读到的"某段目标"，用来挡住 HUD 每秒一次的全文件解析
+static GOAL_CACHE: std::sync::Mutex<Option<(i64, String)>> = std::sync::Mutex::new(None);
+
+/// 目标变了就把缓存丢掉（写路径只有 `set_goal` / `set_state` 两处）
+fn goal_cache_clear() {
+    if let Ok(mut g) = GOAL_CACHE.lock() {
+        *g = None;
+    }
+}
+
 /// 某一段的目标文本（没有就是空串）
+///
+/// HUD 每秒拉一次 `hud_state`，而这里要解析整个 `intents.json`。
+/// 目标一天只改几次，用"段 → 文本"的单格缓存挡住重复读盘：
+/// 缓存只认最后一个段，所以换段自动失效，不需要按段维护一张表。
 pub fn goal_of(seg: i64) -> String {
-    load()
+    if let Ok(g) = GOAL_CACHE.lock() {
+        if let Some((s, t)) = &*g {
+            if *s == seg {
+                return t.clone();
+            }
+        }
+    }
+    let t = load()
         .goals
         .into_iter()
         .find(|g| g.seg == seg)
         .map(|g| g.text)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Ok(mut g) = GOAL_CACHE.lock() {
+        *g = Some((seg, t.clone()));
+    }
+    t
 }
 
 /// 当前这一段的目标
@@ -153,6 +180,7 @@ pub fn set_state(seg: i64, state: &str) -> Result<Goal, String> {
     g.state = state.to_string();
     let out = g.clone();
     save(&st)?;
+    goal_cache_clear();
     brief_invalidate();
     Ok(out)
 }

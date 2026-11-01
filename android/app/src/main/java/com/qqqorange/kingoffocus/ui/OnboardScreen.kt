@@ -39,8 +39,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.core.OnboardMath
+import com.qqqorange.kingoffocus.core.RULE_ID
+import com.qqqorange.kingoffocus.core.buildRule
 import com.qqqorange.kingoffocus.data.Config
-import com.qqqorange.kingoffocus.data.Rule
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.loadLaunchableApps
 import com.qqqorange.kingoffocus.service.GuardService
@@ -88,13 +89,7 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                 defBrk = OnboardMath.BRK,
                 // 覆盖向导自己写的那条，不动用户手建的其他规则
                 rules = it.rules.filter { r -> r.id != RULE_ID } +
-                    Rule(
-                        id = RULE_ID,
-                        name = "开始时选的",
-                        enabled = true,
-                        mode = "blacklist",
-                        packages = picked.toList(),
-                    ),
+                    buildRule(picked.toList()),
                 onboarded = true,
             )
         }
@@ -184,8 +179,11 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                         HourPicker(to, 7, 24) { v -> to = v.coerceAtLeast(from + 1) }
                     }
                     Spacer(Modifier.height(14.dp))
+                    // 用 OnboardMath 算分钟数：和真正写进配置的那张表同一口径
+                    val mins = OnboardMath.minutesOf(OnboardMath.buildDays(days, from, to))
                     Text(
-                        "$daysText ${fmtHour(from)}–${fmtHour(to)} · 每天 ${to - from} 小时",
+                        "$daysText ${fmtHour(from)}–${fmtHour(to)} · " +
+                            "每天 ${to - from} 小时，每周约 ${mins / 60} 小时",
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
@@ -280,8 +278,6 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
         }
     }
 }
-
-private const val RULE_ID = "onboard-rule"
 
 private fun fmtHour(h: Int): String = if (h >= 24) "24:00" else h.toString().padStart(2, '0') + ":00"
 

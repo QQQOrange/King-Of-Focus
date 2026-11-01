@@ -98,7 +98,6 @@ data class WeekSnapshot(
     val diversions: List<Hit> = emptyList(),
     val diverTotal: Int = 0,
     val goal: GoalStat = GoalStat(),
-    val goalDays: Int = 0,
     val staked: Int = 0,
     val stakeClean: Int = 0,
     val stakeVoid: Int = 0,
@@ -129,7 +128,6 @@ object ReviewData {
 
         // 目标完成情况
         val goal = GoalStore.stats(sp.startKey, sp.endKey)
-        val goalDays = GoalStore.daysWithGoal(sp.startKey, sp.endKey)
 
         // 质押：这一周里结算过的
         val from = epoch(sp.start)
@@ -152,7 +150,6 @@ object ReviewData {
             diversions = diver,
             diverTotal = diverTotal,
             goal = goal,
-            goalDays = goalDays,
             staked = stakes.size,
             stakeClean = clean,
             stakeVoid = voided,

@@ -302,6 +302,16 @@ window.__TAURI__ = {
     if (cmd === 'onboard_finish') { window.__onbFinish = args; return { onboarded: true }; }
     if (cmd === 'onboard_try') { window.__onbTry = args; return { until: 1793500000, minutes: args.minutes || 25 }; }
     if (cmd === 'onboard_skip') { window.__onbSkip = 1; return null; }
+    // 统计页的"本期被什么打断"：标签用英文（那是用户数据，不该触发中文残留断言）
+    if (cmd === 'ledger_range') {
+      return {
+        start: args.start, end: args.end, total: 5,
+        items: [
+          { key: 'steam.exe', label: 'Steam', kind: 'app', n: 3, rule: 'Entertainment' },
+          { key: 'bilibili.com', label: 'bilibili.com', kind: 'site', n: 2, rule: 'Sites' },
+        ],
+      };
+    }
     if (cmd === 'focus_goal_state') {
       (window.__goalState = window.__goalState || []).push(args);
       if (STATE.brief && STATE.brief.review) STATE.brief.review.state = args.state || '';
@@ -4094,6 +4104,10 @@ window.__itest = async () => {
   {
     await Act.nav('stats');
     await wait(320);
+    out.push(['统计页有"本期被什么打断"',
+      !!([...document.querySelectorAll('#content .card-title')].find((e) => /被什么打断/.test(e.textContent))), true]);
+    out.push(['账本按次数排好了',
+      (document.querySelector('#content .list-row b') || {}).textContent, '3 次']);
     out.push(['统计页有关键问号', document.querySelectorAll('#content .q').length >= 4, true]);
     // 点开第一条：弹窗要出现，并且写的是"口径"而不是别的
     const q = document.querySelector('#content .q');

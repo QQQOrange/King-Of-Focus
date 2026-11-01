@@ -1,6 +1,7 @@
 package com.qqqorange.kingoffocus.core
 
 import com.qqqorange.kingoffocus.data.HourPlan
+import com.qqqorange.kingoffocus.data.Rule
 import com.qqqorange.kingoffocus.data.defaultDays
 
 /**
@@ -54,3 +55,21 @@ object OnboardMath {
     fun minutesOf(days: List<List<HourPlan>>): Int =
         days.sumOf { row -> row.sumOf { if (it.on) (it.to - it.from).coerceIn(0, 60) else 0 } }
 }
+
+/**
+ * 向导建的那条规则。
+ *
+ * **不能固化**（`hard = false`）：`Rule` 的 `hard` 默认是 true，而写给新手的规则
+ * 一旦固化，到点连关都关不掉——新用户还没有积分可解锁，那就不是自律而是陷阱。
+ */
+fun buildRule(packages: List<String>, id: String = RULE_ID): Rule = Rule(
+    id = id,
+    name = "开始时选的",
+    enabled = true,
+    mode = "blacklist",
+    packages = packages,
+    hard = false,
+)
+
+/** 「开始时选的」这条规则的固定 id：重走向导时是覆盖，不是堆积 */
+const val RULE_ID = "onboard-rule"
