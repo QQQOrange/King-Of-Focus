@@ -332,7 +332,8 @@ data class SleepCfg(
 @Serializable
 data class CloudCfg(
     val enabled: Boolean = false,
-    val url: String = "",
+    /** 空 = 用 [CloudSync.DEFAULT_URL]（与桌面端同一个目录） */
+    val url: String = CloudSync.DEFAULT_URL,
     val user: String = "",
     val pass: String = "",
     /**
@@ -591,7 +592,11 @@ fun normalize(cfg: Config): Config {
             unlockPrice = cfg.sleep.unlockPrice.coerceIn(0, 100),
         ),
         cloud = cfg.cloud.copy(
-            url = cfg.cloud.url.trim().let { u -> if (u.isNotEmpty() && !u.endsWith("/")) "$u/" else u },
+            // 空白 = 默认地址（老配置、手动清空都落到默认，不再"看着有地址其实没有"）；
+            // 自定义地址只补末尾斜杠，绝不用默认值覆盖。
+            url = CloudSync.urlOf(cfg.cloud).let { u -> if (u.endsWith("/")) u else "$u/" },
+            // `enabled` 不在这里改：覆盖它会表现成"开关点了自己弹回去"。
+            // 缺账号这件事由设置页提示 + [CloudAuto] / 手动同步的前置判断处理。
         ),
         points = cfg.points.coerceAtLeast(0),
         // 通知：结束前提醒 0–120 分钟（0 = 不提醒），汇总时间落在 0–23 点

@@ -381,3 +381,71 @@ King Of Focus 使用报告
 | 配额用尽 | `E_RATE` + 提到 5000 次的建议 |
 | 下载被掐断 | 错误说明 + 「用浏览器打开」 |
 | 大小 / 哈希不符 | 删除文件并报错，绝不交给安装器 |
+
+
+---
+
+## 14. 默认 WebDAV 地址：两端统一 + 真生效（0.4.4）
+
+### 根因（三处叠加，缺一不可）
+
+| # | 位置 | 问题 |
+|---|---|---|
+| 1 | `ui/app.js` 输入框 | 地址只写在 `placeholder`（灰色示例文字）里，**配置里是空串**。用户看到"已经填好了"，实际没填 |
+| 2 | `sync.rs` 三处 + `backup.rs` + Android `CloudSync.base()` | 各自判 `url.trim().is_empty()` → 直接报「还没有填写 WebDAV 地址」，于是"看着有地址、同步必失败" |
+| 3 | 两端默认值 | 桌面 `SyncCfg::default().url = ""`、手机 `CloudCfg.url = ""`；手机 placeholder 还写成 `king-of-focus`（小写），与桌面 `KingOfFocus` 不一致 |
+
+顺带发现：自动同步的条件是 `enabled && auto && !url.is_empty()`，而 `url` 恰好是空 —— **自动同步一次都没跑过**。
+
+### 统一后的默认值
+
+```
+https://dav.jianguoyun.com/dav/KingOfFocus/
+```
+
+- PC：`src-tauri/src/model.rs` → `pub const DEFAULT_SYNC_URL`
+- 手机：`data/CloudSync.kt` → `const val DEFAULT_URL`
+- 两处**逐字相同**，由 `node tools/check_dav_url.js` 自动比对（不一致直接退出码 1）。
+
+### 空 = 默认，且自定义绝不被覆盖
+
+| 层 | 规则 |
+|---|---|
+| `cfg::sanitize` / Android `normalize` | 空白 → 默认；非空白只 `trim`（手机另补末尾 `/`），**内容一个字不改** |
+| `sync::url_of` / `CloudSync.urlOf` | 再兜一次：任何调用点拿到的都是非空地址 |
+| `sync_save` | 收到空串 → 存默认，而不是把同步弄死 |
+| Android `Store.load` | **读盘即归一化**，界面上直接显示默认地址（以前是空框 + placeholder） |
+| 云端覆盖（`sync::download` / `Portable` 恢复） | 保留本机 `sync` 配置；便携文档里根本不含 sync 字段 |
+
+### 目录自动创建（否则默认地址第一次用必然失败）
+
+默认地址带一层子目录，而 WebDAV 的 `PUT` **不会**自动建父目录（回 409），
+`PROPFIND` 对不存在的目录回 404 —— 表现为"上传失败 / 列表打不开"。
+
+- 桌面：`net::mkcol` + `net::ensure_dir`（逐级建，已存在 405 视为成功），在上传与列目录前调用；
+- 手机：`CloudSync.ensureDir`，同样在 `put` 与 `list` 前调用。
+
+### 手机端补齐的入口（与桌面端对齐）
+
+| 能力 | 桌面 | 手机 |
+|---|---|---|
+| 立即同步（谁新用谁） | ✓ | ✓ 新增 |
+| 恢复云端备份 | ✓「云端 → 覆盖本机」 | ✓ 新增「恢复云端最新」（弹合并/覆盖） |
+| 上传本机 | ✓ | ✓ |
+| 上传后按策略清理 | ✓ 只清本机来源 | ✓ 新增，只清本机手动传的，保留 5 份；桌面传的与自动备份不动 |
+| 导出 / 从文件恢复 | ✓ | ✓（已有，SAF） |
+
+### 验收
+
+| 场景 | 期望 |
+|---|---|
+| PC：配置里 `url = ""` | 启动后配置与界面都显示默认地址，同步可用 |
+| PC：手填自定义地址 | 原样保存，重跑同步用的还是它（`sync_save` 不覆盖非空值） |
+| 手机：配置里 `url = ""` | 界面显示默认地址（实测：`https://dav.jianguoyun.com/dav/KingOfFocus/`） |
+| 手机：手填自定义地址 | 原样保留（实测：`http://127.0.0.1:8765/davphone/`） |
+| 两端默认值 | `node tools/check_dav_url.js` 全绿 |
+| 目录不存在 | MKCOL 自动建，随后 PUT/PROPFIND 成功 |
+| 只清空白（空格/换行） | 视为空 → 落默认 |
+
+自动化断言：Rust `sync::tests`（默认/自定义/sanitize/协议头）+ `net::tests`（逐级目录）、
+Android `CloudDefaultTest`（8 条）。

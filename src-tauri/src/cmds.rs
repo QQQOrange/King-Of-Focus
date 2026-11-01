@@ -1610,12 +1610,24 @@ pub fn sync_save(
     enabled: bool,
 ) -> Result<(), String> {
     let mut c = shared.config();
-    c.settings.sync.url = url.trim().to_string();
+    // 留空 = 用默认地址。
+    //
+    // 以前这里直接存 trim 后的空串，于是用户"清空一下再保存"就把同步彻底弄死了：
+    // 界面上还是显示着 placeholder 的地址，实际上 `url` 是空的。
+    // 自定义地址原样保存（只 trim），绝不用默认值覆盖它。
+    let url = url.trim().to_string();
+    c.settings.sync.url = if url.is_empty() {
+        crate::model::DEFAULT_SYNC_URL.to_string()
+    } else {
+        url
+    };
     c.settings.sync.username = username;
     c.settings.sync.password = password;
     c.settings.sync.auto = auto;
     c.settings.sync.auto_minutes = auto_minutes.clamp(5, 1440);
-    c.settings.sync.enabled = enabled;
+    // 「启用」看的是**凭据是否齐全**：地址恒有值（默认），没有账号的匿名 PUT
+    // 只会在每半小时失败一次，那不如老老实实标成未启用。
+    c.settings.sync.enabled = enabled && !c.settings.sync.username.trim().is_empty();
     if c.settings.sync.device.trim().is_empty() {
         c.settings.sync.device = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "我的电脑".into());
     }

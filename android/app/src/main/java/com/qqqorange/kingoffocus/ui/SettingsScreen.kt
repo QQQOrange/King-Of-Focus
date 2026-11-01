@@ -626,31 +626,59 @@ private fun CloudSection(cfg: Config) {
         busy = false
     }
 
+    /**
+     * 上传本机配置，返回一句给人看的结果。
+     *
+     * 抽成 suspend 函数是为了让「立即同步」复用同一条上传路径——
+     * 两套上传代码迟早会分叉（一份加了加密、一份忘了），最后变成"手动传的和自动传的不一样"。
+     */
+    suspend fun doUpload(): String = withContext(Dispatchers.IO) {
+        runCatching {
+            val c = Store.current
+            val name = CloudSync.backupName()
+            // 载荷是**跨设备文档**（与桌面端同一份格式），不是手机自己的 config.json：
+            // 后者桌面读不懂，传上去也只是一份没人能用的文件。
+            val doc = Portable.toDoc(c, android.os.Build.MODEL ?: "Android", appVersion(ctx))
+            val body = Portable.seal(Portable.render(doc), c.backup.password)
+            when (val r = CloudSync.put(c.cloud, name, body)) {
+                is CloudSync.Outcome.Err -> r.message
+                is CloudSync.Outcome.Ok -> {
+                    val hint = if (c.backup.password.isBlank()) {
+                        "（明文，建议设置备份密码）"
+                    } else {
+                        ""
+                    }
+                    "已上传 $name$hint"
+                }
+            }
+        }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
+    }
+
+    /**
+     * 上传后清理：只删**本机手动传的**旧备份，保留最近 [CloudSync.KEEP_MANUAL] 份。
+     * 桌面端传的、自动备份的一律不动（桌面端 `prune_targets` 也是这个规矩）。
+     */
+    suspend fun pruneRemote(): Int = withContext(Dispatchers.IO) {
+        runCatching {
+            val c = Store.current
+            val list = (CloudSync.list(c.cloud) as? CloudSync.Outcome.Ok)?.entries.orEmpty()
+            var n = 0
+            for (name in CloudSync.pruneTargets(list)) {
+                if (CloudSync.delete(c.cloud, name) is CloudSync.Outcome.Ok) n++
+            }
+            n
+        }.getOrDefault(0)
+    }
+
     fun upload() {
         persist()
         scope.launch {
             busy = true
             status = "上传…"
-            val msg = withContext(Dispatchers.IO) {
-                runCatching {
-                    val c = Store.current
-                    val name = CloudSync.backupName()
-                    // 载荷是**跨设备文档**（与桌面端同一份格式），不是手机自己的 config.json：
-                    // 后者桌面读不懂，传上去也只是一份没人能用的文件。
-                    val doc = Portable.toDoc(c, android.os.Build.MODEL ?: "Android", appVersion(ctx))
-                    val body = Portable.seal(Portable.render(doc), c.backup.password)
-                    when (val r = CloudSync.put(c.cloud, name, body)) {
-                        is CloudSync.Outcome.Err -> r.message
-                        is CloudSync.Outcome.Ok -> {
-                            val hint = if (c.backup.password.isBlank()) {
-                                "（明文，建议设置备份密码）"
-                            } else {
-                                ""
-                            }
-                            "已上传 $name$hint"
-                        }
-                    }
-                }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
+            var msg = doUpload()
+            if (msg.startsWith("已上传")) {
+                val pruned = pruneRemote()
+                if (pruned > 0) msg += "（清理旧备份 $pruned 份）"
             }
             note(msg)
             busy = false
@@ -658,40 +686,131 @@ private fun CloudSection(cfg: Config) {
         }
     }
 
+    suspend fun doRestore(entry: CloudSync.Entry, mode: String): String =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val c = Store.current
+                val text = when (val r = CloudSync.get(c.cloud, entry.name)) {
+                    is CloudSync.Outcome.Err -> return@withContext r.message
+                    is CloudSync.Outcome.Ok -> r.text ?: ""
+                }
+                val plain = Portable.unlock(text, c.backup.password)
+                val parsed = Portable.parse(plain)
+                val base = Store.current
+                if (mode == "merge") {
+                    val out = Portable.merge(parsed.doc, base)
+                    if (out.stats.noop) {
+                        "这份备份的内容本机都有了"
+                    } else {
+                        Store.update { out.config }
+                        "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
+                    }
+                } else {
+                    val next = Portable.overwrite(parsed.doc, base)
+                    Store.update { next }
+                    "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）"
+                }
+            }.getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
+        }
+
     fun restore(entry: CloudSync.Entry, mode: String) {
         persist()
         scope.launch {
             busy = true
             status = if (mode == "merge") "正在合并…" else "正在覆盖…"
-            val msg = withContext(Dispatchers.IO) {
-                runCatching {
-                    val c = Store.current
-                    val text = when (val r = CloudSync.get(c.cloud, entry.name)) {
-                        is CloudSync.Outcome.Err -> return@runCatching r.message
-                        is CloudSync.Outcome.Ok -> r.text ?: ""
-                    }
-                    val plain = Portable.unlock(text, c.backup.password)
-                    val parsed = Portable.parse(plain)
-                    val base = Store.current
-                    if (mode == "merge") {
-                        val out = Portable.merge(parsed.doc, base)
-                        if (out.stats.noop) {
-                            "这份备份的内容本机都有了"
-                        } else {
-                            Store.update { out.config }
-                            "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
-                        }
-                    } else {
-                        val next = Portable.overwrite(parsed.doc, base)
-                        Store.update { next }
-                        "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）"
-                    }
-                }.getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
-            }
+            val msg = doRestore(entry, mode)
             note(msg)
             busy = false
             // 规则和时段可能整批换了，守护服务要按新配置重来一遍
             if (GuardService.shouldRun(Store.current)) runCatching { GuardService.start(ctx) }
+        }
+    }
+
+    /**
+     * 立即同步：**谁新用谁**（与桌面端「立即同步」同一条规则）。
+     *
+     * 桌面端的判据是 payload 里的 `updatedAt`；手机端每份备份的文件名就是上传时刻，
+     * 两者含义可比，所以这里直接用 `entry.at` 对 `cfg.updatedAt`。
+     * 差值 2 秒以内算"同一版本"——上传本身也会刷本机时间，不留这点余量会来回传。
+     */
+    fun smartSync() {
+        persist()
+        scope.launch {
+            busy = true
+            status = "同步中…"
+            val probe = withContext(Dispatchers.IO) {
+                runCatching {
+                    val c = Store.current
+                    when (val r = CloudSync.list(c.cloud)) {
+                        is CloudSync.Outcome.Err -> Triple("err", null, "同步失败：${r.message}")
+                        is CloudSync.Outcome.Ok -> {
+                            val latest = CloudSync.latest(r.entries)
+                            when {
+                                latest == null -> Triple("upload", null, "")
+                                latest.at > c.updatedAt + 2 -> Triple("download", latest, "")
+                                c.updatedAt > latest.at + 2 -> Triple("upload", latest, "")
+                                else -> Triple("same", latest, "")
+                            }
+                        }
+                    }
+                }.getOrElse {
+                    Triple("err", null, "同步失败：${it.message ?: "未知错误"}")
+                }
+            }
+            val msg = when (probe.first) {
+                "err" -> probe.third
+                "same" -> "两端已经是同一版本，无需同步"
+                "download" -> {
+                    val e = probe.second
+                    if (e == null) "同步失败：云端那份读不出来" else doRestore(e, "overwrite")
+                }
+                else -> {
+                    val up = doUpload()
+                    if (up.startsWith("已上传")) {
+                        val pruned = pruneRemote()
+                        up + if (pruned > 0) "（清理旧备份 $pruned 份）" else ""
+                    } else {
+                        up
+                    }
+                }
+            }
+            note(msg)
+            busy = false
+            // 下载覆盖后规则整批换过，守护服务按新配置重来
+            if (GuardService.shouldRun(Store.current)) runCatching { GuardService.start(ctx) }
+            refresh()
+        }
+    }
+
+    /**
+     * 「恢复云端备份」的明确入口：拉列表 → 取最新一份 → 弹现有的「合并 / 覆盖」对话框。
+     *
+     * 以前只能先「刷新列表」再从一堆行里点一个，用户根本不知道哪行才是"恢复"。
+     */
+    fun restoreLatest() {
+        persist()
+        scope.launch {
+            busy = true
+            status = "读取云端…"
+            val r = withContext(Dispatchers.IO) {
+                runCatching { CloudSync.list(Store.current.cloud) }
+                    .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
+            }
+            busy = false
+            when (r) {
+                is CloudSync.Outcome.Err -> note(r.message)
+                is CloudSync.Outcome.Ok -> {
+                    entries = r.entries
+                    loaded = true
+                    val e = CloudSync.latest(r.entries)
+                    if (e == null) {
+                        note("云端还没有备份。先点「上传本机」传一份，或者去桌面端「备份 → 云端」上传。")
+                    } else {
+                        picked = e
+                        status = "云端最新：${e.sourceLabel} · ${e.timeLabel}"
+                    }
+                }
+            }
         }
     }
 
@@ -716,10 +835,28 @@ private fun CloudSection(cfg: Config) {
                 value = url,
                 onValueChange = { url = it },
                 label = { Text("WebDAV 地址（目录）") },
-                placeholder = { Text("https://dav.jianguoyun.com/dav/king-of-focus/") },
+                placeholder = { Text("留空 = 用默认地址（坚果云）") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
+            Text(
+                "默认地址与桌面端完全相同：坚果云 / KingOfFocus（目录不存在会自动建）。" +
+                    "用别的网盘就把地址改成你自己的，改完点「保存」。",
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // 默认地址让"地址已就绪"成为常态，于是真正的缺口变成账号——
+            // 不说清楚的话，用户点了「立即同步」只会看到 401。
+            if (cfg.cloud.user.trim().isEmpty()) {
+                Text(
+                    "还差账号 / 密码：默认地址用的是坚果云，账号填坚果云的登录邮箱，"
+                        + "密码填「应用密码」（坚果云 → 安全选项 → 添加应用）。",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (url.trim().startsWith("http://")) {
                 Text(
                     "这个地址是明文 http：账号密码和备份内容在局域网里是可见的。能用 https 就用 https。",
@@ -774,6 +911,17 @@ private fun CloudSection(cfg: Config) {
             Spacer(Modifier.height(10.dp))
             Text("云端备份", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
+            // 主按钮是「立即同步」（谁新用谁，和桌面端一样），
+            // 上传 / 恢复各留一个明确入口，不用先刷新列表再猜哪行是恢复。
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { smartSync() }, enabled = !busy) {
+                    Text(if (busy) "处理中…" else "立即同步", fontSize = 12.sp)
+                }
+                OutlinedButton(onClick = { restoreLatest() }, enabled = !busy) {
+                    Text("恢复云端最新", fontSize = 12.sp)
+                }
+            }
+            Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { upload() }, enabled = !busy) {
                     Text("上传本机", fontSize = 12.sp)

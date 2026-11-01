@@ -29,7 +29,9 @@ object CloudAuto {
     fun maybeUpload(ctx: Context) {
         val cfg = Store.current
         if (!cfg.cloud.enabled || !cfg.cloud.auto) return
-        if (cfg.cloud.url.isBlank()) return
+        // 地址恒有值（空 = 默认），这里只看账号：
+        // 匿名 PUT 到默认目录只会一次次 401，那就别每 10 分钟试一次。
+        if (cfg.cloud.user.isBlank()) return
         val now = System.currentTimeMillis()
         if (now - lastTry < MIN_GAP_MS) return
         lastTry = now

@@ -43,7 +43,13 @@ object Store {
 
     private fun load(): Config {
         if (!file.exists()) return Config()
-        return runCatching { json.decodeFromString<Config>(file.readText()) }
+        // 读出来就归一化。
+        //
+        // 以前这里只 decode：老配置里 `cloud.url` 是空串，内存里就一直是空串——
+        // 界面输入框看着是空的（只剩 placeholder），而同步那边又各自判"地址为空"。
+        // 归一化之后，"空 = 默认地址"这条规则在**第一次读进内存时**就成立，
+        // 界面上直接显示默认地址，用户一眼能看到自己在用哪个目录。
+        return runCatching { normalize(json.decodeFromString<Config>(file.readText())) }
             .getOrElse {
                 // 留档再重置：用户至少还能找回规则
                 val bad = File(file.parentFile, "config.broken-${System.currentTimeMillis()}.json")
