@@ -1912,6 +1912,20 @@ pub fn stake_place(shared: State<'_, Arc<Shared>>, amount: Option<i64>) -> Resul
     Ok(json!(s))
 }
 
+// ---------------- 周复盘 ----------------
+
+/// 某一周的数据快照 + 已保存的回答（offset 0 = 本周，1 = 上周）
+#[tauri::command]
+pub fn review_week(offset: Option<i64>) -> Value {
+    crate::review::week(offset.unwrap_or(1))
+}
+
+/// 保存五条回答（覆盖这一周）
+#[tauri::command]
+pub fn review_save(week: String, answers: Vec<String>) -> Result<(), String> {
+    crate::review::save_answers(&week, answers)
+}
+
 /// 今天的打断账本：谁打得最多
 #[tauri::command]
 pub fn ledger_today(limit: Option<usize>) -> Value {

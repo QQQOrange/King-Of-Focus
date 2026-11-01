@@ -25,6 +25,7 @@ mod portable;
 mod proc;
 mod quotes;
 mod report_out;
+mod review;
 mod sched;
 mod server;
 mod shared;
@@ -494,6 +495,8 @@ fn main() {
             cmds::ledger_today,
             cmds::ledger_range,
             cmds::stake_place,
+            cmds::review_week,
+            cmds::review_save,
             cmds::stats_range,
             cmds::stats_calendar,
             cmds::stats_flush,

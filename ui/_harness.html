@@ -264,6 +264,22 @@ window.__TAURI__ = {
       return { mode: args.mode || 'overwrite', rules: 3, added: 3, skipped: 0, conflict: 0, slots: 0, noop: false };
     }
     if (cmd === 'update_check') return { ok: true, newer: false, current: '0.0.2', latest: '0.0.2' };
+    // 周复盘：造一份固定快照，让"五个问题都渲染出来 + 能保存"可被断言
+    if (cmd === 'review_week') {
+      return {
+        week: args.offset === 0 ? '2026-10-26' : '2026-10-19',
+        start: '2026-10-19', end: '2026-10-25',
+        days: [{ day: '2026-10-20', on: 7200, total: 9000, top: 'Visual Studio Code' }],
+        onSecs: 7200 * 3, offSecs: 1800 * 3, prevOnSecs: 7200 * 2,
+        bestDay: '2026-10-21', bestOn: 7200,
+        diversions: [{ label: 'Steam', n: 4, kind: 'app' }],
+        diverTotal: 6, goalDays: 5,
+        staked: 3, stakeClean: 2, stakeVoid: 1,
+        distractTotal: 7, distractDone: 4,
+        answers: ['', '', '', '', ''], qCount: 5,
+      };
+    }
+    if (cmd === 'review_save') { window.__reviewSaved = args; return null; }
     return null;
   } },
   event: { listen: async () => () => {} },
@@ -3998,6 +4014,45 @@ window.__itest = async () => {
 
     await Act.nav('settings');
     await wait(250);
+  }
+
+  // ---- 26f. 统计口径自解释（每个数字旁一个问号）----
+  {
+    await Act.nav('stats');
+    await wait(320);
+    out.push(['统计页有关键问号', document.querySelectorAll('#content .q').length >= 4, true]);
+    // 点开第一条：弹窗要出现，并且写的是"口径"而不是别的
+    const q = document.querySelector('#content .q');
+    q.click();
+    await wait(200);
+    const box = document.querySelector('#modalRoot .modal');
+    out.push(['点问号会弹出说明', !!box, true]);
+    out.push(['说明里有标题', box ? (box.querySelector('h3') || {}).textContent : '', '为什么分成两条轨']);
+    document.querySelector('#modalRoot [data-act="close-modal"]').click();
+    await wait(320);
+    out.push(['说明能关掉', !!document.querySelector('#modalRoot .modal'), false]);
+  }
+
+  // ---- 26g. 周复盘：五个问题 + 保存 ----
+  {
+    await Act.nav('reports');
+    await wait(360);
+    out.push(['报告页有周复盘卡', document.querySelectorAll('#content .rv-q').length, 5]);
+    out.push(['每题都有输入框',
+      document.querySelectorAll('#content textarea[id^="rvA"]').length, 5]);
+    // 数字要在提问之前：先给材料，再问问题
+    const first = document.querySelector('#content .rv-q');
+    out.push(['每题先给数字再提问',
+      !!first && first.querySelector('.rv-data') !== null && first.querySelector('.rv-ask') !== null, true]);
+    // 填一条并保存：假后端要收到 week + 5 条答案
+    const ta = document.getElementById('rvA4');
+    ta.value = '只改一件事：晚上不排任务';
+    document.querySelector('[data-act="review-save"]').click();
+    await wait(240);
+    const saved = window.__reviewSaved || {};
+    out.push(['保存会把这一周一起传上去', saved.week, '2026-10-19']);
+    out.push(['保存带上 5 条回答', (saved.answers || []).length, 5]);
+    out.push(['第 5 条真的传上去了', (saved.answers || [])[4], '只改一件事：晚上不排任务']);
   }
 
   // ---- 26g. 总览的「今天三件套」----

@@ -2942,3 +2942,45 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
 .tb-a { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .tb-stake { font-size: 11px; color: var(--gold); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tb-stake .muted { color: var(--text-3); }
+
+/* ---------- 口径说明的小问号 ----------
+ * 它必须"在但不抢眼"：14px、无背景、压暗，鼠标移上去才亮。
+ * 一旦做得醒目，用户会先点它而不是先看数据。
+ */
+.q {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 4px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: 1px;
+  transition: color var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
+}
+.q:hover { color: var(--gold); border-color: var(--gold); }
+
+/* ---------- 周复盘 ----------
+ * 每题三行：数字（暗）→ 提问（亮）→ 输入框。
+ * 数字压暗是因为它只是背景材料；真正要看的是那句提问。
+ */
+.rv-q { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.rv-q:last-of-type { border-bottom: none; }
+.rv-data { font-size: 11.5px; color: var(--text-3); line-height: 1.7; }
+.rv-data b { color: var(--text-2); font-weight: 600; }
+.rv-ask { font-size: 13px; color: var(--text); margin: 5px 0 6px; line-height: 1.6; }
+.rv-in {
+  width: 100%;
+  resize: vertical;
+  min-height: 38px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  font-family: inherit;
+}

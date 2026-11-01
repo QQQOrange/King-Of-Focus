@@ -26,6 +26,31 @@
     '统计报告': 'Reports',
     '历史报告': 'History',
     '云同步': 'Cloud sync',
+    /* —— 口径说明 / 周复盘 —— */
+    '其余全部记到': 'Everything else goes to ',
+    '。两条轨': '. The two tracks are ',
+    '完全隔离、绝不相加': 'fully separated and never summed',
+    '所以「今日自律 2 小时」的意思是：今天有 2 小时是':
+      'So "2h of discipline today" means 2 hours of usage while discipline was on — ',
+    '在自律状态下的使用时间': 'not "2 hours of studying".',
+    '· 前台是受支持的浏览器、且插件在 5 分钟内上报过当前标签页 → 记到':
+      '· supported browser with a page reported by the extension within 5 min → counted against ',
+    '那个域名': 'that domain',
+    '· 否则记到': '· otherwise → counted against ',
+    '那个 exe': 'that exe',
+    '它统计的是': 'It measures ',
+    '窗口在前台的时间': 'time in the foreground',
+    '按秒': 'per second',
+    '口径说明': 'How this is measured',
+    '周复盘': 'Weekly review',
+    '明白了': 'Got it',
+    '复盘已保存：下周打开还能看到这几句': 'Review saved. Open the same week later to compare.',
+    '，上周': ', last week ',
+    '。最投入的是': '. Best day: ',
+    '次，最多来自': ' blocks; top source ',
+    '条分心事件，处理了': ' distractions recorded, ',
+    '笔，干净跑完': ' stakes settled, ',
+    '笔，被没收': ' forfeited.',
     /* —— 分心事件 —— */
     '下一段': 'Next window',
     '跑完退还本金；一次都没被打断再加 20%':

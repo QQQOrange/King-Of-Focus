@@ -180,6 +180,11 @@ fn save_stakes(st: &StakeStore) -> Result<(), String> {
     std::fs::rename(&tmp, &p).map_err(|e| format!("写入质押失败: {e}"))
 }
 
+/// 全部质押记录（只读，给周复盘用）
+pub fn stakes_all() -> Vec<Stake> {
+    load_stakes().stakes
+}
+
 /// 当前这一段押的那笔（没押 / 已结算 → None）
 pub fn stake_now(cfg: &Config) -> Option<Stake> {
     let (seg, _, _) = seg_now(cfg)?;

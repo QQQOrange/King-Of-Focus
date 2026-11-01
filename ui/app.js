@@ -3512,7 +3512,7 @@ function dayHtml() {
   // 读数行："共 2 小时 30 分 · 6 项"。复合句在 JS 里拼，不指望词典认得出来
   const sumTxt = en ? `${fmtDurShort(total)} · ${nItems} items` : `共 ${fmtDur(total)} · ${nItems} 项`;
   const head = `<div class="dc-hd">
-    <b class="dc-title">当日日历</b>
+    <b class="dc-title">当日日历 ${qtip('hour')}</b>
     <button class="btn btn-sm dc-ar" data-act="day-move" data-d="-1" title="${en ? 'Previous day' : '前一天'}">‹</button>
     <button class="btn btn-sm dc-ar" data-act="day-move" data-d="1" title="${en ? 'Next day' : '后一天'}">›</button>
   </div>
@@ -3778,6 +3778,107 @@ function peerBanner() {
   </div>`;
 }
 
+
+/* ============================================================
+   口径说明（B7）
+   ------------------------------------------------------------
+   统计页最容易被误读的不是数字，是"这个数字是什么意思"。
+   误读一次，用户就会开始怀疑整套数据，然后关掉统计。
+   所以每个关键数字旁边都留一个「?」，点开就是一句话解释。
+
+   为什么文案写在这里而不是 i18n 词典里：这些是**成段的解释**，
+   整段是一个文本节点，词典里逐字命中没问题；但每段都带 `<b>` 与换行，
+   塞进词典会变成一堆片段，反而更容易翻错。这里用 zh/en 双份，直接取。
+   ============================================================ */
+const TIPS = {
+  track: {
+    zh: ['为什么分成两条轨', `只有一秒里满足下面任一条件，才记到<b>自律模式已开启</b>：
+      <br>① 有自律规则正在生效（到点就生效，与你是否在看这个软件无关）；
+      <br>② 正在自律时段里（番茄休息也算在内）；
+      <br>③ 正处于锁机中。
+      <br><br>其余全部记到<b>自律模式未开启</b>。两条轨<b>完全隔离、绝不相加</b>——
+      "开着自律在用电脑"和"没开自律在用电脑"是两种完全不同的事，
+      混在一起只会得到一条既不能夸也不能骂的曲线。
+      <br><br>所以「今日自律 2 小时」的意思是：今天有 2 小时是<b>在自律状态下的使用时间</b>，
+      不是"今天学了 2 小时"。`],
+    en: ['Why two tracks', `A second counts as <b>discipline on</b> only when one of these holds:
+      <br>1. a discipline rule is active right now;
+      <br>2. you are inside a focus window (pomodoro breaks included);
+      <br>3. the screen is locked by this app.
+      <br><br>Everything else goes to <b>discipline off</b>. The tracks are never
+      mixed or summed: "using the PC while discipline is on" and "using it while off"
+      are different things.`],
+  },
+  collect: {
+    zh: ['这些秒数是怎么来的', `每秒采样一次前台窗口，累计成秒数：
+      <br>· 前台是受支持的浏览器、且插件在 5 分钟内上报过当前标签页 → 记到<b>那个域名</b>；
+      <br>· 否则记到<b>那个 exe</b>。
+      <br><br>它统计的是<b>窗口在前台的时间</b>，不是"你有多专注"。想看专注质量，
+      看「分心事件」和「被打断」——那两样记录的才是真的走神。`],
+    en: ['Where the seconds come from', `The foreground window is sampled once per second:
+      <br>· supported browser with a page reported by the extension within 5 minutes →
+      counted against <b>that domain</b>;
+      <br>· otherwise → counted against <b>that exe</b>.
+      <br><br>This measures time in the foreground, not focus quality.`],
+  },
+  hour: {
+    zh: ['为什么这一小时算"未自律"', `判定是<b>按秒</b>做的，不是给整小时贴一个标签：
+      那一秒如果不在规则生效期、不在专注时段、也没锁机，就记进"未开启"。
+      <br><br>所以同一小时里两种状态都可能有（日历上是不同颜色的块）。
+      如果你觉得"我明明在自律"，去总览看一眼守护状态——多半是规则没生效。`],
+    en: ['Why this hour counts as "off"', `The decision is made <b>per second</b>: a second with no
+      active rule, no focus window and no lock goes to "off". One hour can therefore
+      contain both colours.`],
+  },
+  hourly: {
+    zh: ['24 根柱子是什么', `每根柱子 = 那个钟点上累计的使用秒数（整个所选时间段相加），
+      不是某一天的分布。
+      <br><br>它回答的是"你一天里什么时候最投入"，所以看形状比看高度有用：
+      连续的高柱是整块时间，零碎的小柱是被打断的时段。`],
+    en: ['What the 24 bars are', `Each bar is the accumulated seconds at that hour of the day
+      across the selected range — not a single day's shape.`],
+  },
+  idle: {
+    zh: ['离开的时间去哪了', `超过 60 秒没有任何键鼠输入，这段不计时（可在设置里改）。
+      <br><br>这是这套统计最容易被误读的地方：「看了两小时视频」可能只记几分钟，
+      因为手没动。真正在看的东西，会在「分心事件」和「被打断」里留下痕迹。`],
+    en: ['Where idle time goes', `A stretch with no keyboard or mouse input for more than
+      60 seconds is not counted (configurable).`],
+  },
+};
+
+/** 一个小问号：点开就是上面那段解释 */
+function qtip(k) {
+  return `<button class="q" data-act="tip" data-k="${k}" title="口径说明">?</button>`;
+}
+
+function showTip(k) {
+  const t = TIPS[k];
+  if (!t) return;
+  const zh = I18N.getLang() !== 'en';
+  const [title, body] = zh ? t.zh : t.en;
+  $('#modalRoot').innerHTML = `
+  <div class="modal-mask" data-act="close-modal-bg">
+    <div class="modal" style="max-width:520px">
+      <div class="modal-hd">
+        <h3>${qtTitle(title)}</h3>
+        <button class="close-x" data-act="close-modal">×</button>
+      </div>
+      <div class="modal-bd">
+        <div style="font-size:12.5px;line-height:1.85">${body}</div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn btn-primary btn-sm" data-act="close-modal">明白了</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** 标题里不放用户输入，只有固定文案，直接插即可 */
+function qtTitle(t) {
+  return esc(t);
+}
+
 function viewStats() {
   const st = S.stats;
   const cur = currentSlices();
@@ -3797,7 +3898,7 @@ function viewStats() {
     <div class="seg">
       ${segs.map(([k, n, c]) => `<button class="${S.statsTab === k ? 'active ' + c : ''}" data-act="stats-tab" data-tab="${k}">${n}</button>`).join('')}
     </div>
-    <div class="hint">当前状态：<b>${S.data && S.data.runtime.disciplineOn ? '自律模式已开启' : '自律模式未开启'}</b></div>
+    <div class="hint">${qtip('track')} 当前状态：<b>${S.data && S.data.runtime.disciplineOn ? '自律模式已开启' : '自律模式未开启'}</b></div>
   </div>
 
   ${peerBanner()}
@@ -3814,7 +3915,7 @@ function viewStats() {
 
   <div class="card" id="distCard">
     <div class="card-title">
-      使用时长分布 · ${cur.label}
+      使用时长分布 · ${cur.label} ${qtip('collect')}
       <span class="badge">合计 ${fmtDur(cur.total)}</span>
     </div>
     <div class="hint" style="margin-bottom:6px">统计口径：只计入你在电脑前的时间；离开超过 1 分钟（无键鼠输入）的那段不计入。</div>
@@ -3857,7 +3958,7 @@ function viewStats() {
 
   ${cur.slices.length ? `
   <div class="card">
-    <div class="card-title">24 小时分布</div>
+    <div class="card-title">24 小时分布 ${qtip('hourly')}</div>
     <div class="card-sub">每个小时累计的秒数，可以看出你在什么时间最投入。</div>
     <div class="hourly">
       ${hourly.map((v) => `<div class="hbar ${v === 0 ? 'zero' : ''}" style="height:${Math.max(1, (v / maxH) * 100)}%" title="${Math.round(v / 60)} 分钟"></div>`).join('')}
@@ -3866,13 +3967,158 @@ function viewStats() {
   </div>` : ''}
 
   <div class="note" style="margin-top:14px">
-    <b>采集口径：</b>每秒采样一次前台窗口。若前台是受支持的浏览器、且插件在 5 分钟内上报过当前标签页，
+    <b>采集口径：</b>${qtip('idle')}每秒采样一次前台窗口。若前台是受支持的浏览器、且插件在 5 分钟内上报过当前标签页，
     这一秒记到<b>该域名</b>上；否则记到<b>该 exe</b>上。无操作超过 60 秒不计时（可在设置里改）。
     日文件按小时分桶，可回溯到"某天某小时"。
   </div>`;
 }
 
-/* ---------------- 视图：统计报告 ---------------- */
+
+/* ============================================================
+   周复盘（A7）
+   ------------------------------------------------------------
+   为什么不是"自动生成一份周报"：报告是数据，复盘是决定。
+   一份周报可以从头看到尾，然后什么都不会改变。
+   所以这里只有五个问题，每个问题前面挂一个数字，
+   答完必须落成一句"下周改什么"——这一句才是产出。
+
+   数据全部来自已有文件（统计日文件、账本、分心事件、段目标、质押），
+   在 Rust 侧 `review::week` 里汇总，和统计页读的是同一份数据。
+   另算一套的话，用户会先怀疑数字，再怀疑软件。
+   ============================================================ */
+function reviewState() {
+  S.review = S.review || { offset: 1, data: null, loading: false };
+  return S.review;
+}
+
+async function reviewLoad() {
+  const r = reviewState();
+  if (r.loading) return;
+  r.loading = true;
+  try {
+    r.data = await invoke('review_week', { offset: r.offset });
+  } catch (e) {
+    r.data = null;
+  }
+  r.loading = false;
+  if (S.view === 'reports') render();
+}
+
+async function reviewSave() {
+  const r = reviewState();
+  if (!r.data) return;
+  const answers = [];
+  for (let i = 0; i < 5; i++) {
+    const el = document.getElementById(`rvA${i}`);
+    answers.push(el ? el.value : '');
+  }
+  try {
+    await invoke('review_save', { week: r.data.week, answers });
+    r.data.answers = answers;
+    toast('复盘已保存：下周打开还能看到这几句', 'ok');
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
+}
+
+/** 五个问题：数据陈述 + 一个真正要回答的提问 */
+function reviewCard() {
+  const r = reviewState();
+  const en = I18N.getLang() === 'en';
+  const d = r.data;
+  const head = `<div class="card-title">周复盘
+      <div class="seg cal-seg" style="margin-left:auto">
+        <button class="${r.offset === 0 ? 'active gold' : ''}" data-act="review-week" data-off="0">${en ? 'This week' : '本周'}</button>
+        <button class="${r.offset === 1 ? 'active gold' : ''}" data-act="review-week" data-off="1">${en ? 'Last week' : '上周'}</button>
+      </div>
+    </div>`;
+
+  if (!d) {
+    return `<div class="card">${head}
+      <div class="empty"><span class="ico">◔</span>${en ? 'No data yet.' : '还没有可复盘的数据。'}</div>
+    </div>`;
+  }
+
+  // 用 fmtDurShort（6h20m）而不是 fmtDur（6 小时 20 分）：后者是中文专用，
+  // 英文界面下会漏出中文单位 —— "英文界面零残留中文"那条断言就是抓这个的。
+  const h = (sec) => fmtDurShort(sec);
+  const diver = (d.diversions && d.diversions[0]) || null;
+  const left = Math.max(0, (d.distractTotal || 0) - (d.distractDone || 0));
+  const bestDay = d.bestDay ? d.bestDay.slice(5) : '—';
+  const ans = d.answers || [];
+
+  const qs = [
+    {
+      data: en
+        ? `Discipline-on time <b>${h(d.onSecs)}</b> this week, <b>${h(d.prevOnSecs)}</b> last week. Best day: <b>${bestDay}</b> (${h(d.bestOn)}).`
+        : `本周自律 <b>${h(d.onSecs)}</b>，上周 <b>${h(d.prevOnSecs)}</b>。最投入的是 <b>${bestDay}</b>（${h(d.bestOn)}）。`,
+      ask: en ? 'Which day felt best, and what did you do right that day?' : '这周最好的一天是哪天？那天你做对了什么？',
+      ph: en ? 'e.g. Tuesday — phone was in another room' : '例如：周二，手机放到了另一个房间',
+    },
+    {
+      data: d.diverTotal
+        ? (en
+            ? `Blocked <b>${d.diverTotal}</b> times; top source <b>${esc(diver.label)}</b> (${diver.n}).`
+            : `被打断 <b>${d.diverTotal}</b> 次，最多来自 <b>${esc(diver.label)}</b>（${diver.n} 次）。`)
+        : (en
+            ? 'Nothing was blocked this week. Either very disciplined, or the rules were not active.'
+            : '这周一次都没被拦过。要么很自律，要么规则没生效。'),
+      ask: en
+        ? (d.diverTotal ? 'Will you turn that one off next week? If not, what is the alternative?' : 'Do you want to check whether the rules actually work?')
+        : (d.diverTotal ? '下周要不要把「' + (diver ? esc(diver.label) : '') + '」关掉？关不掉的话，替代办法是什么？' : '要不要去总览看一眼守护状态，确认规则真的在生效？'),
+      ph: en ? 'e.g. uninstall it / only allow it after 21:00' : '例如：卸载掉 / 只在 21 点后允许',
+    },
+    {
+      data: en
+        ? `Wrote a goal on <b>${d.goalDays}/7</b> days.`
+        : `有 <b>${d.goalDays}/7</b> 天写了段目标。`,
+      ask: en ? 'On the days without a goal, what were you actually doing?' : '没写目标的那几天，你其实在做什么？',
+      ph: en ? 'e.g. just opening things, no real task' : '例如：只是在随便点，没有真的任务',
+    },
+    {
+      data: en
+        ? `Recorded <b>${d.distractTotal}</b> distractions, processed <b>${d.distractDone}</b>.`
+        : `记下 <b>${d.distractTotal}</b> 条分心事件，处理了 <b>${d.distractDone}</b> 条。`,
+      ask: left
+        ? (en ? `${left} left — which one deserves handling right now?` : `还剩 ${left} 条，哪一条值得现在就处理？`)
+        : (en ? 'All processed. What did you learn about what distracts you?' : '都处理完了。这些念头里有什么规律？'),
+      ph: en ? 'e.g. the one about "check the docs later"' : '例如：那条"晚点去查文档"',
+    },
+    {
+      data: en
+        ? `Stakes: <b>${d.staked}</b> settled, <b>${d.stakeClean}</b> clean, <b>${d.stakeVoid}</b> forfeited.`
+        : `质押结算 <b>${d.staked}</b> 笔，干净跑完 <b>${d.stakeClean}</b> 笔，被没收 <b>${d.stakeVoid}</b> 笔。`,
+      ask: en ? 'Pick ONE thing to change next week.' : '下周只改一件事——改哪件？',
+      ph: en ? 'Just one. Two changes means none.' : '只写一件。写两件等于没写。',
+      last: true,
+    },
+  ];
+
+  const rows = qs.map((q, i) => `<div class="rv-q">
+      <div class="rv-data">${q.data}</div>
+      <div class="rv-ask">${q.ask}</div>
+      <textarea id="rvA${i}" class="input rv-in" rows="${q.last ? 3 : 2}"
+        placeholder="${q.ph}">${esc(ans[i] || '')}</textarea>
+    </div>`).join('');
+
+  return `<div class="card">
+    ${head}
+    <div class="card-sub">
+      ${en
+        ? 'Five questions, the numbers are already filled in. Answer in a sentence or two — that sentence is the whole point.'
+        : '五个问题，数字已经填好。每题用一两句回答就行——那一两句才是复盘的全部产出。'}
+    </div>
+    ${rows}
+    <div class="row" style="margin-top:14px;align-items:center">
+      <button class="btn btn-primary btn-sm" data-act="review-save">${en ? 'Save review' : '保存复盘'}</button>
+      <span class="hint" style="margin-left:10px">${en
+        ? 'Stored locally; open the same week again to compare.'
+        : '存在本机，下次打开这一周还能看到，用来对照'}</span>
+    </div>
+  </div>`;
+}
+
+/* ---------------- 视图：统计报告 ---------------- *//* ---------------- 视图：统计报告 ---------------- */
 function viewReports() {
   const d = S.data;
   const s = d ? d.config.settings.stats : {};
@@ -3910,6 +4156,8 @@ function viewReports() {
     </div>`;
 
   return `
+  ${reviewCard()}
+
   <div class="card">
     <div class="card-title">自动生成设置</div>
     <div class="card-sub">
@@ -5914,7 +6162,7 @@ const Act = window.Act = {
     if (view !== 'clock') S.ccFull = false;
     if (view === 'stats' && !S.stats) await loadStats();
     if (view === 'distract') await dxLoad();
-    if (view === 'reports') await loadReports();
+    if (view === 'reports') { await loadReports(); await reviewLoad(); }
     if (view === 'sync') { await loadBackups(); }
     if (view === 'browsers') { await Act.browserScan(); return; }
     if (view === 'about') await loadQuota();
@@ -8949,6 +9197,16 @@ document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
+
+  // ---- 口径说明 ----
+  if (act === 'tip') { showTip(el.dataset.k); return; }
+  if (act === 'review-save') { await reviewSave(); return; }
+  if (act === 'review-week') {
+    S.review = S.review || {};
+    S.review.offset = Number(el.dataset.off) || 0;
+    await reviewLoad();
+    return;
+  }
 
   // ---- 今天三件套 ----
   if (act === 'stake') {
