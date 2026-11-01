@@ -3952,8 +3952,9 @@ function viewSync() {
   <div class="card">
     <div class="card-title">本地备份 <span class="badge">${(S.backups || []).length} 份</span></div>
     <div class="card-sub">
-      存在软件目录下的 <code>king of focus back</code>，写盘前就加密：设了密码用 AES-256-GCM（可跨机恢复），
-      没设密码用本机 Windows DPAPI。只保留最近 10 份、且 7 天内的。
+      存在软件目录下的 <code>king of focus back</code>，每一份都是跨设备文件。<br>
+      设了备份密码就是 AES-256-GCM 密文（电脑、手机都能打开）；没设就是明文（生成时会提醒）。<br>
+      只保留最近 10 份、7 天内的。同一份文件拿到哪台设备都能恢复，没有「只认本机」那一档。
     </div>
     <div class="row" style="gap:9px;flex-wrap:wrap;margin-bottom:10px">
       <button class="btn btn-primary btn-sm" data-act="backup-make">立即备份</button>
@@ -3969,7 +3970,7 @@ function viewSync() {
     <div class="row" style="align-items:center;gap:9px;margin-bottom:14px;flex-wrap:wrap">
       <span class="hint" style="width:74px">备份密码</span>
       <input type="password" id="bkPass" style="flex:1;max-width:280px"
-        placeholder="${(d.config.settings.backup || {}).password ? '已设置（留空 = 不修改）' : '留空 = 用本机 DPAPI 加密'}" />
+        placeholder="${(d.config.settings.backup || {}).password ? '已设置（留空 = 不修改）' : '留空 = 明文备份（两端都能读）'}" />
       <label class="row" style="align-items:center;gap:6px;font-size:11.5px;cursor:pointer">
         <input type="checkbox" id="bkAuto" ${(d.config.settings.backup || {}).autoOnStart ? 'checked' : ''} /> 启动时自动备份
       </label>
@@ -4316,12 +4317,13 @@ function viewHelp() {
   `)}
 
   ${sec('9 · 备份与云同步', `
-    本地备份在软件目录下的 <code>king of focus back</code>，写盘前加密（设了密码用 AES-256-GCM，
-    没设密码用本机 DPAPI）。只保留最近 10 份、7 天内的，超出自动删。<br>
+    本地备份在软件目录下的 <code>king of focus back</code>，每一份都是跨设备文件。<br>
+    设了密码用 AES-256-GCM（两端都能开），没设密码就是明文 JSON（生成时会提醒）。<br>
+    只保留最近 10 份、7 天内的，超出自动删。<br>
     云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。
     「立即同步」只同步自律规则和设置，不做版本归档。<br>
     <b>手机互通：</b><br>
-    · 备份是两端共用的格式，设了备份密码就能在电脑和手机之间互相恢复。<br>
+    · 两端导出的是同一种文件：同样的字段、同样的加密信封，不区分来源设备。<br>
     · 桌面端：「导出跨设备备份…」和「从文件恢复…」。<br>
     · 手机端：「设置 → 备份与恢复」，填同一个密码。<br>
     · 恢复时选「覆盖」（整份替换）或「合并」（只补缺的）。
@@ -6381,7 +6383,7 @@ const Act = window.Act = {
       const r = await invoke('backup_make');
       await loadBackups();
       render();
-      toast(`已生成备份 ${r.name}（${r.encrypted ? '密码加密' : 'DPAPI 加密'}）`, 'ok');
+      toast(`已生成备份 ${r.name}（${r.encrypted ? '密码加密，两端都能恢复' : '明文，请妥善保管'}）`, r.encrypted ? 'ok' : 'warn');
     } catch (e) { toast(String(e), 'err'); }
   },
   async backupRestore(path) {
@@ -6427,7 +6429,7 @@ const Act = window.Act = {
     const v = ($('#bkPass') || {}).value || '';
     await invoke('backup_save', { password: v, autoOnStart: !!($('#bkAuto') || {}).checked });
     await pull(); render();
-    toast(v ? '备份密码已保存（之后都用它加密）' : '已改为本机 DPAPI 加密', 'ok');
+    toast(v ? '备份密码已保存（之后都用它加密）' : '已改为明文备份：两端都能读，但请妥善保管', 'ok');
   },
   async cloudList() {
     toast('正在读取云端备份…');

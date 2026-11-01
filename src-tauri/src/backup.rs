@@ -1,15 +1,17 @@
 //! 备份：本地版本化备份 + WebDAV 云端备份 + 跨设备（手机）导入导出
 //!
-//! 加密信封（参考 Quick search 的成熟做法）：
-//!   `{"kofEnc":1,...}` = 备份密码（Argon2id 派生 + AES-256-GCM，桌面内部用）
-//!   `{"kofEnc":2,...}` = Windows DPAPI（跟当前账户走，没设密码时的兜底）
-//!   `{"kofEnc":3,...}` = **跨设备**备份密码（PBKDF2-HMAC-SHA256 + AES-256-GCM）
-//! 三种情况磁盘上都不会出现明文。
+//! 加密信封（**一份文件，两种状态**）：
+//!   `{"kofEnc":3,...}` = 跨设备密码（PBKDF2-HMAC-SHA256 + AES-256-GCM，两端都能解）
+//!   明文 JSON        = 没设密码时原样写出（界面会明确警告）
+//!   `{"kofEnc":1,...}` = Argon2id、`{"kofEnc":2,...}` = Windows DPAPI：**只读，不再写**。
+//!   这两种是早期桌面端留下的，出了那台机器就打不开，正是"只能由生成备份的设备读取"
+//!   的根源。现在只保留解析分支（让老备份还能恢复），写入路径一律不再产生它们。
 //!
-//! 为什么跨设备单独一个信封：手机端没有 Argon2id、也没有 DPAPI。
-//! PBKDF2-HMAC-SHA256 是 Android `javax.crypto` 自带的，两端都能算，
+//! 为什么统一到 PBKDF2：手机端没有 Argon2id、也没有 DPAPI，
+//! PBKDF2-HMAC-SHA256 是 Android `javax.crypto` 自带的，两端都能算。
 //! 于是"设了密码的备份"才能真正在电脑和手机之间来回搬。
-//! 没有密码的跨设备导出就是明文 JSON（界面会明确警告），因为 DPAPI 出了这台机器就打不开。
+//! 没设密码时**不能**退回 DPAPI：那玩意儿跟当前 Windows 账户绑定，
+//! 拷到手机上就是一堆解不开的字节，用户只会看到"文件损坏"。
 //!
 //! 载荷：`portable::Doc`（两端共用的文档，见 portable.rs）。
 //! 老版本备份的载荷是 Config 本身，仍然读得懂，且保持"整份覆盖"的老语义。
@@ -131,6 +133,10 @@ extern "system" {
 
 const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
 
+/// DPAPI 加密**只留在测试里**：备份写入路径不再产生 `kofEnc:2`
+/// （那玩意儿跟着 Windows 账户走，出不了这台机器）。保留是为了验证
+/// "老备份仍然解得开"——用户升级前留下的那些文件还得能恢复。
+#[cfg(test)]
 fn dpapi_encrypt(plain: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
         let input = Blob { cb: plain.len() as u32, pb: plain.as_ptr() as *mut u8 };
@@ -161,23 +167,10 @@ fn dpapi_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 // ---------------- 信封 ----------------
-/// 加密一段载荷。
-///
-/// 设了密码 → `kofEnc:3`（PBKDF2，手机也解得开）；
-/// 没设密码 → `kofEnc:2`（DPAPI，只有本机本账户能开，这是"没密码"的代价）。
-///
-/// 早先设密码用的是 Argon2id（`kofEnc:1`）。那个更抗暴力破解，但手机端
-/// 没有现成实现，备份就永远只能在电脑之间搬。现在统一走 PBKDF2-HMAC-SHA256
-/// 600000 轮——强度仍然在线（OWASP 推荐档位），换来的是真·跨设备。
-/// `kofEnc:1` 的老文件继续读得懂，只是不再往里写。
-pub fn encrypt(plain: &str, pass: &str) -> Result<String, String> {
-    if pass.trim().is_empty() {
-        let ct = dpapi_encrypt(plain.as_bytes())?;
-        return Ok(json!({"kofEnc": 2, "alg": "dpapi", "data": b64e(&ct)}).to_string());
-    }
-    seal_portable_with(plain, pass, PBKDF2_ITER)
-}
-
+// 写入路径只有一条：`seal_portable`（有密码 → kofEnc:3，没密码 → 明文）。
+// 早期还有一个 `encrypt`（没密码就上 DPAPI、有密码就上 Argon2id），已经删除：
+// 它产出的文件出了这台机器就打不开，正是"只有生成备份的设备能读"的来源。
+// 读取仍然三条都认（见 `decrypt`），老备份不会被抛下。
 
 // ---------------- PBKDF2（跨设备信封 kofEnc:3） ----------------
 /// PBKDF2-HMAC-SHA256（RFC 8018）。
@@ -334,16 +327,19 @@ fn stamp() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
-/// 生成一份备份，返回文件信息
+/// 生成一份备份，返回文件信息。
 ///
-/// 载荷是**跨设备文档**（portable::Doc），不再是 Config 原样：
-/// 这样同一份文件设了密码就能直接拷到手机上恢复。
-/// 加密方式仍按本机设置走（有密码 = Argon2id，没密码 = DPAPI 只保本机）。
+/// 载荷是**跨设备文档**（portable::Doc），信封与「导出跨设备备份」完全相同：
+/// 有密码 → kofEnc:3，没密码 → 明文。这样备份目录里/云端上的每一份文件
+/// 都是"拿到哪台设备都能恢复"的同一种文件，不存在"本机专用的那种"。
+///
+/// 以前这里走 `encrypt`：没设密码就 DPAPI。结果是**云端那份谁也读不了**——
+/// 换台电脑重装、或者拿手机去恢复，都只会看到"备份文件已损坏"。
 pub fn make(shared: &Shared) -> Result<Value, String> {
     let c = shared.config();
     let pass = c.settings.backup.password.clone();
     let payload = Doc::from_config(&c).render()?;
-    let env = encrypt(&payload, &pass)?;
+    let env = seal_portable(&payload, &pass)?;
     let name = format!("kof-{}{}", stamp(), EXT);
     let path = dir().join(&name);
     std::fs::write(&path, env).map_err(|e| format!("写入备份失败: {e}"))?;
@@ -352,7 +348,8 @@ pub fn make(shared: &Shared) -> Result<Value, String> {
         "name": name,
         "size": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
         "encrypted": !pass.trim().is_empty(),
-        "portable": !pass.trim().is_empty(),
+        // 兼容老前端字段名：现在**永远**是跨设备的，没有"仅本机"这一档了
+        "portable": true,
         "dir": dir().to_string_lossy(),
     }))
 }
@@ -715,18 +712,24 @@ mod tests {
     #[test]
     fn password_envelope_roundtrip() {
         let plain = r#"{"rules":[{"name":"自律时间"}]}"#;
-        let env = encrypt(plain, "pw123456").unwrap();
+        let env = seal_portable(plain, "pw123456").unwrap();
         assert!(!env.contains("自律时间"), "明文泄漏");
         assert_eq!(decrypt(&env, "pw123456").unwrap(), plain);
         assert!(decrypt(&env, "wrong").is_err(), "错密码必须拒绝");
     }
 
+    /// 老备份（kofEnc:2 / DPAPI）必须还能恢复，但**写入路径不再产生**这种文件：
+    /// 它跟着 Windows 账户走，出了这台机器就打不开——"只有生成备份的设备能读"
+    /// 就是这么来的。
     #[test]
-    fn dpapi_envelope_roundtrip() {
-        let env = encrypt("hello-kof", "").unwrap();
-        assert!(env.contains("dpapi"));
-        assert!(!env.contains("hello-kof"));
+    fn legacy_dpapi_envelope_still_opens_but_is_never_written() {
+        let ct = dpapi_encrypt(b"hello-kof").unwrap();
+        let env = json!({"kofEnc": 2, "alg": "dpapi", "data": b64e(&ct)}).to_string();
         assert_eq!(decrypt(&env, "").unwrap(), "hello-kof");
+        // 没设密码 → 明文，而不是 DPAPI
+        assert_eq!(seal_portable("hello-kof", "").unwrap(), "hello-kof");
+        // 设了密码 → kofEnc:3（手机也解得开）
+        assert!(seal_portable("hello-kof", "pw").unwrap().contains("\"kofEnc\":3"));
     }
 
     #[test]
