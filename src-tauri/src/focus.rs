@@ -15,7 +15,7 @@
 use crate::distract;
 use crate::model::Config;
 use crate::shared::Shared;
-use chrono::Local;
+use chrono::{Datelike, Duration, Local, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
@@ -84,6 +84,7 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
     st.goals.retain(|g| g.seg != seg);
     if t.is_empty() {
         save(&st)?;
+        brief_invalidate();
         return Ok(Goal { seg, text: String::new(), at: 0, day: String::new() });
     }
     let g = Goal {
@@ -93,6 +94,7 @@ pub fn set_goal(cfg: &Config, text: &str) -> Result<Goal, String> {
         day: Local::now().format("%Y-%m-%d").to_string(),
     };
     st.goals.push(g.clone());
+    brief_invalidate();
     if st.goals.len() > MAX_GOALS {
         st.goals.sort_by_key(|x| x.at);
         let drop = st.goals.len() - MAX_GOALS;
@@ -170,6 +172,107 @@ pub fn snapshot(cfg: &Config) -> serde_json::Value {
         "blocks": blocks_now(cfg),
         "segLabel": seg.map(|(_, _, l)| l).unwrap_or_default(),
     })
+}
+
+// ---------------------------------------------------------------- 今日概览
+
+/// 今天还剩/正在进行什么，给总览页顶部那一块用。
+///
+/// 为什么放在 Rust 算：判断"下一段什么时候开始"要用和遮罩、锁机完全相同的
+/// 排班口径（`plan_wins` / 窗口的 from-to）。在 JS 里另算一份，迟早和判定打架。
+/// 缓存：`get_state` 每 1.5 秒拉一次，而这里要读当天的统计文件。
+/// 20 秒的缓存让"打开总览就已经有数"，又不至于每次轮询都去碰磁盘。
+static BRIEF: std::sync::Mutex<Option<(i64, serde_json::Value)>> = std::sync::Mutex::new(None);
+
+pub fn today_brief(shared: &Shared) -> serde_json::Value {
+    let now = Local::now().timestamp();
+    if let Ok(g) = BRIEF.lock() {
+        if let Some((at, v)) = &*g {
+            if now - *at < 20 {
+                return v.clone();
+            }
+        }
+    }
+    let v = compute_brief(shared);
+    if let Ok(mut g) = BRIEF.lock() {
+        *g = Some((now, v.clone()));
+    }
+    v
+}
+
+/// 配置变了（写目标、改排班）立刻作废，不然要等 20 秒才看到自己刚写的东西
+pub fn brief_invalidate() {
+    if let Ok(mut g) = BRIEF.lock() {
+        *g = None;
+    }
+}
+
+fn compute_brief(shared: &Shared) -> serde_json::Value {
+    let cfg = shared.config();
+    let now = Local::now();
+    let naive = now.naive_local();
+    let seg = distract::segment_bounds(&cfg, naive);
+    let seg_left = seg.as_ref().map(|(_, e, _)| (*e - now.timestamp()).max(0)).unwrap_or(0);
+    let next = next_segment(&cfg, naive);
+    let plan_min = today_plan_minutes(&cfg, naive);
+    let today = now.format("%Y-%m-%d").to_string();
+    let agg = crate::stats::aggregate(shared, &today, &today);
+    let on_min = agg.on.iter().map(|s| s.secs).sum::<u64>() / 60;
+
+    json!({
+        "today": today,
+        "inSegment": seg.is_some(),
+        "segLabel": seg.as_ref().map(|(_, _, l)| l.clone()).unwrap_or_default(),
+        "segLeft": seg_left,
+        "goal": seg.as_ref().map(|(s, _, _)| goal_of(*s)).unwrap_or_default(),
+        "blocks": blocks_now(&cfg),
+        // 下一个还没开始的段：秒数 + 人话标签 + 起始 HH:MM
+        "nextInSecs": next.as_ref().map(|x| x.0).unwrap_or(-1),
+        "nextLabel": next.as_ref().map(|x| x.1.clone()).unwrap_or_default(),
+        "nextAt": next.as_ref().map(|x| x.2.clone()).unwrap_or_default(),
+        "planMin": plan_min,
+        "onMin": on_min,
+        "points": cfg.points.balance,
+    })
+}
+
+/// 往后找"下一个还没开始的段"：(还有多少秒, 标签, 起始时刻)
+///
+/// 逐小时扫、最多 7 天：一小时两段的情况也能找对（同一小时里的后一段）。
+fn next_segment(cfg: &Config, now: NaiveDateTime) -> Option<(i64, String, String)> {
+    for step in 0..168i64 {
+        let base = (now + Duration::hours(step))
+            .with_minute(0)
+            .and_then(|x| x.with_second(0))
+            .and_then(|x| x.with_nanosecond(0))?;
+        let wd = base.weekday().num_days_from_monday();
+        let Some(wins) = crate::clock::plan_wins(cfg, wd, base.hour()) else {
+            continue;
+        };
+        for (_, _, f, to) in wins {
+            let start = base + Duration::minutes(f as i64);
+            if start <= now {
+                continue;
+            }
+            let end = base + Duration::minutes(to as i64);
+            return Some((
+                (start - now).num_seconds(),
+                format!("{}–{}", start.format("%H:%M"), end.format("%H:%M")),
+                start.format("%H:%M").to_string(),
+            ));
+        }
+    }
+    None
+}
+
+/// 今天排了多少分钟（选中窗口的总时长）
+fn today_plan_minutes(cfg: &Config, now: NaiveDateTime) -> u32 {
+    let wd = now.weekday().num_days_from_monday();
+    (0..24u32)
+        .filter_map(|h| crate::clock::plan_wins(cfg, wd, h))
+        .flat_map(|w| w.into_iter())
+        .map(|(_, _, f, t)| t.saturating_sub(f))
+        .sum()
 }
 
 #[cfg(test)]

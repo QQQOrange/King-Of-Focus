@@ -169,6 +169,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "hbBrowser": rt.hb_browser,
                 "siteUrl": rt.site_url,
                 "siteTitle": rt.site_title,
+                // 总览顶部那一块：现在/下一段/今日进度/目标/打断
+                "brief": crate::focus::today_brief(&shared),
                 "wakeNote": rt.wake_note,
                 "wakeAt": rt.wake_at,
                 "locked": rt.locked,

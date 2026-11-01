@@ -27,6 +27,13 @@
     '历史报告': 'History',
     '云同步': 'Cloud sync',
     /* —— 分心事件 —— */
+    '下一段': 'Next window',
+    '今天没有排时段': 'Nothing scheduled today',
+    '打开遮罩': 'Open the mask',
+    '去排时段': 'Plan a window',
+    '遮罩已盖上：这一段只看目标窗口': 'Mask is up: only your target window is visible.',
+    '还没选过目标窗口，先选一次；之后这里就能一键盖上':
+      'No target window picked yet — pick one once, then this button works in one click.',
     '分心事件': 'Distractions',
     '这一段开始前写的目标': 'What you planned for this session',
     '记录时间：': 'Showing: ',

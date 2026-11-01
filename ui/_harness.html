@@ -4000,6 +4000,26 @@ window.__itest = async () => {
     await wait(250);
   }
 
+  // ---- 26g. 总览的「今天三件套」----
+  {
+    await Act.nav('overview');
+    await wait(320);
+    out.push(['总览有今天三件套', !!document.querySelector('.today-bar'), true]);
+    out.push(['三件套里有主按钮',
+      !!document.querySelector('.today-bar [data-act="today-mask"], .today-bar [data-act="today-clock"]'), true]);
+    out.push(['有今日进度条', !!document.querySelector('.today-bar .tb-track i'), true]);
+    // 空闲时按钮是"去排时段"，点它会切到时段页
+    const btn = document.querySelector('.today-bar [data-act="today-clock"]');
+    if (btn) {
+      btn.click();
+      await wait(260);
+      out.push(['点主按钮能去排时段',
+        (document.querySelector('#pageTitle').textContent || '').trim(), '自律时段']);
+      await Act.nav('overview');
+      await wait(200);
+    }
+  }
+
   // ---- 26h. 分心事件：日历 + 当天清单 ----
   {
     await Act.nav('distract');

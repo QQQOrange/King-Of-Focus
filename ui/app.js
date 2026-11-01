@@ -434,6 +434,53 @@ function viewOverview() {
 
   const maskOn = d.mask.on;
 
+  // —— 今天三件套：现在在干嘛 / 今天的进度 / 一个主按钮 ——
+  // 总览上信息很多（语录、生效规则、拦截记录…），但"我现在该做什么"这一层
+  // 以前是没有的：打开软件要先自己扫一遍才知道。这一块只回答三个问题。
+  const en = I18N.getLang() === 'en';
+  const br = d.brief || {};
+  const segOn = !!br.inSegment;
+  const segLeft = br.segLeft || 0;
+  const planMin = br.planMin || 0;
+  const onMin = br.onMin || 0;
+  const pct = planMin > 0 ? Math.min(100, Math.round((onMin / planMin) * 100)) : 0;
+  const goal = br.goal || '';
+  const nextAt = br.nextAt || '';
+  const nextIn = br.nextInSecs > 0 ? br.nextInSecs : 0;
+  const brState = segOn ? (rt.breakOn ? '休息中' : '专注中') : '空闲';
+  const brLine = segOn
+    ? `<span class="tb-left">${br.segLabel ? esc(br.segLabel) + ' · ' : ''}还剩 ${fmtDurShort(segLeft)}</span>`
+    : nextAt
+      ? `<span class="tb-left">下一段 <b>${esc(nextAt)}</b> 开始${nextIn ? `（${fmtDurShort(nextIn)}后）` : ''}</span>`
+      : '<span class="tb-left">今天没有排时段</span>';
+  const todayBar = `
+  <div class="today-bar">
+    <div class="tb-l">
+      <div class="tb-state">
+        <span class="tb-dot${segOn ? ' on' : ''}"></span>
+        <b>${brState}</b>
+        ${brLine}
+        ${br.blocks ? `<span class="tb-blk">被打断 ${br.blocks}</span>` : ''}
+      </div>
+      <div class="tb-goal${goal ? '' : ' ghost'}" title="${
+        segOn ? '在 HUD 那一行上点一下就能写' : '开始一段之后可以写'
+      }">${goal ? esc(goal) : (segOn
+        ? (en ? 'No goal yet — click that line on the HUD' : '还没写这一段的目标（在 HUD 上点一下就能写）')
+        : (en ? 'Goals are written on the HUD' : '这一段的目标可以在 HUD 上写'))}</div>
+    </div>
+    <div class="tb-p">
+      <div class="tb-num">${fmtDurShort(onMin * 60)}<span class="muted"> / ${
+        planMin ? fmtDurShort(planMin * 60) : (en ? 'not planned' : '未排')
+      }</span></div>
+      <div class="tb-track"><i style="width:${pct}%"></i></div>
+    </div>
+    <div class="tb-a">
+      ${segOn
+        ? `<button class="btn btn-primary btn-sm" data-act="today-mask">打开遮罩</button>`
+        : `<button class="btn btn-primary btn-sm" data-act="today-clock">去排时段</button>`}
+    </div>
+  </div>`;
+
   const q = quoteView();
   const qN = ((d.config.settings || {}).customQuotes || []).length;
   const feed = quoteActiveFeed();
@@ -442,6 +489,7 @@ function viewOverview() {
     : '内置句子，没有网址';
   return `
   ${lockBanner}${unlockBanner}
+  ${todayBar}
   <section class="hub-quote${S.quoteBusy ? ' busy' : ''}" aria-label="激励语录" data-quote-box="1">
     <div class="qmark">“</div>
     <div class="qbody">
@@ -8850,6 +8898,27 @@ document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
+
+  // ---- 今天三件套 ----
+  if (act === 'today-clock') { await Act.nav('clock'); return; }
+  if (act === 'today-mask') {
+    const m = ((S.data.config.settings || {}).mask || {});
+    const pid = m.targetPid || 0;
+    if (pid > 0) {
+      try {
+        await invoke('mask_start', { pid, title: m.targetTitle || '' });
+        toast('遮罩已盖上：这一段只看目标窗口', 'ok');
+      } catch (e) {
+        // 目标窗口可能已经关掉了：退回"自己选一次"，别静默什么都不发生
+        toast(String(e).replace(/^Error:\s*/, ''), 'err');
+        await Act.nav('mask');
+      }
+    } else {
+      toast('还没选过目标窗口，先选一次；之后这里就能一键盖上');
+      await Act.nav('mask');
+    }
+    return;
+  }
 
   // ---- 分心事件 ----
   if (act === 'dx-view') { dxState().view = el.dataset.v; render(); return; }
