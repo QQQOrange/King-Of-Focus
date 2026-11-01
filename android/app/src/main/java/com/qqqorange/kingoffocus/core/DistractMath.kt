@@ -2,7 +2,9 @@ package com.qqqorange.kingoffocus.core
 
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.DistractItem
+import com.qqqorange.kingoffocus.data.Goal
 import com.qqqorange.kingoffocus.data.Slots
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -23,6 +25,33 @@ object DistractMath {
 
     /** 一个自律时段：起止（unix 秒）+ 可读标签 */
     data class Seg(val start: Long, val end: Long, val label: String)
+
+    /** 已经结束、且写了目标的那一段（首页据此问"做到了吗"） */
+    data class Ended(val seg: Long, val end: Long, val goal: String, val state: String)
+
+    /**
+     * 上一次**已经结束、而且写了目标**的那一段。
+     *
+     * 与桌面端 `focus::last_ended_goal` 同一套规则：只回溯 [withinHours] 小时——
+     * 早上那一段到晚上还追着问，那不叫复盘，叫骚扰。
+     */
+    fun lastEndedGoal(
+        cfg: Config,
+        goals: List<Goal>,
+        now: LocalDateTime,
+        withinHours: Long = 6,
+    ): Ended? {
+        val nowSec = epoch(now)
+        var best: Ended? = null
+        for (g in goals) {
+            if (g.text.isBlank() || g.seg <= 0) continue
+            val at = Instant.ofEpochSecond(g.seg).atZone(ZoneId.systemDefault()).toLocalDateTime()
+            val end = segmentBounds(cfg, at)?.end ?: continue
+            if (end > nowSec || nowSec - end > withinHours * 3600) continue
+            if (best == null || g.seg > best.seg) best = Ended(g.seg, end, g.text, g.state)
+        }
+        return best
+    }
 
     /** 一条记录归到哪一组（同一天里按段分组用） */
     data class Group(val segStart: Long, val label: String, val items: List<DistractItem>)

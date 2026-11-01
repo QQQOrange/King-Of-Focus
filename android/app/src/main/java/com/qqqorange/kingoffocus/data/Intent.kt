@@ -21,6 +21,13 @@ data class Goal(
     val text: String = "",
     val at: Long = 0,
     val day: String = "",
+    /**
+     * 这一段做完没有：""（还没答）/ done / partial / missed。
+     *
+     * 与桌面端 `focus.rs::Goal.state` 同义。只要三档、不做"进度条 + 数量"：
+     * 那会变成一个小型任务管理器，而这里要回答的是"这一段有没有真的做出东西"。
+     */
+    val state: String = "",
 )
 
 @Serializable
@@ -30,6 +37,11 @@ data class GoalDoc(
 )
 
 object GoalStore {
+    /** 三档判定 + 空串（撤销）；写别的会让完成率变成假的 */
+    private val STATE_OK = setOf("", "done", "partial", "missed")
+
+    val STATES = listOf("done", "partial", "missed")
+
     private const val MAX = 2000
 
     private val json = Json {
@@ -54,13 +66,38 @@ object GoalStore {
     @Synchronized
     fun of(seg: Long): String = list.firstOrNull { it.seg == seg }?.text ?: ""
 
+    /** 全部目标（首页"上一段做到了吗"要用） */
+    @Synchronized
+    fun all(): List<Goal> = list
+
+    /** 某一段的判定（没写目标 / 没答 → 空串） */
+    @Synchronized
+    fun stateOf(seg: Long): String = list.firstOrNull { it.seg == seg }?.state.orEmpty()
+
+    /**
+     * 给某一段打勾 / 改判 / 撤销（空串）。
+     *
+     * 只允许改**有目标**的段：没写目标的段没有"做没做完"可言，
+     * 给它记一个状态只会让完成率变成假的。
+     */
+    @Synchronized
+    fun setState(seg: Long, state: String): Boolean {
+        if (seg <= 0 || state !in STATE_OK) return false
+        if (list.none { it.seg == seg }) return false
+        list = list.map { if (it.seg == seg) it.copy(state = state) else it }
+        save()
+        return true
+    }
+
     /** 写/清空某一段的目标；返回写完之后的文本 */
     @Synchronized
     fun set(seg: Long, text: String, day: String = "", now: Long = System.currentTimeMillis() / 1000): String {
         if (seg <= 0) return ""
         val t = text.trim().take(200)
+        // 改文案不清掉已有判定：用户多半只是把"写登录页"改成"写完登录页"
+        val keep = list.firstOrNull { it.seg == seg }?.state.orEmpty()
         val next = list.filter { it.seg != seg }.toMutableList()
-        if (t.isNotEmpty()) next += Goal(seg = seg, text = t, at = now, day = day)
+        if (t.isNotEmpty()) next += Goal(seg = seg, text = t, at = now, day = day, state = keep)
         list = if (next.size > MAX) next.sortedBy { it.at }.takeLast(MAX) else next
         save()
         return t

@@ -128,7 +128,7 @@ const STATE = {
   brief: {
     today: '2026-10-27', inSegment: false, segLabel: '', segLeft: 0, goal: '',
     blocks: 0, nextInSecs: 0, nextLabel: '', nextAt: '', planMin: 0, onMin: 0,
-    points: 12, goalState: '',
+    points: 12, goalState: '', goalTotal: 4, goalDone: 2,
     // 目标文案用英文：这是**用户数据**，英文界面残留中文的断言不该被它触发
     review: { seg: 1793500000, end: 1793503600, goal: 'finish the login page', state: '' },
   },
@@ -4138,6 +4138,8 @@ window.__itest = async () => {
       !!document.querySelector('.today-bar [data-act="today-mask"], .today-bar [data-act="today-clock"]'), true]);
     out.push(['有今日进度条', !!document.querySelector('.today-bar .tb-track i'), true]);
     // 上一段有目标 → 三档判定出现在总览上（A5：目标有了"做完没有"）
+    out.push(['总览显示今日成果（目标 4 做完 2）',
+      ((document.querySelector('.tb-goalstat') || {}).textContent || '').trim(), '4 个目标，做完 2 个']);
     out.push(['有"做到了吗"三档', document.querySelectorAll('.rv-btn').length, 3]);
     {
       const done = document.querySelector('.rv-btn[data-st="done"]');

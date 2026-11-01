@@ -48,4 +48,40 @@ class GoalStoreTest {
         assertEquals("", GoalStore.set(0, "无效"))
         assertEquals("", GoalStore.of(0))
     }
+
+    // ---------------- 判定（做完 / 一半 / 没做成） ----------------
+
+    @Test
+    fun judgmentOnlyOnExistingGoal() {
+        val seg = 1_700_300_000L
+        // 没写目标的段：标记不上（否则完成率的分母会被凭空加大）
+        assertEquals(false, GoalStore.setState(seg, "done"))
+        GoalStore.set(seg, "写完登录页")
+        assertEquals(true, GoalStore.setState(seg, "done"))
+        assertEquals("done", GoalStore.stateOf(seg))
+        // 空串 = 撤销
+        assertEquals(true, GoalStore.setState(seg, ""))
+        assertEquals("", GoalStore.stateOf(seg))
+    }
+
+    @Test
+    fun judgmentRejectsUnknownValues() {
+        val seg = 1_700_400_000L
+        GoalStore.set(seg, "背 40 个词")
+        for (bad in listOf("ok", "DONE", "true", "1", "finished")) {
+            assertEquals("$bad 不该被接受", false, GoalStore.setState(seg, bad))
+        }
+        assertEquals("", GoalStore.stateOf(seg))
+    }
+
+    /** 改文案不清掉判定：用户多半只是把"写登录页"改成"写完登录页" */
+    @Test
+    fun editingTextKeepsJudgment() {
+        val seg = 1_700_500_000L
+        GoalStore.set(seg, "写登录页")
+        GoalStore.setState(seg, "partial")
+        GoalStore.set(seg, "写完登录页")
+        assertEquals("写完登录页", GoalStore.of(seg))
+        assertEquals("partial", GoalStore.stateOf(seg))
+    }
 }

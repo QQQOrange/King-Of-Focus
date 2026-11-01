@@ -3081,3 +3081,6 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
 }
 .dx-st.done { color: var(--green); border-color: var(--green); }
 .dx-st.missed { color: var(--red); border-color: var(--red); }
+
+/* 今日成果（写了几个目标、做完几个）：压在进度条下面一行小字 */
+.tb-goalstat { margin-top: 5px; font-size: 10.5px; color: var(--text-3); }

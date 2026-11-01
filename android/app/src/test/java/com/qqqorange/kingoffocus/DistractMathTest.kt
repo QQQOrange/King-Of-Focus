@@ -171,4 +171,54 @@ class DistractMathTest {
         assertTrue(!DistractMath.validDay("2026-13-99"))
         assertTrue(!DistractMath.validDay(""))
     }
+
+    // ---------------- 上一段：做到了吗 ----------------
+
+    private fun goal(seg: LocalDateTime, text: String, state: String = ""): com.qqqorange.kingoffocus.data.Goal =
+        com.qqqorange.kingoffocus.data.Goal(
+            seg = seg.atZone(java.time.ZoneId.systemDefault()).toEpochSecond(),
+            text = text,
+            day = seg.toLocalDate().toString(),
+            state = state,
+        )
+
+    /** 只挑"已经结束、且写了目标"的那一段 */
+    @Test
+    fun lastEndedPicksFinishedGoal() {
+        val c = cfg(listOf(9 to 60)) // 只有周一 09:00–10:00
+        val goals = listOf(goal(at(9, 0), "写完登录页"))
+        // 还在段里：不算"上一段"
+        assertNull(DistractMath.lastEndedGoal(c, goals, at(9, 30)))
+        // 段结束后 10 分钟：命中
+        val hit = DistractMath.lastEndedGoal(c, goals, at(10, 10))
+        assertEquals("写完登录页", hit?.goal)
+        assertEquals("", hit?.state)
+    }
+
+    /** 超过 6 小时就不再问：早上那段到晚上还追着问 = 骚扰 */
+    @Test
+    fun lastEndedExpiresAfterSixHours() {
+        val c = cfg(listOf(9 to 60))
+        val goals = listOf(goal(at(9, 0), "写完登录页"))
+        assertNull(DistractMath.lastEndedGoal(c, goals, at(17, 0)))
+        // 刚好 6 小时整还算（边界不苛刻到分钟）
+        assertEquals("写完登录页", DistractMath.lastEndedGoal(c, goals, at(16, 0))?.goal)
+    }
+
+    /** 没写目标的段不该冒出来问"做到了吗" */
+    @Test
+    fun lastEndedSkipsEmptyGoals() {
+        val c = cfg(listOf(9 to 60))
+        assertNull(DistractMath.lastEndedGoal(c, listOf(goal(at(9, 0), "   ")), at(10, 10)))
+    }
+
+    /** 同一批里取**最近**的那一段 */
+    @Test
+    fun lastEndedTakesMostRecent() {
+        val c = cfg(listOf(9 to 60, 11 to 60))
+        val goals = listOf(goal(at(9, 0), "第一段"), goal(at(11, 0), "第二段", "done"))
+        val hit = DistractMath.lastEndedGoal(c, goals, at(13, 0))
+        assertEquals("第二段", hit?.goal)
+        assertEquals("done", hit?.state)
+    }
 }

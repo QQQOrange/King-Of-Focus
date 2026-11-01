@@ -490,6 +490,11 @@ function viewOverview() {
         planMin ? fmtDurShort(planMin * 60) : (en ? 'not planned' : '未排')
       }</span></div>
       <div class="tb-track"><i style="width:${pct}%"></i></div>
+      ${br.goalTotal
+        ? `<div class="tb-goalstat">${en
+            ? `${br.goalDone}/${br.goalTotal} goals done`
+            : `${br.goalTotal} 个目标，做完 ${br.goalDone} 个`}</div>`
+        : ''}
     </div>
     <div class="tb-a">
       ${segOn

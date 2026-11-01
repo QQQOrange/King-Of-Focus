@@ -159,16 +159,36 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             } else {
                 groups.forEachIndexed { gi, g ->
                     if (gi > 0) Spacer(Modifier.height(10.dp))
-                    // 这一段当时写的目标：让"我要做什么 → 结果记了什么"在同一处对得上
+                    // 这一段当时写的目标：让"我要做什么 → 记了什么 → 做成没有"在同一处对得上
                     val gGoal = com.qqqorange.kingoffocus.data.GoalStore.of(g.segStart)
                     if (gGoal.isNotBlank()) {
-                        Text(
-                            "目标：$gGoal",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "目标：$gGoal",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            val gState = com.qqqorange.kingoffocus.data.GoalStore.stateOf(g.segStart)
+                            if (gState.isNotBlank()) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    when (gState) {
+                                        "done" -> "做完了"
+                                        "partial" -> "一半"
+                                        else -> "没做成"
+                                    },
+                                    fontSize = 9.sp,
+                                    color = when (gState) {
+                                        "done" -> Color(0xFF3FBF7F)
+                                        "missed" -> Color(0xFFE05A5A)
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(2.dp))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {

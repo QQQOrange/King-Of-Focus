@@ -514,6 +514,7 @@ fn compute_brief(shared: &Shared) -> serde_json::Value {
     let today = now.format("%Y-%m-%d").to_string();
     let agg = crate::stats::aggregate(shared, &today, &today);
     let on_min = agg.on.iter().map(|s| s.secs).sum::<u64>() / 60;
+    let (goal_total, goal_done, _, _, _) = goal_stats(&today, &today);
 
     json!({
         "today": today,
@@ -535,6 +536,9 @@ fn compute_brief(shared: &Shared) -> serde_json::Value {
         "nextAt": next.as_ref().map(|x| x.2.clone()).unwrap_or_default(),
         "planMin": plan_min,
         "onMin": on_min,
+        // 今日成果：写了几个目标、做完几个。时长是过程，这才是结果。
+        "goalTotal": (goal_total, goal_done).0,
+        "goalDone": (goal_total, goal_done).1,
         "points": cfg.points.balance,
     })
 }

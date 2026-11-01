@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -139,6 +140,65 @@ fun AppRoot() {
 }
 
 /**
+ * 「上一段做到了吗」。
+ *
+ * 三档：做完了 / 一半 / 没做成。选中的变实心，再点一次撤销。
+ * 为什么不放"进度 + 数量"：那会变成一个任务管理器，而这里只回答一句
+ * "这一段有没有真的做出东西"。
+ */
+@Composable
+private fun GoalReviewCard(
+    ended: com.qqqorange.kingoffocus.core.DistractMath.Ended,
+    onPick: (String) -> Unit,
+) {
+    Panel {
+        Text("上一段的目标", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(3.dp))
+        Text(
+            ended.goal,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("done" to "做完了", "partial" to "做了一半", "missed" to "没做成").forEach { (v, label) ->
+                val on = ended.state == v
+                val tint = when (v) {
+                    "done" -> Color(0xFF3FBF7F)
+                    "missed" -> Color(0xFFE05A5A)
+                    else -> MaterialTheme.colorScheme.primary
+                }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .background(
+                            if (on) tint.copy(alpha = 0.18f) else Color.Transparent,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .border(
+                            1.dp,
+                            if (on) tint else MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(10.dp),
+                        )
+                        .clickable { onPick(v) }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        fontSize = 12.sp,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (on) tint else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
  * 守护状态带。
  *
  * 三态：
@@ -237,6 +297,16 @@ private fun HomeScreen(cfg: Config) {
     @Suppress("UNUSED_EXPRESSION")
     tick
 
+    // 上一段的目标判定：打完勾要立刻在页面上看到，所以自己记一个版本号
+    var goalRev by remember { mutableStateOf(0) }
+    val todayKey = now.toLocalDate().toString()
+    val goalsToday = remember(tick, goalRev, todayKey) {
+        com.qqqorange.kingoffocus.data.GoalStore.all().filter { it.day == todayKey }
+    }
+    val ended = remember(tick, goalRev, goalsToday, cfg.days) {
+        com.qqqorange.kingoffocus.core.DistractMath.lastEndedGoal(cfg, goalsToday, now)
+    }
+
     // 总览只要一个总数：两轨相加（细分在「统计」页里看）
     val todaySecs = remember(tick, cfg.stats.enabled) {
         StatsMath.total(StatsStore.today(now), null)
@@ -321,6 +391,20 @@ private fun HomeScreen(cfg: Config) {
                 KV("今日使用", StatsMath.fmtDuration(todaySecs))
                 KV("今日自律", Slots.fmtMinutes(todayPlanMin))
             }
+        }
+
+        // —— 上一段：做到了吗 ——
+        // 为什么放在首页而不是等周复盘：记忆有保质期，隔一天再问答案就不准了。
+        if (ended != null) {
+            GoalReviewCard(
+                ended = ended,
+                onPick = { st ->
+                    // 再点一次同一个 = 撤销
+                    val next = if (ended.state == st) "" else st
+                    com.qqqorange.kingoffocus.data.GoalStore.setState(ended.seg, next)
+                    goalRev++
+                },
+            )
         }
 
         ToggleRow(
