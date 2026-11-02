@@ -40,6 +40,24 @@ object Portable {
     const val FORMAT = "kof-portable"
     const val SCHEMA = 1
 
+    /** 规则默认色，与桌面 `cfg::sanitize` 里写死的值一致 */
+    private const val DEFAULT_COLOR = "#ff9f43"
+
+    /**
+     * 覆盖模式的闸门：自律时段进行中不许整份替换配置。
+     *
+     * 桌面端在 `backup::apply` 里调 `guard::config_replace_blocked`，手机端以前
+     * 直接 `Store.update`，于是"自律时段内导入一份规则全关的旧备份"就是一键解除自律。
+     * 这里用与桌面同义的判定（时段内 + 未解锁 + 本段没停）。
+     */
+    fun overwriteBlocked(cfg: Config): String? {
+        val now = java.time.LocalDateTime.now()
+        if (com.qqqorange.kingoffocus.core.ScheduleEngine.frozen(cfg, now)) {
+            return "自律时段正在生效，不能整份覆盖配置。请先用积分解锁，或者改用「合并」。"
+        }
+        return null
+    }
+
     /** 写入时用的迭代次数（读取一律以文件里的 `iter` 为准） */
     const val ITER = 600_000
     private const val ITER_MIN = 10_000
@@ -609,7 +627,7 @@ object Portable {
                     put("chars", 20)
                 },
             )
-            put("color", "#ff9f43")
+            put("color", DEFAULT_COLOR)
             put("extraProtected", JsonArray(emptyList()))
             put(
                 "brk",
@@ -637,8 +655,7 @@ object Portable {
     }
 
     /** 有没有手机端表达不了的内容（有才值得存 carry，免得白占配置体积） */
-    private fun needsCarry(rj: JsonObject): Boolean {
-        if (rj.str("mode") == "both") return true
+    private fun needsCarry(rj: JsonObject): Boolean {        if (rj.str("mode") == "both") return true
         if (rj.arr("sites").isNotEmpty() || rj.arr("exceptions").isNotEmpty()) return true
         if (rj.arr("extraProtected").isNotEmpty()) return true
         if (rj.arr("schedule").any { it is JsonArray && it.isNotEmpty() }) return true
@@ -651,6 +668,10 @@ object Portable {
         if (lock != null && lock.str("kind").let { it.isNotEmpty() && it != "none" }) return true
         if (rj.obj("brk")?.str("kind") == "pomodoro") return true
         if (rj.obj("autolaunch")?.bool("enabled", false) == true) return true
+        // 自定义颜色：桌面端的规则可以单独配色，手机端没有这个概念，
+        // 不靠 carry 带回桌面就会被重置成默认橙。
+        val color = rj.str("color")
+        if (color.isNotEmpty() && color != DEFAULT_COLOR) return true
         return false
     }
 
@@ -685,11 +706,19 @@ object Portable {
         return "bk$n"
     }
 
-    /** 内容指纹：名称 + 模式 + 名单（和桌面端 `portable::sig` 同一套规则） */
+    /**
+     * 内容指纹：名称 + 模式 + 允许名单 + 禁止名单，和桌面端 `portable::sig` 同一套规则。
+     *
+     * 以前只拼 `packages`（允许名单），两条只在"禁止名单"上不同的规则指纹相同，
+     * 合并时第二条会被当成"已存在"静默跳过。
+     */
     fun sig(r: Rule): String {
         val apps = r.packages.map { it.trim().lowercase() }
             .filter { it.isNotEmpty() }.sorted().distinct()
-        return "${r.name.trim().lowercase()}|${r.mode.trim()}|${apps.joinToString(",")}|"
+        val deny = r.deny.map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }.sorted().distinct()
+        return "${r.name.trim().lowercase()}|${r.mode.trim()}|${apps.joinToString(",")}|" +
+            deny.joinToString(",")
     }
 
     private fun uniqueName(taken: List<Rule>, base: String): String {

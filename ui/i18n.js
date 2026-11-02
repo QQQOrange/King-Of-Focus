@@ -1869,6 +1869,21 @@
     [/^(.+) 分钟后$/, 'in $1 min'],
     /* 日历明细的「共 5 小时 12 分」 */
     [/^共 (.+)$/, 'Total $1'],
+
+    /* —— 带变量的提示（精确词典覆盖不了，靠规则） —— */
+    [/^自律时段生效中，(.+)改不了；等这一段结束再改$/, 'Discipline is running — $1 cannot be changed until this session ends.'],
+    [/^已解锁 (\d+) 分钟，消耗 (\d+) 分$/, 'Unlocked $1 min for $2 points'],
+    [/^检测完成：(\d+) 个浏览器的插件已就绪$/, 'Scan done: the extension is ready in $1 browser(s)'],
+    [/^已导出：(.+)$/, 'Exported: $1'],
+    [/^导出失败：(.+)$/, 'Export failed: $1'],
+    [/^删除失败：(.+)$/, 'Delete failed: $1'],
+    [/^已生成备份 (.+)（(.+)）$/, 'Backup created: $1 ($2)'],
+    [/^短语每 (\d+) 分钟换一次$/, 'Quote rotates every $1 min'],
+    [/^关闭前宽限已设为 (\d+)ms$/, 'Grace before closing set to $1 ms'],
+    [/^已取消 (.+)（(\d+) 个小时段）$/, 'Cleared $1 ($2 hours)'],
+    [/^(.+) 整天已选中（(.+)）$/, '$1 fully selected ($2)'],
+    [/^(.+) 本来就没有选中任何时段$/, '$1 has no selected hours'],
+    [/^已清空 (.+) 的 (\d+) 个小时段$/, 'Cleared $2 hours on $1'],
   ];
 
   /* ---------- 语言状态与译文查表 ---------- */

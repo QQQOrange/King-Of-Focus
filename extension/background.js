@@ -60,13 +60,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------------- 主程序发现 ---------------- */
 
+/**
+ * 带超时的 fetch。
+ *
+ * 没有超时的时候：本机某个服务占了 27315 却不回数据（半开连接），
+ * `findPort` 的 /api/ping 会永久挂起，后面每次 refresh 都排在它后面 ——
+ * 表现是"插件在跑、规则再也不更新"，而且完全没有提示。
+ */
+async function fetchT(url, opt, ms) {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const id = ctl ? setTimeout(() => { try { ctl.abort(); } catch (e) { /* 忽略 */ } }, ms || 1500) : 0;
+  try {
+    return await fetch(url, Object.assign({}, opt || {}, ctl ? { signal: ctl.signal } : {}));
+  } finally {
+    if (id) clearTimeout(id);
+  }
+}
+
 async function findPort() {
   if (API) return API;
   const saved = (await chrome.storage.local.get('port')).port;
   const list = saved ? [saved, ...PORTS.filter((p) => p !== saved)] : PORTS;
   for (const p of list) {
     try {
-      const r = await fetch(`http://127.0.0.1:${p}/api/ping`, { cache: 'no-store' });
+      // 探测要快：一个端口 400ms 不应答就当没开
+      const r = await fetchT(`http://127.0.0.1:${p}/api/ping`, { cache: 'no-store' }, 400);
       if (r.ok) {
         API = p;
         chrome.storage.local.set({ port: p });
@@ -82,11 +100,11 @@ async function post(path, body) {
   const p = await findPort();
   if (!p) return false;
   try {
-    await fetch(`http://127.0.0.1:${p}${path}`, {
+    await fetchT(`http://127.0.0.1:${p}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
-    });
+    }, 2000);
     return true;
   } catch (e) {
     API = null;
@@ -435,7 +453,7 @@ async function beat() {
   if (!p) return false;
   const tab = await currentTab();
   try {
-    await fetch(`http://127.0.0.1:${p}/api/heartbeat`, {
+    await fetchT(`http://127.0.0.1:${p}/api/heartbeat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -443,7 +461,7 @@ async function beat() {
         url: tab ? tab.url : '',
         title: tab ? tab.title : '',
       }),
-    });
+    }, 2000);
     // 拦截页的"目标地址"靠它兜底：DNR 重定向拿不到原 URL，referrer 也常为空
     if (tab && tab.url) chrome.storage.local.set({ lastUrl: tab.url });
     return true;
@@ -481,7 +499,7 @@ async function doRefresh(opts) {
 
   let state;
   try {
-    const r = await fetch(`http://127.0.0.1:${p}/api/state`, { cache: 'no-store' });
+    const r = await fetchT(`http://127.0.0.1:${p}/api/state`, { cache: 'no-store' }, 3000);
     state = await r.json();
   } catch (e) {
     API = null;

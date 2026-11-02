@@ -112,21 +112,27 @@
   function match(u, compiled) {
     if (!/^https?:/i.test(String(u || ''))) return null;
     var list = compiled || [];
+    var i;
+
+    // 例外是**全局放行**。
+    //
+    // DNR 那一层把例外编译成 `priority: 25 allow`，必然压过所有规则的拦截（20）——
+    // 请求层本来就是"跨规则放行"。JS 这一层以前是"逐规则跳过"，于是同一个网址
+    // 会出现"新开的页面被放行、已经开着的标签页却照样被关"的两套结论。
+    // 现在两层口径统一：任何一条规则的例外命中，这个网址就完全不拦。
+    for (i = 0; i < list.length; i++) {
+      if (any(list[i].exceptions, u)) return null;
+    }
 
     // 强制模式优先：只要有生效的白名单规则，就只有名单内的能活
     // 空名单的白名单规则视为未配置，直接跳过（否则会把所有标签页清空）
     var whites = [];
-    var i;
     for (i = 0; i < list.length; i++) {
       if (list[i].mode === 'whitelist' && list[i].sites.length > 0) whites.push(list[i]);
     }
     if (whites.length) {
       for (i = 0; i < whites.length; i++) {
-        var w = whites[i];
-        // 例外优先于白名单：界面明确写着"例外的优先级高于网站自律规则"。
-        // 以前这里只看 sites，白名单模式下配了例外也照拦，等于这一栏是摆设。
-        if (w.exceptions && w.exceptions.length && any(w.exceptions, u)) return null;
-        if (any(w.sites, u)) return null;
+        if (any(whites[i].sites, u)) return null;
       }
       return whites[0].name;
     }
@@ -134,7 +140,6 @@
     for (i = 0; i < list.length; i++) {
       var r = list[i];
       if (r.mode === 'whitelist') continue;
-      if (any(r.exceptions, u)) continue;
       if (any(r.sites, u)) return r.name;
     }
     return null;

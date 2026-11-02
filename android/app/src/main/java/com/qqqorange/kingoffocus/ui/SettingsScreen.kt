@@ -783,6 +783,9 @@ private fun CloudSection(cfg: Config) {
                         "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
                     }
                 } else {
+                    // 和桌面 config_replace_blocked 同一条纪律：自律时段里不能整份替换配置，
+                    // 否则"导入一份规则全关的旧备份"就是一键解除自律。
+                    Portable.overwriteBlocked(base)?.let { return@withContext it }
                     val next = Portable.overwrite(parsed.doc, base)
                     Store.update { next }
                     "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）"

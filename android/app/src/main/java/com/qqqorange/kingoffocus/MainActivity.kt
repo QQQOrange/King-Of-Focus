@@ -232,6 +232,8 @@ internal fun BackupSection(cfg: Config) {
                             "冲突 ${st.conflict} 条，补上 ${st.slots} 个小时段"
                     }
                 } else {
+                    // 自律时段里不许整份替换配置（与桌面同一道闸）
+                    Portable.overwriteBlocked(base)?.let { return@withContext it }
                     val next = Portable.overwrite(parsed.doc, base)
                     Store.update { next }
                     "已覆盖：现在有 ${next.rules.size} 条规则" +
