@@ -1360,6 +1360,14 @@ pub fn points_unlock(shared: State<'_, Arc<Shared>>, minutes: u32) -> Result<Val
         }
     }
     let price = unlock_price(&c) * minutes as i64;
+    // 已经在解锁窗口里就拒绝：以前可以再买一次，钱照扣，
+    // 而到期时间被改成"现在 + 新买的分钟数"—— 可能比原来还短
+    //（15:00 买到 15:15，再买 5 分钟变成 15:07，白花 105 分）。
+    let now_ts = chrono::Local::now().timestamp();
+    if now_ts < c.points.unlock_until {
+        let left = (c.points.unlock_until - now_ts) / 60 + 1;
+        return Err(format!("这一轮已经解锁了（还剩约 {left} 分钟），等结束再买"));
+    }
     if c.points.balance < price {
         return Err(format!(
             "积分不够：需要 {price} 分，你现在有 {} 分",
@@ -1433,6 +1441,13 @@ fn today_on_secs(shared: &Shared) -> u64 {
         .lock()
         .map(|d| d.on.values().map(|a| a.secs).sum())
         .unwrap_or(0)
+}
+
+/// 今天还没处理的分心事件条数（HUD 的「＋」角标）。
+fn pending_distract_today() -> u32 {
+    let st = crate::distract::load();
+    let (_, total, done) = crate::distract::day_of(&st, &crate::distract::today());
+    total.saturating_sub(done) as u32
 }
 
 /// `hud_state` 里要用的几个标量（从 Value 里挖出来，避免在 json! 里做两遍）
@@ -1524,6 +1539,11 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "blocks": focus.blocks,
         "distractOn": cfg.settings.distract.enabled,
         "distractCorner": cfg.settings.distract.button_corner,
+        // 今天"还没处理"的分心事件条数。
+        //
+        // 以前 HUD 只在"刚记完那一下"更新这个数字：在分心事件页把条目勾掉之后，
+        // HUD 还显示 3；重启又变空白。两边必须是同一个数。
+        "pendingDistract": pending_distract_today(),
     })
 }
 
@@ -1577,11 +1597,21 @@ pub fn stats_calendar(start: String, end: String, tab: String) -> Vec<crate::sta
 }
 
 #[tauri::command]
-pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -> Value {
+pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -> Result<Value, String> {
+    // 起止填反时直接拒绝。
+    // 以前直接丢给 aggregate()，而 `while cur <= e` 一次都不跑 → 合计 0、
+    // 页面写"这段时间还没有数据"，可同一页的周月网格（calendar 会 swap）却有数据，
+    // 两边自相矛盾，用户以为统计坏了。
+    if start.trim().is_empty() || end.trim().is_empty() {
+        return Err("统计区间不完整".into());
+    }
+    if start > end {
+        return Err("开始日期晚于结束日期".into());
+    }
     let agg = crate::stats::aggregate(&shared, &start, &end);
     let on_secs: u64 = agg.on.iter().map(|s| s.secs).sum();
     let off_secs: u64 = agg.off.iter().map(|s| s.secs).sum();
-    json!({
+    Ok(json!({
         "start": start,
         "end": end,
         "on": agg.on,
@@ -1590,7 +1620,7 @@ pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -
         "offSecs": off_secs,
         "onHourly": agg.on_hourly.to_vec(),
         "offHourly": agg.off_hourly.to_vec(),
-    })
+    }))
 }
 
 #[tauri::command]

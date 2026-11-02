@@ -174,6 +174,12 @@ async function tick() {
   if (on) {
     const corner = ['tl', 'tr', 'bl', 'br'].includes(s.distractCorner) ? s.distractCorner : 'tl';
     ['tl', 'tr', 'bl', 'br'].forEach((c) => document.body.classList.toggle('cap-' + c, c === corner));
+    // 待处理条数跟着后端走：在分心事件页把条目勾掉之后，HUD 这边也要立刻变。
+    // 以前只有"刚记完那一下"会更新，之后一直停在旧数字。
+    const n = +(s.pendingDistract || 0);
+    const badge = document.getElementById('capN');
+    const txt = n > 99 ? '99+' : n ? String(n) : '';
+    if (badge.textContent !== txt) badge.textContent = txt;
     // 关掉模块时把已经打开的输入框也收起来，否则会留下一个没有按钮的空面板
     if (!on && !panel.hidden) closeCapture();
   } else if (!panel.hidden) {

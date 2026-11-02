@@ -380,6 +380,7 @@ pub fn tick_settle(shared: &Shared) {
     // 段起点 + 24h 一定过去；但我们要的是"这段已经结束"，判据见下。
     let cfg = shared.config();
     let mut refund_total = 0i64;
+    let mut bonus_total = 0i64;
     let mut changed = false;
     for x in st.stakes.iter_mut() {
         if x.settled_at != 0 || x.seg <= 0 {
@@ -399,16 +400,29 @@ pub fn tick_settle(shared: &Shared) {
         x.settled_at = now;
         x.refunded = back;
         refund_total += back;
+        // 只有**奖励**算收入，本金不算：押 10 退 12 应该只 +2，
+        // 否则反复押退十次，"累计获得"会涨 120，实际只赚 20。
+        if back > x.amount {
+            bonus_total += back - x.amount;
+        }
         changed = true;
     }
     if !changed {
         return;
     }
-    let _ = save_stakes(&st);
+    // 先把"已结算"写进 stakes.json，成功了再动余额。
+    // 以前是 `let _ = save_stakes(&st);` 之后无条件加余额：写盘失败时每 20 秒
+    // 又会结算一次（磁盘上还是"未结算"），内存余额一路涨，重启后还能再结算一遍。
+    if let Err(e) = save_stakes(&st) {
+        crate::mask::mlog(&format!("质押结算写盘失败，下轮重试：{e}"));
+        return;
+    }
     if refund_total > 0 {
         let mut c = shared.config();
         c.points.balance += refund_total;
-        c.points.total_earned += refund_total;
+        if bonus_total > 0 {
+            c.points.total_earned += bonus_total;
+        }
         let _ = crate::cfg::save(&c);
         if let Ok(mut w) = shared.cfg.write() {
             *w = c;

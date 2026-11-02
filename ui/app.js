@@ -6523,7 +6523,10 @@ const Act = window.Act = {
     S.view = view;
     // 完整图表页是"自律时段"的下一层：换页面就收起来，免得下次进来还停在那层
     if (view !== 'clock') S.ccFull = false;
-    if (view === 'stats' && !S.stats) await loadStats();
+    // 每次进统计页都重拉：以前只在"从没加载过"时拉，
+    // 上午看过的页面晚上回来还是上午那几个数（"今天 3 分钟"），
+    // 用户会以为统计不涨。
+    if (view === 'stats') await loadStats();
     if (view === 'distract') await dxLoad();
     if (view === 'reports') { await loadReports(); await reviewLoad(); }
     if (view === 'sync') { await loadBackups(); }
@@ -6722,7 +6725,10 @@ const Act = window.Act = {
     const rt = S.data.runtime || {};
     const st = rt.sleep || {};
     const inSleep = !!(st.enabled && st.inWindow && st.price > 0);
-    const inDisc = !!(rt.disciplineOn || rt.breakOn);
+    // 只看"真的有东西在拦"：disciplineOn = 规则生效 / 专注段 / 固化。
+    // 以前还加了 breakOn，休息段点进来会列出一堆价格，点了却报
+    // "当前没有正在进行的自律时段，不需要解锁"（后端只认专注段或生效中的规则）。
+    const inDisc = !!rt.disciplineOn;
     const rows = [];
 
     if (inSleep) {
@@ -8235,6 +8241,10 @@ const Act = window.Act = {
         p.from = 0;
         p.to = 60;
         p.seg = segId;
+        // 清掉这一小时里的"两段"划分（wins）。
+        // 引擎和画图都以 wins 为准，留着它的话：右键选「整小时」、
+        // 或者把起止分钟改成 00–30，都会提示成功，但图和判定还是原来那两段。
+        p.wins = [];
         n++;
       }
     }
@@ -8933,7 +8943,11 @@ async function loadStats() {
     // 免得点一下日期整块统计突然变成"没有数据"
     if (r && Array.isArray(r.on)) S.stats = r;
     S.statsLedger = led && !led.error ? led : { total: 0, items: [] };
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    // 区间填反之类的原因要说明白，不能只是控制台里一行
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+    console.error(e);
+  }
 }
 async function loadReports() {
   try { S.reports = await invoke('report_list'); } catch (e) { S.reports = []; }

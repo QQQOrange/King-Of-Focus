@@ -59,6 +59,8 @@ pub struct Runtime {
     /// 这一段开始时的"今日已拦截次数"快照：用来算这一轮被打断了几次。
     /// 没有它的话恭喜弹窗只能写死"全程没有破功"——哪怕这一轮被拦了十次。
     pub since_blocks: u32,
+    /// 这一段里最后命中的规则名（结算时 active/lock_names 已经清空，只能靠它）
+    pub since_names: String,
     /// 「自律时段」24 段计划：当前是否在选中的时段里
     pub clock_in_window: bool,
     /// 今天是周几（0=周一 … 6=周日）
@@ -114,6 +116,7 @@ impl Default for Runtime {
             quote_from: String::new(),
             celebrate: None,
             since_blocks: 0,
+            since_names: String::new(),
             clock_in_window: false,
             clock_weekday: 7,
             clock_hour: 24,

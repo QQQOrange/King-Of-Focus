@@ -422,6 +422,12 @@ pub fn exit_blocked_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<Strin
     if crate::sleep::locked_by_cfg(cfg, ts) {
         return Some("睡眠时段锁定中：只能用积分解锁，或者等这一段结束".into());
     }
+    // 积分解锁窗口内一切暂停 —— 包括"不许退出"。
+    // README 写的是"所有拦截暂停、可以退出程序、守护进程退出"，
+    // 而以前只有 lock_info 读这个字段，于是花掉积分仍然退不出去。
+    if ts < cfg.points.unlock_until {
+        return None;
+    }
     // 注意用带 `now` 的那个版本：早期这里读的是真实时钟，
     // 导致"可注入时间"的函数在测试里行为随运行时刻变化。
     let info = lock_info_at(cfg, now);
@@ -457,6 +463,16 @@ pub fn exit_blocked_at(cfg: &Config, now: chrono::NaiveDateTime) -> Option<Strin
 /// 而强制退出正是用户从固化里出来的通道，这条通道不能被这个开关一起关掉。
 pub fn session_quit_locked(cfg: &Config) -> bool {
     if crate::testmode::on() {
+        return false;
+    }
+    // 积分解锁期间可以退出（和"所有拦截暂停"同一口径）
+    if crate::sched::now_local()
+        .and_local_timezone(Local)
+        .single()
+        .map(|x| x.timestamp())
+        .unwrap_or(0)
+        < cfg.points.unlock_until
+    {
         return false;
     }
     if cfg.settings.allow_quit_in_session {

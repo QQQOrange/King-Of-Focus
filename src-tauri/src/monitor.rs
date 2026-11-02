@@ -239,11 +239,28 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                         // 记下起点的"今日拦截数"，结算时相减就是这一轮被打断了几次
                         rt.since_blocks = rt.blocked_apps + rt.blocked_sites;
                     }
+                    if running {
+                        // 记住这一段命中的规则名。
+                        //
+                        // 结算那一刻 `active` 和 `lock_names` 都已经清空（这一拍刚被覆写），
+                        // 直接从它们拼名字永远是空串 —— 恭喜弹窗上一直显示占位文案
+                        // "自律自律规则"。所以在一整段里持续记最后一次非空的名字。
+                        let cur: Vec<String> = if rt.lock_names.is_empty() {
+                            rt.active.iter().map(|(n, _)| n.clone()).collect()
+                        } else {
+                            rt.lock_names.clone()
+                        };
+                        if !cur.is_empty() {
+                            rt.since_names = cur.join("、");
+                        }
+                    }
                     if !running && rt.since > 0 {
                         // 一段自律结束了 → 攒一条"恭喜"给界面弹窗
                         let secs = (now_ts - rt.since).max(0);
                         if secs >= 60 {
-                            let names = if rt.lock_names.is_empty() {
+                            let names = if !rt.since_names.is_empty() {
+                                rt.since_names.clone()
+                            } else if rt.lock_names.is_empty() {
                                 rt.active
                                     .iter()
                                     .map(|(n, _)| n.clone())
@@ -255,6 +272,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             let blocks = (rt.blocked_apps + rt.blocked_sites)
                                 .saturating_sub(rt.since_blocks);
                             rt.celebrate = Some((secs, names, blocks));
+                            rt.since_names.clear();
                             just_finished = true;
                         }
                         rt.since = 0;

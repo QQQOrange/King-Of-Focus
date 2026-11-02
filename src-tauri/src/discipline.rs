@@ -50,12 +50,19 @@ pub fn state(cfg: &Config, now: &NaiveDateTime) -> Discipline {
         clock_on: clock.map(|c| c.focusing()).unwrap_or(false),
         apply_rules: apply,
         hard_pause: clock_break && apply,
+        // 规则自带的番茄休息只有"这条规则真的会拦人"时才有意义。
+        //
+        // 引擎现在把自律规则当纯名单（不看 Rule.schedule），只在专注段且
+        // apply_rules 打开时才生效。以前这里不看那两个前提，于是一条老配置里的
+        // 规则番茄会在**什么都没拦**的时候把 HUD 拉起来、记一段自律、结束时弹恭喜。
         on_break: clock_break
-            || cfg.rules.iter().any(|l| {
-                l.enabled
-                    && crate::sched::is_active(&l.schedule, now)
-                    && crate::sched::is_break_now(&l.schedule, &l.brk, now)
-            }),
+            || (clock.map(|c| c.focusing()).unwrap_or(false)
+                && apply
+                && cfg.rules.iter().any(|l| {
+                    l.enabled
+                        && crate::sched::is_active(&l.schedule, now)
+                        && crate::sched::is_break_now(&l.schedule, &l.brk, now)
+                })),
         clock_weekday: clock.map(|c| c.weekday).unwrap_or(7),
         clock_hour: clock.map(|c| c.hour).unwrap_or(24),
         clock_left: clock.map(|c| c.left).unwrap_or(0),

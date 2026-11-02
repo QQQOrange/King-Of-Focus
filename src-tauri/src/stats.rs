@@ -483,8 +483,35 @@ fn refund_idle(shared: &Shared, secs: u32) {
     let Some(acc) = map.get_mut(&hit.key) else {
         return;
     };
-    if take_back(&mut acc.hours, &mut acc.secs, secs as u64, hit.hour) > 0 {
+    let done = take_back(&mut acc.hours, &mut acc.secs, secs as u64, hit.hour);
+    if done > 0 {
+        // 曲线也要一起扣：日历/周月网格/"最投入的一天"都读 spans。
+        // 只扣 secs 的话会出现"这天写着 0 分钟、日历上却画着两小时的色块"。
+        trim_acc_spans(&mut acc.spans, done);
         shared.stats_dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 从连续使用时段的末尾裁掉 `secs` 秒（spans 是分钟粒度，向上取整）。
+fn trim_acc_spans(spans: &mut Vec<Span>, secs: u64) {
+    let mut left = secs;
+    while left > 0 {
+        let Some(last) = spans.last_mut() else {
+            break;
+        };
+        let len_secs = (last.t.saturating_sub(last.f) as u64) * 60;
+        if len_secs == 0 {
+            spans.pop();
+            continue;
+        }
+        if len_secs <= left {
+            left -= len_secs;
+            spans.pop();
+        } else {
+            let cut = (((left + 59) / 60) as u16).min(last.t - last.f);
+            last.t -= cut;
+            left = 0;
+        }
     }
 }
 
@@ -568,23 +595,25 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
     if !cfg.settings.stats.count_idle {
         let idle = idle_secs();
         if idle >= IDLE_TIMEOUT_SECS {
-            // **刚跨过阈值**：从"最后一次输入"到现在的每一秒都已经被记成活跃了
-            // （阈值内那几十秒是照记的，否则每次短暂停顿都会把一段切成碎片）。
-            // 既然确认人不在，就把这一段整个扣回去。
+            // 已经扣过多少秒（这一轮"离开"累计扣的量）。
             //
-            // ActivityWatch 的等价做法：变成 AFK 时，afk 事件的 timestamp 取
-            // `last_input`（而不是"发现的那一刻"），再用 filter_period_intersect
-            // 把这段从活跃时长里裁掉。两者结果一致：**离开的时间一秒都不算**。
-            if *idle_run > 0 {
-                refund_idle(shared, *idle_run);
-                *idle_run = 0;
+            // 只扣**增量**：这里每秒被调用一次，如果每次都 refund_idle(idle)，
+            // 离开 10 分钟就会扣 1+2+3+…+600 秒。
+            let done = *idle_run;
+            if idle > done {
+                refund_idle(shared, idle - done);
+                *idle_run = idle;
             }
             // 人走了 = 这一段结束（不然下次回来会接成一段超长的假时段）
             span_close(shared);
             return;
         }
-        // 阈值内：照常记，但记着"这段是可能要被扣的"
-        *idle_run = idle_run.saturating_add(1);
+        // 有输入 / 还在阈值内：这一轮"离开"结束，计数清零。
+        //
+        // 以前这里是 `*idle_run = idle_run.saturating_add(1)` —— 一直坐在电脑前
+        // 干活时它也在涨，等真的离开 61 秒时，会把过去**几小时**的工作时间
+        // 一次性全扣掉（`refund_idle(7200)`），那天的统计直接趋近 0。
+        *idle_run = 0;
     } else {
         *idle_run = 0;
     }
