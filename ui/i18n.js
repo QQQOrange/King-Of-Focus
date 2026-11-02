@@ -819,6 +819,69 @@
     '生效 = 主开关 OR（跟随自律 AND 自律生效中）':
       'Active = master switch OR (follow discipline AND discipline is on)',
     '采集口径：': 'What is tracked: ',
+    '一条自律规则 = 一份名单（软件 / 网站 / 例外），不带时间表。':
+      'A rule is just a list (apps / sites / exceptions) — no timetable.',
+    '什么时候算自律时间，只由「自律时段」那一页决定；规则只负责"自律时间里不能开什么"。':
+      'When discipline is on is decided only by the Discipline hours page; a rule only says what must not open during that time.',
+    '自律时间之外它完全静默，自律时间内它一律生效（休息段除外）。':
+      'Outside those hours it stays completely silent; inside them it always applies (except during breaks).',
+    '生效类型：黑名单（名单里的不许开）、白名单（只有名单里的能开，其他前台窗口都会被关）、两者同时（名单里的照样拦，例外里的放行）。':
+      'Modes: blacklist (listed apps are blocked), whitelist (only listed apps may open, everything else in the foreground is closed), or both (listed apps are blocked, exceptions allowed).',
+    '番茄在「自律时段」里按小时配：每个小时都可以设「专注 N 分钟 / 休息 M 分钟」，锚点是整点。':
+      'Pomodoro is configured per hour in Discipline hours: each hour can be focus N min / break M min, anchored to the top of the hour.',
+    '休息期间所有自律规则都暂停拦截（软件和网页都放开），时间到自动锁回，HUD 上的圆点会变绿并显示"休息中"。':
+      'During a break every discipline rule pauses (apps and sites are both released); when it ends everything locks again and the HUD dot turns green.',
+    '提醒在「设置 → 提醒」：学习结束前 X 分钟、休息结束前 Y 分钟各响一次（0~120 分钟，0 = 不发），休息提醒可以单独关。':
+      'Reminders live in Settings → Reminders: one before focus ends and one before a break ends (0–120 minutes, 0 = off); the break one can be turned off separately.',
+    '触发时主界面弹提示、HUD 上的倒计时变金色闪烁。':
+      'When one fires the main window shows a notice and the HUD countdown turns gold and blinks.',
+    '手动开遮罩时，屏幕上会出现桌面 HUD（它压在遮罩之上）：大数字是"这次遮罩已经开了多久"，下面一行是"今天已专注多久"；连续坐满 90 分钟会改成一句"起来走两步？"。':
+      'With the mask on manually, the desktop HUD appears above it: the big number is how long this mask has been up, the line below is today\'s focus total, and after 90 straight minutes it turns into a nudge to get up.',
+    'HUD 左上角那个「＋」是记一笔：想到什么先点一下、打一行字回车，不会打断你，之后在「分心事件」页逐条处理。':
+      'The + at the top-left of the HUD is Jot: type one line and hit Enter — it will not interrupt you, and you can work through them later on the Distractions page.',
+    '记一笔的按钮只在「设置 → 分心事件」开着时出现；它挂在 HUD 上，所以自律时段里也能用。':
+      'The Jot button only appears when Settings → Distractions is on; it lives on the HUD, so it works during discipline hours too.',
+    '每秒采样一次前台窗口；按「自律模式开启 / 未开启」两套数据独立记录，互不混合。':
+      'The foreground window is sampled every second and recorded in two separate tracks (discipline on / off) that are never mixed.',
+    '前台是浏览器且插件上报过，就记到域名上，否则记到 exe 上。统计页显示的是软件名（取自程序版本信息）和页面标题，同一个网址下的多个页面会按网址归并成一行。':
+      'Browser activity reported by the extension is attributed to the domain, otherwise to the exe. Stats show the app name and the page title, and pages under one site are merged into a single row.',
+    '「自律模式开启」的口径有四个：自律规则生效 / 在专注段里 / 固化锁定 / 手动开着专注遮罩。':
+      'Discipline counts as on in four cases: a rule is active / you are inside a focus segment / the hard lock is on / the focus mask is on.',
+    '人离开超过 60 秒（无键鼠输入）的那段时间会被扣回来，不算进任何一边。':
+      'Time away for more than 60 seconds (no keyboard or mouse input) is taken back and counted on neither side.',
+    '报告在日/周/月/年结束后自动生成，也可以手动生成。程序停了几周再打开，中间那几期会一次补齐。':
+      'Reports are generated automatically after each day/week/month/year, or on demand. If the app was closed for weeks, the missing periods are generated in one go.',
+    '三种口径：只看开启、只看未开启、两者汇总（同一应用/域名秒数直接相加）。':
+      'Three views: on only, off only, or both combined (seconds for the same app/domain are added up).',
+    '本机备份是完整备份：规则、时段、积分、遮罩、睡眠、HUD、语录、提醒、自启……全都在里面，换台电脑恢复就是原样搬过去。':
+      'Local backups are complete: rules, hours, points, mask, sleep, HUD, quotes, reminders, autostart — all of it, so restoring on a new PC moves everything over.',
+    '手机端读不懂的那部分会原样忽略，不影响跨设备往返。':
+      'Parts the phone app does not understand are left untouched, so cross-device round trips are unaffected.',
+    '文件在软件目录下的 king of focus back，只保留最近 10 份、7 天内的，超出自动删。':
+      'Files live under king of focus back next to the app; the newest 10 within 7 days are kept, older ones are removed automatically.',
+    '改过备份密码？旧备份是用当时那个密码加密的。恢复时如果解不开，会弹一个输入框问你要"当初的密码"，用它能恢复，而且不会改动你现在设置里的密码。':
+      'Changed the backup password? Old backups are encrypted with the password you had back then. If one will not open you are asked for that old password; it restores fine and your current password is left alone.',
+    '云端备份走你自己的 WebDAV：上传后可以列出所有历史版本，任选一份恢复。「立即同步」只同步自律规则和设置，不做版本归档。':
+      'Cloud backups go to your own WebDAV: every uploaded version is listed and any of them can be restored. Sync now only syncs rules and settings — it does not archive versions.',
+    '手机互通：两端导出的是同一种文件（同样的字段、同样的加密信封）；桌面端用「导出跨设备备份…」/「从文件恢复…」，手机端在「设置 → 备份与恢复」填同一个密码。':
+      'Cross-device: both platforms export the same file format (same fields, same envelope). Desktop uses Export cross-device backup… / Restore from file…; on the phone use Settings → Backup & restore with the same password.',
+    '恢复时选「覆盖」（整份替换）或「合并」（只补缺的）。':
+      'When restoring, pick Overwrite (replace everything) or Merge (only add what is missing).',
+    '不带时间表': 'no timetable',
+    '所有': 'all',
+    '手动开遮罩时': 'When you turn the mask on manually',
+    'HUD 左上角那个「＋」是': 'The + button on the HUD is',
+    '记一笔': 'Jot it down',
+    '手动开着专注遮罩': 'the focus mask is on',
+    '程序停了几周再打开，中间那几期会一次补齐。':
+      'If the app was closed for weeks, the missing periods are generated in one go.',
+    '本机备份是完整备份': 'Local backups are complete',
+    '文件在软件目录下的': 'Files live under',
+    '，只保留最近 10 份、7 天内的，超出自动删。':
+      ', keeping the newest 10 within 7 days; older ones are removed automatically.',
+    '设了密码用 AES-256-GCM（两端都能开），没设密码就是明文 JSON——设置页会常驻一条警告。':
+      'With a password it is AES-256-GCM (readable on both platforms); without one it is plaintext JSON, and Settings shows a permanent warning.',
+    '改过备份密码？': 'Changed the backup password?',
     '每秒采样一次前台窗口；按「自律模式开启 / 未开启」两套数据独立记录，互不混合。 前台是浏览器且插件上报过，就记到域名上，否则记到 exe 上。':
       'The foreground window is sampled every second and recorded separately for discipline on/off. Browser activity is attributed to domains when reported, otherwise to the exe.',
     '摘要': 'Summary',

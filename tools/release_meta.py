@@ -226,6 +226,19 @@ def check(require_same=False, tag=None):
         else:
             warnings.append(msg + '（清单里各平台记自己的版本，客户端只校验自己那一条）')
 
+    # README 头部那一行必须跟着版本走。
+    # 它以前一直停在 0.0.1，用户点进项目主页第一眼看到的就是个假版本号。
+    readme = os.path.join(ROOT, 'README.md')
+    if os.path.exists(readme):
+        with io.open(readme, encoding='utf-8') as f:
+            head = f.read(2000)
+        m = re.search(r'\*\*版本\*\*：([0-9]+\.[0-9]+\.[0-9]+)', head)
+        if not m:
+            problems.append('README.md 头部没有 "- **版本**：x.y.z" 这一行（发版时一起改）')
+        elif m.group(1) != v['windows-x64']:
+            problems.append('README.md 写的版本是 %s，源码是 %s（发版时一起改）'
+                            % (m.group(1), v['windows-x64']))
+
     # 产物 + 清单
     man_path = os.path.join(DIST, MANIFEST_NAME)
     if not os.path.exists(man_path):
