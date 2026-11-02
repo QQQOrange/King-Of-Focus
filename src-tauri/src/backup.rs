@@ -317,6 +317,15 @@ pub fn dir() -> PathBuf {
     // 以前装在 Program Files 时数据已回落到 APPDATA，备份却仍往不可写的安装目录写，
     // 而失败还被上层吞掉 —— 用户以为每天都有备份，其实一份都没有。
     let dd = cfg::data_dir();
+    // 测试模式：备份必须落在测试目录里面。
+    // 以前这里取 data_dir().parent()，而测试目录是 <prod>/test ——
+    // parent 就是正式目录，于是"测试模式里点备份"会写进**正式**备份目录，
+    // 紧接着 prune_local 按份数删掉最旧的正式备份。测试模式必须完全隔离。
+    if crate::testmode::on() {
+        let d = dd.join(DIR_NAME);
+        let _ = std::fs::create_dir_all(&d);
+        return d;
+    }
     let base = dd.parent().map(|p| p.to_path_buf()).unwrap_or(dd);
     let d = base.join(DIR_NAME);
     let _ = std::fs::create_dir_all(&d);
@@ -342,7 +351,14 @@ pub fn make(shared: &Shared) -> Result<Value, String> {
     let env = seal_portable(&payload, &pass)?;
     let name = format!("kof-{}{}", stamp(), EXT);
     let path = dir().join(&name);
-    std::fs::write(&path, env).map_err(|e| format!("写入备份失败: {e}"))?;
+    // 原子写：备份文件写到一半被强杀/断电，会留下一个解不开的 .kofbak，
+    // 用户以为"备份成功"，真要用的时候才发现是坏的。
+    let tmp = crate::cfg::unique_tmp(&path);
+    std::fs::write(&tmp, env).map_err(|e| format!("写入备份失败: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入备份失败: {e}")
+    })?;
     prune_local();
     Ok(json!({
         "name": name,
@@ -386,7 +402,10 @@ fn prune_local() {
     let files = list();
     let now = chrono::Local::now().timestamp();
     for (i, f) in files.iter().enumerate() {
-        let old = now - f["mtime"].as_i64().unwrap_or(0) > KEEP_DAYS * 86400;
+        let mt = f["mtime"].as_i64().unwrap_or(0);
+        // mtime 读不出来时不能当成"1970 年"：那会让这份备份被立刻删掉。
+        // 读不到就只按"最多留几份"这条规则来。
+        let old = mt > 0 && now - mt > KEEP_DAYS * 86400;
         if i >= KEEP_COUNT || old {
             if let Some(p) = f["path"].as_str() {
                 let _ = std::fs::remove_file(p);
@@ -435,7 +454,12 @@ pub fn export_file(shared: &Shared, path: &str) -> Result<Value, String> {
             std::fs::create_dir_all(d).map_err(|e| format!("创建目录失败: {e}"))?;
         }
     }
-    std::fs::write(p, out).map_err(|e| format!("写入失败: {e}"))?;
+    let tmp = crate::cfg::unique_tmp(p);
+    std::fs::write(&tmp, out).map_err(|e| format!("写入失败: {e}"))?;
+    std::fs::rename(&tmp, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入失败: {e}")
+    })?;
     Ok(json!({
         "path": p.to_string_lossy(),
         "encrypted": !pass.trim().is_empty(),
@@ -658,8 +682,13 @@ fn prune_targets(list: &[Value], now: chrono::NaiveDateTime) -> Vec<String> {
             n.trim_start_matches("kof-").trim_end_matches(EXT),
             "%Y%m%d-%H%M%S",
         )
-        .map(|d| (now - d).num_days() > KEEP_DAYS)
-        .unwrap_or(false);
+        .map(|d| (now - d).num_days() > KEEP_DAYS);
+        // 认不出名字的文件（用户自己传上去的、旧命名的）直接跳过：
+        // 既不算进保留名额，也永远不删。以前它 kept+=1 占一个名额，
+        // 于是云端有 1 份别人的文件时，本机最旧的一份真实备份会被挤掉。
+        let Ok(old) = old else {
+            continue;
+        };
         if kept >= KEEP_COUNT || old {
             out.push(n.to_string());
         } else {

@@ -166,12 +166,21 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     }
     let config = shared.config();
     let now = crate::sched::now_local();
+    // 下面这几项会读盘（intents.json / stakes.json / 统计缓存）。
+    // 必须在拿 rt 锁**之前**算完：get_state 每秒被界面拉一次，
+    // 而监控线程每一拍都要拿同一把 rt 锁去做拦截判定 ——
+    // 把磁盘 IO 放在锁里，遇到慢盘就会把拦截主循环卡住。
+    let brief = crate::focus::today_brief(&shared);
+    let stake = crate::focus::stake_snapshot(&config);
+    let clock_summary = crate::clock::summary(&config);
+    let sleep_json = crate::sleep::snapshot(&shared).to_json(&config);
+    let sleep_text = crate::sleep::summary(&shared);
     let (runtime, notice) = {
         let mut rt = shared.rt.lock().unwrap();
         let celebrate = rt
             .celebrate
             .take()
-            .map(|(secs, names)| json!({"secs": secs, "rules": names}));
+            .map(|(secs, names, blocks)| json!({"secs": secs, "rules": names, "blocks": blocks}));
         // 提示只弹一次：取走即清空
         let m = shared
             .mask
@@ -193,9 +202,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "siteUrl": rt.site_url,
                 "siteTitle": rt.site_title,
                 // 总览顶部那一块：现在/下一段/今日进度/目标/打断
-                "brief": crate::focus::today_brief(&shared),
+                "brief": brief,
                 // 这一段的质押状态（界面决定显示"押 10 分"还是"已押"）
-                "stake": crate::focus::stake_snapshot(&config),
+                "stake": stake,
                 "wakeNote": rt.wake_note,
                 "wakeAt": rt.wake_at,
                 "locked": rt.locked,
@@ -211,9 +220,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "clockOn": rt.clock_on,
                 "clockHour": rt.clock_hour,
                 "clockLeft": rt.clock_left,
-                "clockSummary": crate::clock::summary(&config),
-                "sleep": crate::sleep::snapshot(&shared).to_json(&config),
-                "sleepText": crate::sleep::summary(&shared),
+                "clockSummary": clock_summary,
+                "sleep": sleep_json,
+                "sleepText": sleep_text,
                 // Hub 顶部那块激励语录要显示"这条是哪来的"，所以连同出处一起给
                 "quote": rt.quote.clone(),
                 "quoteFrom": rt.quote_from.clone(),
@@ -1444,7 +1453,19 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
                 rt.locked,
                 if rt.since > 0 { (now - rt.since).max(0) } else { 0 },
                 if rt.mask_since > 0 { (now - rt.mask_since).max(0) } else { 0 },
-                if rt.lock_until > 0 { (rt.lock_until - now).max(0) } else { 0 },
+                // 距结束：有固化锁就用锁的截止时间；没有固化锁（普通自律）
+                // 就用这一阶段还剩多久 —— 以前这里只看 lock_until，
+                // 于是"没开固化"的人 HUD 永远显示"本时段没有设定结束时间"，
+                // 而 README 明明写着 HUD 会显示距结束时间。
+                if rt.lock_until > 0 {
+                    (rt.lock_until - now).max(0)
+                } else if rt.in_break && rt.break_left > 0 {
+                    rt.break_left
+                } else if rt.clock_on && rt.clock_left > 0 {
+                    rt.clock_left
+                } else {
+                    0
+                },
                 rt.lock_until_text.clone(),
                 rt.in_break,
                 rt.break_left,
@@ -1677,9 +1698,10 @@ pub fn stats_flush(shared: State<'_, Arc<Shared>>) {
 
 fn after_sync(shared: &Shared, r: Result<String, String>) -> Result<String, String> {
     let mut c = shared.config();
-    c.settings.sync.last_sync = chrono::Local::now().timestamp();
     match &r {
         Ok(m) => {
+            // last_sync 只在成功时前进（和自动同步同一口径）
+            c.settings.sync.last_sync = chrono::Local::now().timestamp();
             c.settings.sync.last_result = m.clone();
             c.settings.sync.last_error.clear();
         }

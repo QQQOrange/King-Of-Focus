@@ -236,6 +236,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     let running = !active.is_empty() || lock.locked || clock_on || on_break;
                     if running && rt.since == 0 {
                         rt.since = now_ts;
+                        // 记下起点的"今日拦截数"，结算时相减就是这一轮被打断了几次
+                        rt.since_blocks = rt.blocked_apps + rt.blocked_sites;
                     }
                     if !running && rt.since > 0 {
                         // 一段自律结束了 → 攒一条"恭喜"给界面弹窗
@@ -250,7 +252,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             } else {
                                 rt.lock_names.join("、")
                             };
-                            rt.celebrate = Some((secs, names));
+                            let blocks = (rt.blocked_apps + rt.blocked_sites)
+                                .saturating_sub(rt.since_blocks);
+                            rt.celebrate = Some((secs, names, blocks));
                             just_finished = true;
                         }
                         rt.since = 0;

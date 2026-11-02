@@ -88,6 +88,9 @@ fn payload(config: &Config, device: &str) -> String {
 
 /// 上传本机配置（云端覆盖）
 pub fn upload(shared: &Shared) -> Result<String, String> {
+    if crate::testmode::on() {
+        return Err("测试模式下不参与云同步".into());
+    }
     let c = shared.config();
     let base = url_of(&c.settings.sync);
     check_url(&base)?;
@@ -134,6 +137,9 @@ pub fn upload(shared: &Shared) -> Result<String, String> {
 
 /// 从云端拉取并覆盖本机配置
 pub fn download(shared: &Shared) -> Result<String, String> {
+    if crate::testmode::on() {
+        return Err("测试模式下不参与云同步".into());
+    }
     let c = shared.config();
     check_url(&url_of(&c.settings.sync))?;
     let body = net::get_text(&remote_url(&c.settings.sync), auth_of(&c.settings.sync).as_deref(), None)?;
@@ -165,8 +171,12 @@ pub fn download(shared: &Shared) -> Result<String, String> {
     if let Some(why) = crate::guard::config_replace_blocked(&c, &remote) {
         return Err(why);
     }
-    // 写盘失败必须上报：内存已经是新配置、磁盘还是旧的，重启后"恢复成功"就白做了
-    cfg::save(&remote)?;
+    // 写盘失败必须上报：内存已经是新配置、磁盘还是旧的，重启后"恢复成功"就白做了。
+    //
+    // 用 save_quiet：`remote.updated_at` 是**云端**那个时间戳，必须原样落盘。
+    // 用 save() 会把它改成本机 now —— 磁盘比云端"新"、内存却还是云端值，
+    // 重启后 smart() 判"本机更新"，于是刚下载完又上传一次，把云端时间戳换成本机时钟。
+    cfg::save_quiet(&remote)?;
     let n = remote.rules.len();
     if let Ok(mut w) = shared.cfg.write() {
         *w = remote;
@@ -176,6 +186,11 @@ pub fn download(shared: &Shared) -> Result<String, String> {
 
 /// 智能同步：谁新用谁
 pub fn smart(shared: &Shared) -> Result<String, String> {
+    // 测试模式完全不参与云同步：测试目录里的配置和正式配置是两份东西，
+    // 同步上去会把正式那份覆盖掉（而且用户以为自己在"试试看"）。
+    if crate::testmode::on() {
+        return Err("测试模式下不参与云同步".into());
+    }
     let c = shared.config();
     check_url(&url_of(&c.settings.sync))?;
     let auth = auth_of(&c.settings.sync);
@@ -191,10 +206,17 @@ pub fn smart(shared: &Shared) -> Result<String, String> {
             Err(e)
         }
         Ok(body) => {
-            let remote_ts = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("updatedAt").and_then(|x| x.as_i64()))
-                .unwrap_or(0);
+            // 读不懂云端文件就**不要动它**。
+            //
+            // 以前 updatedAt 解析失败一律当 0（=最旧），于是"云端文件被别的工具
+            // 重写过 / 缺字段 / 是字符串"这几种情况会直接判成"本机更新"，
+            // 然后把云端覆盖掉，用户没有任何提示。
+            let v = serde_json::from_str::<serde_json::Value>(&body)
+                .map_err(|_| "云端文件不是合法 JSON，未做任何改动".to_string())?;
+            let remote_ts = v
+                .get("updatedAt")
+                .and_then(|x| x.as_i64())
+                .ok_or_else(|| "云端文件缺少 updatedAt，无法判断新旧，未做任何改动".to_string())?;
             if remote_ts > c.updated_at + 2 {
                 download(shared)
             } else if c.updated_at > remote_ts + 2 {
@@ -219,9 +241,14 @@ pub fn start_auto(shared: Arc<Shared>) {
             if sy.enabled && sy.auto {
                 let r = smart(&shared);
                 let mut c2 = shared.config();
-                c2.settings.sync.last_sync = chrono::Local::now().timestamp();
+                // last_sync 只在**成功**时前进。
+                // 以前失败也刷：断网 / 口令错 / 被纪律拦下时，界面上写着
+                // "上次同步 <刚刚>"，用户会以为同步是好的，其实一直在失败。
+                if r.is_ok() {
+                    c2.settings.sync.last_sync = chrono::Local::now().timestamp();
+                    c2.settings.sync.last_result = r.clone().unwrap_or_default();
+                }
                 c2.settings.sync.last_error = r.as_ref().err().cloned().unwrap_or_default();
-                c2.settings.sync.last_result = r.clone().unwrap_or_default();
                 // 记账写入，不能刷新 updated_at：否则本机永远"比云端新"，
                 // 另一台设备刚上传的规则会被这边的过期配置覆盖掉。
                 let _ = cfg::save_quiet(&c2);

@@ -265,10 +265,67 @@ fn save_day(df: &DayFile) -> Result<(), String> {
         return Ok(());
     }
     let p = day_path(&df.date);
-    let tmp = p.with_extension("json.tmp");
+    // 唯一临时名：flush 和跨天轮转可能同时写同一天，共用 `x.json.tmp`
+    // 会互相截断，rename 上去的可能是一份半截 JSON。
+    let tmp = crate::cfg::unique_tmp(&p);
     let s = serde_json::to_string(df).map_err(|e| e.to_string())?;
     std::fs::write(&tmp, s).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
+/// 把 `src` 这一天的统计**并进** `dst`（测试模式「保留」时用）。
+///
+/// 为什么不能直接覆盖：测试模式进去时只复制了配置、没有复制统计，
+/// 所以测试目录里那份"今天"只含测试期间的几分钟。直接 copy 到正式目录，
+/// 用户今天的真实用量就被这几分钟替换掉了，而且没有留档。
+pub fn merge_day_file(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    let read = |p: &std::path::Path| -> Option<DayFile> {
+        let s = std::fs::read_to_string(p).ok()?;
+        serde_json::from_str::<DayFile>(&s).ok()
+    };
+    let Some(from) = read(src) else {
+        return Ok(()); // 读不出来就别动正式那份
+    };
+    let mut to = read(dst).unwrap_or_else(|| DayFile::new(from.date.clone()));
+    if to.date.is_empty() {
+        to.date = from.date.clone();
+    }
+    fn add(dst: &mut BTreeMap<String, Acc>, src: &BTreeMap<String, Acc>) {
+        for (k, a) in src {
+            let e = dst.entry(k.clone()).or_default();
+            if e.label.is_empty() {
+                e.label = a.label.clone();
+            }
+            if e.category.is_empty() {
+                e.category = a.category.clone();
+            }
+            e.secs = e.secs.saturating_add(a.secs);
+            if e.hours.len() < 24 {
+                e.hours.resize(24, 0);
+            }
+            for (i, v) in a.hours.iter().enumerate().take(24) {
+                e.hours[i] = e.hours[i].saturating_add(*v);
+            }
+            for (t, v) in &a.titles {
+                *e.titles.entry(t.clone()).or_insert(0) += *v;
+            }
+            for (b, v) in &a.browsers {
+                *e.browsers.entry(b.clone()).or_insert(0) += *v;
+            }
+            for s in &a.spans {
+                if !e.spans.iter().any(|x| x.f == s.f && x.t == s.t) {
+                    e.spans.push(s.clone());
+                }
+            }
+            e.spans.sort_by_key(|s| s.f);
+        }
+    }
+    add(&mut to.on, &from.on);
+    add(&mut to.off, &from.off);
+    save_day(&to)
 }
 
 pub fn domain_of(url: &str) -> String {
@@ -980,7 +1037,10 @@ pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result
     let agg = aggregate(shared, start, end);
     let on_secs = agg.on.iter().map(|s| s.secs).sum();
     let off_secs = agg.off.iter().map(|s| s.secs).sum();
-    let id = format!("{period}_{start}_{end}");
+    // id 会当文件名用，而读/删那边会把它再过滤一遍（report_path）。
+    // 两处必须用**同一个**过滤：否则带空格/冒号的 id 会被写成一个文件名、
+    // 列表里也显示得出来，但点"打开"时按过滤后的名字去找，永远找不到。
+    let id = sanitize_id(&format!("{period}_{start}_{end}"));
     let mut on = agg.on;
     let mut off = agg.off;
     on.truncate(60);
@@ -999,7 +1059,14 @@ pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result
     };
     let p = stats_dir().join("reports").join(format!("{id}.json"));
     let s = serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?;
-    std::fs::write(&p, s).map_err(|e| format!("写入报告失败: {e}"))?;
+    // 报告也要原子写：写到一半被强杀会留下一个解析不了的 json，
+    // 而列表那边会把它当成"损坏"永远跳过 —— 这份报告就再也看不见了。
+    let tmp = crate::cfg::unique_tmp(&p);
+    std::fs::write(&tmp, s).map_err(|e| format!("写入报告失败: {e}"))?;
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入报告失败: {e}")
+    })?;
     Ok(r)
 }
 
@@ -1038,11 +1105,16 @@ pub fn list_reports() -> Vec<serde_json::Value> {
 ///
 /// id 来自前端，必须过滤：只允许字母/数字/`-`/`_`，
 /// 否则 `../config` 这种就能穿出 reports 目录（三处调用以前各写一遍，容易漏）。
-fn report_path(id: &str) -> Option<PathBuf> {
-    let safe: String = id
-        .chars()
+///
+/// 生成报告时也走这里：写文件名和读文件名必须是同一个规则。
+fn sanitize_id(id: &str) -> String {
+    id.chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
+        .collect()
+}
+
+fn report_path(id: &str) -> Option<PathBuf> {
+    let safe = sanitize_id(id);
     if safe.is_empty() {
         return None;
     }
@@ -1081,7 +1153,13 @@ fn load_sched() -> SchedState {
 
 fn save_sched(s: &SchedState) {
     if let Ok(t) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(sched_path(), t);
+        // 原子写：这份文件记着"日报/周报/月报生成到哪了"。
+        // 半截 JSON 读不出来时会被当成"从没生成过"，于是把已经出过的报告重出一遍。
+        let p = sched_path();
+        let tmp = crate::cfg::unique_tmp(&p);
+        if std::fs::write(&tmp, t).is_ok() {
+            let _ = std::fs::rename(&tmp, &p);
+        }
     }
 }
 
@@ -1115,6 +1193,22 @@ fn prune(cfg: &Config) {
                             let _ = std::fs::remove_file(&p);
                         }
                     }
+                }
+            }
+        }
+    }
+    // 中断账本（ledger）跟着同一个保留期清理。
+    // ledger.rs 的注释一直写着"由 stats::prune 按保留期清理"，
+    // 但这里其实从来没扫过它 —— 每天的账本只增不减，一年就是 365 个文件。
+    if let Ok(rd) = std::fs::read_dir(crate::ledger::dir()) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                if stem.len() == 10 && stem < cutoff_str.as_str() {
+                    let _ = std::fs::remove_file(&p);
                 }
             }
         }

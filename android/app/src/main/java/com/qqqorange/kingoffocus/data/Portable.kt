@@ -625,6 +625,11 @@ object Portable {
         if (rj.arr("sites").isNotEmpty() || rj.arr("exceptions").isNotEmpty()) return true
         if (rj.arr("extraProtected").isNotEmpty()) return true
         if (rj.arr("schedule").any { it is JsonArray && it.isNotEmpty() }) return true
+        // 桌面专属的应用条目（kind != "pkg"，比如 steam.exe 这种路径条目）也必须靠
+        // carry 原样带回桌面。漏了这一条的话，一条"默认形态"的桌面规则
+        // （blacklist + hard + 只填了一个 exe、其它都没动）在手机往返一圈后
+        // apps 会变成空数组 —— blacklist 变成什么都不拦，whitelist 变成拦掉一切。
+        if (rj.arr("apps").any { (it as? JsonObject)?.str("kind") != "pkg" }) return true
         val lock = rj.obj("lock")
         if (lock != null && lock.str("kind").let { it.isNotEmpty() && it != "none" }) return true
         if (rj.obj("brk")?.str("kind") == "pomodoro") return true

@@ -144,9 +144,27 @@ fn write_atomic(cfg: &Config) -> Result<(), String> {
     // config.json 就是空文件或半截 JSON —— 规则、备份口令、令牌全丢。
     // 更隐蔽的是守护进程每 2 秒 load() 一次，读到半截文件会解析失败、
     // 退回默认配置（自律时段是关的），于是固化判定失效并自行退出。
-    let tmp = p.with_extension("json.tmp");
+    //
+    // 临时文件名必须唯一：监控线程每分钟加积分、设置页保存、同步回写、
+    // HTTP 提权接口可能同时写。共用同一个 `config.json.tmp` 时，两个 writer
+    // 会互相截断对方的半成品，rename 上去的可能是一份"半 A 半 B"的 JSON。
+    let tmp = unique_tmp(&p);
     std::fs::write(&tmp, s).map_err(|e| format!("写入配置失败: {e}"))?;
-    std::fs::rename(&tmp, &p).map_err(|e| format!("替换配置失败: {e}"))
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("替换配置失败: {e}")
+    })
+}
+
+/// 生成同目录下的唯一临时文件名（进程号 + 自增序号）。
+pub(crate) fn unique_tmp(p: &std::path::Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "tmp".into());
+    p.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), n))
 }
 
 /// 「进入自律时间自动打开」的归一化。

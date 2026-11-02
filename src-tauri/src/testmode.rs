@@ -63,14 +63,45 @@ pub fn enter() -> Result<(), String> {
 pub fn exit(keep: bool) -> Result<(), String> {
     let td = test_dir();
     if keep {
-        // 1) 配置：测试配置覆盖正式配置
+        // 1) 配置：测试配置覆盖正式配置。
+        //
+        // 不能直接 fs::copy：它会先把目标截断成 0 字节再写，
+        // 中途崩溃/断电/杀软拦截就留下一份空配置 —— 而这是**正式**配置，
+        // 用户的规则、积分、令牌全在里面。先写临时文件再改名。
         let tcfg = td.join("config.json");
         if tcfg.exists() {
             let dst = crate::cfg::prod_data_dir().join("config.json");
-            std::fs::copy(&tcfg, &dst).map_err(|e| format!("合并测试配置失败：{e}"))?;
+            let data = std::fs::read(&tcfg).map_err(|e| format!("合并测试配置失败：{e}"))?;
+            let tmp = crate::cfg::unique_tmp(&dst);
+            std::fs::write(&tmp, data).map_err(|e| format!("合并测试配置失败：{e}"))?;
+            std::fs::rename(&tmp, &dst).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                format!("合并测试配置失败：{e}")
+            })?;
         }
-        // 2) 统计：按天文件同名覆盖，报告按文件名覆盖（只补不删）
-        merge_tree(&td.join("stats"), &crate::cfg::prod_data_dir().join("stats"))?;
+        // 2) 统计：**按天合并**，不覆盖。
+        //
+        //    进测试模式时只复制了配置、没复制统计，所以测试目录里那份"今天"
+        //    只含测试期间的几分钟。直接覆盖会把用户今天真实的用量换成这几分钟，
+        //    而且没有留档。报告只补不删，按文件名覆盖是安全的（同名=同一份报告）。
+        let src_stats = td.join("stats");
+        let dst_stats = crate::cfg::prod_data_dir().join("stats");
+        let src_days = src_stats.join("days");
+        if src_days.is_dir() {
+            let dst_days = dst_stats.join("days");
+            std::fs::create_dir_all(&dst_days).map_err(|e| e.to_string())?;
+            for entry in std::fs::read_dir(&src_days).map_err(|e| e.to_string())? {
+                let e = entry.map_err(|x| x.to_string())?;
+                let from = e.path();
+                if from.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let to = dst_days.join(e.file_name());
+                crate::stats::merge_day_file(&from, &to)?;
+            }
+        }
+        // 报告目录（同名 = 同一份报告，覆盖安全）
+        merge_tree(&src_stats.join("reports"), &dst_stats.join("reports"))?;
     }
     // 无论保留与否，测试目录都要清掉，避免下次进去看到上次的残留
     let _ = std::fs::remove_dir_all(&td);
@@ -91,7 +122,15 @@ fn merge_tree(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
         if from.is_dir() {
             merge_tree(&from, &to)?;
         } else {
-            std::fs::copy(&from, &to).map_err(|x| x.to_string())?;
+            // 统计日文件 / 报告也要走"临时文件 + 改名"：
+            // 直接 copy 会把正式环境里的同名文件先截断，中途失败就丢一天的数据。
+            let data = std::fs::read(&from).map_err(|x| x.to_string())?;
+            let tmp = crate::cfg::unique_tmp(&to);
+            std::fs::write(&tmp, data).map_err(|x| x.to_string())?;
+            if let Err(e) = std::fs::rename(&tmp, &to) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.to_string());
+            }
         }
     }
     Ok(())

@@ -11,7 +11,6 @@
 use crate::cfg;
 use crate::model::Config;
 use crate::proc;
-use crate::sched;
 use chrono::Local;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -105,19 +104,16 @@ pub fn lock_info_at(cfg: &Config, nd: chrono::NaiveDateTime) -> LockInfo {
         if !bound.is_empty() && !bound.contains(&l.id) {
             continue;
         }
-        // 条目自己的时间范围是"自律时间内的二次收窄"
-        let w = &l.schedule;
-        let any = w.iter().any(|day| !day.is_empty());
-        if any && !sched::is_active(w, &nd) {
-            continue;
-        }
-        // 安全闸：没有明确结束时间的条目（全天生效）不参与固化，
-        // 否则会把自己永久锁死，只有等到明天才有解。
-        // 用自律时段本身的结束时间兜底，保证一定有一个"自然解封"的时刻。
-        let left = match sched::slot_left_secs(w, &nd) {
-            Some(v) if v > 0 => v,
-            _ => d.clock_left.max(0),
-        };
+        // 不再看 `l.schedule`（条目自己的周时间表）。
+        //
+        // 引擎那边（discipline::active_rules）早就把自律规则当"纯名单"了：
+        // 什么时候算自律时间，只由「自律时段」决定。这里如果还按旧的时间表收窄，
+        // 就会出现"规则在拦人，但固化没生效"（画了格子的老规则在格子外仍拦，
+        // 却不锁退出）或者反过来 —— 两个口径必须由同一个函数说了算。
+        //
+        // 安全闸：没有明确结束时间的条目不参与固化，
+        // 用自律时段本身的下一次翻转兜底，保证一定有一个"自然解封"的时刻。
+        let left = crate::clock::seconds_until_change(cfg).unwrap_or_else(|| d.clock_left.max(0));
         if left <= 0 {
             continue;
         }

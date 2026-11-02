@@ -55,25 +55,63 @@ fn path_of(day: &str) -> PathBuf {
 }
 
 pub fn load_day(day: &str) -> Day {
-    let text = std::fs::read_to_string(path_of(day)).unwrap_or_default();
-    let mut d: Day = serde_json::from_str(&text).unwrap_or_default();
-    if d.schema == 0 {
-        d.schema = 1;
+    let p = path_of(day);
+    let text = match std::fs::read_to_string(&p) {
+        Ok(t) => t,
+        Err(e) => {
+            // 只有"文件不存在"才是"今天还没有记录"。
+            // 其它读错误（占用 / 权限 / 非 UTF-8）不能当成空账本：
+            // 下一次 record() 就会把空账本写回去，那一天的中断记录直接没了。
+            if e.kind() != std::io::ErrorKind::NotFound {
+                crate::mask::mlog(&format!("账本读不出来（{e}），本次不写盘：{}", p.display()));
+                let mut d = Day::default();
+                d.day = String::new(); // 空 day → save_day 会拒绝写
+                return d;
+            }
+            String::new()
+        }
+    };
+    match serde_json::from_str::<Day>(&text) {
+        Ok(mut d) => {
+            if d.schema == 0 {
+                d.schema = 1;
+            }
+            if d.day.is_empty() {
+                d.day = day.to_string();
+            }
+            d
+        }
+        Err(_) => {
+            // 解析失败：先留档再重开，别让下一条记录把坏文件覆盖掉
+            let bad = p.with_extension(format!(
+                "json.bad-{}",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ));
+            let _ = std::fs::rename(&p, &bad);
+            crate::mask::mlog(&format!("账本解析失败，已留档：{}", bad.display()));
+            let mut d = Day::default();
+            d.schema = 1;
+            d.day = day.to_string();
+            d
+        }
     }
-    if d.day.is_empty() {
-        d.day = day.to_string();
-    }
-    d
 }
 
 fn save_day(d: &Day) -> Result<(), String> {
+    if d.day.is_empty() {
+        // 读失败时的占位对象：宁可这次不记，也不要覆盖磁盘上的真实账本
+        return Ok(());
+    }
     let dir = dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建账本目录失败: {e}"))?;
     let p = path_of(&d.day);
     let s = serde_json::to_string_pretty(d).map_err(|e| e.to_string())?;
-    let tmp = p.with_extension("json.tmp");
+    let tmp = crate::cfg::unique_tmp(&p);
     std::fs::write(&tmp, s).map_err(|e| format!("写入账本失败: {e}"))?;
-    std::fs::rename(&tmp, &p).map_err(|e| format!("写入账本失败: {e}"))
+    std::fs::rename(&tmp, &p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入账本失败: {e}")
+    })
 }
 
 /// 记一次打断。

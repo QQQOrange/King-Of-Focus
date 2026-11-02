@@ -790,7 +790,6 @@ function viewRules() {
       </div>
       <div class="sl-item-act">
         <div class="switch${locked ? ' locked' : ''}" data-act="toggle-rule" data-id="${l.id}"
-             style="${locked ? 'pointer-events:none;opacity:.32' : ''}"
              title="${locked ? (hardLocked ? '自律固化中，开关已锁定' : '自律时段生效中，开关已锁定') : '启用 / 停用'}">
           <input type="checkbox" ${l.enabled ? 'checked' : ''}><i></i>
         </div>
@@ -4878,7 +4877,9 @@ function showCelebrate(c) {
           ${dur}
         </div>
         <div style="font-size:12.5px;color:var(--text-2);margin-bottom:22px">
-          ${esc(c.rules || '自律自律规则')} · 全程没有破功
+          ${esc(c.rules || '自律自律规则')} · ${(c.blocks || 0) > 0
+            ? `被打断 ${c.blocks} 次`
+            : '全程没有破功'}
         </div>
         <div class="note" style="text-align:left;font-size:13px;line-height:1.9">
           ${esc(praise)}
@@ -9595,6 +9596,15 @@ document.addEventListener('click', async (e) => {
   if (!el) return;
   const act = el.dataset.act;
 
+  // 锁定的开关（自律时段 / 固化期间）：吞掉这次点击，只说明原因。
+  //
+  // 以前靠 CSS `pointer-events:none` 挡住，结果点击直接穿透到下面那一行的
+  // 「编辑」动作上 —— 用户点那个灰掉的开关，弹出来的是规则编辑器，
+  // 而且怎么改都保存不了。现在统一在这里拦，所有锁定开关行为一致。
+  if (el.classList.contains('locked') && el.classList.contains('switch')) {
+    if (guardDiscipline(act === 'toggle-rule' ? '切换自律规则开关' : '修改这项设置')) return;
+  }
+
   // ---- 首用向导 ----
   if (act === 'wiz-open') { wizOpen(); return; }
   if (act === 'wiz-close') { wizClose(); return; }
@@ -11986,4 +11996,19 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
     } catch (e) { /* 网络失败静默，不打扰用户 */ }
   }, 2600);
 })();
+
+/* 兜底：没被 catch 的 invoke 失败要说话，不能静默。
+ *
+ * 以前一批"点了就发出去"的动作（打开报告、删除备份、切换更新开关、
+ * 跳过版本、打开配置目录……）没有 try/catch：后端一拒绝，用户看到的是
+ * "点了没反应"，既没有提示也没有状态变化，只能反复点。
+ * 这里统一收口，把原因弹出来；已经自己 catch 过的地方不会走到这里。
+ */
+window.addEventListener('unhandledrejection', (e) => {
+  const raw = e.reason && (e.reason.message || e.reason);
+  const msg = String(raw || '').replace(/^Error:\s*/, '').trim();
+  if (msg) toast(msg, 'err');
+  // 别让控制台里堆一堆未处理拒绝
+  if (e.preventDefault) e.preventDefault();
+});
 

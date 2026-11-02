@@ -232,11 +232,27 @@ pub fn seconds_until_change(cfg: &Config) -> Option<i64> {
 
     // 直接按"未来时刻的专注状态"探测：分钟级窗口、跨小时、跨天都自动算对
     let mut probe_secs = 30i64;
+    let mut prev = 0i64;
     while probe_secs <= 7 * 24 * 3600 {
         let probe = now + chrono::Duration::seconds(probe_secs);
         if focusing_at(cfg, probe) != cur {
-            return Some(probe_secs);
+            // 二分收敛到秒。粗探测是 30 秒一格，直接把它当结果的话，
+            // 插件会在"边界已过"之后再多等最多 29 秒才重拉规则 ——
+            // 那半分钟里休息已经结束、网页却仍然没被拦住。
+            let mut lo = prev;
+            let mut hi = probe_secs;
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                let p = now + chrono::Duration::seconds(mid);
+                if focusing_at(cfg, p) != cur {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            return Some(hi);
         }
+        prev = probe_secs;
         probe_secs += if probe_secs < 7200 { 30 } else { 300 };
     }
     None

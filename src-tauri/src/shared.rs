@@ -54,8 +54,11 @@ pub struct Runtime {
     /// 当前励志短语
     pub quote: String,
     pub quote_from: String,
-    /// 刚结束的一段自律（秒 + 规则名），等界面取走弹恭喜
-    pub celebrate: Option<(i64, String)>,
+    /// 刚结束的一段自律（秒 + 规则名 + 这一段的打断次数），等界面取走弹恭喜
+    pub celebrate: Option<(i64, String, u32)>,
+    /// 这一段开始时的"今日已拦截次数"快照：用来算这一轮被打断了几次。
+    /// 没有它的话恭喜弹窗只能写死"全程没有破功"——哪怕这一轮被拦了十次。
+    pub since_blocks: u32,
     /// 「自律时段」24 段计划：当前是否在选中的时段里
     pub clock_in_window: bool,
     /// 今天是周几（0=周一 … 6=周日）
@@ -110,6 +113,7 @@ impl Default for Runtime {
             quote: String::new(),
             quote_from: String::new(),
             celebrate: None,
+            since_blocks: 0,
             clock_in_window: false,
             clock_weekday: 7,
             clock_hour: 24,

@@ -2119,7 +2119,11 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 }
 .mask-power.on .mp-title { color: var(--gold); }
 .mask-power.preview { border-color: rgba(122, 168, 255, .34); border-style: dashed; }
-.switch.locked { opacity: .42; pointer-events: none; filter: grayscale(.5); }
+/* 锁定的开关：只做视觉降权，**不**关掉指针事件。
+   以前这里 pointer-events:none，点击会穿透到下面那一行的「编辑」上 ——
+   用户点那个灰掉的开关，弹出来的是规则编辑器，而且怎么改都保存不了。
+   现在点击照常派发到对应动作，由 handler 回一句"自律时段生效中，不能…"。 */
+.switch.locked { opacity: .42; cursor: not-allowed; filter: grayscale(.5); }
 .mask-link { margin-top: 14px; }
 
 /* ══════════ 浏览器列表 ══════════ */
