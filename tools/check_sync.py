@@ -222,10 +222,17 @@ def check_versions(man):
     print('  清单 tag %s，各平台 %s' % (
         man.get('tag'),
         ' / '.join('%s %s' % (p, e['version']) for p, e in sorted(man['platforms'].items()))))
+    # 子进程输出的是中文。Windows 上 `text=True` 会按系统代码页（GBK）解码，
+    # 而 release_meta.py 输出的是 UTF-8 字节 —— 于是这里直接 UnicodeDecodeError，
+    # 整个发版闸门在最后一步崩掉（而且崩在"校验"上，看起来像校验没通过）。
+    # 显式指定 utf-8，并让子进程也按 utf-8 写。
+    env = dict(os.environ, PYTHONIOENCODING='utf-8')
     r = subprocess.run([sys.executable, 'tools/release_meta.py', 'check', '--tag', man['tag']],
-                       capture_output=True, text=True)
-    tail = [l for l in r.stdout.splitlines() if l.startswith(('✓', '✗', '  ✗'))]
-    print('  release_meta check: %s' % (tail[-1] if tail else r.stdout.strip()[-200:]))
+                       capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', env=env)
+    out = r.stdout or ''
+    tail = [l for l in out.splitlines() if l.startswith(('✓', '✗', '  ✗'))]
+    print('  release_meta check: %s' % (tail[-1] if tail else out.strip()[-200:]))
     if r.returncode != 0:
         problems.append('release_meta.py check 未通过（版本/命名/清单不一致）')
 
