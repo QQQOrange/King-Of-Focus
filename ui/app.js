@@ -70,6 +70,7 @@ const S = {
   // 当日日历：显示哪一天。默认跟着选中日/今天走
   dayDate: '',
   dayCache: new Map(),   // `${tab}|${date}` → 单日数据（日历窗口里已有那天时直接复用）
+  dayFailed: new Set(),  // 读取失败过的 `${tab}|${date}`：界面用它显示"重试"而不是永远转圈
   reports: [],
   reportView: null,
   picker: null,
@@ -3527,9 +3528,11 @@ async function dayFetch(date, force) {
     // 取失败**不能**当成"这一天零使用"：以前把它塞进缓存，界面就变成
     // "这一天没有使用记录"，而缓存又让后面永远不再重试 —— 用户看到的是假数据。
     S.dayCache.delete(ck);
+    if (S.dayFailed) S.dayFailed.add(ck);
     if (tok === dayTok) paintDay();
     return;
   }
+  if (S.dayFailed) S.dayFailed.delete(ck);
   S.dayCache.set(ck, got);
   // 期间又切到别的天了：这次结果只进缓存，不抢当前画面
   if (tok === dayTok) paintDay();
@@ -3690,7 +3693,16 @@ function dayHtml() {
   // 否则选中的那一刻轨道会被顶下去 24px，看起来就像"闪了一下"。
   const chip = `<div class="dc-slot">${dayChipHtml(d, colors, hasHit)}</div>`;
 
-  if (!d) return `${head}${chip}<div class="dc-loading">正在载入…</div>`;
+  if (!d) {
+    // 读取失败不能一直显示"正在载入…"：那是个永远不会结束的状态，
+    // 用户只会以为界面坏了。给一句实话 + 一个能点的重试。
+    if (S.dayFailed && S.dayFailed.has(dayCacheKey(date))) {
+      return `${head}${chip}<div class="empty dc-empty">`
+        + '<span class="ico">⚠</span>这一天读取失败，'
+        + '<button class="btn btn-sm" data-act="day-retry">重试</button></div>';
+    }
+    return `${head}${chip}<div class="dc-loading">正在载入…</div>`;
+  }
   if (!blocks.length) {
     return `${head}${chip}<div class="empty dc-empty"><span class="ico">▤</span>这一天没有使用记录。</div>`;
   }
@@ -10253,6 +10265,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'browser-grace-save') { await Act.browserGraceSave(); return; }
   // `nav('browsers')` 自己就会扫一次，这里再扫一遍等于连做两次窗口枚举（每次是
   // spawn_blocking），而且 nav 的 rejection 没人接。
+  if (act === 'day-retry') { await dayFetch(dayOf(), true); return; }
   if (act === 'browser-prompt-go') { closeModal(); await Act.nav('browsers'); return; }
   if (act === 'open-repo') { e.preventDefault(); await Act.openRepo(); return; }
   if (act === 'quota-refresh') { await Act.quotaRefresh(); return; }
