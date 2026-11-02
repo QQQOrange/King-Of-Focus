@@ -278,25 +278,46 @@ fn mark_self_action() {
 ///
 /// 遮罩关闭时必须还回去：那些是用户自己的程序（播放器、便签、输入法候选框……），
 /// 不还原的话它们会永久掉到普通层级，用户会以为被我们弄坏了。
-static DEMOTED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+///
+/// 记的是 (hwnd, pid) 而不是裸 hwnd：窗口句柄会被系统回收复用，只认句柄的话
+/// 还原时可能把"另一个进程刚创建、正好拿到同一个句柄"的窗口顶到最前面。
+/// 同时限制条数：`reassert_below` 每一拍都可能往里塞，长时间开遮罩会无上限增长。
+const DEMOTED_MAX: usize = 64;
+static DEMOTED: Mutex<Vec<(isize, u32)>> = Mutex::new(Vec::new());
 
 fn remember_demoted(h: Hwnd) {
     let v = h as isize;
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(h, &mut pid as *mut u32);
+    }
     if let Ok(mut g) = DEMOTED.lock() {
-        if !g.contains(&v) {
-            g.push(v);
+        if g.iter().any(|(x, _)| *x == v) {
+            return;
         }
+        if g.len() >= DEMOTED_MAX {
+            // 超了就丢最早的一条：继续增长下去只会让退出时的还原越来越慢，
+            // 而那些窗口多半已经关掉了。
+            g.remove(0);
+        }
+        g.push((v, pid));
     }
 }
 
 unsafe fn restore_demoted() {
-    let list: Vec<isize> = match DEMOTED.lock() {
+    let list: Vec<(isize, u32)> = match DEMOTED.lock() {
         Ok(mut g) => std::mem::take(&mut *g),
         Err(_) => return,
     };
-    for p in list {
+    for (p, pid) in list {
         let h = p as Hwnd;
         if h.is_null() || IsWindow(h) == 0 {
+            continue;
+        }
+        // 句柄被复用了：现在的窗口已经不属于当初那个进程，绝不能动它
+        let mut cur = 0u32;
+        GetWindowThreadProcessId(h, &mut cur as *mut u32);
+        if pid != 0 && cur != pid {
             continue;
         }
         let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;

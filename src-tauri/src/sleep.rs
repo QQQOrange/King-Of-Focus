@@ -338,7 +338,9 @@ pub fn unlock(shared: &Arc<Shared>, minutes: u32) -> Result<Value, String> {
         ));
     }
     c.points.balance -= price;
-    c.points.unlock_count_today += 1;
+    // 不涨 unlock_count_today：那个计数是「自律时段解锁」的每天递增价格
+    // （unlock_price 用它算下一次的价格），睡眠解锁和它是两套。
+    // 以前在这里 +1，买一次睡眠解锁会把第二天自律解锁的价格也抬高。
     let until = Local::now().timestamp() + mins as i64 * 60;
     c.points.sleep_unlock_until = until;
     cfg::save(&c)?;

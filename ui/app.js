@@ -274,8 +274,34 @@ async function pull() {
     if (S.data && S.data.runtime && S.data.runtime.celebrate) {
       showCelebrate(S.data.runtime.celebrate);
     }
+    // 之前只要有一次成功就把"失联"标记清掉
+    S.pullFails = 0;
+    markOffline(false);
   } catch (e) {
     console.error(e);
+    // 后端在忙 / 正在重启时，这里会一直失败。以前只是 console.error：
+    // 界面继续用上一份快照画着"自律中 / 剩余 12 分钟"，用户完全看不出
+    // 自己看到的是一份过期状态。连续失败两次就在状态条上明说。
+    S.pullFails = (S.pullFails || 0) + 1;
+    if (S.pullFails >= 2) markOffline(true);
+  }
+}
+
+/** 状态条上的"与后台失联"提示（恢复后自动消失） */
+function markOffline(on) {
+  const pill = $('#statePill');
+  if (!pill) return;
+  if (on) {
+    if (!S.offline) {
+      S.offline = true;
+      pill.dataset.offline = '1';
+      pill.textContent = I.t('与后台失联，正在重连…');
+      pill.className = 'pill red';
+    }
+  } else if (S.offline) {
+    S.offline = false;
+    delete pill.dataset.offline;
+    renderChrome();
   }
 }
 
@@ -286,8 +312,11 @@ function renderChrome() {
   if (!d) return;
   const on = d.runtime.disciplineOn;
   const pill = $('#statePill');
-  pill.className = 'pill' + (on ? ' on' : '');
-  pill.innerHTML = `<span class="dot"></span>${on ? '自律模式已开启' : '自律模式未开启'}`;
+  // 失联期间别把"与后台失联"覆盖成"自律模式未开启"——那是在撒谎
+  if (!S.offline) {
+    pill.className = 'pill' + (on ? ' on' : '');
+    pill.innerHTML = `<span class="dot"></span>${on ? '自律模式已开启' : '自律模式未开启'}`;
+  }
 
   const now = new Date();
   $('#clock').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
@@ -3382,7 +3411,11 @@ async function dayFetch(date, force) {
     const r = await invoke('stats_calendar', { start: date, end: date, tab: statsTabKey() });
     got = (r && r[0]) || { date, secs: 0, items: [] };
   } catch (e) {
-    got = { date, secs: 0, items: [] };
+    // 取失败**不能**当成"这一天零使用"：以前把它塞进缓存，界面就变成
+    // "这一天没有使用记录"，而缓存又让后面永远不再重试 —— 用户看到的是假数据。
+    S.dayCache.delete(ck);
+    if (tok === dayTok) paintDay();
+    return;
   }
   S.dayCache.set(ck, got);
   // 期间又切到别的天了：这次结果只进缓存，不抢当前画面
@@ -3718,6 +3751,8 @@ function calFollowRange() {
 function calHtml() {
   const days = S.cal;
   if (!days) return '<div class="cal-loading">正在载入…</div>';
+  // 读取失败不能画成"这段时间还没有数据"——那是在告诉用户一件假事
+  if (S.calFailed) return '<div class="empty"><span class="ico">⚠</span>统计读取失败，正在重试…</div>';
   if (!days.length) return '<div class="empty"><span class="ico">▤</span>这段时间还没有数据。</div>';
   const colors = calColors(days);
   // 只画网格：选中那天的细则已经搬到饼图右侧的「当日日历」里，
@@ -3750,15 +3785,28 @@ async function calLoad() {
   S.calPending = true;          // 当日日历据此等待，不为同一天再发一个请求
   paintCal();
   paintDay();
+  let failed = false;
   try {
     S.cal = await invoke('stats_calendar', { start: r.start, end: r.end, tab: r.tab });
   } catch (e) {
+    // 失败就把指纹清掉，让 calEnsure 下次重试；同时画"读取失败"而不是"没有数据"
     S.cal = [];
+    S.calKey = '';
+    failed = true;
   }
   S.calPending = false;
+  S.calFailed = failed;
   paintCal();
   // 网格回来了，当天那份数据大概率就在里面：不用再单独请求
   paintDay();
+  // 失败后自动重试一次（每 3 秒，最多持续到用户离开统计页）：
+  // 界面上写的是"正在重试…"，那就得真的在重试，否则就是骗人。
+  if (failed && !S.calRetry) {
+    S.calRetry = setTimeout(() => {
+      S.calRetry = 0;
+      if (S.view === 'stats' && S.calFailed) calLoad();
+    }, 3000);
+  }
 }
 
 /** 进入统计页时保证有数据（区间没变就不重复请求） */
@@ -7389,7 +7437,7 @@ const Act = window.Act = {
   async saveCustomDays() {    const v = +(($('#customDays') || {}).value || 0);
     S.data.config.settings.stats.customDays = Math.max(0, Math.min(365, v));
     if (!S.data.config.settings.stats.customAnchor) S.data.config.settings.stats.customAnchor = todayStr();
-    await saveConfig();
+    if (!(await saveConfig())) return;
     toast(v > 0 ? `已设置每 ${v} 天生成一次报告` : '已关闭自定义周期', 'ok');
   },
 
@@ -7483,7 +7531,7 @@ const Act = window.Act = {
     const v = +(el ? el.value : 0);
     const obj = m[0] === 'settings' ? S.data.config.settings : S.data.config.settings.stats;
     obj[m[1]] = Math.max(m[2], Math.min(m[3], v || m[2]));
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast('已保存', 'ok');
   },
@@ -7492,7 +7540,7 @@ const Act = window.Act = {
     const el = $('#protectedList');
     if (!el) return;
     S.data.config.settings.protected = el.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-    await saveConfig();
+    if (!(await saveConfig())) return;
     toast('保护名单已保存', 'ok');
   },
 
@@ -7848,7 +7896,7 @@ const Act = window.Act = {
     const el = $('#bgGrace');
     const v = Math.max(300, Math.min(3500, Number(el.value) || 1200));
     S.data.config.settings.browserGuard.graceMs = v;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     toast(`关闭前宽限已设为 ${v}ms`, 'ok');
   },
 
@@ -7873,7 +7921,7 @@ const Act = window.Act = {
     // 生效中不能关掉"自律时间内启用自律规则"（打开是加强，不拦）
     if (fc.applyRules && settingsFrozen()) { guardDiscipline('关闭「自律时间内启用自律规则」'); render(); return; }
     fc.applyRules = !fc.applyRules;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(fc.applyRules ? '自律时间内启用自律规则' : '自律时间内不再启用自律规则，只负责进入自律状态', 'ok');
   },
@@ -7927,7 +7975,7 @@ const Act = window.Act = {
     if (settingsFrozen()) { guardDiscipline('清空已选时段'); return; }
     let n = 0;
     prof.days.forEach((day) => day.forEach((p) => { if (p.on) { p.on = false; p.seg = ''; n++; } }));
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(n ? `已清空 ${n} 个小时段` : '当前没有已选时段', n ? 'ok' : 'err');
   },
@@ -8218,7 +8266,7 @@ const Act = window.Act = {
     prof.defWork = w;
     prof.defBrk = b;
     prof.defCap = c;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     // 通用时长只作用于"之后新选的时段"；已经选中的时段保留各自的时长
     const capTip = c > 0
@@ -8237,7 +8285,7 @@ const Act = window.Act = {
     const g = +v === 10 ? 10 : 15;
     if (fc.granularity === g) return;
     fc.granularity = g;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(`已改为每格 ${g} 分钟：一小时 ${60 / g} 格，已排好的时段不受影响`, 'ok');
   },
@@ -8281,7 +8329,7 @@ const Act = window.Act = {
     const fc = clockCfg();
     fc.viewFrom = 0;
     fc.viewTo = 1440;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast('显示范围已恢复为全天（00:00 – 24:00）', 'ok');
   },
@@ -8685,7 +8733,7 @@ const Act = window.Act = {
     if (settingsFrozen()) { guardDiscipline('切换「星期时段」方案'); render(); return; }
     if (!fc.profiles.some((p) => p.id === id) || fc.active === id) return;
     fc.active = id;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     const p = clockProfile();
     toast(`已切换到「${p.name}」：从现在起按这套时段判定`, 'ok');
@@ -8706,7 +8754,7 @@ const Act = window.Act = {
       defBrk: cur.defBrk,
     });
     fc.active = id;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(`已新建「${name}」并切到这套：在下面拖出要自律的时段`, 'ok');
   },
@@ -8716,7 +8764,7 @@ const Act = window.Act = {
     if (settingsFrozen()) { guardDiscipline('重命名「星期时段」方案'); render(); return; }
     const p = clockProfile();
     p.name = name;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(`已重命名为「${name}」`, 'ok');
   },
@@ -8732,7 +8780,7 @@ const Act = window.Act = {
     copy.name = `${cur.name} 副本`.slice(0, 30);
     fc.profiles.push(copy);
     fc.active = copy.id;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(`已复制出「${copy.name}」并切过去`, 'ok');
   },
@@ -8746,7 +8794,7 @@ const Act = window.Act = {
     if (!confirm(`确定删除方案「${cur.name}」？这套排班会被一起删掉。`)) return;
     fc.profiles = fc.profiles.filter((p) => p.id !== cur.id);
     fc.active = fc.profiles[0].id;
-    await saveConfig();
+    if (!(await saveConfig())) return;
     render();
     toast(`已删除「${cur.name}」，现在用的是「${clockProfile().name}」`, 'ok');
   },
@@ -8944,6 +8992,14 @@ function syncEditorInputs() {
 function closeModal() {
   const root = $('#modalRoot');
   if (!root) return;
+  // 关掉的是编辑器/格子弹窗时，把"正在编辑"也一起清掉。
+  //
+  // 以前只有 close-editor 那一条路径会清 S.editing；而庆祝弹窗、更新弹窗、
+  // 浏览器引导都会直接覆盖 #modalRoot，用户用 close-modal 关掉之后 S.editing
+  // 还指着一个已经销毁的规则，pull() 里 `!S.editing` 的判断从此永远为假 ——
+  // 总览页再也不会自动刷新。
+  if (S.modalMode === 'editor' || S.modalMode === 'slot') S.editing = null;
+  S.modalMode = '';
   const mask = root.querySelector('.modal-mask');
   if (!mask) { root.innerHTML = ''; return; }
   mask.classList.add('closing');
@@ -9159,7 +9215,16 @@ const Layer = (() => {
 (() => {
   const root = document.getElementById('modalRoot');
   if (!root || typeof MutationObserver === 'undefined') return;
-  new MutationObserver(() => Layer.sync()).observe(root, { childList: true });
+  new MutationObserver(() => {
+    Layer.sync();
+    // 弹窗内容是 `#modalRoot.innerHTML = ...` 直接插进去的，而 `I.apply` 只在
+    // 启动和切语言时对 document.body 跑过一次 —— 所以英文界面下**所有**弹窗
+    // （规则编辑器、积分解锁、导出、报告、云端、更新…）一直是中文。
+    // 这里跟一次翻译，只扫新插进来的这一层，代价很小。
+    if (window.I18N && root.firstChild) {
+      for (const el of root.children) I18N.apply(el);
+    }
+  }).observe(root, { childList: true });
   Layer.sync();
 })();
 

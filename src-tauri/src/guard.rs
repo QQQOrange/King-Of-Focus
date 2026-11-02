@@ -640,7 +640,12 @@ fn quit_requested() -> bool {
 }
 
 pub fn stop_guard() {
-    let _ = std::fs::remove_file(hb_path());
+    // 顺序很重要：先杀进程，再删心跳。
+    //
+    // 以前是先删心跳：万一 terminate 失败（权限不足），守护还活着但心跳没了，
+    // 它下一轮（2 秒）就会看到 heartbeat_age() = 9999，判定"主进程死了"，
+    // 于是把主进程复活 —— 正好是我们要避免的"退出后又自己回来"。
+    // 现在终止失败时心跳照旧存在，守护只会安静地继续等。
     if let Some(p) = existing_guard() {
         if !proc::terminate(p) {
             // 权限不足时终止会失败。pid 文件绝不能删 —— 删了以后就再也定位不到这个
@@ -650,6 +655,7 @@ pub fn stop_guard() {
             return;
         }
     }
+    let _ = std::fs::remove_file(hb_path());
     let _ = std::fs::remove_file(pid_path());
 }
 

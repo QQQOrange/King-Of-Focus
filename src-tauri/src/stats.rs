@@ -218,7 +218,30 @@ fn load_day(date: &str) -> DayFile {
     let p = day_path(date);
     let s = match std::fs::read_to_string(&p) {
         Ok(s) => s,
-        Err(_) => return DayFile::new(date.into()),
+        Err(e) => {
+            // 只有"文件不存在"才等于"这天没有数据"。
+            //
+            // 其余读错误（被杀软/网盘占用、权限不足、非 UTF-8）绝不能当成空的一天：
+            // flush / 跨天轮转会把这份空对象原样写回同名文件，那一天的统计就真的没了。
+            // 先尽量把原文件改名留档；连改名都失败（典型是文件被独占），
+            // 就返回一个 date 为空的占位 —— save_day 见到空 date 直接跳过，绝不覆盖。
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return DayFile::new(date.into());
+            }
+            let bad = p.with_extension(format!(
+                "json.unreadable-{}",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ));
+            if std::fs::rename(&p, &bad).is_ok() {
+                crate::mask::mlog(&format!("统计日文件读不出来，已留档：{}", bad.display()));
+                return DayFile::new(date.into());
+            }
+            crate::mask::mlog(&format!(
+                "统计日文件读不出来（{e}），本次不写盘以免覆盖：{}",
+                p.display()
+            ));
+            return DayFile::new(String::new());
+        }
     };
     match serde_json::from_str::<DayFile>(&s) {
         Ok(v) => v,
@@ -1137,14 +1160,13 @@ fn run_due(shared: &Shared) {
         let ps = pm + CDur::days(6);
         let key = pm.format("%Y-%m-%d").to_string();
         if s.weekly != key {
-            let _ = generate(
-                shared,
-                "weekly",
-                &key,
-                &ps.format("%Y-%m-%d").to_string(),
-            );
-            s.weekly = key;
-            changed = true;
+            // 和 daily 一个规矩：只有真的写成功才推进游标。
+            // 以前是 `let _ = generate(...)` 之后无条件记 key —— 磁盘满 / 文件名非法
+            // 都会让这一周被标成"已生成"，以后永远不再补。
+            if generate(shared, "weekly", &key, &ps.format("%Y-%m-%d").to_string()).is_ok() {
+                s.weekly = key;
+                changed = true;
+            }
         }
     }
     if st.auto_monthly {
@@ -1153,23 +1175,27 @@ fn run_due(shared: &Shared) {
         let pstart = pend.with_day(1).unwrap_or(pend);
         let key = pstart.format("%Y-%m").to_string();
         if s.monthly != key {
-            let _ = generate(
+            if generate(
                 shared,
                 "monthly",
                 &pstart.format("%Y-%m-%d").to_string(),
                 &pend.format("%Y-%m-%d").to_string(),
-            );
-            s.monthly = key;
-            changed = true;
+            )
+            .is_ok()
+            {
+                s.monthly = key;
+                changed = true;
+            }
         }
     }
     if st.auto_yearly {
         let y = today.year() - 1;
         let key = format!("{y}");
         if s.yearly != key {
-            let _ = generate(shared, "yearly", &format!("{y}-01-01"), &format!("{y}-12-31"));
-            s.yearly = key;
-            changed = true;
+            if generate(shared, "yearly", &format!("{y}-01-01"), &format!("{y}-12-31")).is_ok() {
+                s.yearly = key;
+                changed = true;
+            }
         }
     }
     if st.custom_days > 0 {
@@ -1186,14 +1212,17 @@ fn run_due(shared: &Shared) {
             let we = ws + CDur::days(n - 1);
             let key = we.format("%Y-%m-%d").to_string();
             if s.custom != key {
-                let _ = generate(
+                if generate(
                     shared,
                     "custom",
                     &ws.format("%Y-%m-%d").to_string(),
                     &we.format("%Y-%m-%d").to_string(),
-                );
-                s.custom = key;
-                changed = true;
+                )
+                .is_ok()
+                {
+                    s.custom = key;
+                    changed = true;
+                }
             }
         }
     }

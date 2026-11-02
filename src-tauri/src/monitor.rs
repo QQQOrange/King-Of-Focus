@@ -688,7 +688,11 @@ fn on_block(
             .get(&app_key(app.pid))
             .map(|t| t.elapsed().as_secs() >= 5)
             .unwrap_or(true);
-        if gate || !ok {
+        // 只有过了节流窗口才记一条。
+        // 以前写的是 `gate || !ok`：一旦结束失败（目标以管理员身份在跑），
+        // 每一拍都会记一条"拦截失败"，事件列表每秒刷 1 条、"已拦截 N 次"
+        // 跟着疯涨。失败也要走同一个 5 秒节流。
+        if gate {
             logged.insert(app_key(app.pid), Instant::now());
             shared.log(
                 "app",
@@ -700,9 +704,8 @@ fn on_block(
                     "拦截失败：权限不足".into()
                 },
             );
-            return ok;
         }
-        false
+        ok
     }
 }
 

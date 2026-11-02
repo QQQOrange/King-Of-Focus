@@ -8,6 +8,7 @@
 //! - 同一目标 1.5 秒内只弹一次，避免一次拦截刷出好几张卡片。
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,17 +79,30 @@ pub fn toast(app: &AppHandle, kind: &str, title: &str, body: &str, tag: &str, se
     let _ = w.show();
 
     // 可见期间持续压制其他置顶窗口，到点收起
+    //
+    // 代次：新通知插进来时把它 +1，旧通知的定时线程看到代次变了就只退出、
+    // 不再 hide()。以前每条通知一个线程、到点无条件 hide —— 前一条的定时器
+    // 会把后一条还没看完的通知提前收走。
+    let my_gen = TOAST_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let wk = w.clone();
     thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(secs);
         while Instant::now() < deadline {
             thread::sleep(Duration::from_millis(250));
+            if TOAST_GEN.load(Ordering::SeqCst) != my_gen {
+                return; // 已经被新通知顶掉，交给它自己收
+            }
             let _ = wk.set_always_on_top(false);
             let _ = wk.set_always_on_top(true);
         }
-        let _ = wk.hide();
+        if TOAST_GEN.load(Ordering::SeqCst) == my_gen {
+            let _ = wk.hide();
+        }
     });
 }
+
+/// 当前显示的是第几条通知（用来让旧定时器闭嘴）
+static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 当前是不是英文界面。通知也属于界面的一部分，跟着设置页的选择走。
 fn lang_en(app: &AppHandle) -> bool {

@@ -1336,6 +1336,11 @@ pub fn guard_step(
         .filter(|a| a.pid != std::process::id() && def_by_exe(&a.name).is_some())
         .map(|a| a.pid)
         .collect();
+    // 必须先排序再 dedup：dedup 只去掉**相邻**的重复项。
+    // 而 screen_apps() 是按窗口枚举出来的，同一个浏览器开了多个窗口时
+    // pid 会交替出现 —— 不排序的话去重形同虚设，`single` 永远是 false，
+    // "心跳兜底"这一支就再也不会生效。
+    browser_pids.sort_unstable();
     browser_pids.dedup();
     let single = browser_pids.len() == 1;
 

@@ -149,27 +149,24 @@ impl Shared {
     }
 
     /// 加积分（自律奖励）
+    ///
+    /// 整段持有写锁：读-改-写之间一旦放锁，并发的 `save_config`（设置页保存整份配置）
+    /// 或 `sync::upload` 的回写就会把刚加的积分盖掉，反过来也会把用户刚改的设置盖掉。
     pub fn add_points(&self, n: i64) {
-        let mut c = self.config();
-        c.points.balance += n;
-        c.points.total_earned += n;
-        let _ = crate::cfg::save(&c);
-        if let Ok(mut w) = self.cfg.write() {
-            *w = c;
-        }
+        let mut g = self.cfg.write().unwrap_or_else(|e| e.into_inner());
+        g.points.balance += n;
+        g.points.total_earned += n;
+        let _ = crate::cfg::save(&g);
     }
 
     /// 扣积分，不够就返回 false
     pub fn spend_points(&self, n: i64) -> bool {
-        let mut c = self.config();
-        if c.points.balance < n {
+        let mut g = self.cfg.write().unwrap_or_else(|e| e.into_inner());
+        if g.points.balance < n {
             return false;
         }
-        c.points.balance -= n;
-        let _ = crate::cfg::save(&c);
-        if let Ok(mut w) = self.cfg.write() {
-            *w = c;
-        }
+        g.points.balance -= n;
+        let _ = crate::cfg::save(&g);
         true
     }
 

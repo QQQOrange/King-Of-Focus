@@ -465,6 +465,12 @@ fn apply(shared: &Shared, text: &str, mode: &str) -> Result<Value, String> {
             remote.settings.backup = local.settings.backup.clone();
             remote.settings.update = local.settings.update.clone();
             remote.settings.theme = local.settings.theme.clone();
+            // 机器专属项：备份可能来自别的电脑，"要不要管理员 / 开不开机自启"
+            // 得听这台机器的。以前恢复一份旧备份会顺手把提权关掉或改写自启，
+            // 用户重启之后发现以普通权限在跑，却不知道是恢复备份造成的。
+            // 云同步下载那边（sync::download）一直是保留的，这里补齐成同一套。
+            remote.settings.run_as_admin = local.settings.run_as_admin;
+            remote.settings.autostart = local.settings.autostart;
             remote.updated_at = chrono::Local::now().timestamp();
             cfg::sanitize(&mut remote);
             // 恢复备份 = 整份配置覆盖，必须和 save_config 走同一套纪律校验，
@@ -484,7 +490,15 @@ fn apply(shared: &Shared, text: &str, mode: &str) -> Result<Value, String> {
     let doc = &parsed.doc;
     if mode == "merge" {
         let (next, st) = doc.merge(&local);
-        if st.is_noop() {
+        // "没变化"不能只看规则条数：合并还会带走积分（取两边较大）和另一台设备的
+        // 统计摘要（按时间新的覆盖）。只看 added/conflict/slots 的话，
+        // 这两样会被静默丢掉，而 docs/sync-scope.md 明确承诺它们会被采纳。
+        let noop = st.added == 0
+            && st.conflict == 0
+            && st.slots == 0
+            && next.points.balance == local.points.balance
+            && next.settings.peer_stats == local.settings.peer_stats;
+        if noop {
             // 什么都不用改：既别写盘，也别报错——"这份已经并进去了"
             return Ok(json!({
                 "mode": "merge", "legacy": false, "noop": true,

@@ -104,7 +104,10 @@ pub fn upload(shared: &Shared) -> Result<String, String> {
     // 上传成功后把时间戳写回本地，保证下次比较一致。
     // 用 save_quiet：这一笔只是记下"刚上传时的 updated_at"，
     // 再刷一次时间会让本地看起来比云端还新，下一轮又会白传一遍。
-    let mut live = c.clone();
+    //
+    // 必须重新读一次当前配置，不能拿上传前的快照写回：网络请求可能跑好几秒，
+    // 期间用户改的设置、刚赚到的积分、刚买的解锁都会被这份旧快照覆盖掉。
+    let mut live = shared.config();
     live.updated_at = c2.updated_at;
     let _ = cfg::save_quiet(&live);
     if let Ok(mut w) = shared.cfg.write() {
