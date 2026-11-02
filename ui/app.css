@@ -2424,7 +2424,7 @@ table.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size
 .modal-mask { animation: moFade var(--mo-base) var(--mo-ease) both; }
 .modal { animation: moRise var(--mo-base) var(--mo-ease-out); }
 .modal.closing { animation: moFade var(--mo-fast) var(--mo-ease-in) reverse both; }
-.modal-mask.closing { animation: moFade var(--mo-fast) var(--mo-ease-in) reverse both; }
+.modal-mask.closing { animation: moFade var(--mo-fast) var(--mo-ease-in) reverse both; pointer-events: none; }
 
 /* ⑧ 提示条：从右下淡入；消失时先淡出再移除（避免"啪"地消失） */
 .toast { animation: moToastIn var(--mo-base) var(--mo-ease-out) both; }

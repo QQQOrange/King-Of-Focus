@@ -1084,6 +1084,8 @@ fn publish_overlays(list: &[Overlay]) {
 struct Raised {
     hwnd: Hwnd,
     was_topmost: bool,
+    /// 提起这个窗口时它属于哪个进程：还原前用它挡掉"句柄已被复用"的情况
+    pid: u32,
 }
 
 /// 被抬到 topmost 的窗口的全局影子表：只给"退出时兜底还原"用。
@@ -1105,7 +1107,9 @@ unsafe fn ensure_above(h: Hwnd, raised: &mut Vec<Raised>) {
     if !was {
         // 不在置顶带里：必须变成 topmost，否则永远在遮罩下面。这一步只做一次。
         if !raised.iter().any(|r| r.hwnd == h) {
-            raised.push(Raised { hwnd: h, was_topmost: false });
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(h, &mut pid);
+            raised.push(Raised { hwnd: h, was_topmost: false, pid });
             // 同时记一份到全局表：遮罩线程如果没能在退出前收尾（卡在某帧里、
             // 被强杀），退出流程还要靠它把别人的窗口层级还原回去。
             if let Ok(mut g) = RAISED_ANY.lock() {
@@ -1161,7 +1165,11 @@ unsafe fn release_raised(raised: &mut Vec<Raised>, keep: &[Hwnd]) {
         if keep.contains(&r.hwnd) {
             return true;
         }
-        if IsWindow(r.hwnd) != 0 && !r.was_topmost {
+        // 句柄可能已经被系统回收、又复用给了别的窗口。还原前核对 pid：
+        // 否则会把别人的窗口从置顶带上摘下来（用户会看到自己的播放器莫名其妙掉了层）。
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(r.hwnd, &mut pid);
+        if IsWindow(r.hwnd) != 0 && !r.was_topmost && (r.pid == 0 || pid == r.pid) {
             SetWindowPos(
                 r.hwnd,
                 HWND_NOTOPMOST,

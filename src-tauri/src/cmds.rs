@@ -1077,43 +1077,55 @@ fn restart_as_admin_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn restart_as_admin(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
-    restart_as_admin_inner(&app, &shared)
+pub async fn restart_as_admin(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    // 必须 async + spawn_blocking：`ShellExecuteW(runas)` 在 UAC 弹窗停留期间不返回，
+    // 用户可能几十秒不理它——同步命令跑在 Tauri 主线程上，整个界面（重绘、托盘菜单、
+    // 轮询）会一起冻住。
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || restart_as_admin_inner(&app, &shared))
+        .await
+        .map_err(|_| "提权线程异常退出".to_string())?
 }
 
 /// 打开"总是以管理员身份运行"。开启后立刻提权重启一次（UAC 确认后生效）。
 #[tauri::command]
-pub fn set_run_as_admin(
+pub async fn set_run_as_admin(
     app: AppHandle,
     shared: State<'_, Arc<Shared>>,
     enabled: bool,
 ) -> Result<(), String> {
-    let mut c = shared.config();
-    let before = c.settings.run_as_admin;
-    let need_restart = enabled && !is_admin();
-    // 只有"需要真重启"时才拦；单纯把开关关掉不重启，不该被纪律限制挡住
-    if need_restart {
-        if let Some(why) = crate::guard::exit_blocked(&c) {
-            return Err(format!("{why}；切换管理员模式要重启程序，请等这一段结束后再操作"));
-        }
-    }
-    c.settings.run_as_admin = enabled;
-    cfg::save(&c)?;
-    if let Ok(mut w) = shared.cfg.write() {
-        *w = c.clone();
-    }
-    if need_restart {
-        if let Err(e) = restart_as_admin_inner(&app, &shared) {
-            // 没提权成功就把开关退回去，避免"界面显示已开启、实际没生效"
-            c.settings.run_as_admin = before;
-            let _ = cfg::save(&c);
-            if let Ok(mut w) = shared.cfg.write() {
-                *w = c;
+    // 同上：这条路径里也会走 ShellExecuteW(runas)
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let mut c = shared.config();
+        let before = c.settings.run_as_admin;
+        let need_restart = enabled && !is_admin();
+        // 只有"需要真重启"时才拦；单纯把开关关掉不重启，不该被纪律限制挡住
+        if need_restart {
+            if let Some(why) = crate::guard::exit_blocked(&c) {
+                return Err(format!("{why}；切换管理员模式要重启程序，请等这一段结束后再操作"));
             }
-            return Err(e);
         }
-    }
-    Ok(())
+        c.settings.run_as_admin = enabled;
+        cfg::save(&c)?;
+        if let Ok(mut w) = shared.cfg.write() {
+            *w = c.clone();
+        }
+        if need_restart {
+            if let Err(e) = restart_as_admin_inner(&app, &shared) {
+                // 没提权成功就把开关退回去，避免"界面显示已开启、实际没生效"
+                c.settings.run_as_admin = before;
+                let _ = cfg::save(&c);
+                if let Ok(mut w) = shared.cfg.write() {
+                    *w = c;
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "提权线程异常退出".to_string())?
 }
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";

@@ -285,7 +285,11 @@ async function pull() {
       toast(S.data.runtime.notice, 'err');
     }
     if (S.data && S.data.runtime && S.data.runtime.celebrate) {
-      showCelebrate(S.data.runtime.celebrate);
+      // 正在编辑规则时不弹：庆祝弹窗是直接写 #modalRoot 的，
+      // 会把编辑器连同没保存的改动一起顶掉，而且没有任何提示。
+      // 留在 runtime.celebrate 里，关掉编辑器后的下一拍再弹。
+      const editing = S.modalMode === 'editor' || S.modalMode === 'slot';
+      if (!editing) showCelebrate(S.data.runtime.celebrate);
     }
     // 之前只要有一次成功就把"失联"标记清掉
     S.pullFails = 0;
@@ -6698,6 +6702,9 @@ const Act = window.Act = {
   },
 
   async saveEditor() {
+    // 关窗动画那 120ms 里按钮还能点：S.editing 已经置空，再点一次就是
+    // "Cannot set properties of null" 被全局兜底弹成一条英文 JS 错误。
+    if (!S.editing) return;
     const r = S.editing;
     syncEditorInputs();
     const nameEl = $('#ruleName');
@@ -10021,6 +10028,7 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'del-rule') { await Act.delRule(el.dataset.id); return; }
   if (act === 'mode') {
+    if (!S.editing) return;
     syncEditorInputs();
     S.editing.mode = el.dataset.mode;
     renderEditor(); return;
@@ -10035,9 +10043,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'do-unlock-sleep') { await Act.sleepUnlock(); return; }
   if (act === 'noop') { toast('积分不够，先去专注赚点分', 'err'); return; }
   if (act === 'save-editor') { await Act.saveEditor(); return; }
-  if (act === 'del-app') { S.editing.apps.splice(+el.dataset.i, 1); renderEditor(); return; }
-  if (act === 'del-site') { S.editing.sites.splice(+el.dataset.i, 1); renderEditor(); return; }
-  if (act === 'del-exc') { S.editing.exceptions.splice(+el.dataset.i, 1); renderEditor(); return; }
+  if (act === 'del-app') { if (!S.editing) return; S.editing.apps.splice(+el.dataset.i, 1); renderEditor(); return; }
+  if (act === 'del-site') { if (!S.editing) return; S.editing.sites.splice(+el.dataset.i, 1); renderEditor(); return; }
+  if (act === 'del-exc') { if (!S.editing) return; S.editing.exceptions.splice(+el.dataset.i, 1); renderEditor(); return; }
   if (act === 'pick-running-app') { await Act.pickRunningApp(); return; }
   if (act === 'pick-file') { await Act.pickFile('file'); return; }
   if (act === 'pick-dir') { await Act.pickDir(); return; }
@@ -10242,7 +10250,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'ext-copy') { await Act.extCopy(); return; }
   if (act === 'ext-open') { await Act.browserOpenFolder(); return; }
   if (act === 'browser-grace-save') { await Act.browserGraceSave(); return; }
-  if (act === 'browser-prompt-go') { closeModal(); await Act.browserScan(); Act.nav('browsers'); return; }
+  // `nav('browsers')` 自己就会扫一次，这里再扫一遍等于连做两次窗口枚举（每次是
+  // spawn_blocking），而且 nav 的 rejection 没人接。
+  if (act === 'browser-prompt-go') { closeModal(); await Act.nav('browsers'); return; }
   if (act === 'open-repo') { e.preventDefault(); await Act.openRepo(); return; }
   if (act === 'quota-refresh') { await Act.quotaRefresh(); return; }
   if (act === 'update-enabled') { await Act.updateEnabled(); return; }
