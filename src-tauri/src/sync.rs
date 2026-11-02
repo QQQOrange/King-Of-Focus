@@ -101,10 +101,12 @@ pub fn upload(shared: &Shared) -> Result<String, String> {
         auth_of(&c.settings.sync).as_deref(),
         &body,
     )?;
-    // 上传成功后把时间戳写回本地，保证下次比较一致
+    // 上传成功后把时间戳写回本地，保证下次比较一致。
+    // 用 save_quiet：这一笔只是记下"刚上传时的 updated_at"，
+    // 再刷一次时间会让本地看起来比云端还新，下一轮又会白传一遍。
     let mut live = c.clone();
     live.updated_at = c2.updated_at;
-    let _ = cfg::save(&live);
+    let _ = cfg::save_quiet(&live);
     if let Ok(mut w) = shared.cfg.write() {
         *w = live;
     }
@@ -217,7 +219,9 @@ pub fn start_auto(shared: Arc<Shared>) {
                 c2.settings.sync.last_sync = chrono::Local::now().timestamp();
                 c2.settings.sync.last_error = r.as_ref().err().cloned().unwrap_or_default();
                 c2.settings.sync.last_result = r.clone().unwrap_or_default();
-                let _ = cfg::save(&c2);
+                // 记账写入，不能刷新 updated_at：否则本机永远"比云端新"，
+                // 另一台设备刚上传的规则会被这边的过期配置覆盖掉。
+                let _ = cfg::save_quiet(&c2);
                 if let Ok(mut w) = shared.cfg.write() {
                     *w = c2;
                 }

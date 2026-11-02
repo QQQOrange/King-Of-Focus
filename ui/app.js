@@ -6635,7 +6635,13 @@ const Act = window.Act = {
     $('#opVal').textContent = v + '%';
     const dim = $('#previewDim');
     if (dim) dim.style.opacity = v / 100;
-    await invoke('mask_set', { opacity: +v });
+    // 锁定期间后端会拒绝这条命令（改配置的都要过闸），
+    // 不 catch 的话拖动滑块会留下一串 unhandled rejection。
+    try {
+      await invoke('mask_set', { opacity: +v });
+    } catch (e) {
+      toast(String(e).replace(/^Error:\s*/, ''), 'err');
+    }
   },
   async maskSave() {
     const m = S.data.config.settings.mask;
@@ -6644,10 +6650,10 @@ const Act = window.Act = {
     m.blockClick = cur.blockClick;
     m.follow = !!cur.follow;
     m.mediaPause = !!cur.mediaPause;
-    try {
-      await saveConfig();
-      toast('遮罩参数已保存', 'ok');
-    } catch (e) { toast(String(e), 'err'); }
+    // saveConfig() 不抛异常、只返回成败：以前包在 try/catch 里，
+    // 固化拒绝写入时先弹红色错误、紧接着又弹"遮罩参数已保存"。
+    if (!(await saveConfig())) return;
+    toast('遮罩参数已保存', 'ok');
   },
 
   /* ---- 积分 ---- */
@@ -7047,6 +7053,9 @@ const Act = window.Act = {
     const i = list.findIndex((x) => x.id === id);
     if (i < 0) return;
     if (list[i].builtin) { toast('内置来源不能删除', 'err'); return; }
+    // 名字要在 splice 之前记下来：splice 之后 list[i] 已经是"下一条"了，
+    // 以前删「一言」会提示"已删除来源「内置精选」"。
+    const goneName = list[i].name || id;
     list.splice(i, 1);
     S.data.config.settings.quoteFeeds = list;
     if (S.data.config.settings.quoteFeed === id) S.data.config.settings.quoteFeed = list[0].id;
@@ -7054,7 +7063,7 @@ const Act = window.Act = {
     const ok = await saveConfig();
     renderQuoteSrcModal();
     render();
-    toast(ok ? `已删除来源「${list[i] ? list[i].name : id}」` : '删除失败', ok ? 'ok' : 'err');
+    toast(ok ? `已删除来源「${goneName}」` : '删除失败', ok ? 'ok' : 'err');
   },
 
   /** 添加自定义来源：名称 + 地址 + 类型，三条都必须说得清 */
@@ -7544,9 +7553,13 @@ const Act = window.Act = {
   async openStatsDir() { const p = await invoke('stats_dir_path'); await invoke('open_path', { path: p }); },
 
   /* ---- 云同步 ---- */
-  syncAuto() {
+  async syncAuto() {
+    // 以前只改内存 + render()：1.5 秒后 pull() 就把开关刷回磁盘上的旧值，
+    // 用户按了「保存配置」也存不下来 —— 这个开关等于从来没生效过。
     S.data.config.settings.sync.auto = !S.data.config.settings.sync.auto;
+    const ok = await saveConfig();
     render();
+    if (ok) toast(S.data.config.settings.sync.auto ? '已开启自动同步' : '已关闭自动同步', 'ok');
   },
   async syncSave() {
     const url = ($('#davUrl') || {}).value || '';

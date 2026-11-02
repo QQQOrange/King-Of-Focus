@@ -38,7 +38,9 @@ class PortableTest {
         // 测试的工作目录是 android/app
         val f = File("../../tools/fixtures/$name")
         assertTrue("找不到样例文件：${f.absolutePath}", f.exists())
-        return f.readText()
+        // Windows 上 core.autocrlf=true（Git for Windows 的默认值）会把样例检出成 CRLF，
+        // 而 shape 是按 "\n" 拼的 —— 不归一化的话这条断言在 Windows 上永远是红的。
+        return f.readText().replace("\r\n", "\n")
     }
 
     private fun blank(): Config = Config()

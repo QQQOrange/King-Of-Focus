@@ -410,14 +410,16 @@ pub fn start(app: tauri::AppHandle, shared: std::sync::Arc<Shared>) {
                 // 只说"记了几条"会把这一节的大部分信息（我原本要干什么、被打断几次）丢掉。
                 let mut parts: Vec<String> = Vec::new();
                 if !goal.is_empty() {
-                    parts.push(format!("目标：{goal}"));
+                    // 目标和想法都是用户自己打的字，而通知窗是 innerHTML 渲染的 ——
+                    // 一律转义，别让一个 `<img onerror=...>` 混进 IPC 全权限的 webview。
+                    parts.push(format!("目标：{}", crate::notify::esc(&goal)));
                 }
                 if blocks > 0 {
                     parts.push(format!("被打断 {blocks} 次"));
                 }
                 if !items.is_empty() {
                     parts.push(if items.len() == 1 {
-                        format!("记下 1 条：{}", clip(&items[0].text))
+                        format!("记下 1 条：{}", crate::notify::esc(&clip(&items[0].text)))
                     } else {
                         format!("记下 {} 条想法，去「分心事件」逐条处理", items.len())
                     });
@@ -435,7 +437,7 @@ pub fn start(app: tauri::AppHandle, shared: std::sync::Arc<Shared>) {
             if cfg.settings.distract.enabled {
                 let due = due_nudges(&st, &cfg, now);
                 if !due.is_empty() {
-                    let first = clip(&due[0].text);
+                    let first = crate::notify::esc(&clip(&due[0].text));
                     let body = if due.len() == 1 {
                         format!("「{first}」还没处理")
                     } else {

@@ -396,13 +396,32 @@ impl MergeStats {
 pub fn parse(text: &str) -> Result<Parsed, String> {
     let v: Value = serde_json::from_str(text).map_err(|_| "备份内容不是合法的 JSON".to_string())?;
     if v.get("kof").and_then(|x| x.as_str()) == Some(KOF_MARK) {
-        let doc: Doc = serde_json::from_value(v).map_err(|e| format!("备份结构不认识：{e}"))?;
-        if doc.schema > SCHEMA {
+        // `Doc` 的每个字段都有 `default`，所以**只认 kof 标记是不够的**：
+        // `{"kof":"king-of-focus"}` 也能反序列化成功，得到一份"空文档"。
+        // 而恢复默认是覆盖模式 —— 规则会被清空、时段被关掉、积分归零。
+        // 真备份一定是导出端写全的（字段签名里 rules/clock/points/settings 都在），
+        // 所以这里要求：format 对得上、schema 在范围内、且至少带一个有效分区。
+        if let Some(f) = v.get("format").and_then(|x| x.as_str()) {
+            if f != FORMAT {
+                return Err(format!("备份格式不认识（format={f}）"));
+            }
+        }
+        let schema = v.get("schema").and_then(|x| x.as_u64()).unwrap_or(0);
+        if schema == 0 {
+            return Err("备份文件缺少 schema，无法确认版本".into());
+        }
+        if schema > SCHEMA as u64 {
             return Err(format!(
-                "这份备份来自更新的版本（schema {}），请先升级本软件再恢复",
-                doc.schema
+                "这份备份来自更新的版本（schema {schema}），请先升级本软件再恢复"
             ));
         }
+        let has_section = ["rules", "clock", "points", "settings", "stats"]
+            .iter()
+            .any(|k| v.get(*k).is_some());
+        if !has_section {
+            return Err("备份文件里没有任何可恢复的内容（rules / clock / points / settings 全缺）".into());
+        }
+        let doc: Doc = serde_json::from_value(v).map_err(|e| format!("备份结构不认识：{e}"))?;
         return Ok(Parsed { doc, legacy: None });
     }
     // 老格式：payload 就是 Config（有 settings，且规则键叫 rules 或 lists）
@@ -1067,9 +1086,12 @@ mod tests {
     /// 两端各自"对着同一把尺子量自己"，传递下去就等于两端互相比对。
     #[test]
     fn export_shape_matches_reference() {
-        let want = include_str!("../../tools/fixtures/portable-shape.txt").trim_end();
+        // 归一化行尾：Windows 上 core.autocrlf=true（Git for Windows 默认）会把样例
+        // 检出成 CRLF，而 shape() 用 "\n" 拼接 —— 不处理的话这条断言在 Windows
+        // 上永远失败，等于发版自检直接失效。
+        let want = include_str!("../../tools/fixtures/portable-shape.txt").replace("\r\n", "\n");
         let got = shape(&rich_doc().to_value().unwrap());
-        assert_eq!(got, want, "导出的字段集合变了；改字段就该同步参考样例与两端实现");
+        assert_eq!(got, want.trim_end(), "导出的字段集合变了；改字段就该同步参考样例与两端实现");
     }
 
     /// 参考文档本身必须能被解析，并且解析回来的形状不变（读写对称）

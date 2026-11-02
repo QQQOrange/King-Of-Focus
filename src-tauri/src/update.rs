@@ -547,8 +547,8 @@ pub fn download(
             let _ = fs::remove_file(&file);
             return Err(format!(
                 "安装包校验和对不上（清单 {}… / 实际 {}…），已删除并放弃安装",
-                &want[..want.len().min(8)],
-                &got[..got.len().min(8)]
+                want.chars().take(8).collect::<String>(),
+                got.chars().take(8).collect::<String>()
             ));
         }
     }
@@ -556,13 +556,30 @@ pub fn download(
 }
 
 /// 退出 → 删旧包 → 静默安装 → 启动新版本
-pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
+pub fn apply(app: &AppHandle, installer: &str, shared: &crate::shared::Shared) -> Result<(), String> {
     let p = PathBuf::from(installer);
     if !p.exists() {
         return Err("安装包已不存在，请重新下载".into());
     }
-    let exe = std::env::current_exe().map_err(|e| format!("找不到自身路径：{e}"))?;
     let dir = update_dir();
+    // 只允许执行"我们自己的下载目录里、扩展名是安装包"的文件。
+    // 以前这里只判 exists()，于是任意 IPC 字符串（比如一条被改过的配置）都能
+    // 让我们以管理员权限去执行任意路径 —— 而且这个路径还会被拼进 .cmd 脚本。
+    let ext_ok = matches!(
+        p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase()).as_deref(),
+        Some("exe") | Some("msi")
+    );
+    if !ext_ok {
+        return Err("安装包必须是 .exe 或 .msi".into());
+    }
+    let parent_ok = match (p.parent(), dir.canonicalize()) {
+        (Some(a), Ok(b)) => a.canonicalize().map(|x| x == b).unwrap_or(false),
+        _ => false,
+    };
+    if !parent_ok {
+        return Err("安装包不在下载目录里，已拒绝执行".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("找不到自身路径：{e}"))?;
 
     // 收集需要删除的旧安装包（同目录下除本次之外的所有 exe/msi）
     let mut olds: Vec<String> = Vec::new();
@@ -625,8 +642,9 @@ pub fn apply(app: &AppHandle, installer: &str) -> Result<(), String> {
         .map_err(|e| format!("启动安装程序失败：{e}"))?;
 
     // 安装脚本会 taskkill 本进程；守护进程如果还活着会把旧版本又拉起来，
-    // 和安装程序打架。先让它走。
-    crate::guard::stop_guard();
+    // 和安装程序打架。走完整的退出清理：既让守护先走，也把被遮罩改动过的
+    // 第三方窗口还原、把暂停过的媒体恢复（否则更新完音乐一直是停的）。
+    crate::forcequit::cleanup_for_exit(shared);
     app.exit(0);
     Ok(())
 }

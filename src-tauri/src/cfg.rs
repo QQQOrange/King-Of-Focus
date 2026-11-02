@@ -82,10 +82,26 @@ pub fn load() -> Config {
                 Config::default()
             }
         },
-        Err(_) => {
-            let c = Config::default();
-            let _ = save(&c);
-            c
+        Err(e) => {
+            // 只有"文件不存在"才是第一次运行。
+            //
+            // 其余读错误（杀软/网盘/编辑器占用导致的共享冲突、权限不足、
+            // 非 UTF-8 编码）**绝不能**当成"没有配置"：那样会立刻用默认配置
+            // 覆盖掉用户真实的规则、积分、备份口令和令牌，而且连留档都没有。
+            // 以前这里就是 `Err(_) => save(&Config::default())`。
+            if e.kind() == std::io::ErrorKind::NotFound {
+                let c = Config::default();
+                let _ = save(&c);
+                return c;
+            }
+            eprintln!("读取配置失败（保留原文件，不回写默认值）: {e}");
+            let bad = data_dir().join(format!(
+                "config.unreadable-{}.json",
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ));
+            let _ = std::fs::copy(&p, &bad);
+            LOAD_BROKEN.store(true, std::sync::atomic::Ordering::Relaxed);
+            Config::default()
         }
     }
 }
@@ -106,7 +122,20 @@ pub fn save(cfg: &Config) -> Result<(), String> {
     // 把本地改动冲掉，用户看不出原因。在这里统一刷新，一处覆盖所有调用点。
     let mut owned = cfg.clone();
     owned.updated_at = chrono::Local::now().timestamp();
-    let cfg = &owned;
+    write_atomic(&owned)
+}
+
+/// 只落盘、**不**刷新 `updated_at` 的保存。
+///
+/// 给"记账"类写入用：同步结果（lastSync/lastResult/lastError）、更新检查时间
+/// （lastCheck）这些字段每次都会变，但它们不是用户改的配置。如果也跟着刷新
+/// updated_at，本机会一直"看起来比云端新"：另一台设备刚同步上去的新规则，
+/// 这边重启一次就被判成"本地更新"，然后把过期配置上传覆盖掉。
+pub fn save_quiet(cfg: &Config) -> Result<(), String> {
+    write_atomic(cfg)
+}
+
+fn write_atomic(cfg: &Config) -> Result<(), String> {
     let p = config_path();
     let s = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     // 原子写：先写同目录的临时文件再改名替换。

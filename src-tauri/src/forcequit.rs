@@ -407,10 +407,13 @@ pub fn force_quit(app: &AppHandle, shared: &Shared) -> bool {
     // 设置页「立即退出」都能在固化期间把程序关掉，固化形同虚设。
     let info = crate::guard::lock_info(&cfg_now);
     if info.locked {
+        // 规则名来自配置（可以从备份 / 云端同步恢复进来），而通知窗是
+        // `innerHTML = body` 渲染的，webview 又是 withGlobalTauri + csp:null ——
+        // 不转义就等于把一条 `<img onerror=...>` 直接送进 IPC 全权限环境。
         let body = format!(
             "<b>{}</b><br>固化锁定中（{} 结束），现在不能退出；需要提前结束请用积分解锁。",
-            info.names.join("、"),
-            info.until_text
+            crate::notify::esc(&info.names.join("、")),
+            crate::notify::esc(&info.until_text)
         );
         log("拒绝退出：固化锁定中");
         crate::notify::toast(app, "warn", "固化锁定中，不能退出", &body, "quit-blocked", 6);

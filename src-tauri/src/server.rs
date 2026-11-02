@@ -51,13 +51,41 @@ fn read_body(req: &mut Request) -> String {
     read_capped(req.as_reader())
 }
 
-fn cors<W: std::io::Write + std::io::Read>(resp: &mut Response<W>) {
-    for (k, v) in [
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Headers", "*"),
-        ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-        ("Cache-Control", "no-store"),
-    ] {
+fn origin_of(req: &Request) -> Option<String> {
+    req.headers()
+        .iter()
+        .find(|h| h.field.equiv("Origin"))
+        .map(|h| h.value.as_str().to_string())
+}
+
+fn is_ext_origin(v: &str) -> bool {
+    let l = v.to_ascii_lowercase();
+    l.starts_with("chrome-extension://") || l.starts_with("moz-extension://")
+}
+
+/// 允许改状态的请求来源？
+///
+/// 网页发起的跨源请求一定带 `Origin: http(s)://…`，而扩展带的是
+/// `chrome-extension://…`。没有 Origin 的（curl / 本机脚本）照常放行 ——
+/// 本机进程本来就能直接改配置，挡它没有意义。
+fn origin_ok(req: &Request) -> bool {
+    match origin_of(req) {
+        None => true,
+        Some(o) => is_ext_origin(&o),
+    }
+}
+
+fn add_cors<W: std::io::Write + std::io::Read>(origin: Option<String>, resp: &mut Response<W>) {
+    let mut headers: Vec<(&str, String)> = vec![("Cache-Control", "no-store".into())];
+    // 只对扩展来源回 ACAO，而且是"精确回显"而不是 `*`：
+    // `*` 会让任意网页都能读到 /api/state（完整规则名单 + 是否管理员）。
+    if let Some(o) = origin.filter(|o| is_ext_origin(o)) {
+        headers.push(("Access-Control-Allow-Origin", o));
+        headers.push(("Vary", "Origin".into()));
+        headers.push(("Access-Control-Allow-Headers", "*".into()));
+        headers.push(("Access-Control-Allow-Methods", "GET, POST, OPTIONS".into()));
+    }
+    for (k, v) in headers {
         if let Ok(h) = Header::from_bytes(k.as_bytes(), v.as_bytes()) {
             let _ = resp.add_header(h);
         }
@@ -65,8 +93,9 @@ fn cors<W: std::io::Write + std::io::Read>(resp: &mut Response<W>) {
 }
 
 fn reply(req: Request, code: u16, body: String) {
+    let origin = origin_of(&req);
     let mut resp = Response::from_string(body).with_status_code(code);
-    cors(&mut resp);
+    add_cors(origin, &mut resp);
     let _ = req.respond(resp);
 }
 
@@ -75,9 +104,20 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
     let path = url.split('?').next().unwrap_or("").to_string();
 
     if *req.method() == Method::Options {
+        let origin = origin_of(&req);
         let mut resp = Response::empty(204);
-        cors(&mut resp);
+        add_cors(origin, &mut resp);
         let _ = req.respond(resp);
+        return;
+    }
+
+    // 会改状态（关浏览器 / 弹通知抢焦点 / 触发提权）的三个接口必须先验来源。
+    // 以前它们对所有来源开放，任何网页一句 fetch 就能：
+    //  - 往 /api/heartbeat 灌心跳 → 浏览器守护以为插件在跑，整道防线失效；
+    //  - 往 /api/report 灌上报 → 弹通知、抢焦点、污染拦截记录。
+    let state_changing = matches!(path.as_str(), "/api/heartbeat" | "/api/report" | "/api/elevate");
+    if state_changing && !origin_ok(&req) {
+        reply(req, 403, json!({"error": "origin not allowed"}).to_string());
         return;
     }
 
@@ -104,9 +144,11 @@ fn handle(app: &tauri::AppHandle, shared: &Arc<Shared>, mut req: Request) {
                         reply(req, 200, json!({"ok": true, "restarting": true}).to_string());
                         // 让响应先发出去，再把当前实例关掉，把锁让给提权副本
                         let app2 = app.clone();
+                        let sh2 = shared.clone();
                         std::thread::spawn(move || {
                             std::thread::sleep(std::time::Duration::from_millis(350));
-                            crate::guard::stop_guard();
+                            // 和托盘退出同一条清理链：还原被遮罩动过的窗口、恢复媒体、落盘统计
+                            crate::forcequit::cleanup_for_exit(&sh2);
                             app2.exit(0);
                         });
                     }
@@ -476,6 +518,9 @@ fn state_json(shared: &Shared) -> String {
         "nextChange": next_change,
         // 插件据此决定：只关标签页，还是连整个浏览器窗口一起关
         "siteCloseBrowser": cfg.settings.site_close_browser,
+        // 演练模式：插件只上报、不写 DNR、不关页面。
+        // 以前这个字段没导出，界面写着"只记录不真的关闭"，插件却照关不误。
+        "dryRun": cfg.settings.dry_run,
         // 插件按这个值切中英文（跟随软件设置页里的选择）
         "lang": cfg.settings.lang,
         // 正在运行的这个实例是不是管理员（新实例据此决定要不要请它提权）

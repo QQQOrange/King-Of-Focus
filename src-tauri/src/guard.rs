@@ -190,6 +190,41 @@ pub fn discipline_violation_at(
     if !old.settings.allow_quit_in_session && new.settings.allow_quit_in_session {
         return Some("自律时段生效中，不能重新打开「自律时段内允许退出」".into());
     }
+    // 2.6) 几个"一键关掉全部拦截"的总闸：时段内只能往更严的方向改。
+    //
+    //   这几项以前完全不在检查范围里 —— 于是自律时段内点一下「演练模式」，
+    //   软件/网页/浏览器三处拦截全部变成"只记录不关闭"；往「全局保护名单」
+    //   里加一个进程名，它就再也不被拦。界面还会提示"已保存"。
+    if !old.settings.dry_run && new.settings.dry_run {
+        return Some("自律时段生效中，不能打开「演练模式」（它会让所有拦截只记录不关闭）".into());
+    }
+    if old.settings.guard_browser && !new.settings.guard_browser {
+        return Some("自律时段生效中，不能关闭「浏览器守护」".into());
+    }
+    if old.settings.block_taskmgr && !new.settings.block_taskmgr {
+        return Some("自律时段生效中，不能关闭「禁止打开任务管理器」".into());
+    }
+    if old.settings.site_close_browser && !new.settings.site_close_browser {
+        return Some("自律时段生效中，不能关闭「网页被拦时关闭整个浏览器」".into());
+    }
+    if old.settings.soft_close && !new.settings.soft_close {
+        return Some("自律时段生效中，不能关闭「先温和关闭」".into());
+    }
+    // 保护名单只允许"减"不允许"增"：多一个被保护的进程 = 多一条漏网的路。
+    for p in new.settings.protected.iter() {
+        let lp = p.trim().to_lowercase();
+        if lp.is_empty() {
+            continue;
+        }
+        if !old
+            .settings
+            .protected
+            .iter()
+            .any(|x| x.trim().to_lowercase() == lp)
+        {
+            return Some(format!("自律时段生效中，不能把「{p}」加进全局保护名单"));
+        }
+    }
     // 3) 正在生效的那套方案不能被切走 / 删掉
     let old_id = oc.active_profile().map(|p| p.id.clone()).unwrap_or_default();
     let new_id = nc.active_profile().map(|p| p.id.clone()).unwrap_or_default();

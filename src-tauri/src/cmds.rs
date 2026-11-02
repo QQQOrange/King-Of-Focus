@@ -126,6 +126,29 @@ pub fn unlock_price(cfg: &Config) -> i64 {
     (base * mult).round() as i64
 }
 
+/// 固化 / 睡眠锁定期间，凡是会写配置的命令统一从这里拒绝。
+///
+/// `save_config` 早就这么做了，但「遮罩参数 / 快捷键 / 提醒 / HUD / 分心事件 /
+/// 浏览器路径」这些命令各写各的 `cfg::save` —— 锁定期间照样能改、还能落盘，
+/// 而界面上的横幅写着"无法修改任何设置"。
+pub(crate) fn deny_if_locked(shared: &Shared) -> Result<(), String> {
+    if crate::sleep::is_locked(shared) {
+        return Err("睡眠时段锁定中：只能用积分解锁，或者等这一段结束".into());
+    }
+    if crate::guard::is_locked(shared) {
+        let info = crate::guard::lock_info(&shared.config());
+        return Err(format!(
+            "自律固化中（{} 结束），现在改不了设置",
+            if info.until_text.is_empty() {
+                "本时段".to_string()
+            } else {
+                info.until_text
+            }
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     // 跨天重置解锁次数
@@ -697,7 +720,10 @@ pub fn mask_set(
     follow: Option<bool>,
     follow_schedule: Option<bool>,
     media_pause: Option<bool>,
-) {
+) -> Result<(), String> {
+    // 遮罩参数也会写进配置，所以和 save_config 走同一道闸：
+    // 以前固化期间拖一下透明度滑块就能改设置并落盘，界面上却写着"改不了设置"。
+    deny_if_locked(&shared)?;
     let m = &*shared.mask;
     if let Some(o) = opacity {
         m.opacity.store(o.min(100), Ordering::Relaxed);
@@ -766,11 +792,13 @@ pub fn mask_set(
             *w = c;
         }
     }
+    Ok(())
 }
 
 /// 设置全局快捷键（带冲突检测：注册失败会回滚到原来的组合）
 #[tauri::command]
 pub fn mask_hotkey(shared: State<'_, Arc<Shared>>, combo: String) -> Result<(), String> {
+    deny_if_locked(&shared)?;
     let m = &*shared.mask;
     let trimmed = combo.trim().to_string();
     let parsed = if trimmed.is_empty() {
@@ -860,10 +888,10 @@ pub fn mask_preview(shared: State<'_, Arc<Shared>>) -> i64 {
 /// 遮罩跟随自律模式
 #[tauri::command]
 pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    deny_if_locked(&shared)?;
     let m = &*shared.mask;
     m.auto_follow.store(enabled, Ordering::Relaxed);
-    crate::mask::wake();
-    let mut c = shared.config();
+    crate::mask::wake();    let mut c = shared.config();
     c.settings.mask.follow_schedule = enabled;
     cfg::save(&c)?;
     if let Ok(mut w) = shared.cfg.write() {
@@ -875,6 +903,7 @@ pub fn mask_follow_schedule(shared: State<'_, Arc<Shared>>, enabled: bool) -> Re
 /// 媒体管控开关（遮罩生效时自动暂停被盖住窗口的媒体）
 #[tauri::command]
 pub fn mask_media_pause(shared: State<'_, Arc<Shared>>, enabled: bool) -> Result<(), String> {
+    deny_if_locked(&shared)?;
     let m = &*shared.mask;
     m.media_pause.store(enabled, Ordering::Relaxed);
     if !enabled {
@@ -1002,10 +1031,13 @@ fn restart_as_admin_inner(app: &AppHandle, shared: &Arc<Shared>) -> Result<(), S
     // 延迟一小会儿再退出：让当前这次 invoke 的响应先发回前端，
     // 否则界面会先弹一个"调用失败"的红色提示，然后才重启。
     let h = app.clone();
+    let sh = shared.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(350));
-        // 别把守护进程留下来：它会以为主进程死了，又拉起一个旧权限的实例
-        crate::guard::stop_guard();
+        // 走完整的退出清理，而不是只 stop_guard：
+        //  - 遮罩线程会把被抬升/摘顶的第三方窗口还原，只杀进程就再也还原不回来；
+        //  - 暂停过的媒体（SMTC）也要恢复，否则"以管理员身份重启"之后音乐一直是停的。
+        crate::forcequit::cleanup_for_exit(&sh);
         h.exit(0);
     });
     Ok(())
@@ -1452,6 +1484,7 @@ pub fn notify_save(
     break_before: u32,
     break_notify: bool,
 ) -> Result<(), String> {
+    deny_if_locked(&shared)?;
     let mut c = shared.config();
     c.settings.notify.enabled = enabled;
     c.settings.notify.work_before = work_before.min(120);
@@ -1466,6 +1499,7 @@ pub fn notify_save(
 
 #[tauri::command]
 pub fn hud_save(shared: State<'_, Arc<Shared>>, enabled: bool, quote_minutes: u32) -> Result<(), String> {
+    deny_if_locked(&shared)?;
     let mut c = shared.config();
     c.settings.hud.enabled = enabled;
     c.settings.hud.quote_minutes = quote_minutes.clamp(5, 1440);
@@ -1621,7 +1655,8 @@ fn after_sync(shared: &Shared, r: Result<String, String>) -> Result<String, Stri
         }
         Err(e) => c.settings.sync.last_error = e.clone(),
     }
-    let _ = cfg::save(&c);
+    // 记账写入：只更新"上次同步时间/结果"，不能刷新 updated_at
+    let _ = cfg::save_quiet(&c);
     if let Ok(mut w) = shared.cfg.write() {
         *w = c;
     }
@@ -1727,7 +1762,8 @@ pub async fn update_check(
         let v = crate::update::check(&c.settings.update);
         let mut c2 = c.clone();
         c2.settings.update.last_check = chrono::Local::now().timestamp();
-        let _ = cfg::save(&c2);
+        // 记账写入：检查时间不是用户改的配置，别让它把 updated_at 顶上去
+        let _ = cfg::save_quiet(&c2);
         if let Ok(mut w) = shared.cfg.write() {
             *w = c2;
         }
@@ -1803,7 +1839,7 @@ pub fn update_apply(
     if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
         return Err(format!("{why}；更新需要退出程序，请等这一段结束后再更新"));
     }
-    crate::update::apply(&app, &installer)
+    crate::update::apply(&app, &installer, &shared)
 }
 
 #[tauri::command]
@@ -1812,11 +1848,26 @@ pub fn open_url(url: String) -> Result<(), String> {
     if !(u.starts_with("https://") || u.starts_with("http://")) {
         return Err("只支持 http / https 链接".into());
     }
-    Command::new("cmd")
-        .args(["/C", "start", "", u])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    // 绝对不能走 `cmd /C start "" <url>`：cmd.exe 还会解析 & | ^ % 这些元字符。
+    //  - 正常链接：`?a=1&b=2` 会被拆成两条命令，后半截当成命令去执行；
+    //  - 被构造的链接：`https://x/&calc&` 直接就是命令注入。
+    // 链接来源包括语录源 home、自动打开的目标、以及从备份/云端恢复回来的配置。
+    // ShellExecuteW 直接交给 Shell 打开，没有这一层解析。
+    let op = wide("open");
+    let file = wide(u);
+    let r = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r as usize <= 32 {
+        return Err(format!("打开链接失败（ShellExecute 返回 {}）", r as usize));
+    }
     Ok(())
 }
 

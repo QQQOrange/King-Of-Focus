@@ -867,6 +867,10 @@ pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let live = shared.stats.lock().map(|c| c.clone()).unwrap_or_default();
 
     if let (Ok(s), Ok(e)) = (start.parse::<NaiveDate>(), end.parse::<NaiveDate>()) {
+        // 上限一年：stats_range / report_generate 的区间直接来自 IPC，
+        // 不钳制的话一个 "0001-01-01"~"9999-12-31" 就是 365 万次开文件，
+        // 而且是在 UI 线程上跑（和 calendar 里那条 366 天的钳制保持一致）。
+        let e = if (e - s).num_days() > 366 { s + chrono::Duration::days(366) } else { e };
         let mut cur = s;
         while cur <= e {
             let ds = cur.format("%Y-%m-%d").to_string();

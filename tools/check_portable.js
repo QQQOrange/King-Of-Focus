@@ -135,7 +135,9 @@ try {
 }
 
 if (canon) {
-  const want = read(shapePath).trim();
+  // 归一化行尾：Windows 上 core.autocrlf=true 会把样例检出成 CRLF，而 shape()
+  // 用 "\n" 拼接。不处理的话这个发版自检在 Windows 上永远是红的。
+  const want = read(shapePath).replace(/\r\n/g, '\n').trim();
   const got = shape(canon);
   if (want === 'placeholder') {
     fail('portable-shape.txt 还是占位内容：跑 cargo test __gen_canon_fixture -- --ignored');

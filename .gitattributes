@@ -1,0 +1,32 @@
+# 行尾与二进制属性
+#
+# 背景：Git for Windows 的默认配置是 core.autocrlf=true，会把工作区里的文本文件
+# 检出成 CRLF。而本仓库有若干"逐字比对"的自检（portable-shape.txt 的字段签名、
+# i18n 词条等），行尾一变，这些自检在 Windows 上就永远是红的 —— 等于发版前的
+# 质量闸门形同虚设。
+#
+# 所以这里显式钉住：源码/样例一律 LF；只有 cmd.exe 真正需要的 .bat/.cmd 用 CRLF。
+
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制：任何换行转换都会损坏它们
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.webp    binary
+*.zip     binary
+*.crx     binary
+*.apk     binary
+*.aab     binary
+*.jar     binary
+*.so      binary
+*.dll     binary
+*.exe     binary
+*.pem     binary
+*.keystore binary
+*.jks     binary

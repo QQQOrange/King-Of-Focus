@@ -27,6 +27,7 @@ let CLOSING = new Set();   // 正在关闭的标签，防重入
 let lastPull = 0;
 let lastClosedAt = 0;
 let CLOSE_WINDOW = true;   // 网页被拦时，是否连整个浏览器窗口一起关
+let DRY_RUN = false;       // 演练模式：只上报，不写 DNR、不关页面
 const NOTIFY_LEAD_MS = 900; // 通知先露脸，再关页面
 
 /* ---- 网页收尾（休息 → 学习）----
@@ -95,61 +96,139 @@ async function post(path, body) {
 
 /* ---------------- DNR：拦新导航 ---------------- */
 
+/** 主机名规范化：去 www / 端口 / 前导点，中文域名转 punycode。
+ *  返回空串表示这条不能进 requestDomains（Chrome 会因为一条非法条件拒绝整批）。 */
+function normalizeHost(h) {
+  let s = String(h || '').trim().toLowerCase()
+    .replace(/^\.+/, '').replace(/^www\./, '').replace(/:\d+$/, '');
+  if (!s) return '';
+  if (/[^\x00-\x7f]/.test(s)) {
+    try { s = new URL('http://' + s).hostname; } catch (e) { return ''; }
+  }
+  return /^[a-z0-9.-]+$/.test(s) ? s : '';
+}
+
+/** 一条非法条件会让 Chrome 拒绝**整批**规则，所以先逐条筛 */
+function validCond(c) {
+  if (!c) return false;
+  if (c.requestDomains) {
+    return c.requestDomains.every((h) => h && /^[a-z0-9.-]+$/.test(h)
+      && !h.startsWith('.') && !h.endsWith('.') && !h.includes('..'));
+  }
+  if (c.regexFilter) return c.regexFilter.length <= 2000;
+  return true;
+}
+
 function condOf(pattern) {
   const raw = String(pattern || '').trim().toLowerCase();
   if (!raw) return null;
   if (raw === '*' || raw === '*.*' || raw === '**') {
     return { urlFilter: '*', resourceTypes: ['main_frame'] };
   }
-  const bare = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-  // 主机部分：去掉 query 与结尾斜杠。
+  // 去掉 scheme、fragment、query 与结尾斜杠。
   // 用户常常直接粘贴整条网址（https://www.douyin.com/），不归一化的话它会变成
-  // "带路径的精确匹配"，裸域 douyin.com 反而拦不住——DNR 与 JS 判定必须一致。
-  const core = bare.split('?')[0].replace(/\/+$/, '');
-  const hostOnly = (h) => ({
-    requestDomains: [h.replace(/^\./, '').replace(/^www\./, '')],
-    resourceTypes: ['main_frame'],
-  });
+  // "带路径的精确匹配"，裸域 douyin.com 反而拦不住 —— DNR 与 JS 判定必须一致。
+  // `#` 必须去掉：matcher.js 会砍掉 fragment，这边不砍的话
+  // `twitter.com/#/home` 在 DNR 永远不命中、JS 却按整域拦，两边行为对不上。
+  const bare = raw
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+    .split('#')[0]
+    .split('?')[0];
+  const core = bare.replace(/\/+$/, '');
+
   if (core && !core.includes('/')) {
-    if (core.slice(0, 2) === '*.') return hostOnly(core.slice(2)); // 含裸域 + 子域
-    if (!core.includes('*')) return hostOnly(core);
+    if (core.slice(0, 2) === '*.') {
+      const h = normalizeHost(core.slice(2));
+      return h ? { requestDomains: [h], resourceTypes: ['main_frame'] } : null;
+    }
+    if (!core.includes('*')) {
+      const h = normalizeHost(core);
+      return h ? { requestDomains: [h], resourceTypes: ['main_frame'] } : null;
+    }
   }
-  const body = bare.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+
+  // 带路径 / 通配 → 锚定到 ^https?://(?:www\.)? 的正则。
+  // 不锚定的话 `?q=youtube.com/shorts` 这种查询串也会被拦。
+  const esc = (s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  const slash = core.indexOf('/');
+  const hostPart = slash >= 0 ? core.slice(0, slash) : core;
+  const pathPart = slash >= 0 ? core.slice(slash) : '';
+  const wild = pathPart ? '[^/]*' : '.*';
+  const hostRx = esc(hostPart).replace(/\\?\*/g, wild);
+  const body = '^https?://(?:www\\.)?' + hostRx + esc(pathPart).replace(/\\?\*/g, '.*');
   try {
-    return { regexFilter: body, resourceTypes: ['main_frame'] };
+    new RegExp(body); // 明显语法错误当场丢掉，别拖累整批
   } catch (e) {
     return null;
+  }
+  return { regexFilter: body, resourceTypes: ['main_frame'] };
+}
+
+/** 整批写；被拒就退化成逐条写，把坏的那几条挑出来丢掉 */
+async function replaceDnr(add) {
+  const old = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = old.map((x) => x.id);
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds,
+      addRules: add.slice(0, 4000),
+    });
+    return true;
+  } catch (e) {
+    console.warn('[King of Focus] DNR 批量写入失败，改为逐条重试', e);
+    try {
+      await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
+    } catch (e2) { /* ignore */ }
+    let ok = 0;
+    for (const rule of add.slice(0, 4000)) {
+      try {
+        await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [rule] });
+        ok++;
+      } catch (e3) {
+        console.warn('[King of Focus] 跳过一条非法规则', rule, e3);
+      }
+    }
+    return ok > 0;
   }
 }
 
 async function syncDnr(rules) {
+  // 演练模式：只做本地判定 + 上报，不真的改写请求
+  if (DRY_RUN) {
+    await replaceDnr([]).catch(() => false);
+    FINGERPRINT = '';
+    return false;
+  }
+
   const fp = JSON.stringify(rules);
   if (fp === FINGERPRINT) return false;
-  FINGERPRINT = fp;
 
   const add = [];
   let id = 1;
   for (const r of rules) {
     const isWhite = r.mode === 'whitelist';
-    const sites = (r.sites || []).map(condOf).filter(Boolean);
+    const sites = (r.sites || []).map(condOf).filter(validCond);
     if (isWhite) {
       if (!sites.length) continue; // 空白名单不生效，避免全站封锁
-      // 例外必须比白名单的 allow 优先级更高：否则"只允许 A 站，但 B 站例外"
-      // 这种配置里 B 站会先被白名单兜底规则拦掉。以前这一支完全没处理 exceptions。
+      // 优先级（数字大的赢）：白名单 allow(50) > 白名单例外(45) > 兜底全拦(40)
+      //                    > 黑名单例外(25) > 黑名单拦截(20)
+      // 关键点是兜底全拦必须**高于**黑名单例外：matcher.js 在强制模式下
+      // 根本不看黑名单的 exceptions，如果 DNR 让例外赢，就会出现
+      // "JS 关掉页面、请求层却放行" 的两套行为。
       for (const e of r.exceptions || []) {
         const c = condOf(e);
-        if (c) add.push({ id: id++, priority: 35, action: { type: 'allow' }, condition: c });
+        if (validCond(c)) add.push({ id: id++, priority: 45, action: { type: 'allow' }, condition: c });
       }
       add.push({
         id: id++,
-        priority: 10,
+        priority: 40,
         action: {
           type: 'redirect',
           redirect: { extensionPath: `/blocked.html?mode=white&rule=${encodeURIComponent(r.name)}` },
         },
         condition: { urlFilter: '*', resourceTypes: ['main_frame'] },
       });
-      for (const c of sites) add.push({ id: id++, priority: 30, action: { type: 'allow' }, condition: c });
+      for (const c of sites) add.push({ id: id++, priority: 50, action: { type: 'allow' }, condition: c });
     } else {
       for (const c of sites) {
         add.push({
@@ -164,17 +243,16 @@ async function syncDnr(rules) {
       }
       for (const e of r.exceptions || []) {
         const c = condOf(e);
-        if (c) add.push({ id: id++, priority: 25, action: { type: 'allow' }, condition: c });
+        if (validCond(c)) add.push({ id: id++, priority: 25, action: { type: 'allow' }, condition: c });
       }
     }
   }
 
-  const old = await chrome.declarativeNetRequest.getDynamicRules();
-  await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: old.map((x) => x.id),
-    addRules: add.slice(0, 4000),
-  });
-  return true;
+  const ok = await replaceDnr(add);
+  // 只有真的写进去了才记指纹。以前是先记后写：一次失败之后
+  // 后面所有 refresh 都会在函数开头短路，DNR 永远不再重建。
+  FINGERPRINT = ok ? fp : '';
+  return ok;
 }
 
 /* ---------------- 主动清理：关掉已打开的违规页面 ---------------- */
@@ -421,6 +499,7 @@ async function doRefresh(opts) {
   const LANG = (state && state.lang) === 'en' ? 'en' : 'zh-CN';
   MATCHERS = self.KOFMatch.compile(RAW_RULES);
   CLOSE_WINDOW = state.siteCloseBrowser !== false;
+  DRY_RUN = !!(state && state.dryRun);
   // 收尾契约：enabled/mode/sweepSeq/nextChange/clockLeft
   const sw = (state && state.sweep) || {};
   SWEEP_ENABLED = sw.enabled !== false;
@@ -431,7 +510,11 @@ async function doRefresh(opts) {
   // 判定放进纯函数：seq 变小 = 主程序重启过（计数清零），只当重新对齐。
   const boundary = self.KOFSweep.boundary(SWEEP_SEQ, seq);
   SWEEP_SEQ = seq;
-  await syncDnr(RAW_RULES);
+  await syncDnr(RAW_RULES).catch((e) => {
+    // 写 DNR 失败不该连累后面的心跳 / 清理 / 状态上报
+    console.warn('[King of Focus] 同步 DNR 失败', e);
+    return false;
+  });
   chrome.storage.local.set({
     connected: true,
     lang: LANG,
