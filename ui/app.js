@@ -1955,6 +1955,86 @@ function restoreText(r) {
   return `已覆盖：现在有 ${r.rules} 条规则` + (r.legacy ? '（旧版备份，整份恢复）' : '');
 }
 
+/**
+ * 跑一次"恢复"：解密失败时问一次备份密码再重试。
+ *
+ * 为什么需要：备份是用**当时设置里的**密码加密的。用户改过密码之后，
+ * 旧备份就再也打不开了——以前只会弹一句"密码不对，或者备份文件被改动过"，
+ * 文件明明是好的，而且没有任何地方能输入旧密码。
+ */
+async function runRestore(call, _cmd, _base) {
+  const isPassErr = (m) => /密码不对|需要密码|password/i.test(m);
+  try {
+    const r = await call(undefined);
+    await pull(); render();
+    toast(restoreText(r), 'ok');
+    return;
+  } catch (e) {
+    const msg = String(e).replace(/^Error:\s*/, '');
+    if (!isPassErr(msg)) {
+      if (!msg.includes('已取消')) toast(msg, 'err');
+      return;
+    }
+  }
+  // 问一次旧密码
+  const pass = await promptBackupPass();
+  if (pass == null) return;
+  try {
+    const r = await call(pass);
+    await pull(); render();
+    toast(restoreText(r), 'ok');
+  } catch (e) {
+    toast(String(e).replace(/^Error:\s*/, ''), 'err');
+  }
+}
+
+/** 输入备份密码的小弹窗（返回 null = 取消） */
+function promptBackupPass() {
+  return new Promise((resolve) => {
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="modal-mask" data-act="pass-cancel">
+        <div class="modal" style="width:430px">
+          <div class="modal-hd"><h3>这份备份用的是另一个密码</h3></div>
+          <div class="modal-bd">
+            <div class="note" style="font-size:13px;line-height:1.9;margin-bottom:14px">
+              备份是用**当时设置里的**密码加密的。你后来改过备份密码，所以现在解不开。
+              输入当初那个密码就能恢复（不会改动你现在的设置）。
+            </div>
+            <input id="bakPass" type="password" class="input" placeholder="当初的备份密码" autocomplete="off" />
+          </div>
+          <div class="modal-ft">
+            <button class="btn" data-act="pass-cancel">取消</button>
+            <button class="btn btn-primary" data-act="pass-ok">用这个密码恢复</button>
+          </div>
+        </div>
+      </div>`;
+    const done = (v) => {
+      root.innerHTML = '';
+      resolve(v);
+    };
+    const ok = () => {
+      const v = (($('#bakPass') || {}).value || '').trim();
+      if (!v) { toast('请输入密码', 'err'); return; }
+      done(v);
+    };
+    root.onclick = (e) => {
+      const a = e.target.closest('[data-act]');
+      if (!a) return;
+      if (a.dataset.act === 'pass-ok') ok();
+      else if (a.dataset.act === 'pass-cancel') done(null);
+    };
+    const inp = $('#bakPass');
+    if (inp) {
+      inp.focus();
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); ok(); }
+        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      });
+    }
+  });
+}
+
 /* ---------------- 生效时间段：微缩图 + 完整页（两级形态） ----------------
  *
  * 为什么分成两级：
@@ -4102,7 +4182,8 @@ const TIPS = {
     zh: ['为什么分成两条轨', `只有一秒里满足下面任一条件，才记到<b>自律模式已开启</b>：
       <br>① 有自律规则正在生效（到点就生效，与你是否在看这个软件无关）；
       <br>② 正在自律时段里（番茄休息也算在内）；
-      <br>③ 正处于锁机中。
+      <br>③ 正处于锁机中；
+      <br>④ 手动开着专注遮罩（你主动把屏幕盖上去做一件事，那也算在专注）。
       <br><br>其余全部记到<b>自律模式未开启</b>。两条轨<b>完全隔离、绝不相加</b>——
       "开着自律在用电脑"和"没开自律在用电脑"是两种完全不同的事，
       混在一起只会得到一条既不能夸也不能骂的曲线。
@@ -4111,7 +4192,8 @@ const TIPS = {
     en: ['Why two tracks', `A second counts as <b>discipline on</b> only when one of these holds:
       <br>1. a discipline rule is active right now;
       <br>2. you are inside a focus window (pomodoro breaks included);
-      <br>3. the screen is locked by this app.
+      <br>3. the screen is locked by this app;
+      <br>4. the focus mask is on (you put it up yourself to work on one thing).
       <br><br>Everything else goes to <b>discipline off</b>. The tracks are never
       mixed or summed: "using the PC while discipline is on" and "using it while off"
       are different things.`],
@@ -4636,6 +4718,7 @@ function viewSync() {
       </label>
       <button class="btn btn-sm" data-act="backup-pass">保存</button>
     </div>
+    ${(d.config.settings.backup || {}).password ? '' : `<div class="hint" style="margin:-6px 0 12px;color:var(--gold)">⚠ 没设备份密码：本地备份、云端备份、导出的文件都是明文，任何能拿到文件的人都能读。</div>`}
     ${(S.backups || []).length ? (S.backups || []).map((f) => `<div class="list-row">
         <span class="badge gold">${esc(f.name)}</span>
         <span class="grow muted" style="font-size:10.5px">${new Date((f.mtime || 0) * 1000).toLocaleString()} · ${Math.round((f.size || 0) / 1024)} KB</span>
@@ -7345,11 +7428,7 @@ const Act = window.Act = {
   async backupRestore(path) {
     const mode = await askRestoreMode('恢复这份备份？', '文件来自本机的备份目录。');
     if (!mode) return;
-    try {
-      const r = await invoke('backup_restore', { path, mode });
-      await pull(); render();
-      toast(restoreText(r), 'ok');
-    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+    await runRestore((pass) => invoke('backup_restore', { path, mode, pass }), 'backup_restore', { path, mode });
   },
   /** 导出成可以拷到手机上的文件 */
   async backupExport() {
@@ -7366,15 +7445,7 @@ const Act = window.Act = {
   async backupImport() {
     const mode = await askRestoreMode('从文件恢复', '选一个 .kofbak 备份文件，电脑或手机导出的都行。');
     if (!mode) return;
-    try {
-      const r = await invoke('backup_import', { mode });
-      await pull(); render();
-      toast(restoreText(r), 'ok');
-    } catch (e) {
-      const m = String(e).replace(/^Error:\s*/, '');
-      if (m.includes('已取消')) return;
-      toast(m, 'err');
-    }
+    await runRestore((pass) => invoke('backup_import', { mode, pass }), 'backup_import', { mode });
   },
   async backupDelete(path) {
     if (!confirm('删除这份备份文件？')) return;
@@ -7406,11 +7477,7 @@ const Act = window.Act = {
   async cloudRestore(name) {
     const mode = await askRestoreMode('恢复云端的 ' + name + '？', '这台机器会按你选的方式应用它。');
     if (!mode) return;
-    try {
-      const r = await invoke('backup_cloud_restore', { name, mode });
-      await pull(); render();
-      toast(restoreText(r), 'ok');
-    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+    await runRestore((pass) => invoke('backup_cloud_restore', { name, mode, pass }), 'backup_cloud_restore', { name, mode });
   },
 
   async saveNotify() {

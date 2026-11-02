@@ -552,7 +552,13 @@
     '邮箱 / 用户名': 'Email / user',
     '密码 / 应用密码': 'Password / app password',
     '备份密码': 'Backup password',
+    '这份备份用的是另一个密码': 'This backup uses a different password',
+    '当初的备份密码': 'The password used back then',
+    '用这个密码恢复': 'Restore with this password',
     '留空 = 明文备份（两端都能读）': 'Empty = plaintext backup (readable on both platforms)',
+    '⚠ 没设备份密码：本地备份、云端备份、导出的文件都是明文，任何能拿到文件的人都能读。':
+      '⚠ No backup password: local backups, cloud backups and exported files are plaintext — anyone who gets the file can read it.',
+    '明文': 'plaintext',
     '已改为明文备份：两端都能读，但请妥善保管': 'Switched to plaintext backup: readable anywhere, but keep it safe.',
     '本地备份': 'Local backup',
     '启动时自动备份': 'Auto backup on launch',

@@ -336,6 +336,19 @@ fn stamp() -> String {
     chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
+/// 给跨设备文档挂上 `native`（完整配置），本机备份用。
+fn native_payload(c: &crate::model::Config, rendered: &str) -> Result<String, String> {
+    let mut v: serde_json::Value =
+        serde_json::from_str(rendered).map_err(|e| format!("备份序列化失败: {e}"))?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "native".to_string(),
+            serde_json::to_value(c).map_err(|e| format!("备份序列化失败: {e}"))?,
+        );
+    }
+    serde_json::to_string(&v).map_err(|e| format!("备份序列化失败: {e}"))
+}
+
 /// 生成一份备份，返回文件信息。
 ///
 /// 载荷是**跨设备文档**（portable::Doc），信封与「导出跨设备备份」完全相同：
@@ -347,7 +360,13 @@ fn stamp() -> String {
 pub fn make(shared: &Shared) -> Result<Value, String> {
     let c = shared.config();
     let pass = c.settings.backup.password.clone();
-    let payload = Doc::from_config(&c).render()?;
+    // 本机备份额外带一份**完整配置**（`native` 段）。
+    //
+    // 跨设备文档只含规则/时段/积分/提醒/统计摘要，遮罩、睡眠、HUD、语录、
+    // 自启这些设置根本不在里面 —— 用户在设置里看到"备份"，自然会以为全都备了。
+    // 加这一段之后：本机备份能整份恢复；手机端不认识这个键，会原样忽略，
+    // 跨设备往返的行为完全不变（形状自检比对的仍是 Doc::render 的结果）。
+    let payload = native_payload(&c, &Doc::from_config(&c).render()?)?;
     let env = seal_portable(&payload, &pass)?;
     let name = format!("kof-{}{}", stamp(), EXT);
     let path = dir().join(&name);
@@ -427,15 +446,15 @@ pub fn mode_norm(mode: &str) -> &'static str {
 }
 
 /// 恢复备份目录里的一份（界面上的"恢复"按钮）
-pub fn restore_local(shared: &Shared, path: &str, mode: &str) -> Result<Value, String> {
+pub fn restore_local(shared: &Shared, path: &str, mode: &str, pass: Option<&str>) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("读不到备份文件: {e}"))?;
-    apply(shared, &text, mode)
+    apply(shared, &text, mode, pass)
 }
 
 /// 从任意路径导入（含手机传来的文件）
-pub fn import_file(shared: &Shared, path: &str, mode: &str) -> Result<Value, String> {
+pub fn import_file(shared: &Shared, path: &str, mode: &str, pass: Option<&str>) -> Result<Value, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("读不到这个文件: {e}"))?;
-    apply(shared, &text, mode)
+    apply(shared, &text, mode, pass)
 }
 
 /// 导出到任意路径（跨设备用）
@@ -473,11 +492,37 @@ pub fn export_file(shared: &Shared, path: &str) -> Result<Value, String> {
 /// 把一段备份文本应用到本机配置
 ///
 /// 返回值给界面组装提示：{ mode, rules, added, skipped, conflict, slots, legacy, source, noop }
-fn apply(shared: &Shared, text: &str, mode: &str) -> Result<Value, String> {
+///
+/// `pass` 是"临时口令"：用户改过备份密码之后，旧备份要用当时那个口令才解得开。
+/// 界面在解密失败时问一次，然后带着它重试。
+fn apply(shared: &Shared, text: &str, mode: &str, pass: Option<&str>) -> Result<Value, String> {
     let local = shared.config();
-    let plain = unlock(text, &local.settings.backup.password)?;
+    let stored = local.settings.backup.password.clone();
+    let mut plain = match unlock(text, &stored) {
+        Ok(p) => p,
+        Err(e) => {
+            // 存的口令解不开、但用户给了临时口令 → 用临时的再试一次
+            match pass {
+                Some(p) if !p.trim().is_empty() => unlock(text, p)?,
+                _ => return Err(e),
+            }
+        }
+    };
+    if plain.trim().is_empty() && !stored.trim().is_empty() {
+        if let Some(p) = pass {
+            plain = unlock(text, p)?;
+        }
+    }
     let parsed = portable::parse(&plain)?;
     let mode = mode_norm(mode);
+
+    // 本机备份里带了一份完整配置（`native`）：恢复时以它为底，
+    // 这样遮罩 / 睡眠 / HUD / 语录 / 自启这些不在跨设备文档里的设置也能一起回来。
+    // 没有这一段的（手机导出的、老备份、云端同步文件）按原来的"部分恢复"处理。
+    let native: Option<crate::model::Config> = serde_json::from_str::<serde_json::Value>(&plain)
+        .ok()
+        .and_then(|v| v.get("native").cloned())
+        .and_then(|v| serde_json::from_value::<crate::model::Config>(v).ok());
 
     // 老格式的覆盖：保持"整份替换"的老语义（那是它当初的承诺）。
     // 合并仍然只能走加法，所以老格式的合并按新文档的加法规则处理。
@@ -544,14 +589,33 @@ fn apply(shared: &Shared, text: &str, mode: &str) -> Result<Value, String> {
         }));
     }
 
-    let next = doc.to_config(&local);
+    // 覆盖模式：有 `native` 就以它当底（完整恢复），否则退回"从当前配置出发、
+    // 只覆盖文档里有的字段"。
+    let base = match &native {
+        Some(n) => {
+            let mut n = n.clone();
+            // 机器专属 / 账号类的仍然听这台机器的
+            n.settings.sync = local.settings.sync.clone();
+            n.settings.update = local.settings.update.clone();
+            n.settings.run_as_admin = local.settings.run_as_admin;
+            n.settings.autostart = local.settings.autostart;
+            // 备份口令保留本机当前的：否则恢复一份老备份会把口令改回去，
+            // 之后所有新备份都用旧口令加密。
+            n.settings.backup = local.settings.backup.clone();
+            n
+        }
+        None => local.clone(),
+    };
+    let next = doc.to_config(&base);
     if let Some(why) = crate::guard::config_replace_blocked(&local, &next) {
         return Err(why);
     }
     let n = next.rules.len();
+    let full = native.is_some();
     commit(shared, next)?;
     Ok(json!({
         "mode": "overwrite", "legacy": false, "noop": false,
+        "full": full,
         "rules": n,
         "added": n, "skipped": 0, "conflict": 0, "slots": 0,
         "source": doc.source, "device": doc.device, "createdAt": doc.created_at,
@@ -721,14 +785,14 @@ pub fn cloud_upload(shared: &Shared) -> Result<String, String> {
     Ok(format!("已上传 {name}（清理旧备份 {removed} 份）"))
 }
 
-pub fn cloud_restore(shared: &Shared, name: &str, mode: &str) -> Result<Value, String> {
+pub fn cloud_restore(shared: &Shared, name: &str, mode: &str, pass: Option<&str>) -> Result<Value, String> {
     if !name.ends_with(EXT) || name.contains('/') || name.contains('\\') {
         return Err("备份文件名不合法".into());
     }
     let c = shared.config();
     let (base, auth) = remote_base(&c)?;
     let env = net::get_text(&format!("{base}{name}"), auth.as_deref(), None)?;
-    apply(shared, &env, mode)
+    apply(shared, &env, mode, pass)
 }
 
 pub fn delete_file(path: &str) -> Result<(), String> {
@@ -954,4 +1018,21 @@ mod tests {
         assert_eq!(prune_targets(&list, now), vec!["kof-20250101-120000.kofbak"]);
     }
 
+    /// 本机备份要带上完整配置，而且加了 `native` 之后仍然是合法文档
+    /// （手机端读它会忽略这个键，跨设备往返行为不变）。
+    #[test]
+    fn native_payload_keeps_doc_parseable() {
+        let mut c = Config::default();
+        c.settings.mask.opacity = 42;
+        c.settings.hud.offset_x = 123;
+        let rendered = Doc::from_config(&c).render().unwrap();
+        let out = native_payload(&c, &rendered).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let n = v.get("native").expect("缺少 native 段");
+        assert_eq!(n["settings"]["mask"]["opacity"], 42);
+        assert_eq!(n["settings"]["hud"]["offsetX"], 123);
+        // 仍然是 portable 能解析的文档
+        let parsed = crate::portable::parse(&out).expect("加了 native 之后仍应能解析");
+        assert_eq!(parsed.doc.schema, crate::portable::SCHEMA);
+    }
 }

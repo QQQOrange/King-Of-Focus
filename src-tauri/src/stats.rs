@@ -1283,47 +1283,97 @@ fn run_due(shared: &Shared) {
         }
     }
     if st.auto_weekly {
-        let monday = today - CDur::days(today.weekday().num_days_from_monday() as i64);
-        let pm = monday - CDur::days(7);
-        let ps = pm + CDur::days(6);
-        let key = pm.format("%Y-%m-%d").to_string();
-        if s.weekly != key {
-            // 和 daily 一个规矩：只有真的写成功才推进游标。
-            // 以前是 `let _ = generate(...)` 之后无条件记 key —— 磁盘满 / 文件名非法
-            // 都会让这一周被标成"已生成"，以后永远不再补。
-            if generate(shared, "weekly", &key, &ps.format("%Y-%m-%d").to_string()).is_ok() {
-                s.weekly = key;
-                changed = true;
+        let this_monday = today - CDur::days(today.weekday().num_days_from_monday() as i64);
+        // 从"上次生成的那一周"的下一周开始补，一直补到上一周。
+        //
+        // 以前只算最近一周：一周不开机，中间那几周永远不会生成，
+        // 而界面上写的是"下次启动会补齐"。
+        let mut ws = match chrono::NaiveDate::parse_from_str(&s.weekly, "%Y-%m-%d") {
+            Ok(d) => d + CDur::days(7),
+            Err(_) => this_monday - CDur::days(7),
+        };
+        if ws < this_monday - CDur::days(365) {
+            ws = this_monday - CDur::days(365); // 别一口气补三年
+        }
+        while ws < this_monday {
+            let we = ws + CDur::days(6);
+            if generate(
+                shared,
+                "weekly",
+                &ws.format("%Y-%m-%d").to_string(),
+                &we.format("%Y-%m-%d").to_string(),
+            )
+            .is_err()
+            {
+                break; // 写盘失败就停在这，下次再补
             }
+            s.weekly = ws.format("%Y-%m-%d").to_string();
+            changed = true;
+            ws += CDur::days(7);
         }
     }
     if st.auto_monthly {
         let first = today.with_day(1).unwrap_or(today);
         let pend = first - CDur::days(1);
         let pstart = pend.with_day(1).unwrap_or(pend);
-        let key = pstart.format("%Y-%m").to_string();
-        if s.monthly != key {
+        // 和 weekly 一样：按月逐个补，直到上个月
+        let mut ms = match chrono::NaiveDate::parse_from_str(&format!("{}-01", s.monthly), "%Y-%m-%d") {
+            Ok(d) => {
+                let mut y = d.year();
+                let mut m = d.month() + 1;
+                if m > 12 {
+                    m = 1;
+                    y += 1;
+                }
+                NaiveDate::from_ymd_opt(y, m, 1).unwrap_or(pstart)
+            }
+            Err(_) => pstart,
+        };
+        if ms < pstart - CDur::days(366) {
+            ms = pstart - CDur::days(366);
+        }
+        while ms <= pstart {
+            let me = (ms + CDur::days(31)).with_day(1).unwrap_or(ms) - CDur::days(1);
             if generate(
                 shared,
                 "monthly",
-                &pstart.format("%Y-%m-%d").to_string(),
-                &pend.format("%Y-%m-%d").to_string(),
+                &ms.format("%Y-%m-%d").to_string(),
+                &me.format("%Y-%m-%d").to_string(),
             )
-            .is_ok()
+            .is_err()
             {
-                s.monthly = key;
-                changed = true;
+                break;
             }
+            s.monthly = ms.format("%Y-%m").to_string();
+            changed = true;
+            let mut y = ms.year();
+            let mut m = ms.month() + 1;
+            if m > 12 {
+                m = 1;
+                y += 1;
+            }
+            ms = match NaiveDate::from_ymd_opt(y, m, 1) {
+                Some(d) => d,
+                None => break,
+            };
         }
     }
     if st.auto_yearly {
-        let y = today.year() - 1;
-        let key = format!("{y}");
-        if s.yearly != key {
-            if generate(shared, "yearly", &format!("{y}-01-01"), &format!("{y}-12-31")).is_ok() {
-                s.yearly = key;
-                changed = true;
+        let last_year = today.year() - 1;
+        let mut y = match s.yearly.parse::<i32>() {
+            Ok(v) => v + 1,
+            Err(_) => last_year,
+        };
+        if y < last_year - 20 {
+            y = last_year - 20;
+        }
+        while y <= last_year {
+            if generate(shared, "yearly", &format!("{y}-01-01"), &format!("{y}-12-31")).is_err() {
+                break;
             }
+            s.yearly = format!("{y}");
+            changed = true;
+            y += 1;
         }
     }
     if st.custom_days > 0 {
@@ -1335,23 +1385,37 @@ fn run_due(shared: &Shared) {
         };
         let elapsed = (today - anchor).num_days();
         let done = elapsed / n;
-        if done >= 1 {
-            let ws = anchor + CDur::days((done - 1) * n);
-            let we = ws + CDur::days(n - 1);
-            let key = we.format("%Y-%m-%d").to_string();
-            if s.custom != key {
-                if generate(
-                    shared,
-                    "custom",
-                    &ws.format("%Y-%m-%d").to_string(),
-                    &we.format("%Y-%m-%d").to_string(),
-                )
-                .is_ok()
-                {
-                    s.custom = key;
-                    changed = true;
+        // 从上次那个窗口的下一格开始补
+        let mut k = if s.custom.is_empty() {
+            done.max(1)
+        } else {
+            match chrono::NaiveDate::parse_from_str(&s.custom, "%Y-%m-%d") {
+                Ok(d) => {
+                    let idx = (d - anchor).num_days() / n;
+                    idx + 1
                 }
+                Err(_) => done.max(1),
             }
+        };
+        if k < done - 60 {
+            k = done - 60;
+        }
+        while k >= 1 && k <= done {
+            let ws = anchor + CDur::days((k - 1) * n);
+            let we = ws + CDur::days(n - 1);
+            if generate(
+                shared,
+                "custom",
+                &ws.format("%Y-%m-%d").to_string(),
+                &we.format("%Y-%m-%d").to_string(),
+            )
+            .is_err()
+            {
+                break;
+            }
+            s.custom = we.format("%Y-%m-%d").to_string();
+            changed = true;
+            k += 1;
         }
     }
 

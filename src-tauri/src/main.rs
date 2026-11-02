@@ -135,6 +135,13 @@ fn main() {
     // 守护进程模式：由主进程在锁定时拉起，只负责"主进程被杀就复活它"
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--guard") {
+        // 守护是从一份改名的副本（kof-guard.exe）跑起来的，
+        // 复活时必须知道"主程序在哪"，否则会把守护自己当成主程序拉起来。
+        if let Some(i) = args.iter().position(|a| a == "--main-exe") {
+            if let Some(p) = args.get(i + 1) {
+                guard::set_main_exe(p);
+            }
+        }
         guard::guard_main();
         return;
     }

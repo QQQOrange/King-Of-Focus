@@ -42,6 +42,51 @@ pub fn focus_main(app: &AppHandle, shared: &Shared) {
     let _ = app.emit("goto-home", ());
 }
 
+/// 上一轮自律的"起点存档"：重启后用它接着算已专注时长。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct SessionMark {
+    since: i64,
+    blocks: u32,
+    names: String,
+    /// 存档时刻：重启后按 (now - at) 把起点往后挪，停机那段时间不计入专注时长
+    at: i64,
+}
+
+fn session_path() -> std::path::PathBuf {
+    crate::cfg::data_dir().join("session.json")
+}
+
+fn session_load() -> Option<SessionMark> {
+    let s = std::fs::read_to_string(session_path()).ok()?;
+    let m: SessionMark = serde_json::from_str(&s).ok()?;
+    // 超过 12 小时的存档没有意义（中间那一轮早就结束了）
+    if m.since <= 0 || chrono::Local::now().timestamp() - m.at > 12 * 3600 {
+        let _ = std::fs::remove_file(session_path());
+        return None;
+    }
+    Some(m)
+}
+
+fn session_save(since: i64, blocks: u32, names: &str) {
+    let m = SessionMark {
+        since,
+        blocks,
+        names: names.to_string(),
+        at: chrono::Local::now().timestamp(),
+    };
+    if let Ok(s) = serde_json::to_string(&m) {
+        let p = session_path();
+        let tmp = crate::cfg::unique_tmp(&p);
+        if std::fs::write(&tmp, s).is_ok() {
+            let _ = std::fs::rename(&tmp, &p);
+        }
+    }
+}
+
+fn session_clear() {
+    let _ = std::fs::remove_file(session_path());
+}
+
 /// 把 HUD 摆到用户选的那个角。
 ///
 /// 四角 + 边距（`offset_x/offset_y`）的组合足够避开绝大多数"主要专注内容"：
@@ -99,6 +144,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
         // 于是这一拍不做收尾——宁可漏一次，也不要在用户刚开机的第一秒就把
         // 他昨天开着的东西收走。
         let mut prev_break: Option<bool> = None;
+        // 上一轮会话的"已专注时长"存档（重启后接着算，见 session_load / session_save）
+        let mut session_saved: Option<SessionMark> = session_load();
+        let mut session_saved_at: Instant = Instant::now();
         // 柔和模式"停放"的进程：学习期间不再被常规拦截反复强杀。
         // 只要它还是最小化状态就继续放行；用户一还原窗口，立刻按拦截处理。
         let mut parked: HashMap<u32, Instant> = HashMap::new();
@@ -235,9 +283,21 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     // README 写的是休息时 HUD 显示"休息中"、整段结束才恭喜。
                     let running = !active.is_empty() || lock.locked || clock_on || on_break;
                     if running && rt.since == 0 {
-                        rt.since = now_ts;
+                        // 重启后接着算：把上次存档的起点按"停机时长"往后挪，
+                        // 这样已专注时长不包含程序关着的那段时间。
+                        match session_saved.take() {
+                            Some(m) if m.since > 0 => {
+                                let gap = (now_ts - m.at).max(0);
+                                rt.since = m.since + gap;
+                                rt.since_blocks = m.blocks;
+                                rt.since_names = m.names;
+                            }
+                            _ => rt.since = now_ts,
+                        }
                         // 记下起点的"今日拦截数"，结算时相减就是这一轮被打断了几次
-                        rt.since_blocks = rt.blocked_apps + rt.blocked_sites;
+                        if rt.since_blocks == 0 {
+                            rt.since_blocks = rt.blocked_apps + rt.blocked_sites;
+                        }
                     }
                     if running {
                         // 记住这一段命中的规则名。
@@ -276,6 +336,14 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             just_finished = true;
                         }
                         rt.since = 0;
+                        session_clear();
+                    } else if running && rt.since > 0 {
+                        // 每 20 秒把"这一轮从什么时候开始"存一次：重启后接着算，
+                        // 不然 HUD 的已专注时长和恭喜弹窗的时长都会从重启那一刻重新开始。
+                        if session_saved_at.elapsed().as_secs() >= 20 {
+                            session_saved_at = Instant::now();
+                            session_save(rt.since, rt.since_blocks, &rt.since_names);
+                        }
                     }
                 }
             }

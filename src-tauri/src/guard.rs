@@ -555,17 +555,57 @@ pub fn guard_alive() -> bool {
     existing_guard().is_some()
 }
 
+/// 守护进程用的可执行文件路径。
+///
+/// 为什么不用 current_exe：守护和主程序共用同一个映像名时，一句
+/// `taskkill /F /IM "King Of Focus.exe"` 就能把两个一起杀掉，整套"杀不掉"就没了。
+/// 所以把主程序复制一份到数据目录、改名成 `kof-guard.exe` 再启动 —— 映像名不同，
+/// taskkill 只能杀掉其中一个。主程序升级后（大小/时间变了）自动刷新这份副本。
+fn guard_exe() -> Option<PathBuf> {
+    let src = std::env::current_exe().ok()?;
+    let dst = cfg::data_dir().join(GUARD_EXE);
+    let need = match (std::fs::metadata(&src), std::fs::metadata(&dst)) {
+        (Ok(a), Ok(b)) => a.len() != b.len() || a.modified().ok() != b.modified().ok(),
+        (Ok(_), Err(_)) => true,
+        _ => false,
+    };
+    if need {
+        // 先写临时名再改名：守护进程可能正在跑，直接覆盖会失败
+        let tmp = cfg::unique_tmp(&dst);
+        if std::fs::copy(&src, &tmp).is_ok() {
+            if std::fs::rename(&tmp, &dst).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    if dst.exists() {
+        Some(dst)
+    } else {
+        // 复制不出来（权限/杀软）就退回原样：宁可共用映像名，也不能没有守护
+        Some(src)
+    }
+}
+
+/// 守护进程要复活的主程序路径（由 `--main-exe` 传入）
+static MAIN_EXE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+const GUARD_EXE: &str = "kof-guard.exe";
+
 /// 确保守护进程在跑（只在锁定时调用）
 pub fn ensure_guard() {
     if existing_guard().is_some() {
         return;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe)
-            .arg("--guard")
-            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-            .spawn();
-    }
+    let Some(exe) = guard_exe() else {
+        return;
+    };
+    let main = std::env::current_exe().unwrap_or_default();
+    let _ = Command::new(exe)
+        .arg("--guard")
+        .arg("--main-exe")
+        .arg(main)
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn();
 }
 
 /// 守护进程主体（由 main 在 `--guard` 参数时调用）
@@ -617,10 +657,28 @@ pub fn guard_main() {
 /// 另外：守护进程是主进程 spawn 出来的，**会继承主进程的权限**。
 /// 主进程是管理员时，守护也是管理员，普通拉起出来的新主进程同样是管理员。
 fn respawn_main() {
-    if let Ok(exe) = std::env::current_exe() {
+    // 守护自己是从一份改名的副本跑起来的，current_exe 指向的是那份副本 ——
+    // 用它复活就等于把守护当主程序拉起来。优先用启动时传进来的 --main-exe。
+    let target = MAIN_EXE
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .or_else(|| std::env::current_exe().ok());
+    if let Some(exe) = target {
         // 带 --respawn 标记：新实例据此知道"我是被守护拉起来的，不是用户启动的"，
         // 于是不会清掉"别复活"哨兵（否则守护下一轮又能把它复活）。
         let _ = Command::new(exe).arg("--respawn").spawn();
+    }
+}
+
+/// 守护进程启动时记下"主程序在哪"（`--main-exe`）
+pub fn set_main_exe(p: &str) {
+    let p = p.trim();
+    if p.is_empty() {
+        return;
+    }
+    if let Ok(mut g) = MAIN_EXE.lock() {
+        *g = Some(PathBuf::from(p));
     }
 }
 

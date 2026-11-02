@@ -1974,9 +1974,10 @@ pub fn backup_restore(
     shared: State<'_, Arc<Shared>>,
     path: String,
     mode: Option<String>,
+    pass: Option<String>,
 ) -> Result<Value, String> {
     let m = mode.unwrap_or_else(|| "overwrite".into());
-    let r = crate::backup::restore_local(&shared, &path, &m)?;
+    let r = crate::backup::restore_local(&shared, &path, &m, pass.as_deref())?;
     // 恢复完必须重灌运行态：遮罩参数 / 快捷键 / 端口读的都是运行态，
     // 只改 cfg 不重灌，用户会看到"恢复了但好像没生效，重启才好"。
     apply_runtime_cfg(&shared);
@@ -2014,6 +2015,7 @@ pub async fn backup_import(
     app: AppHandle,
     shared: State<'_, Arc<Shared>>,
     mode: Option<String>,
+    pass: Option<String>,
 ) -> Result<Value, String> {
     let picked = app
         .dialog()
@@ -2023,7 +2025,7 @@ pub async fn backup_import(
         .blocking_pick_file();
     let path = picked.ok_or_else(|| "已取消导入".to_string())?;
     let m = mode.unwrap_or_else(|| "overwrite".into());
-    let r = crate::backup::import_file(&shared, &path.to_string(), &m)?;
+    let r = crate::backup::import_file(&shared, &path.to_string(), &m, pass.as_deref())?;
     apply_runtime_cfg(&shared);
     Ok(r)
 }
@@ -2257,9 +2259,10 @@ pub fn backup_cloud_restore(
     shared: State<'_, Arc<Shared>>,
     name: String,
     mode: Option<String>,
+    pass: Option<String>,
 ) -> Result<Value, String> {
     let m = mode.unwrap_or_else(|| "overwrite".into());
-    let r = crate::backup::cloud_restore(&shared, &name, &m)?;
+    let r = crate::backup::cloud_restore(&shared, &name, &m, pass.as_deref())?;
     apply_runtime_cfg(&shared);
     Ok(r)
 }
