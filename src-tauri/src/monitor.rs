@@ -341,6 +341,17 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             let session_on = !active.is_empty() || lock.locked || clock_on || on_break;
             let want_hud = if mask_on { !session_on } else { session_on };
             let show_hud = want_hud && cfg.settings.hud.enabled;
+            // 手动遮罩的起点：HUD 在"没有自律时段"时靠它当秒表（否则一直是 00:00:00）。
+            // 只在"遮罩开着且没有自律时段"时记账，关掉或进入自律时段就清零。
+            if let Ok(mut rt) = shared.rt.lock() {
+                if mask_on && !session_on {
+                    if rt.mask_since == 0 {
+                        rt.mask_since = chrono::Local::now().timestamp();
+                    }
+                } else {
+                    rt.mask_since = 0;
+                }
+            }
             if let Some(w) = app.get_webview_window("hud") {
                 let vis = w.is_visible().unwrap_or(false);
                 if show_hud && !vis {

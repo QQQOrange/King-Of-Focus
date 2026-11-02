@@ -45,6 +45,12 @@ pub struct Runtime {
     pub lock_names: Vec<String>,
     /// 本轮自律开始时间（unix 秒），0 = 没在自律
     pub since: i64,
+    /// 手动开遮罩（不在自律时段里）的起点，0 = 没有手动遮罩。
+    ///
+    /// HUD 在没有自律时段时也要显示（它挂着「记一笔」），但那时 `since` 是 0，
+    /// 计时器会一直是 00:00:00 —— 看着像坏了。所以单独记一个"这次遮罩开了多久"，
+    /// 让 HUD 变成一块手动的专注秒表。
+    pub mask_since: i64,
     /// 当前励志短语
     pub quote: String,
     pub quote_from: String,
@@ -100,6 +106,7 @@ impl Default for Runtime {
             lock_until_text: String::new(),
             lock_names: vec![],
             since: 0,
+            mask_since: 0,
             quote: String::new(),
             quote_from: String::new(),
             celebrate: None,

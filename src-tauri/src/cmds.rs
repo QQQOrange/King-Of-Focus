@@ -1413,6 +1413,19 @@ pub fn hud_set_look(
     Ok(())
 }
 
+/// 今天累计的"专注"秒数。
+///
+/// `stats::sample` 把"自律规则生效 / 时段专注 / 固化"记到 `on`，其余记到 `off`；
+/// 手动开遮罩现在也算 `on`（用户是主动在专注），所以这里直接求和就是"今天专注了多久"。
+/// 只在 HUD 每秒拉一次状态时调用，成本是一个几十项的 map 求和。
+fn today_on_secs(shared: &Shared) -> u64 {
+    shared
+        .stats
+        .lock()
+        .map(|d| d.on.values().map(|a| a.secs).sum())
+        .unwrap_or(0)
+}
+
 /// `hud_state` 里要用的几个标量（从 Value 里挖出来，避免在 json! 里做两遍）
 struct FocusBits {
     in_segment: bool,
@@ -1424,12 +1437,13 @@ struct FocusBits {
 #[tauri::command]
 pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
     let now = chrono::Local::now().timestamp();
-    let (on, locked, elapsed, remaining, until_text, break_on, break_left, quote, quote_from) = {
+    let (on, locked, elapsed, mask_elapsed, remaining, until_text, break_on, break_left, quote, quote_from) = {
         match shared.rt.lock() {
             Ok(rt) => (
                 !rt.active.is_empty() || rt.locked,
                 rt.locked,
                 if rt.since > 0 { (now - rt.since).max(0) } else { 0 },
+                if rt.mask_since > 0 { (now - rt.mask_since).max(0) } else { 0 },
                 if rt.lock_until > 0 { (rt.lock_until - now).max(0) } else { 0 },
                 rt.lock_until_text.clone(),
                 rt.in_break,
@@ -1437,7 +1451,7 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
                 rt.quote.clone(),
                 rt.quote_from.clone(),
             ),
-            Err(_) => (false, false, 0, 0, String::new(), false, 0, String::new(), String::new()),
+            Err(_) => (false, false, 0, 0, 0, String::new(), false, 0, String::new(), String::new()),
         }
     };
     let cfg = shared.config();
@@ -1463,6 +1477,10 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         // 界面要说"遮罩中"而不是"专注中"。
         "maskOn": shared.mask.on.load(std::sync::atomic::Ordering::Relaxed),
         "elapsed": elapsed,
+        // 手动遮罩的秒表（没有自律时段时，HUD 用它当计时器）
+        "maskElapsed": mask_elapsed,
+        // 今天累计的"专注"秒数（自律时段 + 手动遮罩都算进去，见 stats::sample）
+        "todaySecs": today_on_secs(&shared),
         "remaining": remaining,
         "untilText": until_text,
         "breakOn": break_on,

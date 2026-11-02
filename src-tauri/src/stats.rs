@@ -598,11 +598,16 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
     // 规则生效 / 自律时段专注 / 固化锁定，三者任一成立都算。
     // 早期这里只判断 rt.active，导致"只用自律时段、没配规则"时
     // 明明在专注，时长却全被记到 off 那一档。
+    //
+    // 手动开的遮罩也算：用户是主动把屏幕盖上去做一件事的，
+    // 记到 off（休息）里会让统计页看起来像在摸鱼，而 HUD 又要用它显示
+    // "今天已专注多久"，两边必须是同一个数。
     let state_on = shared
         .rt
         .lock()
         .map(|rt| !rt.active.is_empty() || rt.clock_on || rt.locked)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || shared.mask.on.load(Ordering::Relaxed);
     let hour = now.hour() as usize;
 
     // 记下落点：万一接下来判定为空闲，就靠它把误记的秒扣回去

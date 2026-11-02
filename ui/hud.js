@@ -14,6 +14,8 @@ const HUD_T = {
     focus: '专注中', brk: '休息中', locked: '固化专注中', mask: '遮罩中',
     until: '至', idle: '还没有开始',
     maskHint: '想到什么就点左上角记一笔',
+    maskToday: '今天已专注 {t}',
+    maskRest: '已连续 {t} · 起来走两步？',
     breakLeft: '休息还剩 {t}，之后自动锁回',
     warn: '本轮还剩 {t} · 快结束了',
     remain: '距结束 {t}',
@@ -24,6 +26,8 @@ const HUD_T = {
     focus: 'Focusing', brk: 'On break', locked: 'Hard-locked', mask: 'Mask on',
     until: 'until', idle: 'Not started yet',
     maskHint: 'Jot a stray thought with the + button',
+    maskToday: 'Focused {t} today',
+    maskRest: 'Straight {t} · time to stretch?',
     breakLeft: 'Break ends in {t}, then locks back',
     warn: 'Left this round: {t} · almost done',
     remain: 'Ends in {t}',
@@ -31,6 +35,8 @@ const HUD_T = {
     h: 'h', m: 'min', s: 's',
   },
 };
+/** 连续这么久就提醒起来活动一下（只影响手动遮罩那一行小字） */
+const MASK_REST_HINT = 90 * 60;
 let HUD_LANG = 'zh-CN';
 
 function L(k, vars) {
@@ -99,7 +105,10 @@ async function tick() {
         ? L('mask')
         : L('focus');
 
-  document.getElementById('elapsed').textContent = hms(s.elapsed);
+  // 手动遮罩时大数字是"这次遮罩开了多久"（秒表），
+  // 自律时段里仍然是"这一轮专注了多久"。
+  const big = maskOnly ? (s.maskElapsed || 0) : (s.elapsed || 0);
+  document.getElementById('elapsed').textContent = hms(big);
 
   const until = document.getElementById('until');
   until.textContent = s.untilText ? `${L('until')} ${s.untilText}` : '';
@@ -109,7 +118,15 @@ async function tick() {
   if (s.breakOn) {
     remain.textContent = L('breakLeft', { t: hm(s.breakLeft) });
   } else if (maskOnly) {
-    remain.textContent = L('maskHint');
+    // 没有自律时段就没有"还有多久结束"这回事，所以第二行改成
+    // ① 连续坐太久给一句提醒 ② 今天累计 ③ 什么都没有时给一句引导
+    if (big >= MASK_REST_HINT) {
+      remain.textContent = L('maskRest', { t: hm(big) });
+    } else if ((s.todaySecs || 0) > 0) {
+      remain.textContent = L('maskToday', { t: hm(s.todaySecs) });
+    } else {
+      remain.textContent = L('maskHint');
+    }
   } else if (s.warn && s.breakLeft > 0) {
     remain.textContent = L('warn', { t: hm(s.breakLeft) });
   } else if (s.remaining > 0) {
