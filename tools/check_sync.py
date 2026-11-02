@@ -16,10 +16,12 @@
 
 退出码 0 = 全一致，1 = 有问题（逐条列出）。
 """
+import base64
 import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -188,10 +190,24 @@ def check_source(tag, man):
     notes = 'docs/release-notes-%s.md' % man['platforms']['windows-x64']['version']
     paths = {i['path'] for i in api(
         '/repos/%s/git/trees/%s?recursive=1' % (REPO, tag_tree))['tree']}
-    if notes not in paths:
+    items = api('/repos/%s/git/trees/%s?recursive=1' % (REPO, tag_tree))['tree']
+    blob_of = {i['path']: i['sha'] for i in items if i['type'] == 'blob'}
+    if notes not in blob_of:
         problems.append('tag %s 的源码里没有 %s —— tag 打错了版本' % (tag, notes))
     else:
         print('  tag 内容：含 %s ✓' % notes)
+        # 再核一次版本号本身：说明文件可能是上一版复制来的
+        want_version = man['platforms']['windows-x64']['version']
+        text = base64.b64decode(
+            api('/repos/%s/git/blobs/%s' % (REPO, blob_of['src-tauri/Cargo.toml']))['content']
+        ).decode('utf-8', 'replace')
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        got_version = m.group(1) if m else '?'
+        if got_version != want_version:
+            problems.append('tag %s 里 Cargo.toml 是 %s，清单是 %s'
+                            % (tag, got_version, want_version))
+        else:
+            print('  tag 内容：Cargo.toml version = %s ✓' % got_version)
     if tag_tree == local_tree:
         print('  tag 就在本地 HEAD 上')
     elif tag_tree != local_tree:
