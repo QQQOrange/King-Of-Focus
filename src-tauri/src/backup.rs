@@ -516,6 +516,24 @@ fn apply(shared: &Shared, text: &str, mode: &str, pass: Option<&str>) -> Result<
     let parsed = portable::parse(&plain)?;
     let mode = mode_norm(mode);
 
+    // 覆盖模式必须先确认这份文档里**真的**有规则和时段。
+    //
+    // `portable::parse` 只要求"任意一个分区存在"，于是一份只有 `settings`
+    // 的残缺文件也能通过校验，然后在覆盖模式下把用户所有规则、7×24 时段
+    // 清成空——界面还返回"恢复成功"。缺这两个键就拒绝，让用户改用「合并」。
+    if mode == "overwrite" && parsed.legacy.is_none() {
+        let v: Option<serde_json::Value> = serde_json::from_str(&plain).ok();
+        if let Some(v) = v {
+            if v.get("rules").is_none() || v.get("clock").is_none() {
+                return Err(
+                    "这份备份缺少 rules / clock 分区，直接覆盖会把现有规则和时段清空。\
+                     请改用「合并」，或者换一份完整备份。"
+                        .into(),
+                );
+            }
+        }
+    }
+
     // 本机备份里带了一份完整配置（`native`）：恢复时以它为底，
     // 这样遮罩 / 睡眠 / HUD / 语录 / 自启这些不在跨设备文档里的设置也能一起回来。
     // 没有这一段的（手机导出的、老备份、云端同步文件）按原来的"部分恢复"处理。
@@ -566,6 +584,7 @@ fn apply(shared: &Shared, text: &str, mode: &str, pass: Option<&str>) -> Result<
             && st.conflict == 0
             && st.slots == 0
             && next.points.balance == local.points.balance
+            && next.points.total_earned == local.points.total_earned
             && next.settings.peer_stats == local.settings.peer_stats;
         if noop {
             // 什么都不用改：既别写盘，也别报错——"这份已经并进去了"
@@ -624,6 +643,14 @@ fn apply(shared: &Shared, text: &str, mode: &str, pass: Option<&str>) -> Result<
 
 /// 落盘 + 换内存里的配置
 fn commit(shared: &Shared, next: Config) -> Result<(), String> {
+    // 覆盖前先留一份现场：恢复是一步不可逆的整份替换，
+    // 万一用户选错了备份（或者备份本身就是坏的），还有一个能回去的点。
+    let src = cfg::data_dir().join("config.json");
+    if src.exists() {
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let dst = cfg::data_dir().join(format!("config.pre-restore-{ts}.json"));
+        let _ = std::fs::copy(&src, &dst);
+    }
     cfg::save(&next)?;
     if let Ok(mut w) = shared.cfg.write() {
         *w = next;

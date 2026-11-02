@@ -141,6 +141,9 @@ async function tick() {
   // 为什么占用格言的位置而不是加一行：HUD 只有 272×122，加行会把下面的东西挤没；
   // 而专注时"我原本要做的事"比一句格言有用得多。
   if (s.inSegment) {
+    // 回填：编辑框打开时要能看见"现在写的是什么"，否则用户点开是一片空白，
+    // 一回车就把已有目标清掉了。
+    curGoal = goal;
     qEl.classList.toggle('ghost', !goal);
     qEl.dataset.goal = '1';
     if (qEl.textContent !== (goal || goalPh())) qEl.textContent = goal || goalPh();
@@ -236,10 +239,11 @@ function closeCapture() {
 async function saveCapture() {
   const text = capInput.value.trim();
   if (!text) {
-    // 目标允许清空（= 这段不写目标）；记一笔则是"什么都没写，关掉就是"
-    if (mode === 'goal') {
-      try { await invoke('focus_goal_set', { text: '' }); curGoal = ''; } catch (e) { /* 忽略 */ }
-    }
+    // 空回车 = 取消。
+    //
+    // 以前目标模式下空回车会调 focus_goal_set({text:''})，把这一段的**已有目标清掉**，
+    // 而且输入框从不回填（curGoal 一直是空串），用户点开看着是空的、一回车就丢了。
+    // 真要清空，用输入框里的内容全删后点「清空目标」那个显式按钮，不靠"手滑回车"。
     closeCapture();
     return;
   }

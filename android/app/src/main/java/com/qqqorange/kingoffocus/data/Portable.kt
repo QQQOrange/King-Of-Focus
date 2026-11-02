@@ -252,9 +252,26 @@ object Portable {
         val v = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject
             ?: throw IllegalArgumentException("这不是备份文件：内容不是合法的 JSON")
         if (v.str("kof") == KOF) {
-            val schema = v.int("schema", SCHEMA)
+            // 和桌面 `portable::parse` 同一套判据。
+            //
+            // 以前这里只判 `kof` 标记和 schema 上界：`{"kof":"king-of-focus"}` 这种
+            // 残缺/伪造文件会被当成合法备份，覆盖模式一应用就把本机规则清成空表，
+            // 界面还显示"已恢复"。桌面端会拒绝同一份文件 —— 两端行为必须一致。
+            val fmt = v.str("format")
+            if (fmt.isNotEmpty() && fmt != FORMAT) {
+                throw IllegalArgumentException("备份格式不认识：$fmt")
+            }
+            val schema = v.int("schema", 0)
+            if (schema < 1) {
+                throw IllegalArgumentException("备份文件缺少 schema，可能是别的东西改了扩展名")
+            }
             if (schema > SCHEMA) {
                 throw IllegalArgumentException("这份备份来自更新的版本（schema $schema），请先升级本应用")
+            }
+            val hasSection = listOf("rules", "clock", "points", "settings", "stats")
+                .any { v[it] != null }
+            if (!hasSection) {
+                throw IllegalArgumentException("备份文件里没有任何可恢复的内容（规则/时段/积分/设置/统计都为空）")
             }
             return Parsed(v, false)
         }

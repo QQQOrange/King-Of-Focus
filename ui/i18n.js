@@ -552,6 +552,8 @@
     '邮箱 / 用户名': 'Email / user',
     '密码 / 应用密码': 'Password / app password',
     '备份密码': 'Backup password',
+    '后台服务暂时不可用，正在自动重试…': 'Backend is temporarily unavailable — retrying automatically…',
+    '重试一次': 'Retry',
     '这份备份用的是另一个密码': 'This backup uses a different password',
     '当初的备份密码': 'The password used back then',
     '用这个密码恢复': 'Restore with this password',

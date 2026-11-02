@@ -160,6 +160,38 @@ pub fn stop_and_wait(timeout_ms: u64) -> bool {
     STOPPED.load(Ordering::Relaxed)
 }
 
+/// 退出前的兜底还原（幂等）。
+///
+/// 遮罩线程正常情况下会自己把摘顶 / 抬升过的窗口还回去；但线程可能卡在某一帧里
+/// 没赶上 `stop_and_wait` 的等待，进程一退就没人还了——用户会发现自己的播放器
+/// 永久钉在置顶带上。所以退出流程无条件再跑一遍：
+/// · `restore_demoted()` 用的是全局表，重复调用安全；
+/// · 抬升过的窗口照 `RAISED_ANY` 这张影子表还原。
+pub fn restore_on_exit() {
+    unsafe {
+        restore_demoted();
+        let list: Vec<(isize, bool)> = match RAISED_ANY.lock() {
+            Ok(mut g) => std::mem::take(&mut *g),
+            Err(_) => return,
+        };
+        for (raw, was_topmost) in list {
+            let h = raw as Hwnd;
+            if IsWindow(h) == 0 || was_topmost {
+                continue;
+            }
+            SetWindowPos(
+                h,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            );
+        }
+    }
+}
+
 
 /// 通知遮罩线程"状态变了，立刻重算一帧"。任何改 MaskCtl 的地方都该调一下。
 pub fn wake() {
@@ -1054,6 +1086,12 @@ struct Raised {
     was_topmost: bool,
 }
 
+/// 被抬到 topmost 的窗口的全局影子表：只给"退出时兜底还原"用。
+///
+/// `release_raised` 操作的是遮罩线程自己的 `Vec<Raised>`，线程没收尾就没人还原，
+/// 用户的播放器会永久钉在置顶带上。退出流程不依赖线程能跑完，直接照这张表还原。
+static RAISED_ANY: Mutex<Vec<(isize, bool)>> = Mutex::new(Vec::new());
+
 /// 把窗口提到遮罩之上（保持位置、大小、激活状态不变）。
 ///
 /// 注意对**已经是 topmost** 的窗口，`SetWindowPos(HWND_TOPMOST)` 是空操作，
@@ -1068,6 +1106,14 @@ unsafe fn ensure_above(h: Hwnd, raised: &mut Vec<Raised>) {
         // 不在置顶带里：必须变成 topmost，否则永远在遮罩下面。这一步只做一次。
         if !raised.iter().any(|r| r.hwnd == h) {
             raised.push(Raised { hwnd: h, was_topmost: false });
+            // 同时记一份到全局表：遮罩线程如果没能在退出前收尾（卡在某帧里、
+            // 被强杀），退出流程还要靠它把别人的窗口层级还原回去。
+            if let Ok(mut g) = RAISED_ANY.lock() {
+                let x = h as isize;
+                if !g.iter().any(|(y, _)| *y == x) {
+                    g.push((x, false));
+                }
+            }
         }
         SetWindowPos(
             h,

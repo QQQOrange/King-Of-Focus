@@ -240,21 +240,22 @@ pub fn start_auto(shared: Arc<Shared>) {
             // 自动同步一次都没跑过。
             if sy.enabled && sy.auto {
                 let r = smart(&shared);
-                let mut c2 = shared.config();
-                // last_sync 只在**成功**时前进。
-                // 以前失败也刷：断网 / 口令错 / 被纪律拦下时，界面上写着
-                // "上次同步 <刚刚>"，用户会以为同步是好的，其实一直在失败。
-                if r.is_ok() {
-                    c2.settings.sync.last_sync = chrono::Local::now().timestamp();
-                    c2.settings.sync.last_result = r.clone().unwrap_or_default();
-                }
-                c2.settings.sync.last_error = r.as_ref().err().cloned().unwrap_or_default();
                 // 记账写入，不能刷新 updated_at：否则本机永远"比云端新"，
                 // 另一台设备刚上传的规则会被这边的过期配置覆盖掉。
-                let _ = cfg::save_quiet(&c2);
-                if let Ok(mut w) = shared.cfg.write() {
-                    *w = c2;
-                }
+                //
+                // 用 update_config_quiet：整段"改字段 + 写盘 + 写回内存"在写锁里，
+                // 不会把这期间用户保存的设置抹掉。
+                let _ = shared.update_config_quiet(|c2| {
+                    // last_sync 只在**成功**时前进。
+                    // 以前失败也刷：断网 / 口令错 / 被纪律拦下时，界面上写着
+                    // "上次同步 <刚刚>"，用户会以为同步是好的，其实一直在失败。
+                    if r.is_ok() {
+                        c2.settings.sync.last_sync = chrono::Local::now().timestamp();
+                        c2.settings.sync.last_result = r.clone().unwrap_or_default();
+                    }
+                    c2.settings.sync.last_error = r.as_ref().err().cloned().unwrap_or_default();
+                    Ok(())
+                });
             }
             let mins = shared.config().settings.sync.auto_minutes.clamp(5, 1440) as u64;
             thread::sleep(Duration::from_secs(mins * 60));

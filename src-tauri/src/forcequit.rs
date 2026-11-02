@@ -232,13 +232,17 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> 
         let msg = wparam as u32;
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
             let st = &*(lparam as *const KbdLlHookStruct);
-            // 记下 Alt 被按下的时刻：窗口关闭请求到达时 Alt 可能已经松开了，
-            // 靠这个时间戳才能把 Alt+F4 和"点 X"区分开。
-            if st.vk_code as i32 == VK_MENU {
-                ALT_AT.store(GetTickCount64(), Ordering::Relaxed);
-            }
-            // 只判 F4；其它按键在这里立刻放行（绝大多数按键走这条快路径）
+            // 只在"Alt + F4"这个组合上记时间戳。
+            //
+            // 以前任何 Alt keydown 都记，于是 Alt+Tab 切回本程序后 1.5 秒内点右上角 X
+            // 会被判成 Alt+F4 —— 用户以为只是收进托盘，实际整个进程退出了。
+            // 窗口关闭请求到达时 Alt 往往已经松开，所以时间戳仍然要留，
+            // 但它必须由 F4 触发才算数。
             if st.vk_code as i32 == VK_F4 {
+                if key_down(VK_MENU) {
+                    ALT_AT.store(GetTickCount64(), Ordering::Relaxed);
+                }
+                // 只判 F4；其它按键在这里立刻放行（绝大多数按键走这条快路径）
                 let ctrl = key_down(VK_CONTROL);
                 let alt = key_down(VK_MENU);
                 let fg_ours = foreground_is_ours();
@@ -381,8 +385,10 @@ pub fn cleanup_steps() -> Vec<QuitStep> {
         QuitStep::ResumeMedia,
         QuitStep::StopMask,
         QuitStep::FlushStats,
-        QuitStep::ReleaseLock,
         QuitStep::Unhook,
+        // 放锁必须是最后一步：它之前还要停遮罩线程、刷统计、卸钩子，
+        // 提前放锁会让"正在退出"的那几百毫秒里被再拉起一个实例。
+        QuitStep::ReleaseLock,
     ]
 }
 
@@ -455,14 +461,18 @@ pub fn cleanup_for_exit(shared: &Shared) {
                 crate::media::set_active(false);
             }
             QuitStep::StopMask => {
-                // 等遮罩线程收尾：还原被抬升/摘顶的窗口、注销热键、恢复定时器精度
-                crate::mask::stop_and_wait(600);
+                // 等遮罩线程收尾：还原被抬升/摘顶的窗口、注销热键、恢复定时器精度。
+                //
+                // 超时给到 2 秒：遮罩线程单帧最长会等 1000ms（`mask.rs` 的
+                // `wait_event`），600ms 的预算经常不够，超时后 restore_demoted /
+                // release_raised 就不跑了 —— 用户的播放器会永远钉在 topmost 上。
+                crate::mask::stop_and_wait(2000);
+                // 超时（或线程已经没了）也强制还原一次：幂等操作，代价只有几次
+                // SetWindowPos，换来的是"退出之后别人的窗口层级是干净的"。
+                crate::mask::restore_on_exit();
             }
             QuitStep::FlushStats => {
                 crate::stats::flush(shared);
-            }
-            QuitStep::ReleaseLock => {
-                crate::release_instance_lock();
             }
             QuitStep::Unhook => unsafe {
                 let h = HOOK_HANDLE.swap(std::ptr::null_mut(), Ordering::SeqCst);
@@ -471,6 +481,12 @@ pub fn cleanup_for_exit(shared: &Shared) {
                 }
                 UnregisterHotKey(std::ptr::null_mut(), HOTKEY_ID_FORCE_QUIT);
             },
+            QuitStep::ReleaseLock => {
+                // 放在最后：前面几步 + Tauri 收尾还要几百毫秒到几秒，
+                // 提前放锁会让"退出中"的窗口期里被自启项/双击再拉起一个实例，
+                // 两个进程各跑一套 monitor/stats，同一份文件交替覆盖。
+                crate::release_instance_lock();
+            }
         }
     }
 }

@@ -111,39 +111,65 @@ pub fn segment_bounds(cfg: &Config, now: NaiveDateTime) -> Option<(i64, i64, Str
     let mut start = base + Duration::minutes(from as i64);
     let mut end = base + Duration::minutes(to as i64);
 
-    // 往前接：上一小时整段被选中（to == 60）才连得上
+    // 往前接：上一小时整段被选中（to == 60）**且属于同一段**才连得上。
+    //
+    // 只看边界的话，09:00–10:00 和 10:00–11:00 这两个独立时段会被并成一段：
+    // 第二段沿用第一段的段目标、打断计数接着累加、第一段的押注到点也不结算。
+    let cur_seg = crate::clock::plan_seg(cfg, wd, hour);
     let mut cursor = base;
+    let mut steps = 0;
     for _ in 0..24 {
         if start != cursor {
             break; // 当前段不是从整点开始的（09:15 那种），不再往前并
         }
         let prev = cursor - Duration::hours(1);
         let hm = prev.hour();
-        let Some(prev_wins) = crate::clock::plan_wins(cfg, prev.weekday().num_days_from_monday(), hm)
-        else {
+        let pwd = prev.weekday().num_days_from_monday();
+        let Some(prev_wins) = crate::clock::plan_wins(cfg, pwd, hm) else {
             break;
         };
         let Some((_, _, f, t)) = prev_wins.last() else { break };
         if *t != 60 {
             break; // 上一小时的窗口没顶到整点，说明中间有空隙
         }
+        if !crate::clock::same_seg(cur_seg.as_deref(), crate::clock::plan_seg(cfg, pwd, hm).as_deref())
+        {
+            break; // 边界贴合但是两段不同的时段
+        }
         start = prev + Duration::minutes(*f as i64);
         cursor = prev;
+        steps += 1;
+    }
+    // 走了满 24 小时还连着 → 这是"7×24"这类没有自然边界的配置。
+    // 以前就停在这里，于是起点随着时钟**每小时向后滑一小时**：同一个物理时段
+    // 每小时换一个 id，段目标取不到、打断计数归零、押注还在专注时就被结算。
+    // 改成用"今天 00:00"当起点：稳定，不随时钟滑动。
+    if steps == 24 {
+        if let Some(mid) = now.date().and_hms_opt(0, 0, 0) {
+            if mid > start {
+                start = mid;
+            }
+        }
     }
 
-    // 往后接：这一小时顶到整点、下一小时从 0 分开始
+    // 往后接：这一小时顶到整点、下一小时从 0 分开始，且同属一段
     let mut cursor = end;
+    let mut fsteps = 0;
     for _ in 0..24 {
         if cursor != cursor.date().and_hms_opt(cursor.hour(), 0, 0).unwrap_or(cursor) {
             break;
         }
         let hm = cursor.hour();
-        let Some(next_wins) = crate::clock::plan_wins(cfg, cursor.weekday().num_days_from_monday(), hm)
-        else {
+        let nwd = cursor.weekday().num_days_from_monday();
+        let Some(next_wins) = crate::clock::plan_wins(cfg, nwd, hm) else {
             break;
         };
         let Some((_, _, f, t)) = next_wins.first() else { break };
         if *f != 0 {
+            break;
+        }
+        if !crate::clock::same_seg(cur_seg.as_deref(), crate::clock::plan_seg(cfg, nwd, hm).as_deref())
+        {
             break;
         }
         let nxt_end = cursor + Duration::minutes(*t as i64);
@@ -152,6 +178,15 @@ pub fn segment_bounds(cfg: &Config, now: NaiveDateTime) -> Option<(i64, i64, Str
         }
         end = nxt_end;
         cursor = nxt_end;
+        fsteps += 1;
+    }
+    if fsteps == 24 {
+        // 同上：没有自然边界时用"明天 00:00"收尾
+        if let Some(next_mid) = (now.date() + Duration::days(1)).and_hms_opt(0, 0, 0) {
+            if next_mid < end {
+                end = next_mid;
+            }
+        }
     }
 
     let label = format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"));

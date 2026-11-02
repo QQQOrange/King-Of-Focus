@@ -1193,8 +1193,13 @@ fn save_sched(s: &SchedState) {
 }
 
 fn prune(cfg: &Config) {
-    let keep = cfg.settings.stats.retention_days.max(30) as i64;
-    let cutoff = Local::now().date_naive() - CDur::days(keep);
+    // 夹住上限：`NaiveDate - Duration::days(huge)` 会 panic，而 prune 跑在
+    // stats 线程里，一 panic 这条线程就死了——本次运行内日报周报月报再也不生成，
+    // 界面上却毫无提示。sanitize 也夹了一次，这里是最后一道防线。
+    let keep = cfg.settings.stats.retention_days.clamp(30, 3650) as u64;
+    let Some(cutoff) = Local::now().date_naive().checked_sub_days(chrono::Days::new(keep)) else {
+        return;
+    };
     let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
 
     if let Ok(rd) = std::fs::read_dir(stats_dir().join("days")) {

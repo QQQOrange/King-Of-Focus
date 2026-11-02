@@ -154,14 +154,18 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     // 跨天重置解锁次数
     let today = crate::sched::now_local().format("%Y-%m-%d").to_string();
     {
-        let mut c = shared.config();
+        // 先读一次判断要不要动锁：这个函数每秒被拉一次，
+        // 没必要每秒都抢一次写锁。
+        let c = shared.config();
         if c.points.day != today {
-            c.points.day = today.clone();
-            c.points.unlock_count_today = 0;
-            let _ = cfg::save(&c);
-            if let Ok(mut w) = shared.cfg.write() {
-                *w = c;
-            }
+            // 拿到锁后再确认一次（双检）：这期间别的线程可能已经重置过了。
+            let _ = shared.update_config(|c| {
+                if c.points.day != today {
+                    c.points.day = today.clone();
+                    c.points.unlock_count_today = 0;
+                }
+                Ok(())
+            });
         }
     }
     let config = shared.config();
@@ -308,19 +312,30 @@ pub fn save_config(shared: State<'_, Arc<Shared>>, config: Config) -> Result<(),
             if info.until_text.is_empty() { "本时段".to_string() } else { info.until_text }
         ));
     }
-    // 自律时段内：拒绝"削弱纪律"的改动（关规则、关自律时段、取消已选时段……）
-    // 界面上的开关虽然已经置灰，但真正把关的是这一层——直接调命令也绕不过去。
-    let old = shared.config();
-    if let Some(why) = crate::guard::discipline_violation(&old, &config) {
-        return Err(why);
-    }
-    let mut c = config;
-    cfg::sanitize(&mut c);
-    c.updated_at = chrono::Local::now().timestamp();
-    cfg::save(&c)?;
-    if let Ok(mut w) = shared.cfg.write() {
-        *w = c;
-    }
+    // 关键：前端发来的是**上一次 pull 的整份快照**，不是"这次改了哪几个字段"。
+    //
+    // 以前直接把它落盘，于是快照与实时状态之间的那 0–1.5 秒里，后台加的分、
+    // 扣的分、买的解锁时间、写回的同步状态，全部被"退回"到快照值——
+    // 而且磁盘也一起退回，重启救不回来。所以服务器自己维护的字段一律以
+    // 内存现值（拿到写锁之后的那一份）为准，只有用户能编辑的才采用前端值。
+    //
+    // 自律时段内还要拒绝"削弱纪律"的改动（关规则、关自律时段、取消已选时段……）：
+    // 界面上的开关虽然已经置灰，但真正把关的是这一层，直接调命令也绕不过去。
+    shared.update_config(move |live| {
+        let mut c = config;
+        // —— 服务器自己维护、前端无权修改的字段 ——
+        c.points = live.points.clone();
+        c.settings.peer_stats = live.settings.peer_stats.clone();
+        c.settings.sync.last_sync = live.settings.sync.last_sync;
+        c.settings.sync.last_error = live.settings.sync.last_error.clone();
+        c.settings.sync.last_result = live.settings.sync.last_result.clone();
+        cfg::sanitize(&mut c);
+        if let Some(why) = crate::guard::discipline_violation(live, &c) {
+            return Err(why);
+        }
+        *live = c;
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -1727,21 +1742,20 @@ pub fn stats_flush(shared: State<'_, Arc<Shared>>) {
 // ---------------- 云同步 ----------------
 
 fn after_sync(shared: &Shared, r: Result<String, String>) -> Result<String, String> {
-    let mut c = shared.config();
-    match &r {
-        Ok(m) => {
-            // last_sync 只在成功时前进（和自动同步同一口径）
-            c.settings.sync.last_sync = chrono::Local::now().timestamp();
-            c.settings.sync.last_result = m.clone();
-            c.settings.sync.last_error.clear();
+    // 记账写入：只更新"上次同步时间/结果"，不能刷新 updated_at。
+    // 用 update_config_quiet 保证"读-改-写"在锁里，不会把用户的设置改动抹掉。
+    let _ = shared.update_config_quiet(|c| {
+        match &r {
+            Ok(m) => {
+                // last_sync 只在成功时前进（和自动同步同一口径）
+                c.settings.sync.last_sync = chrono::Local::now().timestamp();
+                c.settings.sync.last_result = m.clone();
+                c.settings.sync.last_error.clear();
+            }
+            Err(e) => c.settings.sync.last_error = e.clone(),
         }
-        Err(e) => c.settings.sync.last_error = e.clone(),
-    }
-    // 记账写入：只更新"上次同步时间/结果"，不能刷新 updated_at
-    let _ = cfg::save_quiet(&c);
-    if let Ok(mut w) = shared.cfg.write() {
-        *w = c;
-    }
+        Ok(())
+    });
     r
 }
 
@@ -1829,26 +1843,29 @@ pub async fn update_check(
 ) -> Result<Value, String> {
     let shared = shared.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // 只用这份配置去发请求，绝不拿它回写：`update::check` 最长要 12 秒，
+        // 这期间后台加的积分、买的解锁、用户改的设置都会在这份快照里缺席。
+        // 以前直接把它落盘并覆盖内存，等于把 12 秒内的所有改动静默回滚。
         let mut c = shared.config();
         // 用户可能刚把令牌粘进输入框就点了「立即检查」：先用上它，别逼他先去保存
         if let Some(t) = token {
             let t = t.trim().to_string();
             if !t.is_empty() && t != c.settings.update.token {
-                c.settings.update.token = t;
-                let _ = cfg::save(&c);
-                if let Ok(mut w) = shared.cfg.write() {
-                    *w = c.clone();
-                }
+                c.settings.update.token = t.clone();
+                let _ = shared.update_config(|live| {
+                    live.settings.update.token = t;
+                    Ok(())
+                });
             }
         }
         let v = crate::update::check(&c.settings.update);
-        let mut c2 = c.clone();
-        c2.settings.update.last_check = chrono::Local::now().timestamp();
-        // 记账写入：检查时间不是用户改的配置，别让它把 updated_at 顶上去
-        let _ = cfg::save_quiet(&c2);
-        if let Ok(mut w) = shared.cfg.write() {
-            *w = c2;
-        }
+        // 记账写入：只更新"上次检查时间"，而且是在**当前**配置上改，
+        // 不是把 12 秒前的快照写回去。检查时间不是用户改的配置，
+        // 所以用 save_quiet，别把 updated_at 顶上去。
+        let _ = shared.update_config_quiet(|live| {
+            live.settings.update.last_check = chrono::Local::now().timestamp();
+            Ok(())
+        });
         v
     })
     .await

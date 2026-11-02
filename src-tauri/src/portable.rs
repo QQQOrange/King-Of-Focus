@@ -266,10 +266,16 @@ impl Doc {
         let stats = self.adopt_stats(base);
         let mut out = base.clone();
         out.rules = normalize_rules(&self.rules);
+        // 「时段内让规则立即生效」是本机策略，手机端根本没有这个概念（它写死 true）。
+        // 整块覆盖会让用户特意关掉的开关被一份手机备份悄悄打开——等于绕过了自律。
+        let keep_apply = out.settings.focus_clock.apply_rules;
         out.settings.focus_clock = self.clock.clone();
+        out.settings.focus_clock.apply_rules = keep_apply;
         // 积分：只搬四个共享项。「今天用了几次」是本机记账，恢复备份不该把它清零
         out.points.balance = self.points.balance;
-        out.points.total_earned = self.points.total_earned;
+        // 累计获得取较大值：手机端的 Config 没有这个字段，导出时拿余额顶替，
+        // 直接照单全收会把"累计 500"改成"累计 30"。
+        out.points.total_earned = self.points.total_earned.max(base.points.total_earned);
         out.points.unlock_until = self.points.unlock_until;
         out.points.sleep_unlock_until = self.points.sleep_unlock_until;
         // 空串 = 这台设备没有这个概念（手机端没有语言/配色切换），保持本机原样。

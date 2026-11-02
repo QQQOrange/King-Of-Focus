@@ -255,6 +255,10 @@ pub fn sanitize(c: &mut Config) {
     // HUD：只认四个角，透明度夹在 30–100（太低看不清、太高挡内容）
     c.settings.hud.corner = c.settings.hud.corner_norm().to_string();
     c.settings.hud.opacity = c.settings.hud.opacity_pct();
+    // 统计保留天数必须夹住：`prune()` 里用 `NaiveDate - days(n)` 算截止日，
+    // 一个手改出来的 100000 会直接 panic，把自动报告线程整条打死
+    //（进程还活着、界面正常，只是日报周报再也不生成了）。
+    c.settings.stats.retention_days = c.settings.stats.retention_days.clamp(30, 3650);
     c.settings.poll_ms = c.settings.poll_ms.clamp(300, 5000);
     c.settings.grace_secs = c.settings.grace_secs.clamp(20, 600);
     // 休息结束收尾：模式只认 soft / hard，写错一律按柔和（不会意外变强杀）

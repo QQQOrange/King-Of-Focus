@@ -134,10 +134,23 @@ function hhmm(ts) {
 function mins(m) { return `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`; }
 function sliceTotal(arr) { return (arr || []).reduce((a, b) => a + (b.secs || 0), 0); }
 
+/**
+ * 把后端抛出来的错误整理成一句能直接给用户看的话。
+ *
+ * Tauri 的 `Err(String)` 到前端会变成 `Error("...")`，直接拼进提示里就会出现
+ * 「同步失败：Error: 密码不对」这种半截英文前缀。以前有 30 多处各自 `.replace()`，
+ * 新的调用点总会忘，所以统一收在这里。
+ */
+function errText(v) {
+  let s = typeof v === 'string' ? v : (v && v.message ? String(v.message) : String(v));
+  s = s.replace(/^Error:\s*/, '').replace(/^Error:\s*/, '').trim();
+  return s || '未知错误';
+}
+
 function toast(msg, kind) {
   const el = document.createElement('div');
   el.className = 'toast ' + (kind || '');
-  el.textContent = L(msg);
+  el.textContent = L(errText(msg));
   $('#toastRoot').appendChild(el);
   // 先播退场（淡出 + 上移），再真正移除——直接 remove 会"啪"地消失
   setTimeout(() => {
@@ -1900,6 +1913,15 @@ function ccNameDialog(mode) {
  */
 let _modeResolve = null;
 
+/**
+ * 当前弹窗被"非按钮方式"关掉（Esc / 点遮罩 / 新弹窗顶替）时的回调解。
+ *
+ * 有些弹窗本质是 `await 用户选一个值`：选择恢复方式、输入旧备份密码。
+ * 它们必须在**任何**关闭路径上兑现，否则调用方会永久挂起（弹窗没了，
+ * 恢复既没成功也没失败）。
+ */
+let MODAL_ON_CLOSE = null;
+
 function askRestoreMode(title, sub) {
   return new Promise((resolve) => {
     if (_modeResolve) { const old = _modeResolve; _modeResolve = null; old(null); }
@@ -1929,6 +1951,10 @@ function askRestoreMode(title, sub) {
           </div>
         </div>
       </div>`;
+    // Esc / 点遮罩关掉时也要兑现：否则调用方的 await 永远挂着，恢复静默失效。
+    MODAL_ON_CLOSE = () => {
+      if (_modeResolve) { const r = _modeResolve; _modeResolve = null; r(null); }
+    };
   });
 }
 
@@ -1936,6 +1962,7 @@ function askRestoreMode(title, sub) {
 function pickRestoreMode(act) {
   const r = _modeResolve;
   _modeResolve = null;
+  MODAL_ON_CLOSE = null;
   closeModal();
   if (r) r(act === 'mode-merge' ? 'merge' : act === 'mode-overwrite' ? 'overwrite' : null);
 }
@@ -2010,9 +2037,12 @@ function promptBackupPass() {
         </div>
       </div>`;
     const done = (v) => {
+      MODAL_ON_CLOSE = null;
       root.innerHTML = '';
       resolve(v);
     };
+    // Esc / 点遮罩关掉时也要兑现（否则 await 永久挂起）
+    MODAL_ON_CLOSE = () => resolve(null);
     const ok = () => {
       const v = (($('#bakPass') || {}).value || '').trim();
       if (!v) { toast('请输入密码', 'err'); return; }
@@ -7464,7 +7494,7 @@ const Act = window.Act = {
     try {
       S.cloud = await invoke('backup_cloud_list');
       renderCloudModal();
-    } catch (e) { toast('读取失败：' + e, 'err'); }
+    } catch (e) { toast('读取失败：' + errText(e), 'err'); }
   },
   async cloudUpload() {
     try {
@@ -7537,7 +7567,7 @@ const Act = window.Act = {
         st.alwaysOnTop = next;
         toast(next ? '主窗口已置顶' : '已取消置顶', 'ok');
       } catch (e) {
-        toast('切换置顶失败：' + e, 'err');
+        toast('切换置顶失败：' + errText(e), 'err');
       }
       await pull(); render(); return;
     }
@@ -7715,7 +7745,7 @@ const Act = window.Act = {
       toast(msg || '同步完成', 'ok');
     } catch (e) {
       await pull(); render();
-      toast('同步失败：' + e, 'err');
+      toast('同步失败：' + errText(e), 'err');
     }
   },
 
@@ -8903,7 +8933,7 @@ const Act = window.Act = {
       } else {
         toast('已经是最新版本 v' + r.current, 'ok');
       }
-    } catch (e) { toast('检查失败：' + e, 'err'); }
+    } catch (e) { toast('检查失败：' + errText(e), 'err'); }
   },
   async clearToken() {
     try {
@@ -9083,6 +9113,12 @@ function closeModal() {
   // 总览页再也不会自动刷新。
   if (S.modalMode === 'editor' || S.modalMode === 'slot') S.editing = null;
   S.modalMode = '';
+  // 有些弹窗是"等用户选一个值"的 Promise（选择恢复方式、输入旧备份密码）。
+  // 用 Esc / 点遮罩关掉时必须把它们 resolve(null)，否则调用方那个 await 永远挂着：
+  // 弹窗关掉了，但"恢复"既没成功也没失败，什么都不发生。
+  const onClose = MODAL_ON_CLOSE;
+  MODAL_ON_CLOSE = null;
+  if (onClose) { try { onClose(); } catch (_) { /* 忽略 */ } }
   const mask = root.querySelector('.modal-mask');
   if (!mask) { root.innerHTML = ''; return; }
   mask.classList.add('closing');
@@ -9844,6 +9880,30 @@ document.addEventListener('click', async (e) => {
     await dxLoad();
     return;
   }
+  if (act === 'dx-on') {
+    // 这个开关以前**没有任何 handler**：点一下视觉变了，但不落盘，
+    // 任何一次重绘又亮回去，HUD 上的「＋」也还在。现在点一下就保存。
+    const box = $('#dxOn');
+    const on = box ? box.checked : true;
+    const cur = (S.data.config.settings || {}).distract || {};
+    const numOr = (sel, fallback) => {
+      const el = $(sel);
+      const v = el ? parseInt(el.value, 10) : NaN;
+      return Number.isFinite(v) ? v : fallback;
+    };
+    try {
+      await invoke('distract_save', {
+        enabled: on,
+        remindMinutes: numOr('#dxMin', cur.remindMinutes || 0),
+        remindMaxDays: numOr('#dxMaxDays', cur.remindMaxDays || 0),
+        buttonCorner: cur.buttonCorner || 'tl',
+      });
+      await pull();
+      toast(on ? '分心事件已开启' : '分心事件已关闭', 'ok');
+    } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
+    return;
+  }
+  if (act === 'reload-app') { location.reload(); return; }
   if (act === 'dx-mask') {
     const box = $('#dxMask');
     const on = box ? box.checked : true;
@@ -11629,11 +11689,13 @@ function ccSegText(d, seg) {
 }
 
 /** ② 右键落在**已有时段**里 → 只针对这一段 */
-function ccOpenSegMenu(d, seg) {
+function ccOpenSegMenu(d, seg, hourAt) {
   ccCloseMenu();
   const prof = clockProfile();
   const a = seg.h0 * 60 + seg.f0;
   const b = seg.h1 * 60 + (seg.t1 >= 60 ? 60 : seg.t1);
+  // 右键落在哪一小时：垂直刻度表只列**这一小时**的四个刻度
+  const hList = Number.isFinite(hourAt) ? hourAt : seg.h0;
 
   // 说明：这里**只认右键点中的这一段**。
   // 拖选是"一段连续区间"，而连续区间一旦提交就必然合成一段（见 ccSegs），
@@ -11657,7 +11719,18 @@ function ccOpenSegMenu(d, seg) {
     </div>
     <div class="cc-menu-hint" id="ccWinHint">起止分钟只改这一段的首 / 尾小时（${WD[d]} ${pad(seg.h0)}:00 与 ${pad(seg.h1)}:00 那两格），中间小时保持整点。</div>
     <label class="cc-menu-def"><input type="checkbox" id="ccDefToo" checked> 同时设为通用时长（之后新选的时段沿用）</label>
-    <div class="cc-menu-hint">休息期间不拦截、不遮罩；排不满 60 分钟的尾段算继续专注。</div>`;
+    <div class="cc-menu-hint">休息期间不拦截、不遮罩；排不满 60 分钟的尾段算继续专注。</div>
+    <div class="cc-tl-list" id="ccTlList">
+      <div class="cc-tl-hd">
+        <span class="cc-tl-c-idx">#</span>
+        <span class="cc-tl-c-day">星期</span>
+        <span class="cc-tl-c-time">起止时间</span>
+        <span class="cc-tl-c-type">类型</span>
+        <span class="cc-tl-c-note">备注</span>
+        <span class="cc-tl-c-act">状态</span>
+      </div>
+      <div id="ccTlRows"></div>
+    </div>`;
   const foot = `
     <button class="btn btn-danger" id="ccSegDel" data-armed="0">取消这一段</button>
     <span style="flex:1"></span>
@@ -11668,7 +11741,36 @@ function ccOpenSegMenu(d, seg) {
   ccMenu = $('#modalRoot');
   $('#ccW') && $('#ccW').focus();
 
+  // 垂直刻度表：列出**右键那一小时**的四个刻度，点一下就切掉/补回这一段
+  const renderSegRows = () => {
+    const box = $('#ccTlRows');
+    if (!box) return;
+    const segs = ccBuildSegments({ d0: d, d1: d, h0: hList, h1: hList });
+    if (!segs.length) { box.innerHTML = '<div class="cc-tl-empty">这个范围里没有可设置的刻度</div>'; return; }
+    box.innerHTML = segs.map((s, i) => `
+      <div class="cc-tl-row ${s.on ? 'on' : 'off'} type-${s.type}">
+        <span class="cc-tl-idx">${i + 1}</span>
+        <span class="cc-tl-day">${WD[s.d]}</span>
+        <span class="cc-tl-time">${ccSegTimeText(s)}</span>
+        <span class="cc-tl-type">${ccSegTypeText(s)}</span>
+        <span class="cc-tl-note">${s.note}${s.on && s.type === 'focus' ? ` · 累计专注 ${s.cumFocus} 分` : ''}</span>
+        <span class="cc-tl-act">
+          <button class="cc-tl-btn ${s.on ? 'on' : ''}" data-tl="${s.d},${s.h},${s.q}"
+            title="${s.on ? '点一下取消这 15 分钟' : '点一下选中这 15 分钟'}">${s.on ? '已选中' : '未选中'}</button>
+        </span>
+      </div>`).join('');
+  };
+  renderSegRows();
+
   ccBindMenu(async (e) => {
+    // 刻度表里的开关：切掉 / 补回这 15 分钟，随后重画表
+    const tl = e.target.closest('[data-tl]');
+    if (tl) {
+      const [dd, hh, qq] = tl.dataset.tl.split(',').map(Number);
+      await Act.clockToggleQ(dd, hh, qq);
+      renderSegRows();
+      return;
+    }
     // 取消这一段：两步确认，避免手滑
     const del = e.target.closest('#ccSegDel');
     if (del) {
@@ -11893,7 +11995,15 @@ function ccOpenDayMenu(d) {
  * 用 capture 阶段先拦一刀：只在"原生菜单要不要弹"这一层生效，
  * 下面监听 contextmenu 的业务逻辑（时段格子）照常收到事件。
  */
-document.addEventListener('contextmenu', (e) => { e.preventDefault(); }, { capture: true });
+document.addEventListener('contextmenu', (e) => {
+  // 输入控件保留原生菜单：粘贴 GitHub 令牌、粘贴浏览器路径、复制域名是文档里
+  // 明确让用户做的动作，一刀切掉等于让这些步骤没法用。
+  const t = e.target;
+  if (t && t.closest && t.closest('input, textarea, [contenteditable=""], [contenteditable="true"]')) {
+    return;
+  }
+  e.preventDefault();
+}, { capture: true });
 
 document.addEventListener('contextmenu', (e) => {
   // 语录区的右键归来源菜单管（上面那个监听已处理）。
@@ -11928,7 +12038,7 @@ document.addEventListener('contextmenu', (e) => {
   const seg = real
     ? ccSegAt(d, ccGrainAt(d, e.clientY).idx * ccStep())
     : ccSegAtHour(d, h);
-  if (seg) ccOpenSegMenu(d, seg);
+  if (seg) ccOpenSegMenu(d, seg, h);
   else ccOpenCellMenu(d, h);
 });
 
@@ -12030,22 +12140,35 @@ document.documentElement.dataset.theme = window.matchMedia('(prefers-color-schem
   await pull();
   await loadReports();
   await loadBackups();
-  if (!S.data) { $('#content').innerHTML = '<div class="empty">无法连接后台服务</div>'; return; }
+  // 轮询必须在任何 return 之前挂上。
+  //
+  // 以前这里 `if (!S.data) { ...; return; }` 直接返回，于是后端只要在启动那一瞬
+  // 不可用（配置目录被占用、杀软在扫、rt 锁中毒），整个窗口就永久停在
+  // "无法连接后台服务"：不轮询、不重试、主题语言都没初始化，点导航永远转圈。
+  setInterval(pull, 1500);
+  window.addEventListener('focus', () => { pull(); });
+  if (!S.data) {
+    markOffline(true);
+    $('#content').innerHTML =
+      '<div class="empty">后台服务暂时不可用，正在自动重试…<br>'
+      + '<button class="btn btn-sm" style="margin-top:12px" data-act="reload-app">重试一次</button></div>';
+    return;
+  }
   S.customStart = todayStr();
   S.customEnd = todayStr();
   I.setLang(langPref());
   applyMotionPref();
   render();
   applyLang();
-  setInterval(pull, 1500);
   // 从托盘恢复窗口时立刻刷一次：窗口隐藏期间 WebView 的定时器会被系统降频，
   // 遮罩/自律状态可能早就变了，等下一拍轮询会在这一瞬间显示旧值。
-  window.addEventListener('focus', () => { pull(); });
-  // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导
-  promptBrowserSetup();
-  // 新装第一次启动：直接把向导弹出来，而不是让人自己找
+  // 新装第一次启动：先把向导弹出来，而不是让人自己找
   // （老配置里没有 onboarded 这个键 → undefined，不算 false，所以老用户不会被弹）
   if ((((S.data.config || {}).settings || {}).onboarded) === false) wizOpen();
+  // 启动时自动识别浏览器与插件状态，缺失就弹一次安装引导。
+  // 必须排在向导**之后**且 await：browsers_scan 会让出执行权，它写的弹窗
+  // 会把刚打开的向导盖掉（新人第一次看到的是"插件没装"而不是三步引导）。
+  else await promptBrowserSetup();
 
   // 下载进度
   if (T && T.event) {

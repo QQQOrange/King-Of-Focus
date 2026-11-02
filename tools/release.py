@@ -68,7 +68,7 @@ def call(method, path, data=None, ctype='application/json'):
         return json.loads(raw) if raw else {}
 
 
-notes_body = (MANIFEST.get('notes') or '').strip() or '\n'.join(NOTES)
+notes_body = (MANIFEST.get('notes') or '').strip() or '见 docs/release-notes-%s.md' % VER
 notes = '\n'.join(['v' + VER, '', notes_body])
 
 # 资产清单来自 update.json：三个平台的包 + 清单本身。

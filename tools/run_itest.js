@@ -87,12 +87,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (v) => (typeof v === 'object' && v !== null ? JSON.stringify(v)
     : typeof v === 'string' ? v.trim() : v);
   const bad = [];
+  let total = 0;
   for (const row of rows) {
-    if (row.length < 3) continue;          // 两元素的是"仅记录"行
-    const [name, got, exp] = row;
-    if (norm(got) !== norm(exp)) bad.push([name, got, exp]);
+    if (!Array.isArray(row) || row.length === 0) continue;
+    // 三元素 = [名字, 实际, 期望]；两元素 = [名字, 布尔]，隐含期望 true。
+    //
+    // 以前两元素直接 `continue`（当成"仅记录"），而 _harness.html 里大量
+    // 真断言就是两元素写法（`out.push(['Escape 后菜单关', !document.querySelector(...)])`）
+    // —— 它们永远不参与比较，等于从来没失败过。
+    if (row.length >= 3) {
+      total++;
+      const [name, got, exp] = row;
+      if (norm(got) !== norm(exp)) bad.push([name, got, exp]);
+    } else if (row.length === 2) {
+      total++;
+      const v = norm(row[1]);
+      if (v !== true && v !== 'true') bad.push([row[0], row[1], true]);
+    }
   }
-  const total = rows.filter((x) => x.length >= 3).length;
   console.log(`断言 ${total} 条，失败 ${bad.length}`);
   for (const [name, got, exp] of bad) {
     console.log(`  FAIL ${name}\n       实际=${JSON.stringify(got)}\n       期望=${JSON.stringify(exp)}`);

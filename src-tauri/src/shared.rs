@@ -188,6 +188,54 @@ impl Shared {
         self.cfg.read().map(|c| c.clone()).unwrap_or_default()
     }
 
+    /// 原子地"读-改-写"配置：整个过程持有写锁。
+    ///
+    /// 为什么需要这个：命令层到处都是
+    /// ```ignore
+    /// let mut c = shared.config();   // 读
+    /// c.settings.x = y;              // 改
+    /// cfg::save(&c)?;                // 写盘
+    /// *shared.cfg.write()? = c;      // 写回内存
+    /// ```
+    /// 读和写回之间有窗口。后台线程（积分、质押结算、云同步）也在改同一份配置，
+    /// 谁后写回内存谁就把对方的改动抹掉——而且两边都已经落过盘，重启也救不回来。
+    ///
+    /// 注意：闭包里**不能**再调用 `shared.config()` / `update_config`（会自锁死）。
+    pub fn update_config<T>(
+        &self,
+        f: impl FnOnce(&mut Config) -> Result<T, String>,
+    ) -> Result<T, String> {
+        // 全程持有写锁：写盘放在锁里是有意的——它只有一两毫秒，
+        // 换来的是"内存与磁盘始终是同一份"。
+        let mut g = match self.cfg.write() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let mut c = g.clone();
+        let out = f(&mut c)?;
+        crate::cfg::save(&c)?;
+        *g = c;
+        Ok(out)
+    }
+
+    /// 同 `update_config`，但只更新内存 + 记账写入（不刷新 `updated_at`）。
+    ///
+    /// 用于"上次同步时间"这类不该被云同步当成配置变更的字段。
+    pub fn update_config_quiet<T>(
+        &self,
+        f: impl FnOnce(&mut Config) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut g = match self.cfg.write() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let mut c = g.clone();
+        let out = f(&mut c)?;
+        crate::cfg::save_quiet(&c)?;
+        *g = c;
+        Ok(out)
+    }
+
     pub fn log(&self, kind: &str, target: String, rule: String, detail: String) {
         let ts = chrono::Local::now().timestamp();
         if let Ok(mut rt) = self.rt.lock() {

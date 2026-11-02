@@ -49,6 +49,32 @@ impl ClockState {
     }
 }
 
+/// 某天某小时属于哪一段（`HourPlan.seg`），没选中/没启用时返回 None。
+///
+/// 为什么需要：`on` + `from/to` 只能表达"这一小时选没选"，表达不了"这两段是**两段**"。
+/// 09:00–10:00 和 10:00–11:00 是两次画出来的独立时段，它们的起止恰好贴合，
+/// 只按边界判断就会并成 09:00–11:00 一整段——段目标串味、打断计数累加、
+/// 押注提前结算都由此而来。
+pub fn plan_seg(cfg: &Config, weekday: u32, hour: u32) -> Option<String> {
+    let c = &cfg.settings.focus_clock;
+    if !c.enabled {
+        return None;
+    }
+    let p = c.active_days()?.get(weekday as usize)?.get(hour as usize)?;
+    if !p.on {
+        return None;
+    }
+    Some(p.seg.clone())
+}
+
+/// 两小时的段标识是否连得上：都为空（老配置没写过 seg）时按旧的连续规则处理。
+pub fn same_seg(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) if !x.is_empty() && !y.is_empty() => x == y,
+        _ => true,
+    }
+}
+
 /// 某天某小时的计划（未启用 / 未选中 → None）
 ///
 /// 返回 `(work, brk, from, to)`：专注分钟、休息分钟、选中窗口的起止分钟。

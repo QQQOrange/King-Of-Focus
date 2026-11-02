@@ -418,15 +418,16 @@ pub fn tick_settle(shared: &Shared) {
         return;
     }
     if refund_total > 0 {
-        let mut c = shared.config();
-        c.points.balance += refund_total;
-        if bonus_total > 0 {
-            c.points.total_earned += bonus_total;
-        }
-        let _ = crate::cfg::save(&c);
-        if let Ok(mut w) = shared.cfg.write() {
-            *w = c;
-        }
+        // 走 update_config：整个"加余额 + 写盘 + 写回内存"在配置写锁里完成。
+        // 以前是先读、后写回，中间那一段正好撞上用户在设置页保存，就会把
+        // 对方的改动抹掉（而且两边都已落盘，重启也救不回来）。
+        let _ = shared.update_config(|c| {
+            c.points.balance += refund_total;
+            if bonus_total > 0 {
+                c.points.total_earned += bonus_total;
+            }
+            Ok(())
+        });
     }
     brief_invalidate();
 }

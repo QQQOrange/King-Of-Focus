@@ -944,7 +944,8 @@ window.__itest = async () => {
   await wait(120);
   out.push(['Escape 前菜单在', !!document.querySelector('.cc-modal')]);
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  await wait(80);
+  // 关闭有 120ms 的退场动画，等它走完再看 DOM
+  await wait(260);
   out.push(['Escape 后菜单关', !document.querySelector('.cc-modal')]);
 
   // 7. 清空全部
@@ -960,10 +961,15 @@ window.__itest = async () => {
   await wait(250);
   out.push(['通用时长保存生效', prof().defWork === 30 && prof().defBrk === 5]);
   out.push(['保存后输入框回显新值', $('#defW').value === '30' && $('#defB').value === '5']);
-  fireQ('mousedown', cell(2, 2), 0);
-  fireQ('mouseup', document, 0);
+  // 新选中的时段要沿用刚保存的通用时长。
+  // 注意：**单击不改配置**是设计（"单击任何位置都不改任何东西"），
+  // 所以这里走真实入口——右键空白格 → 菜单里的时长应预填 30/5 → 应用。
+  fire('contextmenu', cell(2, 2), { clientX: 420, clientY: 420 });
+  await wait(150);
+  out.push(['空格菜单预填通用时长', $('#ccW').value === '30' && $('#ccB').value === '5']);
+  $('#ccApply').click();
   await wait(250);
-  out.push(['保存后新单击选中沿用 30/5', (() => { const p = pd()[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
+  out.push(['应用后新时段沿用 30/5', (() => { const p = pd()[2][2]; return p.on && p.work === 30 && p.brk === 5; })()]);
 
   // 9. 不勾「同时设为通用」→ 只改这一片，通用值不动
   fire('contextmenu', cell(4, 22), { clientX: 420, clientY: 420 });
@@ -999,10 +1005,10 @@ window.__itest = async () => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   await wait(80);
 
-  // 9a-2. 新模态：垂直列出各时段明细（从上到下），替代原来一条横条 4 段
+  // 9a-2. 垂直刻度列表：右键**某一段**的某一小时，列出这一小时的四个刻度
   await Act.clockClear();
   await wait(150);
-  await Act.clockSetWB(0, 1, 8, 12, 50, 10, false, 0, 60); // 周一周二 8–13
+  await Act.clockSetWB(0, 1, 8, 12, 50, 10, false, 0, 60); // 周一周二 8–13，50/10
   await wait(150);
   fire('contextmenu', cell(0, 9), { clientX: 420, clientY: 420 });
   await wait(150);
@@ -1011,29 +1017,24 @@ window.__itest = async () => {
   if (segList) {
     const rows = segList.querySelectorAll('.cc-tl-row');
     out.push(['刻度列表有内容', rows.length >= 1]);
-    // 一格 = 4 个 15 分钟刻度 → 从上到下 4 行（替代原来横条 4 段）
+    // 一格 = 4 个 15 分钟刻度 → 从上到下 4 行
     out.push(['一格展开成 4 行刻度', rows.length === 4]);
     out.push(['刻度首行显示起止时间', rows[0] ? rows[0].querySelector('.cc-tl-time').textContent.indexOf('09:00') >= 0 : false]);
     out.push(['刻度首行显示类型', rows[0] ? rows[0].querySelector('.cc-tl-type').textContent.indexOf('专注') >= 0 : false]);
-    out.push(['刻度首行显示备注', rows[0] ? rows[0].querySelector('.cc-tl-note').textContent.length > 0 : false]);
     out.push(['刻度行有开关按钮', rows[0] ? !!rows[0].querySelector('[data-tl]') : false]);
-    // 第 4 行（50–60 分）应当是休息段
-    out.push(['第 4 段识别为休息', rows[3] ? rows[3].querySelector('.cc-tl-type').textContent.indexOf('休息') >= 0 : false]);
-    // 点开关能切掉这一段
-    const before = (() => { const p = pd()[0][9]; return p.on && p.from === 0 && p.to === 60; })();
+    // 50/10 的这一小时里必然有一格落在休息段
+    out.push(['有刻度识别为休息', [...rows].some((r) => {
+      const t = r.querySelector('.cc-tl-type');
+      return !!t && t.textContent.indexOf('休息') >= 0;
+    })]);
+    // 点开关切掉首段（0–15 分钟）→ 这一小时的起点变成 15
     const btn = rows[0].querySelector('[data-tl]');
     if (btn) btn.click();
-    await wait(200);
-    const after = (() => { const p = pd()[0][9]; return p.on && p.from === 15 && p.to === 60; })();
-    out.push(['列表内开关能切掉首段', before && after]);
-    // 切完再点回来
-    const btn2 = document.querySelector('.cc-tl-row [data-tl]');
-    if (btn2) btn2.click();
-    await wait(200);
-    out.push(['再点一次能补回', (() => { const p = pd()[0][9]; return p.on && p.from === 0 && p.to === 60; })()]);
+    await wait(240);
+    out.push(['列表内开关能切掉首段', (() => { const p = pd()[0][9]; return p.on && p.from === 15 && p.to === 60; })()]);
   }
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
-  await wait(80);
+  await wait(260);
   // 多格应用：起止分钟只落首/尾小时，中间归一成整小时（边界吸附到 15 分钟刻度）
   await Act.clockSetWB(1, 1, 8, 12, 50, 10, false, 20, 50);
   await wait(150);

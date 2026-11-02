@@ -449,14 +449,24 @@ fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
+    while i + 2 < b.len() {
+        if b[i] == b'%' {
+            // 按**字节**取两位十六进制。直接切 &str 会在 `%` 后面跟中文时
+            // 落在字符中间 panic（"byte index N is not a char boundary"）。
+            let hex = [b[i + 1], b[i + 2]];
+            let digits = std::str::from_utf8(&hex).ok();
+            if let Some(d) = digits {
+                if let Ok(v) = u8::from_str_radix(d, 16) {
+                    out.push(v);
+                    i += 3;
+                    continue;
+                }
             }
         }
+        out.push(b[i]);
+        i += 1;
+    }
+    while i < b.len() {
         out.push(b[i]);
         i += 1;
     }

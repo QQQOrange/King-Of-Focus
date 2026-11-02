@@ -246,6 +246,12 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             prev_break = Some(break_now);
 
             let mut just_finished = false;
+            // 会话存档的落盘动作要留到锁**外面**再做：
+            // 每秒一拍的主循环持着 rt 锁去写文件，一旦磁盘慢（网盘同步目录、
+            // 杀软实时扫描）就会把拦截判定、HUD、界面轮询一起拖住，
+            // 超过 8 秒还会被守护判成"主进程死了"。
+            let mut session_job: Option<(i64, u32, String)> = None;
+            let mut session_wipe = false;
 
             {
                 if let Ok(mut rt) = shared.rt.lock() {
@@ -336,16 +342,24 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                             just_finished = true;
                         }
                         rt.since = 0;
-                        session_clear();
+                        session_wipe = true;
                     } else if running && rt.since > 0 {
                         // 每 20 秒把"这一轮从什么时候开始"存一次：重启后接着算，
                         // 不然 HUD 的已专注时长和恭喜弹窗的时长都会从重启那一刻重新开始。
                         if session_saved_at.elapsed().as_secs() >= 20 {
                             session_saved_at = Instant::now();
-                            session_save(rt.since, rt.since_blocks, &rt.since_names);
+                            session_job = Some((rt.since, rt.since_blocks, rt.since_names.clone()));
                         }
                     }
                 }
+            }
+
+            // 锁外落盘
+            if session_wipe {
+                session_clear();
+            }
+            if let Some((since, blocks, names)) = session_job {
+                session_save(since, blocks, &names);
             }
 
             if just_finished {

@@ -261,7 +261,7 @@ fn state_at(cfg: &Config, ts: i64, arm: Option<Arm>) -> SleepState {
 pub fn snapshot(shared: &Shared) -> SleepState {
     let cfg = shared.config();
     let ts = Local::now().timestamp();
-    let st = state_at(&cfg, ts, *arm_slot().lock().unwrap());
+    let st = state_at(&cfg, ts, *arm_slot().lock().unwrap_or_else(|e| e.into_inner()));
     st
 }
 
@@ -357,7 +357,7 @@ pub fn unlock(shared: &Arc<Shared>, minutes: u32) -> Result<Value, String> {
         .as_ref()
         .map(|w| window_start_of(w, until))
         .unwrap_or(0);
-    *arm_slot().lock().unwrap() = Some(Arm {
+    *arm_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arm {
         start: Local::now().timestamp(),
         fired: false,
         key: seg_key,
@@ -384,7 +384,7 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
                 // 合盖/休眠回来：这一轮从"现在"重新给满倒计时。
                 // 以前是清空 arm，主循环再按"段起点"武装 —— 段起点往往在几小时前，
                 // 于是唤醒后的第一拍 remain 就是负的，机器立刻关机。
-                if let Some(a) = arm_slot().lock().unwrap().as_mut() {
+                if let Some(a) = arm_slot().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                     a.start = ts;
                     a.fired = false;
                 }
@@ -402,7 +402,7 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
 
             // ① 武装 / 解除
             {
-                let mut a = arm_slot().lock().unwrap();
+                let mut a = arm_slot().lock().unwrap_or_else(|e| e.into_inner());
                 if !in_window {
                     *a = None;
                 } else if unlocked {
@@ -418,7 +418,7 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
                     *a = Some(Arm { start: started, fired: false, key: seg_key , ..Default::default() });
                 }
             }
-            let st = state_at(&cfg, ts, *arm_slot().lock().unwrap());
+            let st = state_at(&cfg, ts, *arm_slot().lock().unwrap_or_else(|e| e.into_inner()));
 
             // ② 到点关机（只发一次）
             //
@@ -426,18 +426,34 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             // 只关机不锁屏的时段（午睡常见）locked 恒为 false，以前永远不关机。
             // deadline > 0 恰好排除了"解锁中"（那会儿 remain 也是 0）。
             if st.in_window && st.deadline > 0 && st.remain <= 0 && !st.fired && st.will_shutdown {
-                if let Some(a) = arm_slot().lock().unwrap().as_mut() {
-                    a.fired = true;
-                }
-                fire_shutdown();
-                crate::notify::toast(
-                    &app,
-                    "app",
-                    "睡眠时段",
-                    "<b>倒计时结束</b><br>睡眠时段内这台电脑应该已经关掉了，30 秒后关机。",
-                    "睡眠管理",
-                    8,
+                // 复核一遍再动手：上面那拍读到的配置可能是几十毫秒前的，
+                // 用户刚好在这期间点了「积分解锁」——那个流程会 abort 已排队的关机，
+                // 但主循环手里还是旧快照，真发出去就变成"积分扣了、机器照关"。
+                let cfg2 = shared.config();
+                let st2 = state_at(
+                    &cfg2,
+                    ts,
+                    *arm_slot().lock().unwrap_or_else(|e| e.into_inner()),
                 );
+                let still = st2.in_window
+                    && st2.deadline > 0
+                    && st2.remain <= 0
+                    && !st2.fired
+                    && st2.will_shutdown;
+                if still {
+                    let ok = fire_shutdown();
+                    if let Some(a) = arm_slot().lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                        // 失败也要置位（否则每秒重试一次、提示刷屏），
+                        // 但要把失败说出来：组策略禁止 shutdown.exe 时用户至少知道。
+                        a.fired = true;
+                    }
+                    let body = if ok {
+                        "<b>倒计时结束</b><br>睡眠时段内这台电脑应该已经关掉了，30 秒后关机。"
+                    } else {
+                        "<b>倒计时结束，但关机没有执行</b><br>通常是系统策略或权限拦住了关机命令，请手动关机。"
+                    };
+                    crate::notify::toast(&app, "app", "睡眠时段", body, "睡眠管理", 8);
+                }
             }
             // ③ 锁屏窗口：锁定期间常驻最上层，并且每 5 秒抢一次焦点
             //    （别的置顶窗口弹出来就会盖住它，那这层锁就形同虚设）
