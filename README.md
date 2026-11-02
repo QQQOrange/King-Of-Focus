@@ -753,7 +753,14 @@ king-of-focus/
 │   ├── blocked.html/.css/.js       # 拦截页
 │   ├── popup.html/.js              # 状态小面板
 │   └── icons/
-├── tools/
+├── tools/                          # 构建、发版、自检脚本（见「八、发版流程」）
+│   ├── release_meta.py             # 版本号/清单/打包/部署（check｜build｜deploy）
+│   ├── release.py                  # 上传资产到 GitHub Release，逐个核 sha256
+│   ├── api_push.py                 # git 端口被封时用 API 推提交（按本地字节建 blob）
+│   ├── check_sync.py               # 发版后自检：线上/线下/源码三边是否同一份
+│   ├── check_portable.py           # 跨端备份字段签名与样例核对
+│   ├── check_i18n.js               # 英文界面中文残留断言
+│   ├── run_itest.js                # 桌面界面断言（DOM 级）
 │   └── make_icon.py                # 纯标准库生成 PNG/ICO 图标
 └── README.md
 ```
@@ -924,11 +931,42 @@ D:\software\myself\
 
 ## 八、发版流程
 
-1. 改 `src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本号
-2. 改 `src-tauri/src/version.rs` 里的 `BUILD_DATE`（关于页显示"本版本更新时间"）
-3. `cargo build --release`，打包 NSIS 安装包
-4. 在 GitHub 建一个 tag（如 `v0.0.2`），上传 `KingOfFocus-Setup-0.0.2.exe`
-5. 老版本启动时会自动检测到并提示更新
+1. 升版本：`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`，
+   顺手改 `src-tauri/src/version.rs` 的 `BUILD_DATE`；
+   Android 改 `android/app/build.gradle.kts` 的 `versionCode + 1` 与 `versionName`
+2. 跑测试：`cargo test`（桌面）、`gradle testDebugUnitTest`（Android）、
+   `node tools/run_itest.js`（界面断言）、`node tools/check_i18n.js`、`node tools/check_portable.js`
+3. `cargo build --release`，再 `gradle assembleDebug`，然后
+   `python tools/release_meta.py build --notes docs/release-notes-x.y.z.md`
+   （这一步**只打包 dist，不编译**；同时把产物部署到 `D:/software/myself/`）
+4. 提交并打 tag：`git add -A && git commit && git tag vX.Y.Z`
+5. 推源码。`github.com` 的 git 端口常被阻断，正常 `git push` 失败时改用
+   `python tools/api_push.py vX.Y.Z`（走 Git Data API，按本地字节建 blob、
+   逐文件核 sha，绝不 force）
+6. `python tools/release.py X.Y.Z` 上传资产与 `King.Of.Focus-update.json`，
+   老版本启动时据此提示更新
+
+### 发版后自检：`tools/check_sync.py`
+
+一条命令回答"线上、线下、源码是不是同一份"：
+
+```
+python tools/check_sync.py            # 核清单里的 tag
+python tools/check_sync.py --offline  # 不联网，只核产物与部署
+```
+
+它做三件事，任一不符就以非 0 退出：
+
+- **资产**：`dist/` 产物、线上 Release 资产（size + digest）、本机部署文件，
+  三者的 sha256 必须等于清单里那一条；
+- **源码**：线上 `main` 的 tree 必须等于本地 `HEAD` 的 tree（不同则逐文件列出
+  "只在本地 / 只在线上 / 内容不同"）；
+- **tag**：tag 指向的 commit 的 tree 也必须是这一版内容。
+
+注意一个**看起来像问题、其实不是**的现象：走第 5 步的 API 推送时，GitHub 会用
+自己的身份和时间**另建一个 commit**，所以本地与线上的 commit SHA 天生不同、
+`git log` 看着像分叉。判定标准是 **tree**（每个文件的 blob sha 与 mode 全等），
+不是 SHA。`check_sync.py` 就是按 tree 判的，SHA 不同只作为提示打印。
 
 ---
 
