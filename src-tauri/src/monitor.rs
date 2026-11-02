@@ -327,15 +327,20 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             crate::mask::wake();
 
             // ---- 桌面 HUD 显隐 ----
-            // 遮罩开着时把 HUD 收起来：HUD 自己是置顶小窗，留在上面会变成
-            // 遮罩上的一块"挖不掉的横条"，而且它每秒刷新会跟遮罩抢置顶
+            // 两种显示条件：
+            //  · 有自律状态（规则/固化/专注段）且遮罩没开 —— 正常专注时显示；
+            //  · 遮罩开着、但**不在**自律时段里 —— 手动开遮罩时显示。
+            //    这种情况下 HUD 是唯一能"记一笔"（分心事件）的入口，
+            //    收起来等于用户没法记录。遮罩线程会把 HUD 顶在自己上面，
+            //    所以不会再出现"被遮罩盖住"或"每秒抢置顶"的问题。
+            // 有自律时段 + 遮罩同时开着时仍然收起：那时遮罩本身就是专注界面，
+            // 再叠一块横条只是干扰。
             let mask_on = shared.mask.on.load(std::sync::atomic::Ordering::Relaxed)
                 || (cfg.settings.mask.follow_schedule
                     && shared.mask.schedule_on.load(std::sync::atomic::Ordering::Relaxed));
-            let show_hud =
-                (!active.is_empty() || lock.locked || clock_on || on_break)
-                    && cfg.settings.hud.enabled
-                    && !mask_on;
+            let session_on = !active.is_empty() || lock.locked || clock_on || on_break;
+            let want_hud = if mask_on { !session_on } else { session_on };
+            let show_hud = want_hud && cfg.settings.hud.enabled;
             if let Some(w) = app.get_webview_window("hud") {
                 let vis = w.is_visible().unwrap_or(false);
                 if show_hud && !vis {

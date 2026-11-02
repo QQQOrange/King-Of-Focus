@@ -1371,6 +1371,13 @@ unsafe fn root_window(h: Hwnd) -> Hwnd {
 /// 遮罩允许把洞挖在自己身上——用户明确要求"专注遮罩也要盖住 King Of Focus 自己"。
 pub static SELF_MAIN: AtomicIsize = AtomicIsize::new(0);
 
+/// 桌面 HUD 的窗口句柄（启动时由 main 写入）。
+///
+/// HUD 上挂着「记一笔」按钮（分心事件）。手动开遮罩、又不在自律时段里时，
+/// 它是**唯一**能记录分心事件的入口 —— 所以遮罩必须把它当自己人顶在上面：
+/// 既不能在摘顶扫描里把它按下去，也不能让遮罩本身盖住它。
+pub static HUD_HWND: AtomicIsize = AtomicIsize::new(0);
+
 /// 把主窗口抬到置顶带的最前面。
 ///
 /// 只调 `set_always_on_top(true)` 不一定能把窗口"浮上来"：如果它已经是
@@ -1603,7 +1610,11 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
     // 遮罩本身是置顶窗口，所以它 z 序**上方**只剩置顶带里的窗口：
     // 选中窗口（except，跳过）和那些抢置顶的浮窗（要摘）。普通窗口都在遮罩下面，
     // 不会出现在这条链里，所以这个扫描范围是精确的、不会误伤普通窗口。
+    // 遮罩本身是置顶窗口，所以它 z 序**上方**只剩置顶带里的窗口：
+    // 选中窗口（except，跳过）和那些抢置顶的浮窗（要摘）。
+    // 普通窗口都在遮罩下面，不会出现在这条链里，所以这个扫描范围是精确的、不会误伤普通窗口。
     if IS_ADMIN.load(Ordering::Relaxed) {
+        let hud = HUD_HWND.load(Ordering::Relaxed);
         let mut a = GetWindow(hwnd, GW_HWNDPREV);
         let mut g2 = 0;
         while !a.is_null() && g2 < 64 {
@@ -1619,8 +1630,12 @@ unsafe fn reassert_below(hwnd: Hwnd, anchor: Hwnd, except: &[Hwnd]) {
             // 以前浮层打开就取消豁免：摘一次它立刻把 TOPMOST 加回来，
             // 50ms 一次拉锯，缝里那段就一直闪 —— 这正是本轮要根治的那条。
             let is_pass = pid_a != 0 && is_pass_through(pid_a);
+            // HUD 也是"只显示、不隐藏"的那一类：它上面有「记一笔」按钮。
+            // 不豁免的话，遮罩一开就会把 HUD 当碍事浮窗摘掉置顶，按钮就看不见了。
+            let is_hud = hud != 0 && a as isize == hud;
             if IsWindowVisible(a) != 0
                 && !except.contains(&a)
+                && !is_hud
                 && !is_shell_window(a)
                 && !is_mask_class(a)
                 && !is_pass
@@ -2145,7 +2160,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                         self_wins.push(*h);
                     }
                 }
-                release_raised(&mut raised, &self_wins);
+                // HUD 也要进"保留名单"：release_raised 会把不在 keep 里的已抬升窗口
+                // 重新打回非置顶 —— 只 ensure_above、不加进 keep 的话，下一帧就被打回，
+                // 变成 8ms 级拉锯（和当初 lazytyper 弹条那条一模一样）。
+                let hud_keep = HUD_HWND.load(Ordering::Relaxed);
+                let mut keep: Vec<Hwnd> = self_wins.clone();
+                if hud_keep != 0 {
+                    keep.push(hud_keep as Hwnd);
+                }
+                release_raised(&mut raised, &keep);
                 // 主窗口先提，弹窗/放行窗口后提 —— 后提的在上
                 if tgt != 0 {
                     ensure_above(tgt as Hwnd, &mut raised);
@@ -2172,6 +2195,12 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                     if *h != tgt as Hwnd {
                         ensure_above(*h, &mut raised);
                     }
+                }
+                // HUD 最后提：它上面有「记一笔」按钮，被遮罩盖住就等于没有这个入口。
+                // 放在所有窗口之后提，保证它压在最上面（后提的在上）。
+                let hud_h = HUD_HWND.load(Ordering::Relaxed);
+                if hud_h != 0 {
+                    ensure_above(hud_h as Hwnd, &mut raised);
                 }
                 ctl.painted.store(true, Ordering::Relaxed);
                 MASK_ACTIVE.store(true, Ordering::Relaxed);

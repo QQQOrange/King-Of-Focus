@@ -1459,6 +1459,9 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
     json!({
         "on": on,
         "locked": locked,
+        // 遮罩开着、但不在自律时段里：HUD 这时也会显示（唯一能"记一笔"的入口），
+        // 界面要说"遮罩中"而不是"专注中"。
+        "maskOn": shared.mask.on.load(std::sync::atomic::Ordering::Relaxed),
         "elapsed": elapsed,
         "remaining": remaining,
         "untilText": until_text,

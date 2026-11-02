@@ -11,8 +11,9 @@ document.documentElement.dataset.theme = themeMedia.matches ? 'light' : 'dark';
  * 而且每句都要往里插时长，用全局词典反而要拼一堆碎片。 */
 const HUD_T = {
   'zh-CN': {
-    focus: '专注中', brk: '休息中', locked: '固化专注中',
+    focus: '专注中', brk: '休息中', locked: '固化专注中', mask: '遮罩中',
     until: '至', idle: '还没有开始',
+    maskHint: '想到什么就点左上角记一笔',
     breakLeft: '休息还剩 {t}，之后自动锁回',
     warn: '本轮还剩 {t} · 快结束了',
     remain: '距结束 {t}',
@@ -20,8 +21,9 @@ const HUD_T = {
     h: '小时', m: '分', s: '秒',
   },
   en: {
-    focus: 'Focusing', brk: 'On break', locked: 'Hard-locked',
+    focus: 'Focusing', brk: 'On break', locked: 'Hard-locked', mask: 'Mask on',
     until: 'until', idle: 'Not started yet',
+    maskHint: 'Jot a stray thought with the + button',
     breakLeft: 'Break ends in {t}, then locks back',
     warn: 'Left this round: {t} · almost done',
     remain: 'Ends in {t}',
@@ -86,11 +88,16 @@ async function tick() {
   document.body.style.opacity = String(op / 100);
 
   document.body.classList.toggle('break', !!s.breakOn);
+  // 遮罩开着但不在自律时段：HUD 这时候显示是为了「记一笔」，
+  // 说"专注中"会让人以为在计时（其实 elapsed 是 0）。
+  const maskOnly = !!s.maskOn && !s.on && !s.locked && !s.breakOn;
   document.getElementById('label').textContent = s.breakOn
     ? L('brk')
     : s.locked
       ? L('locked')
-      : L('focus');
+      : maskOnly
+        ? L('mask')
+        : L('focus');
 
   document.getElementById('elapsed').textContent = hms(s.elapsed);
 
@@ -101,6 +108,8 @@ async function tick() {
   remain.classList.toggle('warn', !!s.warn);
   if (s.breakOn) {
     remain.textContent = L('breakLeft', { t: hm(s.breakLeft) });
+  } else if (maskOnly) {
+    remain.textContent = L('maskHint');
   } else if (s.warn && s.breakLeft > 0) {
     remain.textContent = L('warn', { t: hm(s.breakLeft) });
   } else if (s.remaining > 0) {

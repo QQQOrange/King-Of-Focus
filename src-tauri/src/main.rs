@@ -417,6 +417,12 @@ fn main() {
                     mask::SELF_MAIN.store(h.0 as isize, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+            // 记住 HUD 句柄：它上面有「记一笔」（分心事件），遮罩必须让它浮在最上面
+            if let Some(w) = app.get_webview_window("hud") {
+                if let Ok(h) = w.hwnd() {
+                    mask::HUD_HWND.store(h.0 as isize, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
