@@ -83,6 +83,12 @@ pub fn lock_info_at(cfg: &Config, nd: chrono::NaiveDateTime) -> LockInfo {
     if !d.clock_on {
         return LockInfo::default();
     }
+    // 没打开「时段内让已启用的自律规则立即生效」时，一条规则都不拦
+    // （discipline::active_rules 会直接返回空）。这时候还把人锁死、
+    // 还不许退出，等于"什么都没拦，但不许走"—— 和 README 的描述正好相反。
+    if !d.apply_rules {
+        return LockInfo::default();
+    }
     // 这套自律时段绑定了哪些规则；空 = 不限制（与 discipline::active_rules 同一口径）。
     // 不看绑定的话，用户把「周末」方案只绑「娱乐」组，工作组里的固化规则照样把他锁住，
     // 而且 lock_names 显示的还是一条此刻并不生效的规则名。
@@ -268,6 +274,17 @@ pub fn discipline_violation_at(
             }
         }
     }
+    // 5.5) 这一段的"结束时刻"不能提前。
+    //
+    //    上面只比较了当前这一小时的 on/work/brk，而界面上的格子菜单是按**单个小时**
+    //    改的：把正在进行的那一段的最后一格 to 改小（当前小时完全没变），
+    //    clock::state_at 到点就返回 None —— 一段 09:00-12:00 的自律在 11:01 就结束了。
+    //    这里直接比"这一段什么时候完"，把"换个方式提前结束"堵掉。
+    let old_end = crate::distract::segment_bounds(old, now).map(|(_, e, _)| e);
+    let new_end = crate::distract::segment_bounds(new, now).map(|(_, e, _)| e);
+    if new_end < old_end {
+        return Some("自律时段生效中，不能提前结束正在进行的那一段".into());
+    }
     // 6) 规则的启用开关：时段内一律锁死（开、关都不行）
     for l in &old.rules {
         match new.rules.iter().find(|x| x.id == l.id) {
@@ -320,6 +337,50 @@ pub fn discipline_violation_at(
                     l.name, e
                 ));
             }
+        }
+        // 6) 条目内容被"换掉"：只比 id 是不够的。
+        //
+        //    以前只检查"有没有被删"，于是把一条已存在的软件条目的 value 从
+        //    steam.exe 改成 notepad.exe（id 不变），拦截目标就被悄悄换走了。
+        for a in &l.apps {
+            if let Some(na) = nl.apps.iter().find(|x| x.id == a.id) {
+                if na.value != a.value {
+                    return Some(format!(
+                        "自律时段生效中，不能改自律规则「{}」里软件的拦截目标",
+                        l.name
+                    ));
+                }
+            }
+        }
+        for s in &l.sites {
+            if let Some(ns) = nl.sites.iter().find(|x| x.id == s.id) {
+                if ns.pattern != s.pattern {
+                    return Some(format!(
+                        "自律时段生效中，不能改自律规则「{}」里网站的匹配内容",
+                        l.name
+                    ));
+                }
+            }
+        }
+        // 7) 固化不能关、生效类型不能放松
+        if l.hard && !nl.hard {
+            return Some(format!("自律时段生效中，不能关闭自律规则「{}」的固化", l.name));
+        }
+        if l.mode == "whitelist" && nl.mode != "whitelist" {
+            return Some(format!(
+                "自律时段生效中，不能把自律规则「{}」从「只允许」改成「只拦截」",
+                l.name
+            ));
+        }
+    }
+    // 8) 浏览器巡检是另一道闸（和 guard_browser 不是一个开关）
+    if old.settings.browser_guard.enabled && !new.settings.browser_guard.enabled {
+        return Some("自律时段生效中，不能关闭「浏览器巡检」".into());
+    }
+    // 9) 当前这一小时的休息上限：调大等于把专注段切碎
+    if let (Some(op), Some(np)) = (oc.active_profile(), nc.active_profile()) {
+        if op.def_cap != np.def_cap {
+            return Some("自律时段生效中，不能改这一小时的休息上限".into());
         }
     }
     None

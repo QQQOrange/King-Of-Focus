@@ -227,7 +227,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     rt.clock_hour = dstate.clock_hour;
                     rt.clock_left = dstate.clock_left;
                     let now_ts = chrono::Local::now().timestamp();
-                    let running = !active.is_empty() || lock.locked || clock_on;
+                    // 「这一轮还没结束」：休息段也算。
+                    //
+                    // 以前这里只看"有没有规则在拦"，而番茄一进休息段 active 就空了、
+                    // clock_on 也变成 false —— 于是每进一次休息就被当成"自律结束"：
+                    // 弹一次恭喜、把主窗口强行拉到前台、HUD 也收起来。
+                    // README 写的是休息时 HUD 显示"休息中"、整段结束才恭喜。
+                    let running = !active.is_empty() || lock.locked || clock_on || on_break;
                     if running && rt.since == 0 {
                         rt.since = now_ts;
                     }
@@ -327,7 +333,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                 || (cfg.settings.mask.follow_schedule
                     && shared.mask.schedule_on.load(std::sync::atomic::Ordering::Relaxed));
             let show_hud =
-                (!active.is_empty() || lock.locked || clock_on) && cfg.settings.hud.enabled && !mask_on;
+                (!active.is_empty() || lock.locked || clock_on || on_break)
+                    && cfg.settings.hud.enabled
+                    && !mask_on;
             if let Some(w) = app.get_webview_window("hud") {
                 let vis = w.is_visible().unwrap_or(false);
                 if show_hud && !vis {
@@ -339,7 +347,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             }
 
             // ---- 积分：只有真正在「工作段」里才计时 ----
-            if (!active.is_empty() || clock_on) && !cfg.settings.dry_run {
+            // 用积分解锁出来的自由时间不算工作段：用户花积分买的是"这段时间不受管"，
+            // 期间还照发积分等于打折，而且会让"解锁→再解锁"变成刷分。
+            if (!active.is_empty() || clock_on) && !unlocked_now && !cfg.settings.dry_run {
                 acc_ms += poll;
                 if acc_ms >= 60_000 {
                     acc_ms -= 60_000;
@@ -355,7 +365,10 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
             crate::sweep::tick_pending(&shared);
 
             // 自律模式是否正在生效：规则生效中 / 时段专注中 / 固化锁定中
-            let discipline_on = !active.is_empty() || lock.locked || clock_on;
+            // 积分解锁出来的自由时间里整条都不生效 —— 界面上写的是
+            // "解锁期间所有拦截暂停、可以退出程序"，那就包括任务管理器和浏览器巡检，
+            // 否则用户花了积分还打不开任务管理器、浏览器照样被关。
+            let discipline_on = !unlocked_now && (!active.is_empty() || lock.locked || clock_on);
 
             if discipline_on {
                 let apps = proc::screen_apps();

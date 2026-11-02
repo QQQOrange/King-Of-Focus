@@ -423,8 +423,12 @@ pub fn test_mode_enter_impl(shared: &Arc<Shared>) -> Result<Value, String> {
     // 进入测试模式会切到独立的数据目录，等于把正式环境的规则整份"换掉"，
     // 而 testmode::on() 还会让固化锁定与纪律校验全部短路。
     // 所以它是比"关规则"更彻底的逃逸口，必须和退出程序一样挡住。
-    if let Some(why) = crate::guard::exit_blocked(&shared.config()) {
-        return Err(format!("{why}；测试模式请等这一段结束后再进"));
+    //
+    // 判据不能用 exit_blocked：它默认放行（「自律时段内允许退出」是开着的），
+    // 于是休息段、或者任何非固化时段都能溜进测试模式，进去之后再关规则就没人管了。
+    // README 写的是"整个自律时段内都不能进"。
+    if crate::discipline::state(&shared.config(), &crate::sched::now_local()).clock_in {
+        return Err("自律时段生效中，不能进入测试模式".into());
     }
     // 先把正式数据落盘，避免切换时丢当前累计
     crate::stats::flush(shared);
@@ -451,6 +455,11 @@ pub fn test_mode_exit(shared: State<'_, Arc<Shared>>, keep: bool) -> Result<Valu
 pub fn test_mode_exit_impl(shared: &Arc<Shared>, keep: bool) -> Result<Value, String> {
     if !crate::testmode::on() {
         return Ok(json!({"on": false}));
+    }
+    // keep=true 会把测试期间改过的配置整份盖回正式环境 —— 那是"换配置"，
+    // 自律时段里必须拒绝（进得来、出得去，但不能把改松的配置带出去）。
+    if keep && crate::discipline::state(&shared.config(), &crate::sched::now_local()).clock_in {
+        return Err("自律时段生效中，不能把测试配置合并回正式配置；请先退出并丢弃".into());
     }
     crate::stats::flush(shared);
     crate::testmode::exit(keep)?;

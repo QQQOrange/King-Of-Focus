@@ -168,6 +168,14 @@ pub fn apply(
     // 走过了，以后不再自动弹
     c.settings.onboarded = Some(true);
 
+    // 新手引导是"一键换排班"：不设防的话它就是一条绕过固化的后门 ——
+    // 设置页里随时能重走一遍，点完就把正在生效的方案换掉，硬锁当场解除。
+    if let Some(why) = crate::guard::discipline_violation(&shared.config(), &c) {
+        return Err(why);
+    }
+    if crate::guard::is_locked(shared) {
+        return Err("自律固化中，现在不能改排班".into());
+    }
     save_cfg(shared, c)?;
     crate::mask::wake();
     // 排班变了：总览的"现在/下一段"要立刻跟着变，不能等 20 秒缓存过期
@@ -261,6 +269,14 @@ pub fn trial(shared: &Shared, minutes: u32) -> Result<Value, String> {
         prev_follow,
     });
 
+    // 试用的作用是把当前这一小时改成 25/5 —— 这正是"改时长逃逸"要防的事，
+    // 所以和 apply 走同一道闸。
+    if let Some(why) = crate::guard::discipline_violation(&shared.config(), &c) {
+        return Err(why);
+    }
+    if crate::guard::is_locked(shared) {
+        return Err("自律固化中，现在不能开始试用".into());
+    }
     save_cfg(shared, c)?;
     crate::mask::wake();
     crate::focus::brief_invalidate();
