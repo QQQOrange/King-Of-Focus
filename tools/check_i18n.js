@@ -91,6 +91,14 @@ for (let n = 0; n < lines.length; n++) {
   // 单引号/反引号包住的整句（toast/confirm 之类），仅当整行就是这一句时收
   const soloRe = /^\s*(?:toast|confirm)\(\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/;
   if ((m = soloRe.exec(line)) !== null) addText(m[1], n + 1);
+
+  // 直接写进节点的文案：`btn.textContent = '正在删除…'` 这类以前完全扫不到，
+  // 于是英文界面残留中文、脚本照样报 100%。
+  const tcRe = /\.(?:textContent|innerText|title|placeholder|ariaLabel)\s*=\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/g;
+  while ((m = tcRe.exec(line)) !== null) addText(m[1], n + 1);
+  // setHint('…') / say('…') / notify('…') 这类自定义提示函数
+  const callRe = /\b(?:setHint|say|notify|toast|confirm)\(\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/g;
+  while ((m = callRe.exec(line)) !== null) addText(m[1], n + 1);
 }
 
 // 用真实的 I18N 判断覆盖：词典 + 正则规则都算

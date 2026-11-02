@@ -23,6 +23,8 @@ let API = null;
 let MATCHERS = [];         // 编译后的匹配器（本地判定用）
 let RAW_RULES = [];        // 服务端原始规则
 let FINGERPRINT = '';      // DNR 只在规则变化时重写
+// 上一轮 DNR 没写成功的条数（>0 时 popup 会提示"部分规则未生效"）
+let DNR_FAILED = 0;
 let CLOSING = new Set();   // 正在关闭的标签，防重入
 let lastPull = 0;
 let lastClosedAt = 0;
@@ -206,7 +208,9 @@ async function replaceDnr(add) {
         console.warn('[King of Focus] 跳过一条非法规则', rule, e3);
       }
     }
-    return ok > 0;
+    // 全部成功才算成功：有一条被拒就返回 false，让调用方不记指纹、下轮重试。
+    // 以前是 `ok > 0`，于是"部分规则生效"会被当成同步完成，被拒的那几条永远不再试。
+    return ok === add.length;
   }
 }
 
@@ -267,9 +271,13 @@ async function syncDnr(rules) {
   }
 
   const ok = await replaceDnr(add);
-  // 只有真的写进去了才记指纹。以前是先记后写：一次失败之后
-  // 后面所有 refresh 都会在函数开头短路，DNR 永远不再重建。
-  FINGERPRINT = ok ? fp : '';
+  // 只有**整批**都写进去了才记指纹。
+  //
+  // 逐条重试时只要有一条成功 `replaceDnr` 就返回 true；此时记下指纹意味着
+  // 被 Chrome 拒掉的那几条（多为正则条数超限）在规则不变时永远不会再尝试，
+  // 用户只会莫名其妙地发现"某些网站拦不住"。宁可每轮重试，也不要静默半生效。
+  FINGERPRINT = ok === true ? fp : '';
+  DNR_FAILED = ok === true ? 0 : (add ? add.length : 0);
   return ok;
 }
 

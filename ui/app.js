@@ -9979,7 +9979,8 @@ document.addEventListener('click', async (e) => {
     try {
       await invoke('distract_auto_mask', { on });
       await pull();
-      render();
+      // 不 render：整页重建会把同一张卡上"重复提醒"输入框里还没保存的数字冲掉。
+      // 这个开关本身是原生 checkbox，视觉已经是对的，只需要刷新数据。
       toast(on ? '已开启：时段一开始就自动盖遮罩' : '已关闭自动遮罩', 'ok');
     } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
     return;
