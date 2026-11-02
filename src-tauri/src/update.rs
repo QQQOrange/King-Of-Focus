@@ -466,7 +466,9 @@ pub fn download(
     let file = dir.join(safe_name(name));
     let _ = fs::remove_file(&file);
 
-    let resp = net::agent()
+    // 下载专用 agent：总时限 30 分钟（默认 agent 是 60 秒整体 deadline，
+    // 慢速链路上 48MB 的安装包永远下不完）
+    let resp = net::agent_download()
         .get(url)
         .set("User-Agent", net::UA)
         .call()

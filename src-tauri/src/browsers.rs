@@ -839,7 +839,10 @@ fn full_scan() -> Vec<BrowserInfo> {
                         _ => Vec::new(),
                     };
                     if hits.is_empty() {
-                        info.ext = "notInstalled".into();
+                        // data_ok = false 表示"配置档根本读不到"（没启动过 / 自定义
+                        // --user-data-dir / Preferences 正被写），这不是"没装插件"。
+                        // 记成 unknown，浏览器守护才不会因为判定不出来就关人。
+                        info.ext = if data_ok { "notInstalled" } else { "unknown" }.into();
                         info.note = if data_ok {
                             "已安装浏览器，但所有配置档里都没有本插件。".into()
                         } else {
@@ -950,6 +953,16 @@ fn full_scan() -> Vec<BrowserInfo> {
 /// 进程名 → 浏览器定义
 pub fn def_by_exe(name: &str) -> Option<&'static Def> {
     DEFS.iter().find(|d| d.exe == name)
+}
+
+/// 是不是"装不上我们插件"的浏览器（目前只有 Firefox 系）。
+///
+/// Firefox 不吃 Chromium MV3 扩展，界面上一直标注为"只识别、不拦截"。
+/// 但「浏览器守护」是按 `matcher::is_browser` 的进程名列表关人的 ——
+/// 于是用户在自律时段里用 Firefox，心跳一过期它就会被当成"插件没开"
+/// 每隔一轮强杀一次。这里把它排除掉。
+pub fn is_unpatchable_browser(name: &str) -> bool {
+    matches!(def_by_exe(name).map(|d| d.family), Some(Family::Firefox))
 }
 
 pub fn info_for_exe(name: &str) -> Option<BrowserInfo> {
@@ -1341,8 +1354,13 @@ pub fn guard_step(
         let info = list.iter().find(|b| b.key == def.key);
         let status = info.map(|i| i.ext.as_str()).unwrap_or("notInstalled");
 
-        // 1) 插件正常 / 该浏览器不支持插件 → 放行
-        if status == "enabled" || status == "unsupported" {
+        // 1) 插件正常 / 该浏览器不支持插件 / 判定不出来 → 放行
+        //
+        // "判定不出来"必须单独成一档：自定义 --user-data-dir、首次运行还没生成
+        // 配置档、Preferences 正被写（共享冲突）时，读不到扩展列表。
+        // 以前这种情况一律记成 notInstalled，然后 1.2 秒后把浏览器关掉 ——
+        // 用户会看到"我明明装了插件，一开就被杀"。
+        if status == "enabled" || status == "unsupported" || status == "unknown" {
             st.pending.remove(&a.pid);
             continue;
         }

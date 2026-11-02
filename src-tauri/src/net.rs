@@ -12,6 +12,21 @@ pub fn agent() -> ureq::Agent {
         .build()
 }
 
+/// 下载大文件（安装包）用的 agent。
+///
+/// `agent()` 里的 `timeout(60s)` 在 ureq 2.x 是**整个请求**的截止时间
+/// （连接 + 响应头 + 把 body 读完）。48MB 的安装包要 800KB/s 才赶得上，
+/// 网速慢一点的用户每次都会看到"下载中断，请重试"，重试也一样。
+/// 这里把总时限放宽到 30 分钟，同时保留 60 秒的**单次读**超时：
+/// 真断流了照样会失败，但慢慢下能下完。
+pub fn agent_download() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(60))
+        .timeout(Duration::from_secs(30 * 60))
+        .build()
+}
+
 /// base64（为了 basic auth，避免多引一个 crate）
 pub fn b64(input: &str) -> String {
     const CH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

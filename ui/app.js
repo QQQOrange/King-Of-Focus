@@ -4977,6 +4977,9 @@ function browserMeta(ext) {
   // 自定义浏览器：用户数据目录不一定在标准位置，扩展状态没法可靠探测，
   // 与其瞎猜"未安装"，不如老实写"需自行确认"
   if (ext === 'manual') return { txt: '插件需自检', cls: 'blue' };
+  // 后端读不到配置档（没启动过 / 自定义 --user-data-dir / Preferences 正被写）：
+  // 这不是"没装插件"，而且浏览器守护也不会因此关它，界面上别吓唬人。
+  if (ext === 'unknown') return { txt: '状态未知', cls: 'blue' };
   return { txt: '插件未安装', cls: 'red' };
 }
 

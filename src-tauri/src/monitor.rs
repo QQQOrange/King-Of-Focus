@@ -506,7 +506,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>) {
                     let now_ts = chrono::Local::now().timestamp();
                     let alive = hb_ts > 0 && now_ts - hb_ts <= cfg.settings.grace_secs as i64;
                     if hb_ts > 0 && !alive {
-                        for a in apps.iter().filter(|a| matcher::is_browser(a)) {
+                        for a in apps.iter().filter(|a| {
+                            matcher::is_browser(a) && !crate::browsers::is_unpatchable_browser(&a.name)
+                        }) {
                             // 演练模式下不关浏览器，只记一条（20 秒节流，避免刷屏）
                             let touched = if cfg.settings.dry_run {
                                 let first = logged
