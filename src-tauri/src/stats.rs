@@ -150,6 +150,14 @@ pub struct Report {
     pub created: i64,
     pub on_secs: u64,
     pub off_secs: u64,
+    /// 明细被截断前的总条数（`on` / `off` 只保留前 60 条）。
+    ///
+    /// 没有这两个数的话，报告里"程序：3 小时（2.1%）"这类占比用的分母是**全量**、
+    /// 分子只有前 60 条，加起来永远到不了 100%，也没有"共 N 项、列 M 项"的提示。
+    #[serde(default)]
+    pub on_items: usize,
+    #[serde(default)]
+    pub off_items: usize,
     pub on: Vec<Slice>,
     pub off: Vec<Slice>,
 }
@@ -688,12 +696,18 @@ fn sample(shared: &Shared, cfg: &Config, idle_run: &mut u32) {
     // 手动开的遮罩也算：用户是主动把屏幕盖上去做一件事的，
     // 记到 off（休息）里会让统计页看起来像在摸鱼，而 HUD 又要用它显示
     // "今天已专注多久"，两边必须是同一个数。
-    let state_on = shared
-        .rt
-        .lock()
-        .map(|rt| !rt.active.is_empty() || rt.clock_on || rt.locked)
-        .unwrap_or(false)
-        || shared.mask.on.load(Ordering::Relaxed);
+    //
+    // 用积分解锁出来的自由时间**不算**：monitor 那边明确不给这段时间发积分
+    //（"解锁出来的自由时间不算工作段"）。以前统计照记 on、积分不给，
+    // 同一段时间两个口径，用户看到"专注 2 小时"却只拿到 1 小时的分。
+    let unlocked_now = now.timestamp() < shared.config().points.unlock_until;
+    let state_on = !unlocked_now
+        && (shared
+            .rt
+            .lock()
+            .map(|rt| !rt.active.is_empty() || rt.clock_on || rt.locked)
+            .unwrap_or(false)
+            || shared.mask.on.load(Ordering::Relaxed));
     let hour = now.hour() as usize;
 
     // 记下落点：万一接下来判定为空闲，就靠它把误记的秒扣回去
@@ -1053,7 +1067,14 @@ fn check_range(start: &str, end: &str) -> Result<(), String> {
     if start.trim().is_empty() || end.trim().is_empty() {
         return Err("统计区间不完整，无法生成报告".into());
     }
-    if start > end {
+    // 按**日期**比较，不是字符串比较：`2026-9-1` 与 `2026-10-01` 用字符串比
+    // 会把 9 月判成"晚于"10 月（'9' > '1'）；`abc` 这种则一路通过，
+    // 最后生成一份全 0 的报告并进列表。
+    let s = chrono::NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("开始日期格式不对：{start}（应为 YYYY-MM-DD）"))?;
+    let e = chrono::NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("结束日期格式不对：{end}（应为 YYYY-MM-DD）"))?;
+    if s > e {
         return Err("统计区间的开始日期晚于结束日期".into());
     }
     Ok(())
@@ -1072,6 +1093,8 @@ pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result
     let id = sanitize_id(&format!("{period}_{start}_{end}"));
     let mut on = agg.on;
     let mut off = agg.off;
+    let on_items = on.len();
+    let off_items = off.len();
     on.truncate(60);
     off.truncate(60);
     let r = Report {
@@ -1083,6 +1106,8 @@ pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result
         created: Local::now().timestamp(),
         on_secs,
         off_secs,
+        on_items,
+        off_items,
         on,
         off,
     };

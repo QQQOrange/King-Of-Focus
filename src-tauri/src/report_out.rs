@@ -83,12 +83,23 @@ pub fn blocks(r: &Report) -> Vec<Blk> {
         Blk::Li(0, format!("开启占比：{}", pct(r.on_secs, total))),
     ];
 
-    // 两侧各自按"分类 → 条目"两层列出，列表层级就是分类与明细的关系
-    let push_side = |v: &mut Vec<Blk>, name: &str, list: &[crate::stats::Slice], tot: u64| {
+    // 两侧各自按"分类 → 条目"两层列出，列表层级就是分类与明细的关系。
+    //
+    // `tot` 是**列出来的这些条目**的秒数和，不是整段时间的总时长：
+    // 报告只存前 60 条明细，用全量当分母会让百分比加起来永远到不了 100%。
+    // `items` 是截断前的总条数，用来写"共 N 项、列 M 项"。
+    let push_side = |v: &mut Vec<Blk>, name: &str, list: &[crate::stats::Slice], items: usize| {
         v.push(Blk::H2(name.into()));
         if list.is_empty() {
             v.push(Blk::P("这一段时间里没有记录到任何活动。".into()));
             return;
+        }
+        let tot: u64 = list.iter().map(|s| s.secs).sum();
+        if items > list.len() {
+            v.push(Blk::P(format!(
+                "共 {items} 项，下面列出占用最多的 {} 项（占比按列出的这些项计算）。",
+                list.len()
+            )));
         }
         // 分类汇总（保持首次出现顺序，时间和从大到小排）
         let mut cats: Vec<(String, u64)> = Vec::new();
@@ -117,8 +128,8 @@ pub fn blocks(r: &Report) -> Vec<Blk> {
             }
         }
     };
-    push_side(&mut v, "开启时段的分布", &r.on, r.on_secs);
-    push_side(&mut v, "未开启时段的分布", &r.off, r.off_secs);
+    push_side(&mut v, "开启时段的分布", &r.on, r.on_items.max(r.on.len()));
+    push_side(&mut v, "未开启时段的分布", &r.off, r.off_items.max(r.off.len()));
 
     v.push(Blk::H2("说明".into()));
     v.push(Blk::P(
@@ -364,6 +375,8 @@ mod tests {
             created: 1_767_000_000,
             on_secs: 11_700,
             off_secs: 74_700,
+            on_items: 2,
+            off_items: 1,
             on: vec![
                 Slice { key: "app|code.exe".into(), label: "Code".into(), category: "app".into(), secs: 7_200, ..Default::default() },
                 Slice { key: "site|github.com".into(), label: "github.com".into(), category: "site".into(), secs: 4_500, ..Default::default() },

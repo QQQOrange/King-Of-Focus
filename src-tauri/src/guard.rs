@@ -591,10 +591,24 @@ static MAIN_EXE: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None)
 
 const GUARD_EXE: &str = "kof-guard.exe";
 
+/// 上次拉起守护的时刻。用来防"两次检查间隔小于子进程写出 pid 的时间"时拉起两份：
+/// `existing_guard()` 只看 pid 文件，而子进程要过一会儿才写。
+static LAST_SPAWN: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 /// 确保守护进程在跑（只在锁定时调用）
 pub fn ensure_guard() {
     if existing_guard().is_some() {
         return;
+    }
+    // 5 秒内只拉一次：守护写 pid 文件之前，第二个调用者也会看到"没有守护"。
+    // 两份守护会互相覆盖 pid、各跑一套"复活"逻辑，退出时只杀得掉其中一个。
+    if let Ok(mut g) = LAST_SPAWN.lock() {
+        if let Some(t) = *g {
+            if t.elapsed().as_secs() < 5 {
+                return;
+            }
+        }
+        *g = Some(std::time::Instant::now());
     }
     let Some(exe) = guard_exe() else {
         return;

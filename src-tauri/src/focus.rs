@@ -253,6 +253,12 @@ pub struct Stake {
     pub refunded: i64,
     /// 是否被没收（积分解锁 = 提前退出）
     pub void: bool,
+    /// 这一段的**起押之后**被打断了几次（落盘，跨重启仍然准确）。
+    ///
+    /// 以前结算读的是进程内的 `BLOCK_SEG/BLOCK_N`：重启归零、新段一次拦截就顶掉旧段，
+    /// 于是"押 10 分、被拦 5 次、重启"结算时按 0 次算，白给 +2 奖励。
+    #[serde(default)]
+    pub blocks: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -332,6 +338,7 @@ pub fn stake_place(shared: &Shared, amount: i64) -> Result<Stake, String> {
         settled_at: 0,
         refunded: 0,
         void: false,
+        blocks: 0,
     };
     st.stakes.push(s.clone());
     if st.stakes.len() > 500 {
@@ -394,7 +401,7 @@ pub fn tick_settle(shared: &Shared) {
         if in_this_seg || now - x.seg < 60 {
             continue;
         }
-        let Some(back) = settle_decision(x, in_this_seg, now, blocks_of(x.seg)) else {
+        let Some(back) = settle_decision(x, in_this_seg, now, x.blocks) else {
             continue;
         };
         x.settled_at = now;
@@ -482,6 +489,19 @@ pub fn note_block(shared: &Shared, kind: &str, key: &str, label: &str, rule: &st
         BLOCK_N.store(1, Ordering::Relaxed);
     } else {
         BLOCK_N.fetch_add(1, Ordering::Relaxed);
+    }
+    // 同时累加到"这一段的那笔质押"上并落盘：结算读的是它，不是进程内计数。
+    // 没有这一半，重启之后"干净跑完"就一定会给出奖励。
+    let mut st = load_stakes();
+    let mut dirty = false;
+    for x in st.stakes.iter_mut() {
+        if x.seg == seg && x.settled_at == 0 {
+            x.blocks = x.blocks.saturating_add(1);
+            dirty = true;
+        }
+    }
+    if dirty {
+        let _ = save_stakes(&st);
     }
 }
 
@@ -693,7 +713,7 @@ mod tests {
     /// 质押结算：段内不结、干净跑完加奖励、被打断过只退本金、已结算的跳过
     #[test]
     fn stake_settles_once_and_pays_bonus() {
-        let x = Stake { seg: 1000, amount: 10, at: 0, settled_at: 0, refunded: 0, void: false };
+        let x = Stake { seg: 1000, amount: 10, at: 0, settled_at: 0, refunded: 0, void: false, blocks: 0 };
         // 还在这一段里 → 不结算
         assert_eq!(settle_decision(&x, true, 2000, 0), None);
         // 刚过起点不到一分钟 → 不结算（避免"押完立刻退"）

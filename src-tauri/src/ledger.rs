@@ -187,9 +187,15 @@ pub fn range(start: &str, end: &str) -> Vec<Hit> {
     let Ok(mut d) = chrono::NaiveDate::parse_from_str(start, "%Y-%m-%d") else {
         return Vec::new();
     };
-    let Ok(b) = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d") else {
+    let Ok(mut b) = chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d") else {
         return Vec::new();
     };
+    // 和 `stats::aggregate` 一个口径：区间最多 366 天。
+    // 不夹的话，一个 `0001-01-01 ~ 9999-12-31` 的调用就是 365 万次开文件，
+    // 而且是在 UI 命令线程上跑（界面直接卡死）。
+    if (b - d).num_days() > 366 {
+        b = d + Days::new(366);
+    }
     while d <= b {
         let day = d.format("%Y-%m-%d").to_string();
         for h in load_day(&day).hits {

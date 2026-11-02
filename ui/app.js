@@ -787,7 +787,7 @@ function viewRules() {
   // **不显示任何"时间范围"** —— 什么时候生效由「自律时段」统一决定，
   // 自律规则只管"自律时间里不能开什么"，两件事不混在一起。
   const item = (l) => `
-    <div class="sl-item ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}">
+    <div class="sl-item ${activeNames.has(l.name) ? 'active' : ''}" data-act="edit-rule" data-id="${l.id}" role="button" tabindex="0">
       <div class="sl-item-bar" style="background:${esc(l.color || '#4d8dff')}"></div>
       <div class="sl-item-main">
         <div class="sl-item-name">${esc(l.name)}
@@ -5127,9 +5127,12 @@ function viewHelp() {
 
 /// 设置页通用的开关行（viewSettings 里那个 sw 是局部函数，这里需要一份全局的）
 function cfgSwitchRow(k, v, title, sub) {
+  // aria-label：开关两侧的文字是兄弟节点，input 本身没有名字，
+  // 读屏器只会念"复选框 未选中"，用户不知道是哪个设置。
+  const label = String(title).replace(/<[^>]*>/g, '');
   return `<div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
       <div><div style="font-size:12.5px">${title}</div><div class="hint" style="margin-top:3px">${sub}</div></div>
-      <div class="switch" data-act="cfg-switch" data-k="${k}"><input type="checkbox" ${v ? 'checked' : ''}><i></i></div>
+      <div class="switch" data-act="cfg-switch" data-k="${k}"><input type="checkbox" aria-label="${esc(label)}" ${v ? 'checked' : ''}><i></i></div>
     </div>`;
 }
 
@@ -6193,28 +6196,51 @@ function syncSleepLock() {
   const price = st.price || 0;
   const mins = st.unlockMin || 30;
   const afford = (st.balance || 0) >= price && price > 0;
+  const shell = `
+      <div class="sl-moon">🌙</div>
+      <div class="sl-title">现在是睡眠时间</div>
+      <div class="sl-sub">这台电脑该关着了。睡眠时段内的一切功能都被限制。</div>
+      <div class="sl-count"><b></b><span></span></div>
+      <button class="btn btn-sm sl-btn" data-act="sleep-unlock"></button>
+      <div class="sl-foot"></div>`;
   if (!el) {
     el = document.createElement('div');
     el.id = 'sleepShield';
     el.className = 'sleep-lock';
+    // 只建一次结构：每 1.5 秒重建 innerHTML 会让按钮节点被换掉，
+    // 键盘用户 Tab 上去之后焦点每 1.5 秒掉回 body（这是全屏遮挡，唯一出口就是它）。
+    el.innerHTML = `<div class="sl-box">${shell}</div>`;
     document.body.appendChild(el);
+    I18N.apply(el);
   }
-  el.innerHTML = `
-    <div class="sl-box">
-      <div class="sl-moon">🌙</div>
-      <div class="sl-title">现在是睡眠时间</div>
-      <div class="sl-sub">这台电脑该关着了。睡眠时段内的一切功能都被限制。</div>
-      <div class="sl-count${left <= 60 ? ' hot' : ''}">
-        <b>${pad(mm)}:${pad(ss)}</b><span>${st.shutdown ? '后自动关机' : '（只锁定，不关机）'}</span>
-      </div>
-      <button class="btn btn-sm sl-btn" data-act="sleep-unlock" ${afford ? '' : 'disabled'}>
-        ${price ? `用 ${price} 积分解锁 ${mins} 分钟` : '这段睡眠没有开启积分解锁'}
-      </button>
-      <div class="sl-foot">
-        积分余额 ${st.balance || 0}${afford || !price ? '' : ' · 积分不够'}<br>
-        解锁到期后如果还在睡眠时段内，会自动重新锁定。
-      </div>
-    </div>`;
+  // 之后只改文本 / 属性
+  const box = el.querySelector('.sl-box');
+  const cnt = el.querySelector('.sl-count');
+  if (box && cnt) {
+    cnt.classList.toggle('hot', left <= 60);
+    const b = cnt.querySelector('b');
+    const sp = cnt.querySelector('span');
+    const t = `${pad(mm)}:${pad(ss)}`;
+    if (b && b.textContent !== t) b.textContent = t;
+    const sub = st.shutdown ? '后自动关机' : '（只锁定，不关机）';
+    if (sp && sp.textContent !== sub) { sp.textContent = sub; I18N.apply(sp); }
+    const btn = el.querySelector('.sl-btn');
+    if (btn) {
+      btn.disabled = !afford;
+      const label = price ? `用 ${price} 积分解锁 ${mins} 分钟` : '这段睡眠没有开启积分解锁';
+      if (btn.textContent.trim() !== label) { btn.textContent = label; I18N.apply(btn); }
+    }
+    const foot = el.querySelector('.sl-foot');
+    if (foot) {
+      const want = `积分余额 ${st.balance || 0}${afford || !price ? '' : ' · 积分不够'}`;
+      // 第一行是纯文本，第二行固定；用 textContent 重建会丢 <br>，所以只改第一段
+      const first = foot.firstChild;
+      if (first && first.nodeType === 3 && first.nodeValue.trim() !== want) {
+        first.nodeValue = want + '\n        ';
+        I18N.apply(foot);
+      }
+    }
+  }
 }
 
 
@@ -6699,6 +6725,24 @@ const Act = window.Act = {
     renderPicker();
   },
 
+  /**
+   * 选一个"要保留显示的窗口"给专注遮罩用。
+   *
+   * 以前总览那个「打开遮罩」按钮在没选过目标时只提示"先选一次"，然后跳到遮罩页——
+   * 而遮罩页根本没有选窗口的入口（`settings.mask.target_pid` 唯一的写入口是 mask_start
+   * 自己）。于是默认配置下这个 CTA 永远走不通。这里把选择器直接接上。
+   */
+  async pickMaskTarget() {
+    S.pickerFor = 'mask';
+    try {
+      S.picker = await invoke('list_windows');
+    } catch (e) {
+      toast('读取窗口失败：' + errText(e), 'err');
+      return;
+    }
+    renderPicker();
+  },
+
   async pickFile(kind) {
     const p = await invoke('pick_path', { kind: kind || 'file' });
     if (!p) return;
@@ -6863,7 +6907,7 @@ const Act = window.Act = {
           ? `${en ? 'left ' : '买完剩 '}${p.balance - cost}`
           : `${en ? 'short ' : '还差 '}${cost - p.balance}`;
         rows.push(`<div class="list-row" style="cursor:pointer;${ok ? '' : 'opacity:.45'}"
-            data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}">
+            data-act="${ok ? 'do-unlock' : 'noop'}" data-min="${m}" role="button" tabindex="0">
           <span class="badge ${ok ? 'gold' : 'red'}">自律时段</span>
           <span class="grow">解锁 ${m} 分钟自由时间（只解现在这一轮，排班不动）</span>
           <span class="hint" style="flex:0 0 auto">${tail}</span>
@@ -9378,6 +9422,22 @@ document.addEventListener('keydown', (e) => {
   Layer.closeTop();
 }, true);
 
+/* KOF-06：让"用 div 做的按钮"也能用键盘触发。
+ *
+ * 规则行、积分解锁行、窗口选择项都是 div（为了布局方便），它们没有原生按钮的
+ * 键盘语义：Tab 到不了、回车也没反应。而积分解锁行偏偏是"被锁住时唯一的出路"。
+ * 给它们加了 role="button" tabindex="0"，这里把 Enter / 空格转成一次点击。
+ */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+  const t = e.target;
+  if (!t || !t.closest) return;
+  const el = t.closest('[data-act][role="button"]');
+  if (!el || el === t && el.tagName === 'BUTTON') return;
+  e.preventDefault();
+  el.click();
+}, true);
+
 /* KOF-04：keyup / 窗口回焦兜底——层还在，焦点却不在了，就拽回来 */
 document.addEventListener('keyup', (e) => {
   if (e.key === 'Tab' || e.key === 'Escape') Layer.ensureInside('keyup');
@@ -9454,7 +9514,7 @@ function renderPicker() {
       <div class="modal-bd">
         <div class="add-row"><input type="text" id="pickerSearch" placeholder="搜索窗口标题或进程名…" /></div>
         <div class="picker-list" id="pickerList">
-          ${list.length ? list.map((w, i) => `<div class="picker-item" data-act="pick-item" data-i="${i}">
+          ${list.length ? list.map((w, i) => `<div class="picker-item" data-act="pick-item" data-i="${i}" role="button" tabindex="0">
             <span class="badge ${w.title ? 'gold' : ''}">${esc(w.name || '?')}</span>
             <div style="flex:1;min-width:0">
               <div class="nm">${esc(w.title || '(无标题)')}</div>
@@ -9815,8 +9875,10 @@ document.addEventListener('click', async (e) => {
         await Act.nav('mask');
       }
     } else {
-      toast('还没选过目标窗口，先选一次；之后这里就能一键盖上');
-      await Act.nav('mask');
+      // 没选过目标：直接把窗口选择器弹出来，选完立刻盖。
+      // 以前这里只提示"先选一次"然后跳到遮罩页，而那一页没有选窗口的入口。
+      toast('选一个要保留显示的窗口，选完立刻盖上');
+      await Act.pickMaskTarget();
     }
     return;
   }
@@ -9995,6 +10057,22 @@ document.addEventListener('click', async (e) => {
     return;
   }
   if (act === 'pick-item') {
+    // 遮罩模式：选中即开遮罩（只留这个窗口可见）
+    if (S.pickerFor === 'mask') {
+      const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
+      if (w) {
+        closeModal();
+        try {
+          await invoke('mask_start', { pid: w.pid, title: w.title || '' });
+          await pull();
+          render();
+          toast(`遮罩已开：只保留「${w.title}」`, 'ok');
+        } catch (e) {
+          toast('开遮罩失败：' + errText(e), 'err');
+        }
+      }
+      return;
+    }
     const w = (S.picker || []).filter((x) => x.title)[+el.dataset.i];
     if (!w) return;
     {

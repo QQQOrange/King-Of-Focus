@@ -380,7 +380,11 @@ pub fn start(app: tauri::AppHandle, shared: Arc<Shared>) {
             // 系统睡过去了（合盖 / 休眠）：这一轮重新给满倒计时
             let last = last_tick().load(Ordering::Relaxed);
             let resumed = last > 0 && ts - last > RESUME_GAP_SECS;
-            if resumed {
+            // 系统时间被**往回调**（NTP 校正 / 手动改）：倒计时是按墙钟算的，
+            // 往回跳会让 remain 变成一个很大的正数，那一轮永远到不了点，
+            // 用户看着"还剩 3 小时"但关机永远不触发。按"刚醒来"同样处理。
+            let rewound = last > 0 && ts < last - 5;
+            if resumed || rewound {
                 // 合盖/休眠回来：这一轮从"现在"重新给满倒计时。
                 // 以前是清空 arm，主循环再按"段起点"武装 —— 段起点往往在几小时前，
                 // 于是唤醒后的第一拍 remain 就是负的，机器立刻关机。
