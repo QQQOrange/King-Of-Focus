@@ -813,7 +813,7 @@ function viewRules() {
         </div>
         <button class="btn btn-sm" data-act="rule-launch" data-id="${l.id}"
           title="进入自律时间时自动打开这些软件 / 网页">自动打开</button>
-        <button class="btn btn-sm" data-act="del-rule" data-id="${l.id}" ${locked ? 'disabled' : ''}>删除</button>
+        <button class="btn btn-sm btn-danger" data-act="del-rule" data-id="${l.id}" ${locked ? 'disabled' : ''}>删除</button>
       </div>
     </div>`;
 
@@ -4821,7 +4821,7 @@ function viewAbout() {
   return `
   <div class="mask-hero" style="align-items:center">
     <div style="display:flex;gap:18px;align-items:center">
-      <div class="brand-mark" style="width:72px;height:72px;border-radius:20px"><img src="logo.png" alt="" /></div>
+      <div class="brand-mark" style="width:72px;height:72px;border-radius:var(--r-xl)"><img src="logo.png" alt="" /></div>
       <div>
         <div style="font-size:22px;font-weight:700;letter-spacing:.3px">${esc(d.appName || 'King Of Focus')}</div>
         <div class="hint" style="margin-top:6px">
@@ -4995,7 +4995,7 @@ function showUpdateModal(info, manual) {
                 : '<div class="hint">这个版本没有写更新说明。</div>'}
         ${!a.url ? '<div class="note" style="border-left-color:var(--red);margin-top:12px">该版本还没有上传安装包，暂时无法自动更新。</div>' : ''}
         <div id="upProgressWrap" class="hidden" style="margin-top:16px">
-          <div style="height:6px;background:var(--inset-bg);border-radius:4px;overflow:hidden">
+          <div style="height:6px;background:var(--inset-bg);border-radius:var(--r-pill);overflow:hidden">
             <div id="upBar" style="height:100%;width:0;background:var(--cc-fill);transition:width .2s"></div>
           </div>
           <div class="hint" id="upText" style="margin-top:8px">准备下载…</div>
@@ -5659,7 +5659,7 @@ function viewSettings() {
   <div class="card">
     <div class="card-title">全局保护名单</div>
     <div class="card-sub">白名单下，这些进程永远不会被拦截。用逗号分隔（进程名，不带 .exe）。</div>
-    <textarea id="protectedList" style="width:100%;height:88px;background:var(--input-bg);border:1px solid var(--line-2);border-radius:8px;color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
+    <textarea id="protectedList" style="width:100%;height:88px;background:var(--input-bg);border:1px solid var(--line-2);border-radius:var(--r-sm);color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
     <div style="margin-top:10px"><button class="btn btn-sm" data-act="save-protected">保存名单</button></div>
   </div>`;
 }
@@ -8101,7 +8101,7 @@ const Act = window.Act = {
     try {
       const msg = await withTimeout(invoke('browser_open_folder'), 12000, '打开资源管理器超时');
       toast(msg, 'ok');
-      if (note) note.innerHTML = `<b style="color:var(--green, #52c41a)">${esc(msg)}</b>`;
+      if (note) note.innerHTML = `<b style="color:var(--green)">${esc(msg)}</b>`;
     } catch (e) {
       const msg = String(e).replace(/^Error:\s*/, '').replace(/\n/g, ' ');
       toast('打开失败，已给出替代方案', 'err');
