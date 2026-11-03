@@ -33,3 +33,7 @@ tools/extension_key.pem
 # 本地测试输出
 .harness_out.html
 .edge_ud/
+
+# Python 缓存（tools 里的脚本会被 import 做测试，别把 .pyc 提进来）
+__pycache__/
+*.pyc

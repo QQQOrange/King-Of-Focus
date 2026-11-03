@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// 更新清单里某一端的最新版本（检查更新时顺手缓存）。
+///
+/// 关于页要显示「手机端 / 插件现在最新是多少」，但为这个再打一次网络请求不值得：
+/// 每次检查更新本来就把整份清单拉下来了，顺手存下三端的版本号即可。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlatformVer {
+    pub version: String,
+    pub file: String,
+    pub url: String,
+}
+
 /// 时间段，单位：分钟（0..1440）。end <= start 表示跨夜。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -894,6 +906,8 @@ pub struct UpdateCfg {
     /// 用户选择"跳过"的版本号
     pub skipped_version: String,
     pub last_check: i64,
+    /// 上次检查更新时清单里的三端版本（platforms 那一节），关于页直接读它
+    pub platforms: std::collections::BTreeMap<String, PlatformVer>,
 }
 
 impl Default for UpdateCfg {
@@ -904,6 +918,7 @@ impl Default for UpdateCfg {
             token: String::new(),
             skipped_version: String::new(),
             last_check: 0,
+            platforms: Default::default(),
         }
     }
 }

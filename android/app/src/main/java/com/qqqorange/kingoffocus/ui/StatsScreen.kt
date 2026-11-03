@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -61,6 +62,7 @@ import com.qqqorange.kingoffocus.core.UsageAccess
 import com.qqqorange.kingoffocus.core.StatsStore
 import com.qqqorange.kingoffocus.core.fmtDuration
 import com.qqqorange.kingoffocus.data.Config
+import com.qqqorange.kingoffocus.data.ReportStore
 import com.qqqorange.kingoffocus.loadLaunchableApps
 import com.qqqorange.kingoffocus.toast
 import java.time.LocalDate
@@ -651,9 +653,94 @@ fun StatsScreen(cfg: Config) {
                 }) { Text("分享", fontSize = 12.sp) }
                 OutlinedButton(onClick = { bump += 1 }) { Text("刷新", fontSize = 12.sp) }
             }
+            Spacer(Modifier.height(10.dp))
+            // 桌面端生成过的报告能翻出来重看；手机端以前关掉页面就没了。
+            // 这里补一个最小存档：保存当前这份 + 列表（打开 / 分享 / 删除）。
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val name = ReportStore.save(now.toLocalDate().toString() + "-" + period.name.lowercase(), text)
+                    if (name.isNotBlank()) {
+                        bump += 1
+                        toast(ctx, "报告已保存")
+                    } else {
+                        toast(ctx, "保存失败")
+                    }
+                }) { Text("保存报告", fontSize = 12.sp) }
+                var showArchive by remember { mutableStateOf(false) }
+                OutlinedButton(onClick = { showArchive = true }) {
+                    Text("已保存（${ReportStore.list().size}）", fontSize = 12.sp)
+                }
+                if (showArchive) {
+                    ReportArchiveDialog(ctx, onClose = { showArchive = false })
+                }
+            }
         }
         Spacer(Modifier.height(6.dp))
     }
+}
+
+/**
+ * 报告存档列表。
+ *
+ * 每一项：标题（报告第一行）+ 保存时间 + 三个动作。
+ * 不做"预览全文"——点「分享」本来就会把全文交给目标应用，
+ * 而这层弹窗的价值是"找回上个月那份"。
+ */
+@Composable
+private fun ReportArchiveDialog(ctx: android.content.Context, onClose: () -> Unit) {
+    var items by remember { mutableStateOf(ReportStore.list()) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("已保存的报告") },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                if (items.isEmpty()) {
+                    Text("还没有保存过。上面点「保存报告」就会存到本机。", fontSize = 12.5.sp)
+                }
+                items.forEach { it ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text(it.title.ifBlank { it.name }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            ReportStore.whenText(it.at) + " · " + it.size + " 字",
+                            fontSize = 10.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = {
+                                val t = ReportStore.read(it.name)
+                                if (t.isBlank()) { toast(ctx, "读取失败"); return@TextButton }
+                                val cm = ctx.getSystemService(ClipboardManager::class.java)
+                                cm?.setPrimaryClip(ClipData.newPlainText("King Of Focus 使用报告", t))
+                                toast(ctx, "已复制")
+                            }) { Text("复制", fontSize = 11.5.sp) }
+                            TextButton(onClick = {
+                                val t = ReportStore.read(it.name)
+                                if (t.isBlank()) { toast(ctx, "读取失败"); return@TextButton }
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent.createChooser(
+                                            Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_TEXT, t)
+                                            },
+                                            "分享报告",
+                                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }
+                            }) { Text("分享", fontSize = 11.5.sp) }
+                            TextButton(onClick = {
+                                ReportStore.delete(it.name)
+                                items = ReportStore.list()
+                            }) {
+                                Text("删除", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("关闭") } },
+    )
 }
 
 // ------------------------------------------------------------------ 视图模型

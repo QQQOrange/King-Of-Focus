@@ -196,6 +196,29 @@ pub fn check(cfg: &UpdateCfg) -> Value {
     }
 }
 
+/// 清单里的 `platforms` 那一节 → 关于页要用的 `{ key: { version, file, url } }`。
+///
+/// 为什么在这里算 URL 而不是让前端拼：清单里的文件名和 tag 是发布时决定的，
+/// 前端拼容易拼错（少个斜杠、忘了 tag），而这里 `tag` 和 `repo` 都是现成的。
+fn platforms_of(manifest: &Value, repo: &str, tag: &str) -> Value {
+    let mut out = serde_json::Map::new();
+    if let Some(m) = manifest.get("platforms").and_then(|x| x.as_object()) {
+        for (k, v) in m {
+            let ver = v.get("version").and_then(|x| x.as_str()).unwrap_or("");
+            let file = v.get("file").and_then(|x| x.as_str()).unwrap_or("");
+            if ver.is_empty() || file.is_empty() {
+                continue;
+            }
+            let url = format!("https://github.com/{repo}/releases/download/{tag}/{file}");
+            out.insert(
+                k.clone(),
+                json!({ "version": ver, "file": file, "url": url }),
+            );
+        }
+    }
+    Value::Object(out)
+}
+
 /// 校验失败时的统一回答。**绝不在失败之后"再找找别的包"**——那正是跨平台错配的入口。
 fn reject_json(
     p: &updsel::Problem,
@@ -289,6 +312,7 @@ fn analyze_release(
                 });
             }
         };
+        let plats = platforms_of(&manifest, &cfg.repo, &tag);
         let sel = match updsel::select(&manifest, plat, &current(), &names) {
             Ok(s) => s,
             Err(p) if p.code == "E_NOT_NEWER" => {
@@ -307,6 +331,7 @@ fn analyze_release(
                     "platformLabel": updsel::platform_label(plat),
                     "remaining": remaining, "limit": limit, "error": "",
                     "note": "已经是最新版本。",
+                    "platforms": plats,
                 });
             }
             Err(p) => return reject_json(&p, &tag, remaining, limit),
@@ -337,6 +362,7 @@ fn analyze_release(
             "limit": limit,
             "error": "",
             "note": if url.is_empty() { "清单里写的文件没有下载地址，请到 GitHub 手动下载。" } else { "" },
+            "platforms": plats,
         });
     }
 

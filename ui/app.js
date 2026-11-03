@@ -3957,15 +3957,27 @@ function peerBanner() {
   const who = peer.source === 'android' ? '手机' : '桌面';
   const name = peer.device ? '（' + esc(peer.device) + '）' : '';
   const when = peer.at ? new Date(peer.at * 1000).toLocaleString() : '';
+  // 这条横幅以前只有读数，没有任何去处：用户想知道"多久没同步了/怎么同步"只能自己找。
+  // 补一行状态 + 一个直达云同步页的入口。
+  const sync = (S.data && S.data.config.settings.sync) || {};
+  const lastSync = sync.lastSync ? new Date(sync.lastSync * 1000).toLocaleString() : '';
+  const staleDays = peer.at ? Math.floor((Date.now() / 1000 - peer.at) / 86400) : -1;
+  const stale = staleDays >= 3
+    ? `<span class="badge red" style="margin-left:6px">${staleDays} 天没更新</span>`
+    : '';
   return `<div class="note" style="border-left-color:var(--blue);margin-bottom:14px">
     <b>另一台设备</b>
-    <span class="hint" style="margin-left:6px">${who}${name}</span>
+    <span class="hint" style="margin-left:6px">${who}${name}</span>${stale}
     <div style="margin-top:6px;font-size:12px">
       最近 ${last7.length} 天：总 ${fmtDur(total)} · 其中自律时段 ${fmtDur(on)}
       ${on > 0 ? `（${Math.round((on / Math.max(1, total)) * 100)}%）` : ''}
       ${when ? `<span class="hint"> · 数据同步于 ${esc(when)}</span>` : ''}
     </div>
-    <div class="hint" style="margin-top:4px">这些数字来自对方设备，不计入上面的本机统计。</div>
+    <div class="hint" style="margin-top:4px">
+      这些数字来自对方设备，不计入上面的本机统计。
+      ${lastSync ? `本机上次与云端同步：${esc(lastSync)}。` : ''}
+      <a href="#" data-act="open-sync" style="color:var(--blue)">去云同步 ↗</a>
+    </div>
   </div>`;
 }
 
@@ -4825,6 +4837,45 @@ function viewAbout() {
   </div>
 
   <div class="card" style="margin-top:14px">
+    <div class="card-title">三端版本</div>
+    ${'' /* 桌面端版本是本机真实版本；手机端/插件读的是上次检查更新时缓存的清单，
+         没有缓存就如实说"还没检查过"，不编一个数字出来。 */}
+    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
+      <div>
+        <div style="font-size:12.5px">桌面端 <span class="badge green" style="margin-left:6px">当前运行</span></div>
+        <div class="hint" style="margin-top:4px">Windows x64 · ${esc(d.buildDate)} 构建</div>
+      </div>
+      <b style="color:var(--gold)">v${esc(d.version)}</b>
+    </div>
+    ${(() => {
+      const plats = (st.platforms || {});
+      const row = (key, label, hint) => {
+        const p = plats[key];
+        if (!p || !p.version) {
+          return `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+            <div><div style="font-size:12.5px">${label}</div>
+            <div class="hint" style="margin-top:4px">${hint}</div></div>
+            <span class="badge">未知</span></div>`;
+        }
+        return `<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+          <div><div style="font-size:12.5px">${label}</div>
+          <div class="hint" style="margin-top:4px">${hint}</div></div>
+          <div class="row" style="gap:8px;align-items:center">
+            <b>v${esc(p.version)}</b>
+            <button class="btn btn-sm" data-act="open-url" data-url="${esc(p.url || '')}">下载</button>
+          </div></div>`;
+      };
+      return row('android', '手机端', '同一个 Release 里的 APK，与桌面端共用备份格式')
+        + row('chrome-extension', '浏览器插件', 'MV3 扩展，网页拦截与焦点上报')
+        + `<div class="hint" style="padding-top:8px">${
+          st.lastCheck
+            ? '清单来自上次检查更新：' + new Date(st.lastCheck * 1000).toLocaleString()
+            : '还没检查过更新——点下面的「检查更新」拉一次清单，这里就会显示三端版本。'
+        }</div>`;
+    })()}
+  </div>
+
+  <div class="card" style="margin-top:14px">
     <div class="card-title">项目</div>
     <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0">
       <div>
@@ -4870,7 +4921,8 @@ function viewAbout() {
     <div class="hint" style="line-height:1.9;padding:10px 0;border-bottom:1px solid var(--line)">
       桌面端只读更新清单里 windows-x64 那一条，四道校验都要过。<br>
       校验平台标识、包类型、版本号、sha256：对不上就不下载。<br>
-      宁可停在提示上，也不去找别的平台的包。
+      宁可停在提示上，也不去找别的平台的包。<br>
+      手机端与插件的版本和下载入口在「关于」页的「三端版本」里。
     </div>
 
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
@@ -10268,6 +10320,16 @@ document.addEventListener('click', async (e) => {
   if (act === 'day-retry') { await dayFetch(dayOf(), true); return; }
   if (act === 'browser-prompt-go') { closeModal(); await Act.nav('browsers'); return; }
   if (act === 'open-repo') { e.preventDefault(); await Act.openRepo(); return; }
+  // 「另一台设备」横幅上的入口：直接跳到云同步页
+  if (act === 'open-sync') { e.preventDefault(); await Act.nav('sync'); return; }
+  // 关于页「三端版本」里的下载按钮：URL 来自更新清单（Rust 侧拼好的），这里只负责打开
+  if (act === 'open-url') {
+    const u = el.dataset.url || '';
+    if (!/^https:\/\//i.test(u)) { toast('这个平台还没有下载地址', 'err'); return; }
+    try { await invoke('open_url', { url: u }); }
+    catch (err) { toast('打开浏览器失败：' + errText(err), 'err'); }
+    return;
+  }
   if (act === 'quota-refresh') { await Act.quotaRefresh(); return; }
   if (act === 'update-enabled') { await Act.updateEnabled(); return; }
   if (act === 'skip-version') { await Act.skipVersion(el.dataset.v); return; }

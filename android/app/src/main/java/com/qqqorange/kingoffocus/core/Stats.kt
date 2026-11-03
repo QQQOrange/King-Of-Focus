@@ -546,6 +546,14 @@ fun fmtDuration(sec: Int): String {
 object StatsTrack {
     fun on(cfg: Config, now: LocalDateTime): Boolean {
         if (!cfg.enabled) return false
+        /* 用积分解锁出来的自由时间**不算**「自律生效中」。
+         *
+         * 桌面端 0.1.97 已经把这条写进 `stats::sample`（monitor 那边也不给
+         * 解锁窗内的时长发积分）。手机端这里以前没跟上：同一段时间，
+         * 记分说「不算工作段」、统计说「自律开着」——两个口径互相矛盾，
+         * 手机上看到的专注时长会比实际挣到的积分多。
+         */
+        if (LockEngine.isUnlocked(cfg, now)) return false
         if (GuardEngine.activeRules(cfg, now).isNotEmpty()) return true
         if (ScheduleEngine.stateAt(cfg, now)?.focusing == true) return true
         return LockEngine.isLockActive(cfg, now)

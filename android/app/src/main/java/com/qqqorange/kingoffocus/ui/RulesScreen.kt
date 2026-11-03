@@ -1,7 +1,9 @@
 package com.qqqorange.kingoffocus.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -9,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +30,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -167,6 +173,17 @@ fun RulesScreen(cfg: Config) {
         cfg.rules.forEach { r ->
             Panel {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    /* 桌面端给这条规则配的颜色。手机端不能改色，但显示出来，
+                     * 两端列表才"对得上号"——以前颜色只藏在 carry 里，看不见。 */
+                    ruleColor(r.color)?.let { c ->
+                        Box(
+                            Modifier
+                                .padding(end = 10.dp)
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(c),
+                        )
+                    }
                     Column(Modifier.weight(1f)) {
                         Text(r.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(3.dp))
@@ -365,4 +382,17 @@ private fun RuleDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+}
+
+/**
+ * 把 `#rrggbb` / `#aarrggbb` 解析成 Compose 的 Color。
+ *
+ * 解析不了就返回 null（不画点）——桌面端的历史配置里可能有空串或旧格式，
+ * 那种情况宁可不显示，也不要因为一个颜色把整个规则列表画崩。
+ */
+private fun ruleColor(s: String): Color? {
+    val t = s.trim().trimStart('#')
+    if (t.length != 6 && t.length != 8) return null
+    val v = t.toLongOrNull(16) ?: return null
+    return if (t.length == 6) Color(0xFF000000L or v) else Color(v)
 }

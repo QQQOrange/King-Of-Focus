@@ -146,6 +146,71 @@ def stage_desktop(version):
     return dest
 
 
+def _newest_mtime(root, skip_dirs):
+    """扫一棵目录，返回 (最新 mtime, 那个文件的绝对路径)。"""
+    newest, where = 0.0, ''
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            try:
+                m = os.path.getmtime(p)
+            except OSError:
+                continue
+            if m > newest:
+                newest, where = m, p
+    return newest, where
+
+
+ANDROID_SKIP = {'build', '.gradle', '.idea', 'bin', 'obj', 'captures', '.kotlin'}
+
+
+def check_android_fresh(apk):
+    """APK 比 android/ 源码旧就拒绝发版。
+
+    以前 stage_android 只是"把现成的 apk 复制过去"。改了 Kotlin 却忘了重新
+    构建时，发出去的 Release 里装的是上一版的包——版本号也没变，看起来一切正常，
+    只有用户装完发现"这个修复怎么没生效"。
+    这里用 mtime 做闸门：源码（含 gradle 脚本）比 APK 新，就直接失败。
+    """
+    apk_m = os.path.getmtime(apk)
+    roots = [
+        os.path.join(ROOT, 'android', 'app', 'src'),
+        os.path.join(ROOT, 'android', 'gradle'),
+    ]
+    files = [
+        os.path.join(ROOT, 'android', 'app', 'build.gradle.kts'),
+        os.path.join(ROOT, 'android', 'build.gradle.kts'),
+        os.path.join(ROOT, 'android', 'settings.gradle.kts'),
+        os.path.join(ROOT, 'android', 'gradle.properties'),
+    ]
+    newest, where = 0.0, ''
+    for r in roots:
+        if os.path.isdir(r):
+            m, p = _newest_mtime(r, ANDROID_SKIP)
+            if m > newest:
+                newest, where = m, p
+    for f in files:
+        if os.path.exists(f):
+            m = os.path.getmtime(f)
+            if m > newest:
+                newest, where = m, f
+    # 1 秒容差：构建与复制之间本来就差几毫秒
+    if newest > apk_m + 1.0:
+        die(
+            '安卓 APK 比源码旧，拒绝发版（否则发出去的是旧包）：\n'
+            '  APK   %s（%s）\n'
+            '  源码  %s（%s）\n'
+            '先构建再发：cd android && gradle assembleDebug'
+            % (
+                os.path.relpath(apk, ROOT),
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(apk_m)),
+                os.path.relpath(where, ROOT),
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(newest)),
+            )
+        )
+
+
 def stage_android(version):
     dest = os.path.join(DIST, target_name('android', version))
     cands = [
@@ -155,6 +220,7 @@ def stage_android(version):
     apk = next((c for c in cands if os.path.exists(c)), None)
     if not apk:
         die('安卓产物不存在（先跑 gradlew assembleDebug / assembleRelease）')
+    check_android_fresh(apk)
     shutil.copy2(apk, dest)
     return dest
 

@@ -572,6 +572,9 @@ object Portable {
             packages = if (mode == "both") emptyList() else pkgs,
             deny = if (mode == "both") pkgs else emptyList(),
             hard = rj.bool("hard", true),
+            // 桌面端的自定义色。手机端不能改色（没有调色板），但要**显示**：
+            // 两端规则列表一眼能对上号，比多一个"只能看"的字段有用。
+            color = rj.str("color").trim(),
             foreign = foreign,
             carry = if (needsCarry(rj)) rj.toString() else "",
         )
@@ -650,12 +653,16 @@ object Portable {
             put("enabled", r.enabled)
             put("mode", mode)
             put("hard", r.hard)
+            // 颜色现在是真字段：手机原生规则用它写默认色，桌面带来的原样写回。
+            // 放在 overlay 这一段（base.forEach 之后），保证和字段一致。
+            put("color", r.color.ifBlank { DEFAULT_COLOR })
             put("apps", JsonArray(apps))
         }
     }
 
     /** 有没有手机端表达不了的内容（有才值得存 carry，免得白占配置体积） */
-    private fun needsCarry(rj: JsonObject): Boolean {        if (rj.str("mode") == "both") return true
+    private fun needsCarry(rj: JsonObject): Boolean {
+        if (rj.str("mode") == "both") return true
         if (rj.arr("sites").isNotEmpty() || rj.arr("exceptions").isNotEmpty()) return true
         if (rj.arr("extraProtected").isNotEmpty()) return true
         if (rj.arr("schedule").any { it is JsonArray && it.isNotEmpty() }) return true

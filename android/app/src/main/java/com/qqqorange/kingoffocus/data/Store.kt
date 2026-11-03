@@ -52,6 +52,8 @@ object Store {
         LedgerStore.init(ctx.applicationContext)
         StakeStore.init(ctx.applicationContext)
         ReviewStore.init(ctx.applicationContext)
+        // 报告存档：桌面端有"生成过的报告能翻出来"，手机端也要能存下来再看
+        ReportStore.init(ctx.applicationContext)
         // 权限状态机要把"首次拿到"记下来（用来区分"从没给过"和"被回收"）
         com.qqqorange.kingoffocus.core.UsageAccess.bind { block -> update(block) }
     }

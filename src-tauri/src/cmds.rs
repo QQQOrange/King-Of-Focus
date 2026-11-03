@@ -1871,6 +1871,21 @@ pub async fn update_check(
             }
         }
         let v = crate::update::check(&c.settings.update);
+        // 顺手把清单里的三端版本存下来：关于页要显示「手机端 / 插件最新是多少」，
+        // 不该为此再打一次网络请求（那还会多消耗一次 API 额度）。
+        // 解析失败就保持原值，不覆盖已有缓存。
+        let plats = v.get("platforms").cloned().unwrap_or(serde_json::Value::Null);
+        if plats.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
+            if let Ok(map) = serde_json::from_value::<
+                std::collections::BTreeMap<String, crate::model::PlatformVer>,
+            >(plats)
+            {
+                let _ = shared.update_config_quiet(|live| {
+                    live.settings.update.platforms = map;
+                    Ok(())
+                });
+            }
+        }
         // 记账写入：只更新"上次检查时间"，而且是在**当前**配置上改，
         // 不是把 12 秒前的快照写回去。检查时间不是用户改的配置，
         // 所以用 save_quiet，别把 updated_at 顶上去。

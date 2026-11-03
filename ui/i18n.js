@@ -555,6 +555,26 @@
     '后台服务暂时不可用，正在自动重试…': 'Backend is temporarily unavailable — retrying automatically…',
     '重试一次': 'Retry',
     '重试': 'Retry',
+    '三端版本': 'Versions across platforms',
+    '还没检查过更新——点下面的「检查更新」拉一次清单，这里就会显示三端版本。':
+      'No update check yet — press "Check for updates" below to fetch the manifest; versions for all three platforms will show up here.',
+    '手机端与插件的版本和下载入口在「关于」页的「三端版本」里。':
+      'Android and extension versions, plus download links, live in About → Versions across platforms.',
+    '去云同步 ↗': 'Go to cloud sync ↗',
+    '本机上次与云端同步：': 'Last local sync with the cloud: ',
+    '这些数字来自对方设备，不计入上面的本机统计。':
+      'These numbers come from the other device and are not part of the local stats above.',
+    '桌面端': 'Desktop',
+    '当前运行': 'Running now',
+    '未知': 'Unknown',
+    '下载': 'Download',
+    '手机端': 'Android',
+    '浏览器插件': 'Browser extension',
+    '同一个 Release 里的 APK，与桌面端共用备份格式':
+      'The APK ships in the same Release and shares the desktop backup format.',
+    'MV3 扩展，网页拦截与焦点上报': 'MV3 extension: web blocking and focus reporting',
+    '这个平台还没有下载地址': 'No download link for this platform yet',
+    '打开浏览器失败：': 'Could not open the browser: ',
     '读取窗口失败：': 'Could not read windows: ',
     '请输入密码': 'Enter the password',
     '报告读取失败': 'Could not open this report',
@@ -1917,6 +1937,9 @@
     [/^还有 (\d+) 分$/, '$1 min left'],
     [/^还有 (\d+) 秒$/, '$1 s left'],
     [/^(.+) 分钟后$/, 'in $1 min'],
+    /* 关于页：构建日期与清单时间都是拼出来的整句 */
+    [/^Windows x64 · (.+) 构建$/, 'Windows x64 · built $1'],
+    [/^清单来自上次检查更新：(.+)$/, 'Manifest from the last check: $1'],
     /* 日历明细的「共 5 小时 12 分」 */
     [/^共 (.+)$/, 'Total $1'],
 

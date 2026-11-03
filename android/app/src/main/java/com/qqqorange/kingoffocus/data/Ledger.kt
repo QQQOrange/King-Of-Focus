@@ -163,7 +163,13 @@ object LedgerStore {
     fun range(start: String, end: String): List<Hit> {
         if (!::dir.isInitialized) return emptyList()
         val s = runCatching { LocalDate.parse(start) }.getOrNull() ?: return emptyList()
-        val e = runCatching { LocalDate.parse(end) }.getOrNull() ?: return emptyList()
+        var e = runCatching { LocalDate.parse(end) }.getOrNull() ?: return emptyList()
+        /* 和桌面端 `ledger::range` 一个口径：区间最多 366 天。
+         *
+         * 不夹的话，一个 `0001-01-01 ~ 9999-12-31` 的调用就是 365 万次开文件，
+         * 而且这段跑在主线程上（报告生成）——直接 ANR。
+         */
+        e = clampEnd(s, e)
         val map = LinkedHashMap<String, Hit>()
         var d = s
         while (!d.isAfter(e)) {
@@ -179,4 +185,15 @@ object LedgerStore {
         }
         return map.values.sortedByDescending { it.n }
     }
+}
+
+/**
+ * 区间上限：报告最多回溯 [maxDays] 天（默认 366，与桌面端 `ledger::range` 同一口径）。
+ *
+ * 单独抽出来是为了能直接测——`range()` 要读真实文件，边界夹取这件小事
+ * 不该只能靠"跑一遍看卡不卡"来验。
+ */
+internal fun clampEnd(start: LocalDate, end: LocalDate, maxDays: Long = 366): LocalDate {
+    val cap = start.plusDays(maxDays)
+    return if (end.isAfter(cap)) cap else end
 }
