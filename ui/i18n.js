@@ -557,6 +557,36 @@
     '重试': 'Retry',
     '三端版本': 'Versions across platforms',
     '诊断信息': 'Diagnostics',
+    '分区重置': 'Reset a section',
+    '只把选中的那一块恢复出厂值，其它设置、规则、积分都不动。重置前会自动存一份快照，点「撤销」能回来。':
+      'Restores only the selected section to its defaults — other settings, rules and points stay untouched. A snapshot is taken first, so you can undo.',
+    '读取中…': 'Loading…',
+    '撤销上次重置': 'Undo last reset',
+    '状态读取失败，不影响重置本身。': 'Could not read the reset state; resetting still works.',
+    '还没有重置过任何分区。': 'No section has been reset yet.',
+    '上次重置：': 'Last reset: ',
+    '已撤销上次重置': 'Last reset undone',
+    /* 分区名里「自律规则 / 自律时段 / 专注遮罩 / 浏览器插件 / 云同步 / 激励语录 /
+     * 睡眠管理 / 分心事件」这些**不在这里重复定义**：导航里已经有了（Rules / Hours /
+     * Extension …）。重复定义会让后写的覆盖前写的，导航文字会跟着变 —— 上一版就踩过。 */
+    'HUD 外观': 'HUD appearance',
+    '阶段提醒': 'Stage reminders',
+    '统计口径': 'Stats settings',
+    '更新通道': 'Update channel',
+    '规则列表恢复为出厂那条「自律时间」，自定义规则会被删除':
+      'The rule list goes back to the single built-in “Discipline time”; custom rules are deleted.',
+    '7×24 时段表恢复默认，多套方案一并清掉': 'The 7×24 grid and all extra sets go back to defaults.',
+    '透明度、跟随、点击穿透、热键等恢复默认': 'Opacity, follow mode, click-through and hotkey go back to defaults.',
+    '睡眠时段与关机倒计时恢复默认（默认关闭）': 'Sleep windows and the shutdown countdown go back to defaults (off).',
+    '停靠角、边距、透明度恢复默认': 'Corner, margin and opacity go back to defaults.',
+    '自定义语录与自定义来源清空，回到内置精选': 'Custom quotes and custom sources are cleared; built-in picks are used.',
+    '提醒开关与提前量恢复默认': 'Reminder toggles and lead times go back to defaults.',
+    '提醒间隔、上限、按钮位置恢复默认': 'Reminder interval, cap and button corner go back to defaults.',
+    '保留天数与计闲规则恢复默认（不会删除已统计的数据）':
+      'Retention and idle rules go back to defaults (already recorded data is kept).',
+    '插件巡检、宽限、自定义浏览器与路径清空': 'Extension checks, grace period, custom browsers and paths are cleared.',
+    '清空 WebDAV 地址与凭据（本机备份不受影响）': 'WebDAV address and credentials are cleared (local backups are kept).',
+    '清空 GitHub 令牌与跳过版本': 'GitHub token and skipped version are cleared.',
     '11 · 出问题了怎么反馈': '11 · Reporting a problem',
     '「关于 → 诊断信息 → 导出」会生成一份文本：版本、系统、当前状态、最近日志，以及脱敏后的配置（网盘密码、备份口令、更新令牌都会打码）。':
       'About → Diagnostics → Export writes a text file: version, OS, current state, recent logs and a redacted config (WebDAV password, backup passphrase and update token are masked).',
@@ -1954,6 +1984,10 @@
     /* 关于页：构建日期与清单时间都是拼出来的整句 */
     [/^Windows x64 · (.+) 构建$/, 'Windows x64 · built $1'],
     [/^诊断信息已导出：(.+)$/, 'Diagnostics exported: $1'],
+    /* 分区重置：按钮上的分区名和 toast 都是拼出来的 */
+    [/^恢复「(.+)」的默认值$/, 'Reset “$1” to defaults'],
+    [/^已重置：(.+)$/, 'Reset done: $1'],
+    [/^上次重置：(.+) · (.+)$/, 'Last reset: $1 · $2'],
     [/^清单来自上次检查更新：(.+)$/, 'Manifest from the last check: $1'],
     /* 日历明细的「共 5 小时 12 分」 */
     [/^共 (.+)$/, 'Total $1'],

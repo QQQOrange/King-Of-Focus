@@ -28,6 +28,7 @@ mod portable;
 mod proc;
 mod quotes;
 mod report_out;
+mod reset;
 mod review;
 mod sched;
 mod server;
@@ -518,6 +519,9 @@ fn main() {
             cmds::backup_restore,
             cmds::backup_export,
         cmds::diag_export,
+        cmds::config_reset_section,
+        cmds::config_reset_undo,
+        cmds::config_reset_state,
             cmds::backup_import,
             cmds::backup_delete,
             cmds::backup_open_dir,

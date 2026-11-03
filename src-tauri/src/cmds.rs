@@ -2038,6 +2038,66 @@ pub fn backup_restore(
     Ok(r)
 }
 
+/// 分区重置：只把某一块设置恢复出厂值（重置前自动快照，可撤销）
+#[tauri::command]
+pub fn config_reset_section(
+    shared: State<'_, Arc<Shared>>,
+    section: String,
+) -> Result<Value, String> {
+    let old = shared.config();
+    let mut next = old.clone();
+    crate::reset::apply(&mut next, &section)?;
+    // 纪律闸：重置规则 / 时段 / 睡眠等于削弱当前这一轮自律，必须挡住。
+    // 判据和"整份覆盖配置"完全同一套（guard::config_replace_blocked）。
+    if let Some(why) = crate::guard::config_replace_blocked(&old, &next) {
+        return Err(format!("{why}；这段时间不能重置这一块"));
+    }
+    let snap = crate::reset::save_snapshot(&old, &section)?;
+    shared.update_config(|live| crate::reset::apply(live, &section))?;
+    apply_runtime_cfg(&shared);
+    crate::logs::write(
+        "reset",
+        &format!("分区重置：{section}（快照 {}）", snap.display()),
+    );
+    Ok(json!({
+        "ok": true,
+        "section": section,
+        "at": chrono::Local::now().timestamp(),
+    }))
+}
+
+/// 撤销最近一次分区重置
+#[tauri::command]
+pub fn config_reset_undo(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    let (prev, section, path) = crate::reset::load_latest()?;
+    let live = shared.config();
+    let mut next = prev;
+    // 积分和"另一台设备的统计"不跟着回滚：它们不是"设置"。
+    // 把积分回滚到快照，等于撤销这段时间赚到的分。
+    next.points = live.points.clone();
+    next.settings.peer_stats = live.settings.peer_stats.clone();
+    if let Some(why) = crate::guard::config_replace_blocked(&live, &next) {
+        return Err(format!("{why}；现在不能撤销这次重置"));
+    }
+    {
+        let mut w = shared.cfg.write().map_err(|_| "配置锁被占用".to_string())?;
+        *w = next.clone();
+    }
+    cfg::save(&next)?;
+    apply_runtime_cfg(&shared);
+    crate::reset::drop_snapshot(&path);
+    crate::logs::write("reset", &format!("撤销重置：{section}"));
+    Ok(json!({ "ok": true, "section": section }))
+}
+
+/// 有没有可撤销的重置（设置页那张卡片用）
+#[tauri::command]
+pub fn config_reset_state() -> Value {
+    match crate::reset::latest_snapshot() {
+        Some((_, section, at)) => json!({ "has": true, "section": section, "at": at }),
+        None => json!({ "has": false }),
+    }
+}
 /// 导出诊断信息（版本 / 环境 / 状态 / 日志尾巴 / 脱敏配置）
 ///
 /// 为什么做成按钮而不是"让用户去 data 目录里找日志"：用户不是开发者，

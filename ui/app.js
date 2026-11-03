@@ -5675,7 +5675,82 @@ function viewSettings() {
     <div class="card-sub">白名单下，这些进程永远不会被拦截。用逗号分隔（进程名，不带 .exe）。</div>
     <textarea id="protectedList" style="width:100%;height:88px;background:var(--input-bg);border:1px solid var(--line-2);border-radius:var(--r-sm);color:var(--text);padding:10px;font-size:12px;resize:vertical;user-select:text">${esc((st.protected || []).join(', '))}</textarea>
     <div style="margin-top:10px"><button class="btn btn-sm" data-act="save-protected">保存名单</button></div>
+  </div>
+
+  ${resetCard()}`;
+}
+
+/**
+ * 「分区重置」卡片。
+ *
+ * 为什么是"选一块 + 一个按钮"而不是 12 个并排的红按钮：
+ * 重置是破坏性操作，界面不该给 12 个手滑的机会。选中态用高亮，
+ * 真正执行还要过一次确认框。
+ *
+ * 每个分区只改自己那几个字段（见 Rust `reset::apply`），
+ * 并且重置前会自动快照、支持撤销。
+ */
+const RESET_SECTIONS = [
+  ['rules', '自律规则', '规则列表恢复为出厂那条「自律时间」，自定义规则会被删除'],
+  ['clock', '自律时段', '7×24 时段表恢复默认，多套方案一并清掉'],
+  ['mask', '专注遮罩', '透明度、跟随、点击穿透、热键等恢复默认'],
+  ['sleep', '睡眠管理', '睡眠时段与关机倒计时恢复默认（默认关闭）'],
+  ['hud', 'HUD 外观', '停靠角、边距、透明度恢复默认'],
+  ['quotes', '激励语录', '自定义语录与自定义来源清空，回到内置精选'],
+  ['notify', '阶段提醒', '提醒开关与提前量恢复默认'],
+  ['distract', '分心事件', '提醒间隔、上限、按钮位置恢复默认'],
+  ['stats', '统计口径', '保留天数与计闲规则恢复默认（不会删除已统计的数据）'],
+  ['browser', '浏览器插件', '插件巡检、宽限、自定义浏览器与路径清空'],
+  ['sync', '云同步', '清空 WebDAV 地址与凭据（本机备份不受影响）'],
+  ['update', '更新通道', '清空 GitHub 令牌与跳过版本'],
+];
+
+function resetCard() {
+  const cur = RESET_SECTIONS.find((s) => s[0] === S.resetSection) || RESET_SECTIONS[0];
+  // 分区名先进 I.t()：英文界面下按钮和说明都必须是英文，
+  // 否则「Reset “自律规则” to defaults」这种半中半英会露出来。
+  const name = (k) => I.t(k);
+  return `<div class="card" id="resetCard">
+    <div class="card-title">分区重置</div>
+    <div class="card-sub">只把选中的那一块恢复出厂值，其它设置、规则、积分都不动。重置前会自动存一份快照，点「撤销」能回来。</div>
+    <div class="row" style="flex-wrap:wrap;gap:8px;margin:10px 0">
+      ${RESET_SECTIONS.map(([k, n]) => `<button class="btn btn-sm${cur[0] === k ? ' btn-primary' : ''}"
+        data-act="reset-pick" data-k="${k}">${esc(name(n))}</button>`).join('')}
+    </div>
+    <div class="hint" style="margin-bottom:10px">${esc(I.t(cur[2]))}</div>
+    <div class="row" style="justify-content:space-between;align-items:center;gap:10px">
+      <div class="hint" id="resetLast" style="flex:1">读取中…</div>
+      <button class="btn btn-sm btn-danger" data-act="reset-section">恢复「${esc(name(cur[1]))}」的默认值</button>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:8px">
+      <button class="btn btn-sm" id="resetUndo" data-act="reset-undo" style="display:none">撤销上次重置</button>
+    </div>
   </div>`;
+}
+
+/** 拉一次"有没有可撤销的重置"，填进卡片（不整页重绘） */
+async function loadResetState() {
+  let st = { has: false };
+  let failed = false;
+  try {
+    // 加超时：后端要是卡住（比如正忙着扫进程），这一行不能永远停在「读取中…」
+    st = await withTimeout(invoke('config_reset_state'), 3000, '读取超时');
+  } catch (e) {
+    failed = true;
+  }
+  S.resetLast = st;
+  const el = $('#resetLast');
+  if (el) {
+    const name = (RESET_SECTIONS.find((s) => s[0] === st.section) || [0, st.section || ''])[1];
+    // 这里是 textContent 直接赋值，不会走 DOM 的翻译扫描 —— 所以自己过一遍 I.t()
+    el.textContent = failed
+      ? I.t('状态读取失败，不影响重置本身。')
+      : (st.has
+        ? I.t('上次重置：') + `${I.t(name)} · ${new Date((st.at || 0) * 1000).toLocaleString()}`
+        : I.t('还没有重置过任何分区。'));
+  }
+  const btn = $('#resetUndo');
+  if (btn) btn.style.display = !failed && st.has ? '' : 'none';
 }
 
 /* ---------------- 饼图 ---------------- */
@@ -6614,6 +6689,9 @@ function render() {
     calEnsure();      // 周/月日历：区间没变就不重复请求
     dayEnsure();      // 当日日历：网格里已有这天就直接复用，不额外请求
   }
+
+  // 设置页的「分区重置」卡片：撤销状态要单独问一次后端（不放进 1.5s 轮询里）
+  if (S.view === 'settings') loadResetState();
 
   // 内容区刚重绘，节点是中文原文；英文界面下立刻翻一遍
   applyLangView();
@@ -7768,6 +7846,40 @@ const Act = window.Act = {
     if (!(await saveConfig())) return;
     render();
     toast('已保存', 'ok');
+  },
+
+  /** 分区重置：选中哪一块，就只重置哪一块 */
+  async resetSection() {
+    const k = S.resetSection || 'rules';
+    const meta = RESET_SECTIONS.find((s) => s[0] === k) || [k, k, ''];
+    const frozen = !!(S.data && S.data.runtime && (S.data.runtime.locked || S.data.runtime.disciplineOn));
+    const tip = frozen
+      ? `当前正在自律时段/固化中。\n\n重置「${meta[1]}」会被后端拒绝（这等于削弱当前这一轮自律）。\n\n确定要试一下吗？`
+      : `重置「${meta[1]}」？\n\n${meta[2]}\n\n重置前会自动存一份快照，之后可以点「撤销上次重置」回来。`;
+    if (!confirm(tip)) return;
+    try {
+      const r = await invoke('config_reset_section', { section: k });
+      await pull();
+      render();
+      toast(`已重置：${meta[1]}`, 'ok');
+      if (r && r.section) S.resetLast = r;
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
+  },
+
+  async resetUndo() {
+    const st = S.resetLast || {};
+    const name = (RESET_SECTIONS.find((s) => s[0] === st.section) || [0, st.section || ''])[1];
+    if (!confirm(`撤销上次重置（${name}）？\n\n会把配置恢复到那次重置之前的样子。`)) return;
+    try {
+      await invoke('config_reset_undo');
+      await pull();
+      render();
+      toast('已撤销上次重置', 'ok');
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
   },
 
   async saveProtected() {
@@ -10291,6 +10403,9 @@ document.addEventListener('click', async (e) => {
   if (act === 'cloud-restore') { await Act.cloudRestore(el.dataset.name); return; }
   if (act === 'backup-dir') { await invoke('backup_open_dir'); return; }
   if (act === 'save-protected') { await Act.saveProtected(); return; }
+  if (act === 'reset-pick') { S.resetSection = el.dataset.k; render(); return; }
+  if (act === 'reset-section') { await Act.resetSection(); return; }
+  if (act === 'reset-undo') { await Act.resetUndo(); return; }
   if (act === 'theme') { await Act.setTheme(el.dataset.v); return; }
   if (act === 'cal-mode') { await Act.calMode(el.dataset.m); return; }
   if (act === 'cal-move') { await Act.calMove(+el.dataset.d); return; }
