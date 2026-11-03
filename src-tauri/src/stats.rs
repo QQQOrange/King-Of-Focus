@@ -1121,7 +1121,34 @@ pub fn generate(shared: &Shared, period: &str, start: &str, end: &str) -> Result
         let _ = std::fs::remove_file(&tmp);
         format!("写入报告失败: {e}")
     })?;
+    prune_reports(REPORT_KEEP);
     Ok(r)
+}
+
+/// 报告最多留这么多份。日报一年 365 份，加上周报月报，200 份够翻很久了；
+/// 不设上限的话，一个用了三年的用户会攒下一千多个小文件，列表越开越慢。
+const REPORT_KEEP: usize = 200;
+
+/// 只保留最新的 `keep` 份报告（按文件修改时间）。删失败就算了，不打扰用户。
+fn prune_reports(keep: usize) {
+    let dir = stats_dir().join("reports");
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .filter_map(|p| {
+            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            Some((t, p))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 pub fn list_reports() -> Vec<serde_json::Value> {

@@ -4889,6 +4889,13 @@ function viewAbout() {
       <button class="btn btn-sm" data-act="open-cfg">打开</button>
     </div>
     <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+      <div>
+        <div style="font-size:12.5px">诊断信息</div>
+        <div class="hint" style="margin-top:4px">版本、运行状态、最近日志和脱敏后的配置打包成一份文本。出问题时导出它发过来，比描述快得多。</div>
+      </div>
+      <button class="btn btn-sm" data-act="diag-export">导出</button>
+    </div>
+    <div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
       <div><div style="font-size:12.5px">使用手册</div><div class="hint" style="margin-top:4px">右键怎么用、积分怎么算、睡眠时段怎么生效，都在这里</div></div>
       <button class="btn btn-sm" data-act="open-help">打开</button>
     </div>
@@ -5182,6 +5189,13 @@ function viewHelp() {
     <b>右键怎么只改了一段？</b> 这是设计：段右键只管那一段；要改整天请右键日期表头。<br>
     <b>想临时放过自己？</b> 用「总览 → 积分兑换」解锁当前这一段（固化了才需要）。<br>
     <b>数据在哪？</b> 全在软件目录的 <code>king of focus data</code>，整个文件夹拷走就能迁移。
+  `)}
+
+  ${sec('11 · 出问题了怎么反馈', `
+    <div>「关于 → 诊断信息 → 导出」会生成一份文本：版本、系统、当前状态、最近日志，以及脱敏后的配置（网盘密码、备份口令、更新令牌都会打码）。</div>
+    <div>出问题时把这份文件发过来，比描述"它有时候不管用"有用得多——日志里能看到规则有没有命中、钩子有没有起来、云同步报了什么错。</div>
+    <div>程序崩溃时还会在 logs 目录里留一份 crash-时间.txt，带调用栈。</div>
+    <div>日志超过 1.5MB 会自动滚成 app.1.log，不会无限长大。</div>
   `)}
 
   <div class="row" style="gap:9px;margin-top:4px">
@@ -9069,6 +9083,16 @@ const Act = window.Act = {
   },
   async tokenDoc() { await invoke('open_url', { url: S.data.tokenDocUrl }); },
   async openRepo() { await invoke('open_url', { url: S.data.repoUrl }); },
+
+  /** 导出诊断信息（版本 / 状态 / 日志 / 脱敏配置） */
+  async diagExport() {
+    try {
+      const p = await invoke('diag_export');
+      toast('诊断信息已导出：' + p, 'ok');
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
+  },
   async quotaRefresh() { await loadQuota(); render(); },
   async updateEnabled() {
     await invoke('update_save', { enabled: !S.data.config.settings.update.enabled });
@@ -10290,6 +10314,7 @@ document.addEventListener('click', async (e) => {
   if (act === 'open-ext') { await Act.openExt(); return; }
   if (act === 'force-quit') { await Act.forceQuit(); return; }
   if (act === 'open-cfg') { await Act.openCfg(); return; }
+  if (act === 'diag-export') { await Act.diagExport(); return; }
   if (act === 'open-stats-dir') { await Act.openStatsDir(); return; }
   /* 云同步 */
   if (act === 'sync-auto') { Act.syncAuto(); return; }

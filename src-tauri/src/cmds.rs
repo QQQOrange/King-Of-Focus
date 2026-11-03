@@ -1871,6 +1871,16 @@ pub async fn update_check(
             }
         }
         let v = crate::update::check(&c.settings.update);
+        crate::logs::write(
+            "update",
+            &format!(
+                "检查更新：ok={} 最新={} 本机={} {}",
+                v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+                v.get("latest").and_then(|x| x.as_str()).unwrap_or("—"),
+                v.get("current").and_then(|x| x.as_str()).unwrap_or("—"),
+                v.get("error").and_then(|x| x.as_str()).unwrap_or("")
+            ),
+        );
         // 顺手把清单里的三端版本存下来：关于页要显示「手机端 / 插件最新是多少」，
         // 不该为此再打一次网络请求（那还会多消耗一次 API 额度）。
         // 解析失败就保持原值，不覆盖已有缓存。
@@ -2026,6 +2036,39 @@ pub fn backup_restore(
     // 只改 cfg 不重灌，用户会看到"恢复了但好像没生效，重启才好"。
     apply_runtime_cfg(&shared);
     Ok(r)
+}
+
+/// 导出诊断信息（版本 / 环境 / 状态 / 日志尾巴 / 脱敏配置）
+///
+/// 为什么做成按钮而不是"让用户去 data 目录里找日志"：用户不是开发者，
+/// 让他找文件、再把带密码的 config.json 发过来，既麻烦又危险。
+#[tauri::command]
+pub async fn diag_export(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let name = format!(
+            "kof-diag-{}.txt",
+            chrono::Local::now().format("%Y%m%d-%H%M")
+        );
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("导出诊断信息（排查问题时发给我）")
+            .set_file_name(&name)
+            .add_filter("文本文件", &["txt"])
+            .blocking_save_file();
+        let path = picked.ok_or_else(|| "已取消导出".to_string())?;
+        let mut p = std::path::PathBuf::from(path.to_string());
+        if p.extension().is_none() {
+            p.set_extension("txt");
+        }
+        let body = crate::diag::report(&shared);
+        std::fs::write(&p, body).map_err(|e| format!("写入失败：{e}"))?;
+        crate::logs::write("diag", &format!("导出诊断信息 → {}", p.display()));
+        Ok(p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|_| "导出线程异常退出".to_string())?
 }
 
 /// 导出跨设备备份（可选密码，没密码就是明文）

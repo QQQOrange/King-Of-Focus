@@ -556,6 +556,20 @@
     '重试一次': 'Retry',
     '重试': 'Retry',
     '三端版本': 'Versions across platforms',
+    '诊断信息': 'Diagnostics',
+    '11 · 出问题了怎么反馈': '11 · Reporting a problem',
+    '「关于 → 诊断信息 → 导出」会生成一份文本：版本、系统、当前状态、最近日志，以及脱敏后的配置（网盘密码、备份口令、更新令牌都会打码）。':
+      'About → Diagnostics → Export writes a text file: version, OS, current state, recent logs and a redacted config (WebDAV password, backup passphrase and update token are masked).',
+    '出问题时把这份文件发过来，比描述"它有时候不管用"有用得多——日志里能看到规则有没有命中、钩子有没有起来、云同步报了什么错。':
+      'Send that file when something breaks — far more useful than "it sometimes does not work": the log shows whether rules matched, whether the hook started, and what cloud sync returned.',
+    '程序崩溃时还会在 logs 目录里留一份 crash-时间.txt，带调用栈。':
+      'On a crash it also leaves logs/crash-<time>.txt with a stack trace.',
+    '日志超过 1.5MB 会自动滚成 app.1.log，不会无限长大。':
+      'The log rolls over to app.1.log past 1.5 MB, so it never grows without bound.',
+    '诊断信息已导出：': 'Diagnostics exported: ',
+    '导出': 'Export',
+    '版本、运行状态、最近日志和脱敏后的配置打包成一份文本。出问题时导出它发过来，比描述快得多。':
+      'Version, runtime state, recent logs and a redacted config in one text file. Export it when something goes wrong — faster than describing it.',
     '还没检查过更新——点下面的「检查更新」拉一次清单，这里就会显示三端版本。':
       'No update check yet — press "Check for updates" below to fetch the manifest; versions for all three platforms will show up here.',
     '手机端与插件的版本和下载入口在「关于」页的「三端版本」里。':
@@ -1939,6 +1953,7 @@
     [/^(.+) 分钟后$/, 'in $1 min'],
     /* 关于页：构建日期与清单时间都是拼出来的整句 */
     [/^Windows x64 · (.+) 构建$/, 'Windows x64 · built $1'],
+    [/^诊断信息已导出：(.+)$/, 'Diagnostics exported: $1'],
     [/^清单来自上次检查更新：(.+)$/, 'Manifest from the last check: $1'],
     /* 日历明细的「共 5 小时 12 分」 */
     [/^共 (.+)$/, 'Total $1'],

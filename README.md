@@ -2,7 +2,7 @@
 
 > 一个 Windows 上的专注 / 自律守护工具：按周计划拦住分心的软件和网页，用一个可调透明度的黑幕把屏幕盖上，并把你每天的时间花在哪记得清清楚楚。
 
-- **版本**：0.1.102（桌面）· 0.6.0（Android）· 1.1.2（浏览器插件）
+- **版本**：0.1.103（桌面）· 0.6.0（Android）· 1.1.2（浏览器插件）
 - **开发者**：QQQOrange
 - **项目地址**：<https://github.com/QQQOrange/King-Of-Focus>
 - **本版本更新时间**：2026-11-02
@@ -841,10 +841,14 @@ king-of-focus/
 | 这一轮自律的起点 | `king of focus data\session.json`（每 20 秒更新，重启后接着算） |
 | 守护进程副本 | `king of focus data\kof-guard.exe`（从主程序复制并改名，主程序升级后自动刷新） |
 | 更新下载目录 | `king of focus data\updates\` |
+| 运行日志 | `king of focus data\logs\app.log`（超过 1.5MB 滚成 `app.1.log`） |
+| 崩溃快照 | `king of focus data\logs\crash-时间.txt`（带调用栈） |
+| 窗口位置与大小 | `king of focus data\window.json`（**不参与同步**：它属于这台机器这块屏） |
 | 测试模式数据 | `king of focus data\test\`（备份、同步、统计全在里面，不污染正式数据） |
 
 - 目录不存在会自动创建；如果放在 `C:\Program Files` 这类无写权限的地方，会自动退回 `%APPDATA%\KingOfFocus`
-- 数据保留默认 **400 天**（可改），超期的日文件与报告在启动时清理
+- 数据保留默认 **400 天**（可改），超期的日文件与报告在启动时清理；报告最多留最新 **200** 份
+- 出问题时用「关于 → 诊断信息 → 导出」：版本、状态、最近 400 行日志和**脱敏后**的配置打成一份文本，直接发出去即可（网盘密码 / 备份口令 / 更新令牌都会打码）
 
 ---
 

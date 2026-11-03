@@ -7,6 +7,7 @@ mod autoopen;
 mod cfg;
 mod clock;
 mod cmds;
+mod diag;
 mod discipline;
 mod distract;
 mod extpage;
@@ -14,6 +15,7 @@ mod focus;
 mod forcequit;
 mod guard;
 mod ledger;
+mod logs;
 mod mask;
 mod matcher;
 mod media;
@@ -38,6 +40,7 @@ mod sync;
 mod update;
 mod updsel;
 mod version;
+mod winstate;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -163,7 +166,22 @@ fn main() {
     }
 
     // 配置要先读：单实例冲突时得知道"用户要求管理员吗"才能决定下一步。
+    // 日志在配置路径确定后立刻开始记：配置本身读坏了正是最需要日志的时候。
+    logs::init();
+    logs::install_panic_hook();
     let config = cfg::load();
+    logs::write(
+        "boot",
+        &format!(
+            "启动 v{} · {} · arch={} · 管理员={} · 提权副本={} · 数据目录={}",
+            version::VERSION,
+            if testmode::on() { "测试模式" } else { "正式" },
+            std::env::consts::ARCH,
+            cmds::is_admin(),
+            elevated,
+            cfg::data_dir().display()
+        ),
+    );
 
     // 先抢单实例锁：已经有实例在跑就安静退出。
     // 顺序很重要 —— 必须先确认"没有别的实例"，再决定要不要弹 UAC，
@@ -260,6 +278,10 @@ fn main() {
         .setup(move |app| {
             // 注：管理员提权已在 main() 里、创建窗口之前完成。
             // 放在 setup() 里会先闪出一个普通权限窗口再被杀掉（用户看到的"闪退"）。
+            // 恢复上次的窗口位置/大小（单独存 window.json，不进同步配置）
+            if let Some(w) = app.get_webview_window("main") {
+                winstate::restore(&w);
+            }
             // 运行时再设一次窗口图标，保证任务栏/Alt+Tab 用的是新图标
             for label in ["main", "hud"] {
                 if let Some(w) = app.get_webview_window(label) {
@@ -358,6 +380,13 @@ fn main() {
                 let w2 = win.clone();
                 let app_h = win.app_handle().clone();
                 win.on_window_event(move |event| {
+                    // 窗口几何：拖动/缩放时防抖保存，关闭前再存一次
+                    match event {
+                        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                            winstate::save_debounced(&w2);
+                        }
+                        _ => {}
+                    }
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         // ---- Alt+F4 识别（关键）----
                         // Alt+F4 和点右上角 X 在 Win32 层面是**同一条路**
@@ -488,6 +517,7 @@ fn main() {
             cmds::backup_list,
             cmds::backup_restore,
             cmds::backup_export,
+        cmds::diag_export,
             cmds::backup_import,
             cmds::backup_delete,
             cmds::backup_open_dir,
@@ -537,6 +567,7 @@ fn main() {
         .expect("King Of Focus 启动失败")
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
+                logs::write("exit", "正常退出（写完统计后进程结束）");
                 stats::flush(&shared_exit);
             }
         });
