@@ -183,7 +183,7 @@ object Portable {
             "points",
             buildJsonObject {
                 put("balance", cfg.points)
-                put("totalEarned", cfg.points)
+                put("totalEarned", cfg.totalEarned.coerceAtLeast(cfg.points))
                 put("unlockUntil", cfg.unlockUntil)
                 // 睡眠时段解锁：两端都有这个概念，不写的话"手机恢复桌面备份"
                 // 会顺手把桌面已经买断的睡眠解锁清掉。
@@ -378,6 +378,10 @@ object Portable {
             // 对方的统计摘要：本机统计一个字节都不动，只是多存一份"另一台设备"的
             peerStats = adoptStats(docStats(doc), base) ?: base.peerStats,
             points = (points?.int("balance", base.points) ?: base.points).coerceAtLeast(0),
+            // 累计获得是桌面端的记账字段。手机端 0.7.0 起也开始记，
+            // 但老备份里没有这个键 —— 那就沿用本机的值，绝不拿余额去顶
+            // （余额会被消费拉低，顶上去会让"累计获得"越用越少）。
+            totalEarned = points?.int("totalEarned", base.totalEarned) ?: base.totalEarned,
             unlockUntil = points?.long("unlockUntil", base.unlockUntil) ?: base.unlockUntil,
             // 睡眠时段的买断时间也要跟着备份走：不然"手机恢复桌面备份"会把
             // 桌面已经花积分买断的那一段重新锁上。
@@ -452,10 +456,13 @@ object Portable {
         }
 
         val docBalance = doc.obj("points")?.int("balance", 0) ?: 0
+        val docEarned = doc.obj("points")?.int("totalEarned", 0) ?: 0
         val next = base.copy(
             rules = rules,
             days = days,
             points = maxOf(base.points, docBalance).coerceAtLeast(0),
+            // 合并只做加法：累计获得取两边较大的那个
+            totalEarned = maxOf(base.totalEarned, docEarned).coerceAtLeast(0),
             // 统计摘要也收下：它不属于"规则/时段"，收它不违背"只会多、不会变"
             // 的承诺（本机统计一个字节都不动，只是多存了对方那份）
             peerStats = adoptStats(docStats(doc), base) ?: base.peerStats,

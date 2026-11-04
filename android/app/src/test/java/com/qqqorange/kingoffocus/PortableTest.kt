@@ -480,4 +480,42 @@ class PortableTest {
             st["notify"]!!.jsonObject.keys,
         )
     }
+
+    /**
+     * 累计获得不能拿余额顶。
+     *
+     * 旧实现写的是 `put("totalEarned", cfg.points)`：余额被解锁消费拉低之后，
+     * 手机备份一恢复，桌面的「累计获得」也跟着变小 —— 那是只增不减的账。
+     */
+    @Test
+    fun totalEarnedIsNotBalance() {
+        val cfg = blank().copy(points = 12, totalEarned = 300)
+        val doc = Portable.toDoc(cfg, "Pixel", "0.7.0", 1_793_510_000, emptyList())
+        val pts = doc["points"]!!.jsonObject
+        assertEquals(12, pts["balance"]!!.jsonPrimitive.content.toInt())
+        assertEquals(300, pts["totalEarned"]!!.jsonPrimitive.content.toInt())
+    }
+
+    /** 老备份没有 totalEarned：沿用本机值，绝不拿余额去顶 */
+    @Test
+    fun importingLegacyDocKeepsLocalTotalEarned() {
+        val doc = Json.parseToJsonElement(
+            """
+            {"kof":"king-of-focus","format":"kof-portable","schema":1,
+             "config":{},"rules":[],
+             "points":{"balance":50}}
+            """.trimIndent(),
+        ).jsonObject
+        val base = blank().copy(points = 1, totalEarned = 800)
+        val out = Portable.overwrite(doc, base)
+        assertEquals("余额按文档走", 50, out.points)
+        assertEquals("累计获得沿用本机，不拿余额顶", 800, out.totalEarned)
+    }
+
+    /** 累计获得永远不小于余额（老配置读进来是 0，余额可能已经几百） */
+    @Test
+    fun normalizeRaisesTotalEarnedToBalance() {
+        val cfg = com.qqqorange.kingoffocus.data.normalize(Config(points = 240, totalEarned = 0))
+        assertEquals(240, cfg.totalEarned)
+    }
 }

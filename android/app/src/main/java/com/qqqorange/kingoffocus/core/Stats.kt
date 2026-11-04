@@ -175,10 +175,12 @@ object StatsStore {
     private fun touchSpan(date: String, key: String, on: Boolean, f: Int, t: Int) {
         synchronized(lock) {
             val cur = curSpan
+            // 不用 `cur!!`：Kotlin 无法通过 `same` 这个布尔值反推非空，
+            // 而 `!!` 在语义漂移的那天就是一次 NPE（打点记录主路径）。
             val same = cur != null && cur.date == date && cur.key == key && cur.on == on &&
                 f <= cur.t + 1
-            if (same) {
-                if (t > cur!!.t) cur.t = t
+            if (cur != null && same) {
+                if (t > cur.t) cur.t = t
                 return
             }
             if (cur != null) pushSpan(cur)

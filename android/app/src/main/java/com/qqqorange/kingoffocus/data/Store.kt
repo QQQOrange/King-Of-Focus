@@ -54,6 +54,8 @@ object Store {
         ReviewStore.init(ctx.applicationContext)
         // 报告存档：桌面端有"生成过的报告能翻出来"，手机端也要能存下来再看
         ReportStore.init(ctx.applicationContext)
+        // 恢复默认 / 重置全部之前的安全网（撤销用）
+        ResetStore.init(ctx.applicationContext)
         // 权限状态机要把"首次拿到"记下来（用来区分"从没给过"和"被回收"）
         com.qqqorange.kingoffocus.core.UsageAccess.bind { block -> update(block) }
     }
@@ -85,7 +87,25 @@ object Store {
         )
         val text = json.encodeToString(Config.serializer(), stamped)
         val tmp = File(file.parentFile, "config.json.tmp")
-        tmp.writeText(text)
+        try {
+            // 必须 fsync 再 rename。
+            //
+            // `writeText` 只把数据交给内核就返回，rename 之后如果断电/硬重启，
+            // 可能出现"文件名换了但内容还是零字节/半截"——配置文件是整个 App
+            // 的状态，这种损坏用户完全看不懂（规则、时段、积分一起没）。
+            // FileOutputStream.getFD().sync() 把数据真正刷到闪存上。
+            java.io.FileOutputStream(tmp).use { out ->
+                out.write(text.toByteArray(Charsets.UTF_8))
+                out.flush()
+                out.fd.sync()
+            }
+        } catch (e: Exception) {
+            runCatching { tmp.delete() }
+            // 写临时文件都失败（存储满 / 权限异常）：直接写目标文件兜底
+            runCatching { file.writeText(text) }
+            _state.value = stamped
+            return
+        }
         if (!tmp.renameTo(file)) {
             // rename 失败（跨卷、被占用）：退化成直接写，至少别丢数据
             file.writeText(text)

@@ -79,6 +79,11 @@ class GuardService : Service() {
     /** 已经清理过哪一天的数据，避免每拍都去列目录 */
     private var statsPruneDay = ""
 
+    /** 积分计时：累计的"自律生效"毫秒数（满 60s 发 1 分，与桌面一致） */
+    private var earnAccumMs = 0L
+    /** 上一拍的时间戳（elapsedRealtime），用来算真实经过多久 */
+    private var earnAt = 0L
+
     /** 上次探测「使用情况访问」的时间与状态（用来发现"被回收"） */
     private var usageProbeAt = 0L
     private var lastUsageState: UsageAccess.State? = null
@@ -176,6 +181,8 @@ class GuardService : Service() {
 
         // 统计先采：它不依赖自律是否生效（自由时间用手机一样该被记录）
         sampleStats(cfg, now)
+        // 积分：和桌面同一口径，真的处在自律生效时段才计时
+        earnPoints(cfg)
 
         val st = ScheduleEngine.stateAt(cfg, now)
         val locked = LockEngine.isLockActive(cfg, now)
@@ -242,6 +249,41 @@ class GuardService : Service() {
         maybeNotify(cfg, st)
         maybeComplete(cfg, st)
         if (!st.inBreak) enforce(cfg, now)
+    }
+
+    /**
+     * 积分：**和桌面同一口径** —— 真的处在自律生效时段里，每满 60 秒 +1 分。
+     *
+     * 手机端以前**完全没有**这个逻辑：积分只会因为"质押退回来"而增加，
+     * 也就是说新用户不押注就永远攒不到分、也就永远买不起解锁。
+     * 桌面端 `monitor.rs` 里是 `acc_ms += poll; if acc_ms >= 60_000 { add_points(1) }`，
+     * 这里照抄语义，但用 `elapsedRealtime` 的差值，切后台/被冻结也不会多算。
+     *
+     * 三个"不算"和桌面一致：解锁窗口内、演练模式（手机没有）、以及不在时段/规则/锁机里。
+     * `StatsTrack.on` 已经把"解锁窗口"排除掉了（0.6.0 起），直接复用同一个判定，
+     * 两处口径不会再分叉。
+     */
+    private fun earnPoints(cfg: Config) {
+        val t = SystemClock.elapsedRealtime()
+        val last = earnAt
+        earnAt = t
+        if (last == 0L) return
+        // 一拍理论上 1 秒；被冻结/休眠回来可能是几分钟——那种不补发，
+        // 否则"息屏一夜回来 +500 分"，光靠积分就能把自律买穿。
+        val delta = (t - last).coerceIn(0L, 3000L)
+        if (!StatsTrack.on(cfg, LocalDateTime.now())) {
+            earnAccumMs = 0  // 不在自律里：清零，别把零碎时间攒到下一次
+            return
+        }
+        earnAccumMs += delta
+        if (earnAccumMs < 60_000) return
+        earnAccumMs -= 60_000
+        Store.update {
+            it.copy(
+                points = it.points + 1,
+                totalEarned = it.totalEarned + 1,
+            )
+        }
     }
 
     /**
@@ -628,12 +670,15 @@ class GuardService : Service() {
     /**
      * 结算到点的质押。
      *
-     * 手机端没有桌面那套 `totalEarned` 记账（积分只有一个余额），所以这里只加余额。
+     * 退回的是"本金 + 奖励"，两边都算获得：桌面 `focus.rs` 里本金只回余额、
+     * 只有奖励进 `total_earned`；手机端没有"本金 vs 奖励"的拆分（`settleDue`
+     * 只回一个总数），所以统一记进累计获得 —— 宁可多记，也不要让"累计获得"
+     * 比余额还小（那看起来就像数据坏了）。
      */
     private fun maybeStake(cfg: Config, now: LocalDateTime) {
         val back = StakeStore.settleDue(cfg, now)
         if (back > 0) {
-            Store.update { it.copy(points = it.points + back) }
+            Store.update { it.copy(points = it.points + back, totalEarned = it.totalEarned + back) }
             notifyOnce(
                 CH_ALERT,
                 ID_STAKE,
@@ -1179,10 +1224,21 @@ class GuardService : Service() {
         private const val FOREGROUND_ID = 1001
         private const val ALERT_ID = 1002
 
-        fun start(ctx: android.content.Context) {
-            val i = Intent(ctx, GuardService::class.java)
-            ctx.startForegroundService(i)
-        }
+        /**
+         * 拉起前台服务。**绝不抛异常**。
+         *
+         * Android 12+ 从后台调 `startForegroundService` 会抛
+         * `ForegroundServiceStartNotAllowedException`；以前有两个调用点
+         * （`GuardHeartbeat`、`App`）没包 runCatching，系统一收紧，用户看到的就是
+         * "打开就闪退"。这里统一兜住并记一条，调用方不用再各自防。
+         *
+         * @return true = 已交给系统拉起
+         */
+        fun start(ctx: android.content.Context): Boolean = runCatching {
+            ctx.startForegroundService(Intent(ctx, GuardService::class.java))
+        }.onFailure {
+            android.util.Log.w("KOF", "拉起守护服务失败（后台限制/权限）: ${it.javaClass.simpleName}")
+        }.isSuccess
 
         /**
          * 服务该不该跑：**自律开着，或者统计开着**。

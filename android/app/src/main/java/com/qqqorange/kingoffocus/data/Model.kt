@@ -458,6 +458,14 @@ data class Config(
     val defCap: Int = 0,
     val rules: List<Rule> = emptyList(),
     val points: Int = 0,
+    /**
+     * 累计获得（只增不减）。
+     *
+     * 桌面端一直有这个字段，用于「攒了多少分」的展示；手机端以前没有，
+     * 导出时直接拿余额顶替 —— 而余额会被解锁消费拉低，于是「手机备份一恢复，
+     * 桌面的累计获得就变小」。现在两端同义，各自记账。
+     */
+    val totalEarned: Int = 0,
     /** 积分解锁到什么时候（unix 秒）；解锁期间所有拦截暂停 */
     val unlockUntil: Long = 0L,
     val notify: NotifyCfg = NotifyCfg(),
@@ -686,6 +694,9 @@ fun normalize(cfg: Config): Config {
             // 缺账号这件事由设置页提示 + [CloudAuto] / 手动同步的前置判断处理。
         ),
         points = cfg.points.coerceAtLeast(0),
+        // 累计获得永远不该小于余额：老配置（没有这个字段）读进来是 0，
+        // 而余额可能已经有几百，不夹的话界面会显示"累计获得 0、余额 300"。
+        totalEarned = cfg.totalEarned.coerceAtLeast(cfg.points).coerceAtLeast(0),
         // 通知：结束前提醒 0–120 分钟（0 = 不提醒），汇总时间落在 0–23 点
         notify = cfg.notify.copy(
             workBefore = cfg.notify.workBefore.coerceIn(0, 120),

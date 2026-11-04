@@ -43,6 +43,9 @@ import com.qqqorange.kingoffocus.data.CloudCfg
 import com.qqqorange.kingoffocus.data.CloudSync
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.SleepSegment
+import com.qqqorange.kingoffocus.data.ResetSection
+import com.qqqorange.kingoffocus.data.ResetStore
+import com.qqqorange.kingoffocus.data.applyReset
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.service.GuardService
 import com.qqqorange.kingoffocus.core.KeepAlive
@@ -85,6 +88,8 @@ fun SettingsScreen(
 ) {
     val ctx = LocalContext.current
     var confirmReset by remember { mutableStateOf(false) }
+    /** 选中的"分区恢复"目标；null = 没选（弹窗关着） */
+    var resetPick by remember { mutableStateOf<ResetSection?>(null) }
 
     Column(
         Modifier
@@ -570,14 +575,53 @@ fun SettingsScreen(
                 )
             }
             Spacer(Modifier.height(6.dp))
-            OutlinedButton(onClick = { confirmReset = true }, modifier = Modifier.fillMaxWidth()) {
-                Text("重置全部配置", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            /* 分区恢复（与桌面 0.1.104 的「分区重置」对齐）
+             *
+             * 以前这里只有一个「重置全部配置」：点下去规则、时段、积分一起没，
+             * 而且没有任何退路。现在：
+             *   · 选一块恢复，其它不动；
+             *   · 动手前把整份配置存成 pre-reset.json，卡片上直接能「撤销」。
+             */
+            OutlinedButton(
+                onClick = { resetPick = ResetSection.RULES },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("恢复某一块的默认值…", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+            if (ResetStore.has()) {
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        val prev = ResetStore.load()
+                        if (prev == null) {
+                            ResetStore.clear()
+                            toast(ctx, "没有可撤销的恢复")
+                            return@OutlinedButton
+                        }
+                        val live = Store.current
+                        // 积分不跟着回滚：那不是"设置"，回滚等于没收这段时间赚的分
+                        val next = prev.copy(
+                            points = live.points,
+                            totalEarned = maxOf(prev.totalEarned, live.totalEarned),
+                            updatedAt = live.updatedAt,
+                        )
+                        ResetStore.save(live)
+                        Store.update { next }
+                        GuardService.sync(ctx)
+                        toast(ctx, "已撤销上次恢复")
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("撤销上次恢复", fontSize = 12.sp)
+                }
             }
         }
 
         SectionTitle("关于")
         Panel {
             InfoRow("版本", "Android ${appVersion(ctx)}")
+            // 累计获得：桌面端一直有这一栏，手机端 0.7.0 起也记账了
+            InfoRow("累计获得", "${cfg.totalEarned} 分（余额 ${cfg.points}）")
             InfoRow("平台标识", "android")
             Text(
                 "桌面版的「结束进程 / 关机 / 全局热键 / 网页拦截」在 Android 上不可实现，"
@@ -606,7 +650,39 @@ fun SettingsScreen(
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("取消") } },
         )
     }
+
+    /* 分区恢复：先选一块，再确认。确认框会把这个分区"会重置掉什么"写清楚。 */
+    val pick = resetPick
+    if (pick != null) {
+        AlertDialog(
+            onDismissRequest = { resetPick = null },
+            title = { Text("恢复默认：${pick.title}") },
+            text = {
+                Column {
+                    Text(pick.desc, fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "只动这一块，其它设置、规则和积分都不变。恢复前会自动存一份快照，「撤销上次恢复」能回来。",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ResetStore.save(Store.current)
+                    Store.update { applyReset(it, pick) }
+                    GuardService.sync(ctx)
+                    resetPick = null
+                    toast(ctx, "已恢复：${pick.title}")
+                }) { Text("恢复默认", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { resetPick = null }) { Text("取消") } },
+        )
+    }
 }
+
+
 
 @Composable
 private fun ModeButton(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {

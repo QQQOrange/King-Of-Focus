@@ -2123,7 +2123,9 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 continue;
             }
 
-            let t = target.unwrap();
+            // 前面 `can_paint(on, target.is_some(), hole_ok)` 已经保证了 Some，
+            // 但这里不写 unwrap：`panic = abort` 下一次语义漂移就是整个程序消失。
+            let Some(t) = target else { continue };
             // 目标矩形（屏幕坐标）。只用于诊断展示，不影响渲染——
             // 遮罩不动，窗口自己浮上去。
             let hole_end = t;

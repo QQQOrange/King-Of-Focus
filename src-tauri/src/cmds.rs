@@ -180,7 +180,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     let sleep_json = crate::sleep::snapshot(&shared).to_json(&config);
     let sleep_text = crate::sleep::summary(&shared);
     let (runtime, notice) = {
-        let mut rt = shared.rt.lock().unwrap();
+        // 锁中毒（有人在持锁时 panic 过）不能让整个状态查询跟着崩：
+        // 这就是 get_state 的主路径，它一 panic，界面每 1.5 秒崩一次。
+        let mut rt = shared.rt.lock().unwrap_or_else(|e| e.into_inner());
         let celebrate = rt
             .celebrate
             .take()

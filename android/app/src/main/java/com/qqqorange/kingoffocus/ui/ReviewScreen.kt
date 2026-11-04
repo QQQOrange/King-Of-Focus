@@ -113,10 +113,10 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            if (loading || snap == null) {
+            val s = snap
+            if (loading || s == null) {
                 Text("正在汇总这一周…", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                val s = snap!!
                 Text(
                     "${s.weekStart} ~ ${s.weekEnd}",
                     fontSize = 11.sp,
