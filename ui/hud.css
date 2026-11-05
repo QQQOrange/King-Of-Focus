@@ -3,7 +3,8 @@
   --hud-line: rgba(255, 255, 255, .1);
   --hud-text: #eef1f7;
   --hud-dim: #8f9aae;
-  --hud-gold: #4d8dff;
+  /* 强调色跟随主界面调色板（tokens.css），不再各窗口各写一份 */
+  --hud-gold: var(--gold);
   --hud-glow: rgba(77, 141, 255, .35);
   --hud-shadow: 0 16px 40px -14px rgba(0, 0, 0, .8), 0 2px 8px rgba(0, 0, 0, .3);
   --hud-inset: inset 0 1px 0 rgba(255, 255, 255, .07);
@@ -14,7 +15,6 @@
   --hud-line: rgba(16, 24, 40, .09);
   --hud-text: #161b24;
   --hud-dim: #6a7385;
-  --hud-gold: #2f6df0;
   --hud-glow: rgba(47, 109, 240, .28);
   --hud-shadow: 0 16px 40px -16px rgba(16, 24, 40, .35), 0 2px 8px rgba(16, 24, 40, .08);
   --hud-inset: inset 0 1px 0 rgba(255, 255, 255, .9);

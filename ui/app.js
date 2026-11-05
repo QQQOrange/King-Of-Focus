@@ -263,7 +263,12 @@ themeMedia.addEventListener('change', () => {
 /* ---------------- 状态拉取 ---------------- */
 async function pull() {
   try {
-    S.data = await invoke('get_state');
+    // 增量拉取：带上上一份配置的指纹，后端没变就把 config 省掉
+    const since = S.cfgRev || 0;
+    const data = await invoke('get_state', { since });
+    if (data && data.config == null && S.data) data.config = S.data.config;
+    S.cfgRev = (data && data.cfgRev) || 0;
+    S.data = data;
     applyTheme();
     renderChrome();
     syncSleepLock();

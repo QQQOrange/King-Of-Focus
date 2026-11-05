@@ -476,6 +476,8 @@ fn percent_decode(s: &str) -> String {
 fn state_json(shared: &Shared) -> String {
     let cfg = shared.config();
     let now = sched::now_local();
+    // 新标签页用：今天的目标与进度（只读聚合，20 秒缓存）
+    let brief = crate::focus::today_brief(shared);
     // 关键：判定口径必须和 monitor.rs（真正在拦软件的那份）完全一致。
     // 以前这里只看"规则自己的时间表"，把「自律时段接管」和「休息段整体暂停」漏掉了，
     // 结果就是：自律时段里主程序在拦软件，插件却一条规则都收不到，
@@ -507,6 +509,12 @@ fn state_json(shared: &Shared) -> String {
         Ok(rt) => (rt.sweep_seq, rt.clock_left),
         Err(_) => (0, 0),
     };
+    // 语录在运行态里（每段时间会换一条），没法在 json! 里写块表达式
+    let (quote_text, quote_from) = shared
+        .rt
+        .lock()
+        .map(|rt| (rt.quote.clone(), rt.quote_from.clone()))
+        .unwrap_or_default();
     json!({
         "active": !rules.is_empty(),
         // 遮罩是否真的开着：以前这里写死 false，插件/脚本读到的永远是"没开"
@@ -531,6 +539,17 @@ fn state_json(shared: &Shared) -> String {
         // 演练模式：插件只上报、不写 DNR、不关页面。
         // 以前这个字段没导出，界面写着"只记录不真的关闭"，插件却照关不误。
         "dryRun": cfg.settings.dry_run,
+        // 新标签页要显示的"今天"：目标、已专注、计划。插件只做展示，不参与判定。
+        "today": {
+            "goal": brief.get("goal").cloned().unwrap_or(serde_json::Value::Null),
+            "goalState": brief.get("goalState").cloned().unwrap_or(serde_json::Value::Null),
+            "onMin": brief.get("onMin").cloned().unwrap_or(serde_json::json!(0)),
+            "planMin": brief.get("planMin").cloned().unwrap_or(serde_json::json!(0)),
+            "goalTotal": brief.get("goalTotal").cloned().unwrap_or(serde_json::json!(0)),
+            "goalDone": brief.get("goalDone").cloned().unwrap_or(serde_json::json!(0)),
+            // 语录在运行态里（每段时间会换一条），不在 brief 里
+            "quote": { "text": quote_text, "from": quote_from },
+        },
         // 插件按这个值切中英文（跟随软件设置页里的选择）
         "lang": cfg.settings.lang,
         // 正在运行的这个实例是不是管理员（新实例据此决定要不要请它提权）

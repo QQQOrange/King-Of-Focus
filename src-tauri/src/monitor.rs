@@ -754,6 +754,16 @@ fn on_block(
         return first;
     }
 
+    // 全屏应用（尤其是独占全屏的游戏）先最小化，再走关闭流程。
+    //
+    // 原因：独占全屏时遮罩根本盖不上去（DirectX 直接接管了显示），
+    // 用户看到的是"游戏画面卡住 + 通知在别的窗口里"，像是没反应。
+    // 先 SW_MINIMIZE 一下，桌面立刻回来、通知和主窗口都看得见；
+    // 关闭流程照常继续——这只是把"看不见"变成"看得见"，不改变拦截判定。
+    if proc::minimize(app.hwnd) {
+        crate::mask::mlog(&format!("拦截前最小化窗口 应用={} pid={}", label, app.pid));
+    }
+
     if cfg.settings.soft_close {
         match pending.get(&app_key(app.pid)) {
             None => {

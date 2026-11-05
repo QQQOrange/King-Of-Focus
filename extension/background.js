@@ -558,6 +558,8 @@ async function doRefresh(opts) {
     // 页面侧（content.js）读这两个开关 + 活跃状态，决定挂不挂专注条、藏不藏推荐流
     feedHide: !!(state && state.feedHide),
     focusBar: state.focusBar !== false,
+    // 新标签页用的"今天"（目标 / 进度 / 语录）
+    today: (state && state.today) || null,
     sweepEnabled: SWEEP_ENABLED,
     sweepMode: SWEEP_MODE,
     sweepSeq: seq,

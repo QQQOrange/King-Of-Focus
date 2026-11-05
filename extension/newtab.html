@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>King Of Focus</title>
+  <link rel="stylesheet" href="newtab.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="brand">
+      <span class="dot"></span>
+      <span>KING OF FOCUS</span>
+    </header>
+
+    <section class="clockbox">
+      <div class="clock" id="clock">--:--</div>
+      <div class="date" id="date"></div>
+    </section>
+
+    <section class="pill-row">
+      <span class="pill" id="status">未开启</span>
+      <span class="pill ghost" id="left" hidden></span>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <span>今天</span>
+        <span class="muted" id="todayLine">—</span>
+      </div>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="goal" id="goal">还没有写目标。</div>
+    </section>
+
+    <p class="quote" id="quote"></p>
+
+    <footer class="foot">
+      <span>打开 King Of Focus 开始一段专注 → 这里会跟着变</span>
+    </footer>
+  </main>
+  <script src="newtab.js"></script>
+</body>
+</html>

@@ -150,7 +150,7 @@ pub(crate) fn deny_if_locked(shared: &Shared) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
+pub fn get_state(shared: State<'_, Arc<Shared>>, since: Option<u64>) -> Value {
     // 跨天重置解锁次数
     let today = crate::sched::now_local().format("%Y-%m-%d").to_string();
     {
@@ -169,6 +169,22 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
         }
     }
     let config = shared.config();
+    // 增量状态：界面每 1.5 秒拉一次，而配置（规则 / 语录 / 排班）几分钟才变一次。
+    // 每次都把整份配置塞进 IPC，等于每秒序列化 + 传输 + 解析十几 KB 的无用数据。
+    //
+    // 这里算一个**内容指纹**（序列化一次再做哈希，几十微秒），和前端带来的 `since`
+    // 比对：一样就把 config 置 null，前端保留上一份。
+    // 用内容哈希而不是"写配置时 +1"的版本号：全项目三十多处直接写 cfg，
+    // 逐处加计数一定会漏，漏了就是界面停在旧配置上——那种 bug 极难查。
+    // 必须在跨天重置之后算，否则指纹和真正发出去的那份配置对不上。
+    let cfg_val = serde_json::to_value(&config).unwrap_or(Value::Null);
+    let cfg_rev = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        cfg_val.to_string().hash(&mut h);
+        h.finish()
+    };
+    let cfg_same = since == Some(cfg_rev);
     let now = crate::sched::now_local();
     // 下面这几项会读盘（intents.json / stakes.json / 统计缓存）。
     // 必须在拿 rt 锁**之前**算完：get_state 每秒被界面拉一次，
@@ -250,7 +266,9 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     let schedule_on = mask.schedule_on.load(Ordering::Relaxed);
     let auto_on = config.settings.mask.follow_schedule && schedule_on;
     json!({
-        "config": config,
+        // 配置没变就发 null：前端保留上一份（见 pull()）
+        "config": if cfg_same { Value::Null } else { cfg_val },
+        "cfgRev": cfg_rev,
         "runtime": runtime,
         "mask": {
             // on = 最终生效（用户意向 OR 自律接管）；userOn = 用户意向；autoOn = 自律接管
