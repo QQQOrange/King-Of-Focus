@@ -782,6 +782,29 @@ pub fn mask_stop(app: AppHandle, shared: State<'_, Arc<Shared>>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_always_on_top(shared.config().settings.always_on_top);
     }
+
+    // 立刻决定 HUD 的去留，不等监控线程下一拍。
+    //
+    // HUD 在"遮罩开着、又不在自律时段"时出现，唯一作用是「记一笔」。遮罩一关，
+    // 这个理由当场消失；可监控线程要等下一拍（默认 0.8 秒，用户把扫描间隔调大
+    // 就是好几秒）才收，看起来就是"关不干净"——而 HUD 是置顶窗，多留一秒就一直
+    // 压在别的窗口上面。
+    //
+    // 但**自律生效中不能收**：那时 HUD 是专注状态条（剩余时间/这一节被打断几次）。
+    // 所以判定必须和 monitor 里那段完全一致，不能图省事一律 hide。
+    let cfg = shared.config();
+    let now = crate::sched::now_local();
+    let d = crate::discipline::state(&cfg, &now);
+    let active = crate::discipline::active_rules(&cfg, &now, &d);
+    let session_on =
+        !active.is_empty() || crate::guard::lock_info(&cfg).locked || d.clock_on || d.on_break;
+    if !session_on {
+        if let Some(w) = app.get_webview_window("hud") {
+            let _ = w.hide();
+        }
+    }
+    // 遮罩线程可能正睡在兜底超时里：立刻叫醒它收掉覆盖层
+    crate::mask::wake();
 }
 
 #[tauri::command]
