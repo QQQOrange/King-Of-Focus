@@ -41,6 +41,31 @@ pub struct Rhythm {
 
 static CACHE: Mutex<Option<(i64, Rhythm)>> = Mutex::new(None);
 
+/// 历史日期的"自律秒数"缓存。
+///
+/// 为什么需要：连续天数要往回读最多 90 个日文件，一周对比再读 14 个 ——
+/// 每次重算就是一百多次"开文件 + 解析 JSON"，放在 `get_state` 这条每秒都走的
+/// 路上，每分钟会有一次肉眼可见的卡顿。历史日期不会再变，缓存住即可；
+/// **只有今天**每次都重新读（它还在增长）。
+static DAYS: Mutex<Option<std::collections::HashMap<String, u64>>> = Mutex::new(None);
+
+fn day_secs(date: &str, today: &str) -> u64 {
+    if date == today {
+        return crate::stats::day_on_secs(date);
+    }
+    let mut g = match DAYS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let map = g.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(v) = map.get(date) {
+        return *v;
+    }
+    let v = crate::stats::day_on_secs(date);
+    map.insert(date.to_string(), v);
+    v
+}
+
 pub fn get(shared: &Shared) -> Rhythm {
     let now = Local::now().timestamp();
     if let Ok(g) = CACHE.lock() {
@@ -67,6 +92,7 @@ pub fn invalidate() {
 fn compute(shared: &Shared) -> Rhythm {
     let cfg = shared.config();
     let today = Local::now().date_naive();
+    let today_s = today.to_string();
     let mut r = Rhythm::default();
 
     // 目标一次读完，按天分组：逐天调 goals_of_day 会把同一个文件读 90 次
@@ -84,7 +110,7 @@ fn compute(shared: &Shared) -> Rhythm {
     }
 
     r.today_plan_secs = plan_secs(&cfg, today);
-    r.today_on_secs = crate::stats::day_on_secs(&today.to_string());
+    r.today_on_secs = crate::stats::day_on_secs(&today_s);
     let (gt, gd) = goals_by_day
         .get(&today.to_string())
         .copied()
@@ -106,7 +132,7 @@ fn compute(shared: &Shared) -> Rhythm {
         |d| {
             let k = d.to_string();
             let (gt, gd) = goals_by_day.get(&k).copied().unwrap_or((0, 0));
-            (crate::stats::day_on_secs(&k), gt, gd)
+            (day_secs(&k, &today_s), gt, gd)
         },
     );
 
@@ -115,14 +141,14 @@ fn compute(shared: &Shared) -> Rhythm {
     let monday = today - Days::new(wd as u64);
     for i in 0..=wd {
         if let Some(d) = monday.checked_add_days(Days::new(i as u64)) {
-            r.week_on_secs += crate::stats::day_on_secs(&d.to_string());
+            r.week_on_secs += day_secs(&d.to_string(), &today_s);
         }
     }
     r.week_days = wd + 1;
     let last_mon = monday - Days::new(7);
     for i in 0..=wd {
         if let Some(d) = last_mon.checked_add_days(Days::new(i as u64)) {
-            r.last_week_on_secs += crate::stats::day_on_secs(&d.to_string());
+            r.last_week_on_secs += day_secs(&d.to_string(), &today_s);
         }
     }
     r

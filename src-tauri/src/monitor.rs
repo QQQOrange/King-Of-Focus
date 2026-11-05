@@ -760,7 +760,11 @@ fn on_block(
     // 用户看到的是"游戏画面卡住 + 通知在别的窗口里"，像是没反应。
     // 先 SW_MINIMIZE 一下，桌面立刻回来、通知和主窗口都看得见；
     // 关闭流程照常继续——这只是把"看不见"变成"看得见"，不改变拦截判定。
-    if proc::minimize(app.hwnd) {
+    //
+    // 只在**第一次**动手时最小化：目标关不掉时这个函数每秒都会被调一次，
+    // 无条件最小化会变成每秒一次 ShowWindow + 一条日志（日志几秒就被刷满，
+    // 真正要查的东西反而被冲掉）。
+    if !pending.contains_key(&app_key(app.pid)) && proc::minimize(app.hwnd) {
         crate::mask::mlog(&format!("拦截前最小化窗口 应用={} pid={}", label, app.pid));
     }
 

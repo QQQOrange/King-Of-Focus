@@ -596,6 +596,12 @@ fn main() {
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
                 logs::write("exit", "正常退出（写完统计后进程结束）");
+                // 正常退出也算"这次启动是好的"。
+                //
+                // 不加这一句会有一个很坏的误判：用户开→关→开→关，每次不到 90 秒，
+                // 三次之后就满足"连续 3 次异常启动"，程序会莫名进入安全模式
+                // （不拦截、不遮罩），而他什么都没做错。
+                boot::mark_ok();
                 stats::flush(&shared_exit);
             }
         });

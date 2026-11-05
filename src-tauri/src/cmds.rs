@@ -182,7 +182,11 @@ pub fn get_state(shared: State<'_, Arc<Shared>>, since: Option<u64>) -> Value {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         cfg_val.to_string().hash(&mut h);
-        h.finish()
+        // **必须砍到 53 位**：这个值要经过 JSON → JavaScript，而 JS 的 Number
+        // 只有 53 位整数精度。完整的 u64 哈希会在大数上被四舍五入，
+        // 前端回传的 since 和这里算出来的永远对不上 —— 功能不报错，但悄悄失效，
+        // 表现就是"增量优化写了等于没写"。2^53-1 之内的整数在两端完全一致。
+        h.finish() & 0x1F_FFFF_FFFF_FFFF
     };
     let cfg_same = since == Some(cfg_rev);
     let now = crate::sched::now_local();

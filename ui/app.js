@@ -4058,14 +4058,17 @@ function heatmapCard() {
 /** 拉一年的每日秒数：失败就画"读取失败"，绝不当成 0 画成空白 */
 function heatEnsure() {
   const today = todayStr();
-  if (S.heat && S.heatKey === today) { paintHeat(); return; }
+  // 同一天也要过期重拉：今天这一格会随着你继续用而变长，
+  // 只按"日期"缓存的话，早上打开统计页，下午再来看还是早上的颜色。
+  const fresh = S.heatAt && Date.now() - S.heatAt < 5 * 60 * 1000;
+  if (S.heat && S.heatKey === today && fresh) { paintHeat(); return; }
   if (S.heatPending) return;
   S.heatPending = true;
   const start = dateStr(addDays(new Date(), -364));
   withTimeout(invoke('stats_heatmap', { start, end: today }), 8000, '热力图读取超时')
     .then((r) => { S.heat = Array.isArray(r) ? r : []; S.heatFailed = false; })
     .catch(() => { S.heat = null; S.heatFailed = true; })
-    .finally(() => { S.heatPending = false; S.heatKey = today; paintHeat(); });
+    .finally(() => { S.heatPending = false; S.heatKey = today; S.heatAt = Date.now(); paintHeat(); });
 }
 
 function paintHeat() {

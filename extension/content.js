@@ -138,6 +138,12 @@
       color: '#9aa4b8', flex: '0 0 auto',
     });
     (document.body || document.documentElement).appendChild(el);
+    // 整条都可以点：收起之后按钮是隐藏的，如果只有按钮能切换，
+    // 用户把专注条收成小圆点后就再也打不开了（只能刷新页面）。
+    el.addEventListener('click', () => {
+      collapsed = !collapsed;
+      paintCollapsed(el);
+    });
     min.addEventListener('click', (e) => {
       e.stopPropagation();
       collapsed = !collapsed;
@@ -153,11 +159,13 @@
     if (collapsed) {
       el.style.padding = '6px';
       el.style.borderRadius = '50%';
+      el.style.cursor = 'pointer';
       txt.style.display = 'none';
       min.style.display = 'none';
     } else {
       el.style.padding = BAR_STYLE.padding;
       el.style.borderRadius = BAR_STYLE.borderRadius;
+      el.style.cursor = 'default';
       txt.style.display = '';
       min.style.display = '';
       min.textContent = '–';
@@ -305,12 +313,19 @@
   // 无条件调 applyFeeds 会把主线程拖死。所以只在"该有的东西不见了"时才重跑：
   //   · 专注条被站点重渲染冲掉；
   //   · 已经藏过的推荐流标记消失（说明路由换了 / 节点被替换）。
+  //
+  // 再叠一层 300ms 合并：即使只是查两次 DOM，每秒几十次也够让页面发涩。
+  let moTimer = 0;
   const mo = new MutationObserver(() => {
-    if (st.focusBar && st.active && !document.getElementById(BAR_ID)) paintBar();
-    if (st.feedHide && feedKey && !document.querySelector('.' + NOTE_CLASS)) {
-      feedKey = '';
-      applyFeeds();
-    }
+    if (moTimer) return;
+    moTimer = setTimeout(() => {
+      moTimer = 0;
+      if (st.focusBar && st.active && !document.getElementById(BAR_ID)) paintBar();
+      if (st.feedHide && feedKey && !document.querySelector('.' + NOTE_CLASS)) {
+        feedKey = '';
+        applyFeeds();
+      }
+    }, 300);
   });
   try {
     mo.observe(document.documentElement, { childList: true, subtree: true });
