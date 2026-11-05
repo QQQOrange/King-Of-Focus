@@ -52,31 +52,39 @@
     },
   ];
 
-  const CSS_ID = 'kof-hide-style';
   const BAR_ID = 'kof-focus-bar';
-  const BAR_CSS_ID = 'kof-bar-style';
   const NOTE_CLASS = 'kof-feed-note';
 
   /**
-   * 专注条固定在**左下角**，不是顶部横条。
+   * 为什么所有样式都走 CSSOM（`el.style.xxx = ...`），而不是插一个 <style>：
    *
-   * 顶部横条会盖住站点自己的导航（YouTube 的头、B 站的顶栏都在 top:0），
-   * 那等于为了提醒而破坏页面。左下角是各站点几乎不用的位置，也不挡内容。
+   * 很多站点的 CSP 里没有 `style-src 'unsafe-inline'`（X / GitHub 都是），
+   * 内容脚本往页面里塞的 <style> 会被浏览器拦掉——表现就是"功能开了，页面没变"，
+   * 而且控制台里只有一条和插件无关的 CSP 报错，用户根本查不到。
+   * 直接改元素的 style 属性（CSSOM）不经过 CSP 解析，稳定得多。
    */
-  const BAR_CSS = `
-#kof-focus-bar{position:fixed;left:12px;bottom:12px;z-index:2147483646;display:flex;align-items:center;gap:8px;
-  max-width:min(520px,calc(100vw - 24px));padding:7px 10px;border-radius:10px;
-  background:rgba(18,20,28,.94);color:#e8ecf5;font:12px/1.1 system-ui,-apple-system,"Segoe UI",sans-serif;
-  box-shadow:0 6px 20px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.06);backdrop-filter:blur(6px)}
-#kof-focus-bar .kof-dot{width:7px;height:7px;border-radius:50%;background:#4d8dff;box-shadow:0 0 0 3px rgba(77,141,255,.18);flex:0 0 auto}
-#kof-focus-bar .kof-txt{flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px}
-#kof-focus-bar .kof-min{all:unset;cursor:pointer;width:18px;height:18px;line-height:17px;text-align:center;border-radius:5px;color:#9aa4b8;flex:0 0 auto}
-#kof-focus-bar .kof-min:hover{background:rgba(255,255,255,.1);color:#fff}
-#kof-focus-bar.kof-collapsed{padding:6px;border-radius:50%}
-#kof-focus-bar.kof-collapsed .kof-txt,#kof-focus-bar.kof-collapsed .kof-min{display:none}
-.kof-feed-note{margin:10px 0;padding:14px 16px;border:1px dashed rgba(120,130,150,.45);border-radius:10px;
-  color:#8b94a7;font:12.5px/1.6 system-ui,sans-serif;text-align:center}
-`;
+  const BAR_STYLE = {
+    position: 'fixed',
+    left: '12px',
+    bottom: '12px',
+    zIndex: '2147483646',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    maxWidth: 'min(520px, calc(100vw - 24px))',
+    padding: '7px 10px',
+    borderRadius: '10px',
+    background: 'rgba(18,20,28,.94)',
+    color: '#e8ecf5',
+    font: '12px/1.1 system-ui,-apple-system,"Segoe UI",sans-serif',
+    boxShadow: '0 6px 20px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.06)',
+    backdropFilter: 'blur(6px)',
+  };
+
+  function style(el, obj) {
+    for (const k in obj) el.style[k] = obj[k];
+    return el;
+  }
 
   let st = {
     active: false,
@@ -105,12 +113,6 @@
   function ensureBar() {
     let el = document.getElementById(BAR_ID);
     if (el) return el;
-    if (!document.getElementById(BAR_CSS_ID)) {
-      const s = document.createElement('style');
-      s.id = BAR_CSS_ID;
-      s.textContent = BAR_CSS;
-      (document.head || document.documentElement).appendChild(s);
-    }
     el = document.createElement('div');
     el.id = BAR_ID;
     el.setAttribute('role', 'status');
@@ -118,14 +120,48 @@
       '<span class="kof-dot"></span>' +
       '<span class="kof-txt"></span>' +
       '<button class="kof-min" type="button" title="">–</button>';
+    style(el, BAR_STYLE);
+    const dot = el.querySelector('.kof-dot');
+    style(dot, {
+      width: '7px', height: '7px', borderRadius: '50%', background: '#4d8dff',
+      boxShadow: '0 0 0 3px rgba(77,141,255,.18)', flex: '0 0 auto',
+    });
+    const txt = el.querySelector('.kof-txt');
+    style(txt, {
+      flex: '1 1 auto', whiteSpace: 'nowrap', overflow: 'hidden',
+      textOverflow: 'ellipsis', letterSpacing: '.2px',
+    });
+    const min = el.querySelector('.kof-min');
+    style(min, {
+      all: 'unset', cursor: 'pointer', width: '18px', height: '18px',
+      lineHeight: '17px', textAlign: 'center', borderRadius: '5px',
+      color: '#9aa4b8', flex: '0 0 auto',
+    });
     (document.body || document.documentElement).appendChild(el);
-    el.querySelector('.kof-min').addEventListener('click', (e) => {
+    min.addEventListener('click', (e) => {
       e.stopPropagation();
       collapsed = !collapsed;
-      el.classList.toggle('kof-collapsed', collapsed);
-      el.querySelector('.kof-min').textContent = collapsed ? '+' : '–';
+      paintCollapsed(el);
     });
     return el;
+  }
+
+  /** 收起态只留一个小圆点：改的是这一个元素，不依赖 class + 样式表 */
+  function paintCollapsed(el) {
+    const txt = el.querySelector('.kof-txt');
+    const min = el.querySelector('.kof-min');
+    if (collapsed) {
+      el.style.padding = '6px';
+      el.style.borderRadius = '50%';
+      txt.style.display = 'none';
+      min.style.display = 'none';
+    } else {
+      el.style.padding = BAR_STYLE.padding;
+      el.style.borderRadius = BAR_STYLE.borderRadius;
+      txt.style.display = '';
+      min.style.display = '';
+      min.textContent = '–';
+    }
   }
 
   function paintBar() {
@@ -135,7 +171,7 @@
       return;
     }
     const el = ensureBar();
-    el.classList.toggle('kof-collapsed', collapsed);
+    paintCollapsed(el);
     const txt = el.querySelector('.kof-txt');
     const names = (st.names || []).join(' / ');
     if (collapsed) {
@@ -149,32 +185,58 @@
 
   /* ---------------- 推荐流 ---------------- */
 
+  let feedKey = '';
+
   function applyFeeds() {
-    const old = document.getElementById(CSS_ID);
-    if (old) old.remove();
+    const rule = st.feedHide ? FEEDS.find((r) => r.test(location)) : null;
+    const key = rule ? rule.name + '|' + location.pathname : '';
+    if (key === feedKey) return;   // 同一页不重复跑（MutationObserver 会频繁触发）
+    feedKey = key;
     document.querySelectorAll('.' + NOTE_CLASS).forEach((n) => n.remove());
-    if (!st.feedHide) return;
+    if (!rule) {
+      restoreHidden();
+      return;
+    }
 
-    const rule = FEEDS.find((r) => r.test(location));
-    if (!rule) return;
-
-    const css = rule.sel.map((s) => s + '{display:none !important}').join('\n');
-    const style = document.createElement('style');
-    style.id = CSS_ID;
-    style.textContent = css;
-    (document.head || document.documentElement).appendChild(style);
+    let first = null;
+    rule.sel.forEach((s) => {
+      document.querySelectorAll(s).forEach((el) => {
+        // 记一下原值：关掉开关/离开首页时要能还原，不能把页面永久改坏
+        if (el.dataset.kofHidden !== '1') {
+          el.dataset.kofHidden = '1';
+          el.dataset.kofPrev = el.style.display || '';
+        }
+        el.style.setProperty('display', 'none', 'important');
+        if (!first) first = el;
+      });
+    });
+    restoreHidden(rule.sel);
 
     // 藏完给一句说明：否则用户只看到"页面空了"，以为网站坏了
-    const anchor = document.querySelector(rule.sel[0]);
-    if (anchor && anchor.parentElement) {
+    if (first && first.parentElement) {
       const note = document.createElement('div');
       note.className = NOTE_CLASS;
       note.textContent = T(
         '推荐流已按 King Of Focus 的设置隐藏（设置 → 拦截行为 → 藏起首页推荐流）',
         'Recommendation feed hidden by King Of Focus (Settings → Blocking → Hide home feeds)',
       );
-      anchor.parentElement.insertBefore(note, anchor);
+      style(note, {
+        margin: '10px 0', padding: '14px 16px',
+        border: '1px dashed rgba(120,130,150,.45)', borderRadius: '10px',
+        color: '#8b94a7', font: '12.5px/1.6 system-ui,sans-serif', textAlign: 'center',
+      });
+      first.parentElement.insertBefore(note, first);
     }
+  }
+
+  /** 把之前藏过、但现在不该藏的节点还原（切路由 / 关开关时） */
+  function restoreHidden(keepSelectors) {
+    document.querySelectorAll('[data-kof-hidden="1"]').forEach((el) => {
+      if (keepSelectors && keepSelectors.some((s) => el.matches(s))) return;
+      el.style.display = el.dataset.kofPrev || '';
+      delete el.dataset.kofHidden;
+      delete el.dataset.kofPrev;
+    });
   }
 
   /* ---------------- 状态 ---------------- */
@@ -237,10 +299,18 @@
     /* 同上 */
   }
 
-  // 单页应用（YouTube/X）切路由不会重新注入脚本：监听 DOM，必要时重挂
+  // 单页应用（YouTube/X）切路由不会重新注入脚本：监听 DOM，必要时重挂。
+  //
+  // 这里必须**有限度**：MutationObserver 在 X 那种页面上每秒能触发几十次，
+  // 无条件调 applyFeeds 会把主线程拖死。所以只在"该有的东西不见了"时才重跑：
+  //   · 专注条被站点重渲染冲掉；
+  //   · 已经藏过的推荐流标记消失（说明路由换了 / 节点被替换）。
   const mo = new MutationObserver(() => {
-    if (!document.getElementById('kof-hide-style') && st.feedHide) applyFeeds();
     if (st.focusBar && st.active && !document.getElementById(BAR_ID)) paintBar();
+    if (st.feedHide && feedKey && !document.querySelector('.' + NOTE_CLASS)) {
+      feedKey = '';
+      applyFeeds();
+    }
   });
   try {
     mo.observe(document.documentElement, { childList: true, subtree: true });
