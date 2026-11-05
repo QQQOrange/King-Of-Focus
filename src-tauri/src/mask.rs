@@ -1432,6 +1432,47 @@ pub static SELF_MAIN: AtomicIsize = AtomicIsize::new(0);
 /// 既不能在摘顶扫描里把它按下去，也不能让遮罩本身盖住它。
 pub static HUD_HWND: AtomicIsize = AtomicIsize::new(0);
 
+/// HUD 正在输入（「记一笔」/写目标）时为真：遮罩每帧都把 HUD 钉在最上面。
+///
+/// 这一小段只有几秒，但必须绝对可靠：输入框被盖住时，用户敲的字会打到遮罩上，
+/// 等于"记一笔"这个入口直接失效——而它恰是自律时段里唯一的入口。
+pub fn hud_capture(open: bool) {
+    if open {
+        raise_hud_now();
+    }
+}
+
+/// 无条件把 HUD 放进置顶带的最前面
+pub fn raise_hud_now() {
+    let h = HUD_HWND.load(Ordering::Relaxed) as Hwnd;
+    if h.is_null() {
+        return;
+    }
+    unsafe {
+        if IsWindow(h) == 0 {
+            return;
+        }
+        SetWindowPos(
+            h,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+        SetWindowPos(
+            h,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        );
+    }
+}
+
 /// 把主窗口抬到置顶带的最前面。
 ///
 /// 只调 `set_always_on_top(true)` 不一定能把窗口"浮上来"：如果它已经是
@@ -2254,9 +2295,15 @@ pub fn start(ctl: std::sync::Arc<MaskCtl>) {
                 }
                 // HUD 最后提：它上面有「记一笔」按钮，被遮罩盖住就等于没有这个入口。
                 // 放在所有窗口之后提，保证它压在最上面（后提的在上）。
+                //
+                // 这里**每帧都无条件顶**，不再只靠 ensure_above 的"是否被压住"判断：
+                // 用户点开输入框的那几百毫秒里，任何一次把遮罩重新提上来的动作都可能
+                // 把 HUD 一起盖住，他就看着输入框消失、字打到遮罩上。而「记一笔」
+                // 恰恰是自律时段里唯一能记录分心事件的入口，不能靠"应该不会发生"。
                 let hud_h = HUD_HWND.load(Ordering::Relaxed);
-                if hud_h != 0 {
+                if hud_h != 0 && IsWindowVisible(hud_h as Hwnd) != 0 {
                     ensure_above(hud_h as Hwnd, &mut raised);
+                    raise_hud_now();
                 }
                 ctl.painted.store(true, Ordering::Relaxed);
                 MASK_ACTIVE.store(true, Ordering::Relaxed);

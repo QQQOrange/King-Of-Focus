@@ -729,6 +729,16 @@ pub async fn browser_open_folder() -> Result<String, String> {
         .map_err(|e| format!("启动资源管理器失败：{e}"))?
 }
 
+/// HUD 打开/关闭「记一笔」输入框时调用。
+///
+/// 打开期间遮罩会把 HUD 钉在最上层（每帧），关掉后恢复常规判定。
+/// 没有这一步时，用户点开输入框后它会被遮罩盖住——而「记一笔」恰恰是自律时段
+/// 里唯一能记录分心事件的入口，盖住它等于这个功能不存在。
+#[tauri::command]
+pub fn hud_capture(open: bool) {
+    crate::mask::hud_capture(open);
+}
+
 #[tauri::command]
 pub fn mask_start(
     app: AppHandle,

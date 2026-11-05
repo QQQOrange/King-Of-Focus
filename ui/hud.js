@@ -218,6 +218,9 @@ function openCapture(which) {
   if (!panel.hidden) return;
   panel.hidden = false;
   document.body.classList.add('capturing');
+  // 告诉后端"我在输入"：遮罩会在这期间每帧把 HUD 钉在最上层。
+  // 不做这一步，自律时段里点开输入框会被遮罩盖住，字也打在遮罩上。
+  invoke('hud_capture', { open: true }).catch(() => {});
   if (mode === 'goal') {
     capInput.placeholder = HUD_LANG === 'en' ? 'What are you doing in this session?' : '这一段要做什么？';
     setHint(HUD_LANG === 'en' ? 'Enter to save · Esc to close' : '回车记下 · Esc 关闭');
@@ -234,6 +237,7 @@ function closeCapture() {
   panel.hidden = true;
   document.body.classList.remove('capturing');
   capInput.blur();
+  invoke('hud_capture', { open: false }).catch(() => {});
 }
 
 async function saveCapture() {
