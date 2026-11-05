@@ -125,7 +125,7 @@ def build_extension_zip(version):
     """把 extension/ 打成一个 zip。排除开发期才用得上的东西。"""
     dest = os.path.join(DIST, target_name('chrome-extension', version))
     src = os.path.join(ROOT, 'extension')
-    skip = {'_test_matcher.js', 'extension_key.pem'}
+    skip = {'extension_key.pem'}
     with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
         for base, _dirs, files in os.walk(src):
             for f in sorted(files):

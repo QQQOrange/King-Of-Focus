@@ -31,6 +31,8 @@ mod report_out;
 mod reset;
 mod review;
 mod rhythm;
+mod poster;
+mod boot;
 mod sched;
 mod server;
 mod shared;
@@ -171,6 +173,15 @@ fn main() {
     // 日志在配置路径确定后立刻开始记：配置本身读坏了正是最需要日志的时候。
     logs::init();
     logs::install_panic_hook();
+    // 连续异常启动 → 安全模式。必须在读配置之前判定：
+    // 如果是配置本身把程序崩掉的，安全模式要能拦住后面的拦截逻辑。
+    let boot_attempts = boot::begin();
+    if boot::safe() {
+        logs::write(
+            "boot",
+            &format!("连续第 {boot_attempts} 次异常启动 → 进入安全模式（不拦截、不遮罩）"),
+        );
+    }
     let config = cfg::load();
     logs::write(
         "boot",
@@ -249,6 +260,15 @@ fn main() {
     if update::take_update_failed() {
         shared.say("上次更新没有安装成功（可能取消了 UAC 授权或安装包被拦截），当前仍是旧版本，可以重试");
     }
+    if boot::safe() {
+        shared.say("连续几次启动都没撑住，已进入安全模式：暂时不拦截、不遮罩。改完规则后点界面顶部的「退出安全模式」即可恢复");
+    }
+    // 活过 90 秒就算这次启动是好的：清零异常计数、自动退出安全模式。
+    // 用后台线程而不是计时器：这里没有异步运行时依赖，越简单越不容易再崩。
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(90));
+        boot::mark_ok();
+    });
     let shared_exit = shared.clone();
 
     // 把配置里的遮罩参数灌进运行态
@@ -520,6 +540,8 @@ fn main() {
             cmds::backup_restore,
             cmds::backup_export,
         cmds::diag_export,
+        cmds::poster_save,
+        cmds::safe_mode_leave,
         cmds::config_reset_section,
         cmds::config_reset_undo,
         cmds::config_reset_state,

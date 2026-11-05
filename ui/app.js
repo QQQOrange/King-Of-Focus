@@ -3986,8 +3986,42 @@ function rhythmCard() {
     <div class="row" style="gap:22px;flex-wrap:wrap;margin-top:12px;align-items:center">
       <div><span class="hint">本周</span> <b>${fmtDur(r.weekOnSecs || 0)}</b> ${deltaTxt}</div>
       <div><span class="hint">今日</span> ${today} ${goalTxt ? `<span class="hint">· ${goalTxt}</span>` : ''}</div>
+      ${bestBlock() ? `<div><span class="hint">最专注</span> <b>${bestBlock()}</b></div>` : ''}
     </div>
+    <div class="hint" style="margin-top:8px">${insightLine(r, delta)}</div>
   </div>`;
+}
+
+/**
+ * 当前区间里"最专注的两小时"（按 2 小时合并桶找最大值）。
+ *
+ * 为什么按 2 小时而不是 1 小时：单小时的峰值受一次会议/一次刷视频影响太大，
+ * 两小时段才更像"你这段时间真的在状态里"。
+ */
+function bestBlock() {
+  const h = S.stats && S.stats.onHourly;
+  if (!Array.isArray(h) || h.length < 24) return '';
+  let best = -1;
+  let bestV = 0;
+  for (let i = 0; i < 24; i += 2) {
+    const v = (h[i] || 0) + (h[i + 1] || 0);
+    if (v > bestV) { bestV = v; best = i; }
+  }
+  if (best < 0 || bestV < 600) return '';  // 少于 10 分钟不值得说
+  return `${pad(best)}:00–${pad(best + 2)}:00`;
+}
+
+/** 一句人话结论：把数字翻译成"这意味着什么" */
+function insightLine(r, delta) {
+  const parts = [];
+  const best = bestBlock();
+  if (best) parts.push(`你最常在 ${best} 进入状态`);
+  if (delta !== null && delta !== undefined && Math.abs(delta) >= 10) {
+    parts.push(delta > 0 ? `本周比上周多出 ${delta}%` : `本周比上周少了 ${Math.abs(delta)}%`);
+  }
+  if ((r.streak || 0) >= 3) parts.push(`已经连着 ${r.streak} 天达标`);
+  if (!parts.length) return '攒几天数据，这里会给你一句结论。';
+  return parts.join('；') + '。';
 }
 
 /**
@@ -4056,6 +4090,24 @@ function paintHeat() {
     cells.push(`<span class="heat-cell l${lv}" title="${key} · ${tip}"></span>`);
   }
   el.innerHTML = cells.join('');
+}
+
+/**
+ * 安全模式提示条。
+ *
+ * 只有在"连续几次启动都没撑住"时出现（见 Rust `boot.rs`）。这时拦截和遮罩
+ * 都已经临时关掉，用户要做的只有一件事：把坏掉的规则改掉，然后点右边恢复。
+ */
+function safeBanner() {
+  return `<div class="card" style="border-color:rgba(255,92,92,.45);background:rgba(255,92,92,.07);margin-bottom:14px">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div>
+        <div class="card-title" style="margin:0;color:var(--red)">安全模式</div>
+        <div class="hint" style="margin-top:4px">连续几次启动都没撑住，已经临时关掉拦截和遮罩（统计照常记录）。先改掉可疑的规则，再点右边恢复。</div>
+      </div>
+      <button class="btn btn-sm" data-act="safe-leave">退出安全模式</button>
+    </div>
+  </div>`;
 }
 
 function peerBanner() {
@@ -4473,6 +4525,7 @@ function viewStats() {
       <input type="date" id="cEnd" value="${esc(S.customEnd || todayStr())}"/>
       <button class="btn btn-sm" data-act="range-apply">应用</button>` : ''}
     <span class="muted" id="rangeLabel" style="margin-left:auto;font-size:11.5px">${st ? st.start + ' ~ ' + st.end : ''}</span>
+    <button class="btn btn-sm" data-act="poster" title="把这段时间的数据画成一张可分享的图">战报图</button>
     <button class="btn btn-sm" data-act="stats-refresh">刷新</button>
   </div>
 
@@ -5610,6 +5663,8 @@ function viewSettings() {
     ${sw('dryRun', st.dryRun, '演练模式', '只记录不真的关闭，用来先验证名单是否写对了')}
     ${sw('softClose', st.softClose, '先温和关闭', '先给程序发关闭信号，0.7 秒不退再强制结束，能保住一部分现场')}
     ${sw('siteCloseBrowser', st.siteCloseBrowser, '网页被拦时关闭整个浏览器', '开：命中自律规则网页先弹通知，然后把整个浏览器窗口关掉；关：只关掉那一个标签页')}
+    ${sw('feedHide', st.feedHide, '藏起首页推荐流', '插件把 YouTube / B 站 / 知乎 / 微博 / X 的首页信息流隐藏起来；搜索、播放页、私信照常。只改变页面显示，不算拦截')}
+    ${sw('focusBar', st.focusBar !== false, '网页角落显示专注条', '自律生效时在每个网页左下角显示「自律中 · 剩余 mm:ss」，可以收成一个小圆点。浏览器全屏时主界面看不见，这条是唯一还看得见的提醒')}
     ${sw('guardBrowser', st.guardBrowser, '浏览器守护', '要拦网页时，如果插件失联，直接关掉浏览器（需先装插件）')}
     ${sw('blockTaskmgr', st.blockTaskmgr !== false, '自律期间禁止打开任务管理器', '自律模式生效时（自律时段专注段 / 自律规则生效中），一发现任务管理器就关掉；「固化」锁定期间无论如何都会关')}
     <div class="row" style="align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)">
@@ -6100,9 +6155,133 @@ function distToSeg(px, py, ax, ay, bx, by) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
+/**
+ * 战报图：1080×1350 竖版海报，画完交给后端存 PNG。
+ *
+ * 为什么是竖版：这图是给人**发出去**的（群里/朋友圈），竖图占屏最大。
+ * 为什么用 canvas 而不是 HTML 转图片：不引第三方库、不依赖布局引擎，
+ * 画出来是什么就是什么，缩放/DPI 都不会走样。
+ */
+function drawPoster() {
+  const cur = currentSlices();
+  if (!cur || !cur.total) return null;
+  const cv = document.createElement('canvas');
+  cv.width = 1080;
+  cv.height = 1350;
+  const g = cv.getContext('2d');
+  const SANS = '"Segoe UI","Microsoft YaHei",system-ui,sans-serif';
+  const pad = 88;
+
+  const bg = g.createLinearGradient(0, 0, 0, 1350);
+  bg.addColorStop(0, '#0b0d12');
+  bg.addColorStop(0.55, '#11151d');
+  bg.addColorStop(1, '#0b0d12');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 1080, 1350);
+
+  const glow = g.createRadialGradient(880, 110, 20, 880, 110, 540);
+  glow.addColorStop(0, 'rgba(77,141,255,.30)');
+  glow.addColorStop(1, 'rgba(77,141,255,0)');
+  g.fillStyle = glow;
+  g.fillRect(0, 0, 1080, 720);
+
+  g.fillStyle = '#4d8dff';
+  g.font = `600 22px ${SANS}`;
+  g.fillText('K I N G   O F   F O C U S', pad, 120);
+
+  g.fillStyle = '#eef2fa';
+  g.font = `700 64px ${SANS}`;
+  g.fillText('自律战报', pad, 210);
+
+  g.fillStyle = '#8b94a7';
+  g.font = `400 24px ${SANS}`;
+  g.fillText(`${(S.stats && S.stats.start) || ''} — ${(S.stats && S.stats.end) || ''}`, pad, 256);
+
+  const total = cur.total || 0;
+  const hh = Math.floor(total / 3600);
+  const mm = Math.round((total % 3600) / 60);
+  g.fillStyle = '#ffffff';
+  g.font = `800 150px ${SANS}`;
+  g.fillText(String(hh), pad, 432);
+  const hw = g.measureText(String(hh)).width;
+  g.fillStyle = '#9aa4b8';
+  g.font = `600 42px ${SANS}`;
+  g.fillText('小时', pad + hw + 18, 432);
+  g.fillStyle = '#eef2fa';
+  g.font = `600 42px ${SANS}`;
+  g.fillText(`${mm} 分钟`, pad + hw + 18 + 100, 432);
+
+  g.fillStyle = '#6f7890';
+  g.font = `400 24px ${SANS}`;
+  g.fillText('本区间自律时长', pad, 482);
+
+  const r = (S.data && S.data.rhythm) || {};
+  const cards = [
+    ['连续达标', `${r.streak || 0} 天`],
+    ['今日目标', (r.todayGoalsTotal || 0) > 0 ? `${r.todayGoalsDone}/${r.todayGoalsTotal}` : '—'],
+    ['本周', fmtDur(r.weekOnSecs || 0)],
+  ];
+  let x = pad;
+  cards.forEach(([k, v]) => {
+    roundRect(g, x, 544, 280, 132, 18, 'rgba(255,255,255,.045)', 'rgba(255,255,255,.07)');
+    g.fillStyle = '#8b94a7';
+    g.font = `400 22px ${SANS}`;
+    g.fillText(k, x + 28, 594);
+    g.fillStyle = '#ffffff';
+    g.font = `700 38px ${SANS}`;
+    g.fillText(v, x + 28, 644);
+    x += 296;
+  });
+
+  g.fillStyle = '#8b94a7';
+  g.font = `400 24px ${SANS}`;
+  g.fillText('花时间最多', pad, 754);
+
+  const top = (cur.slices || []).slice(0, 3);
+  const max = Math.max(1, ...top.map((s) => s.secs || 0));
+  const barW = 1080 - pad * 2;
+  top.forEach((s, i) => {
+    const y = 806 + i * 104;
+    const name = String(s.label || s.key || '—');
+    g.fillStyle = '#eef2fa';
+    g.font = `500 28px ${SANS}`;
+    g.fillText(name.length > 18 ? name.slice(0, 18) + '…' : name, pad, y);
+    g.fillStyle = '#8b94a7';
+    g.font = `400 24px ${SANS}`;
+    g.textAlign = 'right';
+    g.fillText(fmtDur(s.secs || 0), 1080 - pad, y);
+    g.textAlign = 'left';
+    roundRect(g, pad, y + 18, barW, 12, 6, 'rgba(255,255,255,.06)', null);
+    roundRect(g, pad, y + 18, Math.max(12, barW * ((s.secs || 0) / max)), 12, 6, '#4d8dff', null);
+  });
+
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fillRect(pad, 1178, barW, 1);
+  const best = bestBlock();
+  g.fillStyle = '#c9d2e3';
+  g.font = `400 28px ${SANS}`;
+  g.fillText(best ? `最常在 ${best} 进入状态` : '把时间花在哪儿，是看得见的。', pad, 1238);
+  g.fillStyle = '#5d6678';
+  g.font = `400 22px ${SANS}`;
+  g.fillText(`King Of Focus · ${todayStr()}`, pad, 1292);
+
+  return cv.toDataURL('image/png');
+}
+
+function roundRect(g, x, y, w, h, r, fill, stroke) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = 1; g.stroke(); }
+}
+
 /** 画一帧。`hover` = 高亮项索引（-1 无），`t` = 高亮强度 0..1。 */
-function drawPieFrame(cv) {
-  const d = cv.__pie;
+function drawPieFrame(cv) {  const d = cv.__pie;
   if (!d) return;
   const ctx = cv.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
@@ -6793,6 +6972,9 @@ function render() {
   if (S.view === 'settings') html = viewSettings();
   if (S.view === 'help') html = viewHelp();
   if (S.view === 'about') html = viewAbout();
+  // 安全模式：连续几次启动没撑住。提示必须挂在**每一页**最上面——
+  // 用户进来第一件事就是改规则，不能让他先去找入口。
+  if (S.data && S.data.safeMode) html = safeBanner() + html;
   $('#content').innerHTML = html;
 
   // 连续时段要画成整块：格子是静态的，覆盖层得在 DOM 落地后再算
@@ -9322,6 +9504,29 @@ const Act = window.Act = {
       toast(errText(e), 'err');
     }
   },
+
+  /** 手动退出安全模式（改好规则之后） */
+  async safeLeave() {
+    try {
+      await invoke('safe_mode_leave');
+      await pull();
+      render();
+      toast('已退出安全模式', 'ok');
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
+  },
+
+  /** 战报图：canvas 画好 → 后端弹保存框写 PNG */
+  async poster() {    try {
+      const url = drawPoster();
+      if (!url) { toast('这段时间还没有数据', 'err'); return; }
+      const p = await invoke('poster_save', { dataUrl: url });
+      toast('战报图已保存：' + p, 'ok');
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
+  },
   async quotaRefresh() { await loadQuota(); render(); },
   async updateEnabled() {
     await invoke('update_save', { enabled: !S.data.config.settings.update.enabled });
@@ -10547,6 +10752,8 @@ document.addEventListener('click', async (e) => {
   if (act === 'force-quit') { await Act.forceQuit(); return; }
   if (act === 'open-cfg') { await Act.openCfg(); return; }
   if (act === 'diag-export') { await Act.diagExport(); return; }
+  if (act === 'poster') { await Act.poster(); return; }
+  if (act === 'safe-leave') { await Act.safeLeave(); return; }
   if (act === 'open-stats-dir') { await Act.openStatsDir(); return; }
   /* 云同步 */
   if (act === 'sync-auto') { Act.syncAuto(); return; }

@@ -1385,6 +1385,16 @@ pub struct Settings {
     pub soft_close: bool,
     /// 网页命中自律规则时，除了关掉那个标签页，是否连整个浏览器窗口一起关掉
     pub site_close_browser: bool,
+    /// 浏览器插件：把首页推荐流藏起来（YouTube / B 站 / 知乎 / 微博 / X）。
+    ///
+    /// 默认关：这不是"拦截"，而是"改造页面"，默认替用户做决定不合适。
+    /// 打开后只隐藏**推荐流容器**，搜索、播放页、私信这些照常。
+    pub feed_hide: bool,
+    /// 浏览器插件：自律生效时在页面顶部显示一条专注条（剩余时间 + 正在生效的规则）。
+    ///
+    /// 默认开：它不改变网页内容，只是把"现在还在自律里"这件事摆在眼前——
+    /// 浏览器全屏时主界面是看不见的，这条是唯一还看得见的提醒。
+    pub focus_bar: bool,
     /// 自律模式生效期间是否禁止打开任务管理器（固化锁定时始终禁止，与本开关无关）
     pub block_taskmgr: bool,
     /// 另一台设备同步过来的统计摘要（不并入本机统计，单独展示）
@@ -1486,6 +1496,8 @@ impl Default for Settings {
             always_on_top: false,
             soft_close: true,
             site_close_browser: true,
+            feed_hide: false,
+            focus_bar: true,
             block_taskmgr: true,
             allow_quit_in_session: true,
             protected: default_protected(),

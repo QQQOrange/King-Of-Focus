@@ -84,6 +84,17 @@ print('变更文件 %d 个' % len(changed))
 
 entries = []
 for path in changed:
+    # 删除的文件：Git Data API 用 sha=null 表示"从树里去掉"。
+    # 之前没处理这一支，删一个文件就让整个发布卡在 cat-file 128 —— 而发布脚本
+    # 半路失败，最容易被误判成"网络问题"。
+    exists = subprocess.run(
+        ['git', 'cat-file', '-e', head + ':' + path], cwd='.',
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if not exists:
+        entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': None})
+        print('  del ', path)
+        continue
     # 必须用 HEAD 里的字节，而不是工作区文件：工作区可能被 CRLF 转换过，
     # 两边字节不同 → blob sha 不同 → 造出来的树和本地提交不是同一棵树
     raw = git_bytes('cat-file', 'blob', head + ':' + path)

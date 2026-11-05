@@ -119,6 +119,14 @@ pub fn blocked_rule<'a>(cfg: &Config, rules: &'a [Rule], app: &WinApp) -> Option
 /// 用户想"9 点开始自律"，结果要去两个页面各排一次时间，很容易对不上。
 /// 现在时间只在「自律时段」排一次，自律规则纯名单。
 pub fn active_rules(cfg: &Config, now: &NaiveDateTime, d: &Discipline) -> Vec<Rule> {
+    // 安全模式：连续几次启动都没撑住时，先别拦任何东西。
+    //
+    // 这里是所有拦截判定的唯一入口（拦软件 / 下发网页规则 / 自动打开 /
+    // 遮罩是否绘制都读它），所以一行就够；放在各处分别判断迟早会漏一处，
+    // 那正是"进了安全模式还在被关程序"的由来。
+    if crate::boot::safe() {
+        return Vec::new();
+    }
     // 积分解锁窗口内：**所有拦截暂停**。
     // 界面承诺"到 xx 之前所有拦截暂停""解锁 N 分钟自由时间"，但以前只有
     // guard::lock_info 读这个字段，于是花掉积分只换来"能退出、能改设置"，

@@ -603,6 +603,22 @@
       'A day counts when your focused time reaches the plan and every goal you wrote is done. Rest days with no plan never break the streak.',
     '上周还没有数据': 'No data last week',
     '和上周持平': 'Same as last week',
+    '安全模式': 'Safe mode',
+    '连续几次启动都没撑住，已经临时关掉拦截和遮罩（统计照常记录）。先改掉可疑的规则，再点右边恢复。':
+      'The app failed to start several times in a row, so blocking and the mask are temporarily off (stats still record). Fix the suspicious rule, then press the button to resume.',
+    '退出安全模式': 'Leave safe mode',
+    '已退出安全模式': 'Safe mode is off',
+    '最专注': 'Peak focus',
+    '战报图': 'Report image',
+    '把这段时间的数据画成一张可分享的图': 'Turn this range into a shareable image',
+    '这段时间还没有数据': 'No data in this range',
+    '战报图已保存：': 'Report image saved: ',
+    '藏起首页推荐流': 'Hide home feeds',
+    '插件把 YouTube / B 站 / 知乎 / 微博 / X 的首页信息流隐藏起来；搜索、播放页、私信照常。只改变页面显示，不算拦截':
+      'The extension hides the home feed on YouTube, Bilibili, Zhihu, Weibo and X. Search, watch pages and messages are untouched — this only changes what you see, it is not blocking.',
+    '网页角落显示专注条': 'Show a focus pill on web pages',
+    '自律生效时在每个网页左下角显示「自律中 · 剩余 mm:ss」，可以收成一个小圆点。浏览器全屏时主界面看不见，这条是唯一还看得见的提醒':
+      'While discipline is on, a small “Focus on · mm:ss left” pill sits in the bottom-left of every page; click it to collapse. When the browser is fullscreen this is the only reminder you can see.',
     '今天已达标': 'Today: goal met',
     '今天是休息日': 'Today: rest day',
     '这一年': 'This year',

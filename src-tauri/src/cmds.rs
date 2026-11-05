@@ -1559,6 +1559,8 @@ pub fn hud_state(shared: State<'_, Arc<Shared>>) -> Value {
         "quote": quote,
         "quoteFrom": quote_from,
         "theme": cfg.settings.theme,
+        // 安全模式：连续几次启动没撑住时会打开，界面顶部要挂一条提示
+        "safeMode": crate::boot::safe(),
         // HUD 的语言跟着主界面走（它是个独立窗口，只能自己读）
         "lang": cfg.settings.lang,
         "hudEnabled": cfg.settings.hud.enabled,
@@ -2138,6 +2140,43 @@ pub fn config_reset_state() -> Value {
 ///
 /// 为什么做成按钮而不是"让用户去 data 目录里找日志"：用户不是开发者，
 /// 让他找文件、再把带密码的 config.json 发过来，既麻烦又危险。
+/// 手动退出安全模式（改好规则之后点一下，立刻恢复拦截）
+#[tauri::command]
+pub fn safe_mode_leave() -> bool {
+    crate::boot::leave();
+    crate::logs::write("boot", "用户手动退出安全模式");
+    false
+}
+
+/// 保存「战报图」：前端 canvas 画好，这里只负责解码 + 落盘。
+#[tauri::command]
+pub async fn poster_save(app: AppHandle, data_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = crate::poster::decode_png_data_url(&data_url)?;
+        let name = format!(
+            "kof-report-{}.png",
+            chrono::Local::now().format("%Y%m%d-%H%M")
+        );
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("保存战报图（可直接发出去）")
+            .set_file_name(&name)
+            .add_filter("图片", &["png"])
+            .blocking_save_file();
+        let path = picked.ok_or_else(|| "已取消保存".to_string())?;
+        let mut p = std::path::PathBuf::from(path.to_string());
+        if p.extension().is_none() {
+            p.set_extension("png");
+        }
+        std::fs::write(&p, bytes).map_err(|e| format!("写入失败：{e}"))?;
+        crate::logs::write("poster", &format!("保存战报图 → {}", p.display()));
+        Ok(p.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|_| "保存线程异常退出".to_string())?
+}
+
 #[tauri::command]
 pub async fn diag_export(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<String, String> {
     let shared = shared.inner().clone();
