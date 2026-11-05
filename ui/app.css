@@ -3106,3 +3106,28 @@ html[data-motion="low"] .cc-ghost { transition-duration: 60ms; }
 
 /* 今日成果（写了几个目标、做完几个）：压在进度条下面一行小字 */
 .tb-goalstat { margin-top: 5px; font-size: 10.5px; color: var(--text-3); }
+
+/* ---------------- 年度热力图 ----------------
+   一格一天，用亮度表示那天自律时长。宽屏下 53 列刚好一年；
+   窄屏不换行、只允许横向滚动——heatmap 一旦折行，"哪一列是哪一周"就没了。 */
+.heat-wrap { overflow-x: auto; padding: 12px 0 2px; }
+.heat-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 13px);
+  gap: 3px;
+  width: max-content;
+}
+.heat-cell {
+  width: 13px; height: 13px;
+  border-radius: 3px;
+  background: var(--line);
+  display: inline-block;
+}
+/* 用 opacity 而不是 color-mix：WebView2 版本差异下 color-mix 可能不生效，
+   而"深浅不分"会让整张图变成一个颜色，看不出趋势。 */
+.heat-cell.l1 { background: var(--gold); opacity: .28; }
+.heat-cell.l2 { background: var(--gold); opacity: .50; }
+.heat-cell.l3 { background: var(--gold); opacity: .74; }
+.heat-cell.l4 { background: var(--gold); opacity: 1; }
+.heat-cell:hover { outline: 1px solid var(--line-2); }

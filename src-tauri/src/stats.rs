@@ -984,6 +984,14 @@ pub struct Agg {
     pub off_hourly: [u64; 24],
 }
 
+/// 某一天「自律生效」的秒数（只读，供「节奏」连续天数与周对比用）。
+///
+/// 走的是和统计页**同一个**日文件与同一套字段，不另建索引：
+/// 一天一个 json，读一次几毫秒；连续天数最多回溯 90 天，缓存 60 秒完全够。
+pub fn day_on_secs(date: &str) -> u64 {
+    load_day(date).on.values().map(|a| a.secs).sum()
+}
+
 pub fn aggregate(shared: &Shared, start: &str, end: &str) -> Agg {
     let mut on: BTreeMap<String, Slice> = BTreeMap::new();
     let mut off: BTreeMap<String, Slice> = BTreeMap::new();

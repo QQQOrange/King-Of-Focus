@@ -597,6 +597,25 @@
     '日志超过 1.5MB 会自动滚成 app.1.log，不会无限长大。':
       'The log rolls over to app.1.log past 1.5 MB, so it never grows without bound.',
     '诊断信息已导出：': 'Diagnostics exported: ',
+    '节奏': 'Rhythm',
+    '连续达标（天）': 'day streak',
+    '达标 = 当天自律时长达到计划，且写过的目标都做完；没有计划的休息日不算断。':
+      'A day counts when your focused time reaches the plan and every goal you wrote is done. Rest days with no plan never break the streak.',
+    '上周还没有数据': 'No data last week',
+    '和上周持平': 'Same as last week',
+    '今天已达标': 'Today: goal met',
+    '今天是休息日': 'Today: rest day',
+    '这一年': 'This year',
+    '每一格是一天，越亮 = 那天自律模式开着的时间越长':
+      'One square per day; brighter means more hours with discipline mode on.',
+    '正在读取…': 'Loading…',
+    '热力图读取失败，点上面的「刷新」再试一次。':
+      'Could not load the heatmap — press “Refresh” above to retry.',
+    '最近一年还没有可用的数据。用满几天之后，这里就会长出颜色。':
+      'No data for the past year yet — colours appear after a few days of use.',
+    '没有数据': 'No data',
+    '少': 'Less',
+    '多': 'More',
     '导出': 'Export',
     '版本、运行状态、最近日志和脱敏后的配置打包成一份文本。出问题时导出它发过来，比描述快得多。':
       'Version, runtime state, recent logs and a redacted config in one text file. Export it when something goes wrong — faster than describing it.',
@@ -1989,6 +2008,11 @@
     [/^已重置：(.+)$/, 'Reset done: $1'],
     [/^上次重置：(.+) · (.+)$/, 'Last reset: $1 · $2'],
     [/^清单来自上次检查更新：(.+)$/, 'Manifest from the last check: $1'],
+    /* 节奏卡：百分比、还差多少、目标计数都是拼出来的 */
+    [/^比上周多 (\d+)%$/, '+$1% vs last week'],
+    [/^比上周少 (\d+)%$/, '-$1% vs last week'],
+    [/^还差 (.+)$/, '$1 to go'],
+    [/^目标 (\d+)\/(\d+)$/, 'Goals $1/$2'],
     /* 日历明细的「共 5 小时 12 分」 */
     [/^共 (.+)$/, 'Total $1'],
 

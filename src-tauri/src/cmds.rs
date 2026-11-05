@@ -179,6 +179,8 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
     let clock_summary = crate::clock::summary(&config);
     let sleep_json = crate::sleep::snapshot(&shared).to_json(&config);
     let sleep_text = crate::sleep::summary(&shared);
+    // 连续达标 / 本周对比（只读聚合，自带 60 秒缓存；不要放进下面的 rt 锁里）
+    let rhythm = crate::rhythm::get(&shared);
     let (runtime, notice) = {
         // 锁中毒（有人在持锁时 panic 过）不能让整个状态查询跟着崩：
         // 这就是 get_state 的主路径，它一 panic，界面每 1.5 秒崩一次。
@@ -229,6 +231,7 @@ pub fn get_state(shared: State<'_, Arc<Shared>>) -> Value {
                 "clockSummary": clock_summary,
                 "sleep": sleep_json,
                 "sleepText": sleep_text,
+                "rhythm": rhythm,
                 // Hub 顶部那块激励语录要显示"这条是哪来的"，所以连同出处一起给
                 "quote": rt.quote.clone(),
                 "quoteFrom": rt.quote_from.clone(),
@@ -412,6 +415,8 @@ pub async fn pick_path(app: AppHandle, kind: String) -> Option<String> {
 /// 把配置灌进运行态（启动时和切换测试模式后都要走这一遍）
 pub fn apply_runtime_cfg(shared: &Arc<Shared>) {
     let config = shared.config();
+    // 排班/规则变了，"今天的计划时长"跟着变 → 节奏（连续达标）必须重算
+    crate::rhythm::invalidate();
     // 浏览器自定义路径要同步给扫描/打开扩展页那一侧
     crate::browsers::set_custom_exe(config.settings.browser_exe.clone());
     sync_custom_browsers(&config);
@@ -1625,6 +1630,35 @@ pub fn stats_calendar(start: String, end: String, tab: String) -> Vec<crate::sta
     crate::stats::calendar(&start, &end, &tab)
 }
 
+/// 热力图：一整年的「每天自律秒数」，**故意只回两个字段**。
+///
+/// 复用 `stats_calendar` 也能画，但它每天带着 items（软件明细），
+/// 365 天就是几百 KB；热力图只需要深浅，没必要把明细搬一遍。
+#[tauri::command]
+pub fn stats_heatmap(start: String, end: String) -> Vec<(String, u64)> {
+    let Ok(d0) = chrono::NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d") else {
+        return Vec::new();
+    };
+    let Ok(d1) = chrono::NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d") else {
+        return Vec::new();
+    };
+    let (d0, d1) = if d1 < d0 { (d1, d0) } else { (d0, d1) };
+    // 上限与其它区间接口一致（一年 + 一天），防止 IPC 传个超长区间
+    let d1 = if (d1 - d0).num_days() > 366 {
+        d0 + chrono::Duration::days(366)
+    } else {
+        d1
+    };
+    let mut out = Vec::new();
+    let mut cur = d0;
+    while cur <= d1 {
+        let key = cur.format("%Y-%m-%d").to_string();
+        out.push((key.clone(), crate::stats::day_on_secs(&key)));
+        cur += chrono::Duration::days(1);
+    }
+    out
+}
+
 #[tauri::command]
 pub fn stats_range(shared: State<'_, Arc<Shared>>, start: String, end: String) -> Result<Value, String> {
     // 起止填反时直接拒绝。
@@ -2261,6 +2295,8 @@ pub fn ledger_today(limit: Option<usize>) -> Value {
 pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Value, String> {
     let c = shared.config();
     let g = crate::focus::set_goal(&c, &text)?;
+    // "今天目标做完了吗"会影响连续达标 → 立刻作废节奏缓存
+    crate::rhythm::invalidate();
     Ok(json!(g))
 }
 
@@ -2268,6 +2304,7 @@ pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Va
 #[tauri::command]
 pub fn focus_goal_state(seg: i64, state: String) -> Result<Value, String> {
     let g = crate::focus::set_state(seg, &state)?;
+    crate::rhythm::invalidate();
     Ok(json!(g))
 }
 

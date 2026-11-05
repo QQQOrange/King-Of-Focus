@@ -30,6 +30,7 @@ mod quotes;
 mod report_out;
 mod reset;
 mod review;
+mod rhythm;
 mod sched;
 mod server;
 mod shared;
@@ -549,6 +550,7 @@ fn main() {
             cmds::onboard_try,
             cmds::stats_range,
             cmds::stats_calendar,
+        cmds::stats_heatmap,
             cmds::stats_flush,
             cmds::stats_dir_path,
             cmds::report_list,

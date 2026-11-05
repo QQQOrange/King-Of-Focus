@@ -3946,6 +3946,118 @@ function calEnsure() {
  *  加在一起只会得到一个没意义的数字（还会让人以为"我今天用了 20 小时"）。
  *  数据来自云同步/备份带过来的统计摘要（见 portable::Doc.stats）。
  */
+/** 「节奏」：连续达标 + 本周对比。
+ *
+ *  统计页已经有很多数字了，但都在回答"用了多久"，没有一条回答"我最近是变好
+ *  还是变差"。这张卡只放三个判断：连续多少天、本周比上周怎么样、今天达标没有。
+ *
+ *  达标 = 当天自律时长达到计划，且写过的目标都做完（见 Rust `rhythm.rs`）。
+ *  休息日不算断，所以"周末没排班"不会让连续天数归零。
+ */
+function rhythmCard() {
+  const r = (S.data && S.data.rhythm) || null;
+  if (!r) return '';
+  const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 100) : null);
+  const delta = pct(r.weekOnSecs || 0, r.lastWeekOnSecs || 0);
+  const deltaTxt = delta === null
+    ? '<span class="badge">上周还没有数据</span>'
+    : delta === 0
+      ? '<span class="badge">和上周持平</span>'
+      : `<span class="badge ${delta > 0 ? 'green' : 'gold'}">比上周${delta > 0 ? '多' : '少'} ${Math.abs(delta)}%</span>`;
+  const today = r.todayState === 'done'
+    ? '<span class="badge green">今天已达标</span>'
+    : r.todayState === 'rest'
+      ? '<span class="badge">今天是休息日</span>'
+      : `<span class="badge gold">还差 ${fmtDur(Math.max(0, (r.todayPlanSecs || 0) - (r.todayOnSecs || 0)))}</span>`;
+  const goalTxt = (r.todayGoalsTotal || 0) > 0
+    ? `目标 ${r.todayGoalsDone}/${r.todayGoalsTotal}`
+    : '';
+  return `<div class="card" id="rhythmCard">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div>
+        <div class="card-title" style="margin:0">节奏</div>
+        <div class="hint" style="margin-top:4px">达标 = 当天自律时长达到计划，且写过的目标都做完；没有计划的休息日不算断。</div>
+      </div>
+      <div style="text-align:right;min-width:96px">
+        <div style="font-size:30px;font-weight:700;line-height:1.1;color:${(r.streak || 0) > 0 ? 'var(--gold)' : 'var(--text-2)'}">${r.streak || 0}</div>
+        <div class="hint">连续达标（天）</div>
+      </div>
+    </div>
+    <div class="row" style="gap:22px;flex-wrap:wrap;margin-top:12px;align-items:center">
+      <div><span class="hint">本周</span> <b>${fmtDur(r.weekOnSecs || 0)}</b> ${deltaTxt}</div>
+      <div><span class="hint">今日</span> ${today} ${goalTxt ? `<span class="hint">· ${goalTxt}</span>` : ''}</div>
+    </div>
+  </div>`;
+}
+
+/**
+ * 年度热力图：一格一天，颜色越亮 = 那天自律越久。
+ *
+ * 为什么值得占屏幕：柱状图和日历回答的是"某一天/某一周"，只有这种图能一眼
+ * 看出"我这半年是不是在退步"。人对自己时间分布的直觉，在二维方格上最强。
+ *
+ * 数据走 `stats_heatmap`（只回 date + 秒数），一次拉 365 天；
+ * 拉成功就按今天缓存住，同一天不再重复请求。
+ */
+function heatmapCard() {
+  return `<div class="card" id="heatCard">
+    <div class="row" style="justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+      <div class="card-title" style="margin:0">这一年 ${qtip('collect')}</div>
+      <div class="hint">每一格是一天，越亮 = 那天自律模式开着的时间越长</div>
+    </div>
+    <div class="heat-wrap"><div class="heat-grid" id="heatGrid"><span class="hint">正在读取…</span></div></div>
+    <div class="row" style="justify-content:flex-end;align-items:center;gap:6px;margin-top:8px">
+      <span class="hint">少</span>
+      <span class="heat-cell l0"></span><span class="heat-cell l1"></span>
+      <span class="heat-cell l2"></span><span class="heat-cell l3"></span>
+      <span class="heat-cell l4"></span>
+      <span class="hint">多</span>
+    </div>
+  </div>`;
+}
+
+/** 拉一年的每日秒数：失败就画"读取失败"，绝不当成 0 画成空白 */
+function heatEnsure() {
+  const today = todayStr();
+  if (S.heat && S.heatKey === today) { paintHeat(); return; }
+  if (S.heatPending) return;
+  S.heatPending = true;
+  const start = dateStr(addDays(new Date(), -364));
+  withTimeout(invoke('stats_heatmap', { start, end: today }), 8000, '热力图读取超时')
+    .then((r) => { S.heat = Array.isArray(r) ? r : []; S.heatFailed = false; })
+    .catch(() => { S.heat = null; S.heatFailed = true; })
+    .finally(() => { S.heatPending = false; S.heatKey = today; paintHeat(); });
+}
+
+function paintHeat() {
+  const el = $('#heatGrid');
+  if (!el) return;
+  if (S.heatFailed) { el.innerHTML = '<span class="hint">热力图读取失败，点上面的「刷新」再试一次。</span>'; return; }
+  if (!S.heat) return;
+  // 一整年都没有数据（新装、或者刚清过统计）：画 365 个灰格子只会让人以为坏了
+  const total = S.heat.reduce((a, [, s]) => a + (Number(s) || 0), 0);
+  if (total === 0) {
+    el.innerHTML = '<span class="hint">最近一年还没有可用的数据。用满几天之后，这里就会长出颜色。</span>';
+    return;
+  }
+  const map = new Map(S.heat.map(([d, s]) => [d, Number(s) || 0]));
+  // 以周一为一列的开头：先找到"364 天前"那个周一
+  const start = addDays(new Date(), -364);
+  const lead = (start.getDay() + 6) % 7; // 0=周一
+  const first = addDays(start, -lead);
+  const cells = [];
+  for (let d = new Date(first.getTime()); d <= new Date(); d = addDays(d, 1)) {
+    const key = dateStr(d);
+    const secs = map.get(key) || 0;
+    const h = secs / 3600;
+    const lv = h >= 5 ? 4 : h >= 2.5 ? 3 : h >= 1 ? 2 : h > 0 ? 1 : 0;
+    // title 属性不会被 DOM 翻译扫描到，这里显式过一遍 I.t()
+    const tip = secs ? fmtDur(secs) : I.t('没有数据');
+    cells.push(`<span class="heat-cell l${lv}" title="${key} · ${tip}"></span>`);
+  }
+  el.innerHTML = cells.join('');
+}
+
 function peerBanner() {
   const peer = (S.data && S.data.config.settings.peerStats) || null;
   const days = (peer && peer.days) || [];
@@ -4349,6 +4461,10 @@ function viewStats() {
   </div>
 
   ${peerBanner()}
+
+  ${rhythmCard()}
+
+  ${heatmapCard()}
 
   <div class="range-row">
     ${ranges.map(([k, n]) => `<button class="chip-btn ${S.range === k ? 'active' : ''}" data-act="range" data-r="${k}">${n}</button>`).join('')}
@@ -6688,6 +6804,7 @@ function render() {
     drawPie($('#pie'), cur.slices, cur.total, { sub: '累计前台时长', focusKey: S.calHit });
     calEnsure();      // 周/月日历：区间没变就不重复请求
     dayEnsure();      // 当日日历：网格里已有这天就直接复用，不额外请求
+    heatEnsure();     // 年度热力图：一天只拉一次
   }
 
   // 设置页的「分区重置」卡片：撤销状态要单独问一次后端（不放进 1.5s 轮询里）
