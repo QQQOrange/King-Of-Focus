@@ -225,7 +225,12 @@ for (const [file, text] of Object.entries(uiSrc)) {
   }
 }
 
-const appJs = uiSrc['app.js'] || '';
+// 前端拆成 app-core / app-views / … 多份之后，分发器分支可能落在任何一个里。
+// 这里把所有 ui/*.js 拼起来找——按文件找 app.js 会在拆分那天直接 ENOENT。
+const appJs = Object.keys(uiSrc)
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => uiSrc[f])
+  .join('\n');
 for (const m of appJs.matchAll(/\bact\s*===\s*'([a-z0-9-]+)'/g)) actsHandled.add(m[1]);
 for (const m of appJs.matchAll(/\bact\s*===\s*"([a-z0-9-]+)"/g)) actsHandled.add(m[1]);
 // 也认 switch(act) 的 case
@@ -259,7 +264,7 @@ const sectionsBlock = resetSrc.match(/pub const SECTIONS:\s*&\[&str\]\s*=\s*&\[(
 const rustSections = sectionsBlock
   ? [...sectionsBlock[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
   : [];
-const appSrc = fs.readFileSync(path.join(uiDir, 'app.js'), 'utf8');
+const appSrc = appJs;
 const jsBlock = appSrc.match(/const RESET_SECTIONS = \[([\s\S]*?)\n\];/);
 const jsSections = jsBlock
   ? [...jsBlock[1].matchAll(/^\s*\['([a-z]+)'/gm)].map((m) => m[1])
@@ -267,7 +272,7 @@ const jsSections = jsBlock
 if (!rustSections.length) {
   problems.push('reset.rs 里找不到 SECTIONS（分区重置清单）');
 } else if (!jsSections.length) {
-  problems.push('app.js 里找不到 RESET_SECTIONS（分区重置清单）');
+  problems.push('前端 app-*.js 里找不到 RESET_SECTIONS（分区重置清单）');
 } else {
   const onlyRust = rustSections.filter((k) => !jsSections.includes(k));
   const onlyJs = jsSections.filter((k) => !rustSections.includes(k));

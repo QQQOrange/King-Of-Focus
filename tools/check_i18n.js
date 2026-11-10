@@ -14,7 +14,14 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const I18N = path.join(ROOT, 'ui', 'i18n.js');
-const APP = path.join(ROOT, 'ui', 'app.js');
+const UI_DIR = path.join(ROOT, 'ui');
+// 前端已按 app-core / app-views / … 切成多份（2026-11 拆分）。
+// 必须扫**全部** app-*.js：只扫 app.js 的话，拆出去的文件等于没被检查，
+// 报告还是 100%，而英文界面里会冒出中文——那正是这道闸存在的理由。
+const APP_FILES = fs
+  .readdirSync(UI_DIR)
+  .filter((f) => /^app-.*\.js$/.test(f))
+  .sort();
 
 const src = fs.readFileSync(I18N, 'utf8');
 
@@ -56,13 +63,12 @@ for (const k of Object.keys(EXTRA)) {
   }
 }
 
-/* ---------- 扫 app.js 的可见中文 ---------- */
-const app = fs.readFileSync(APP, 'utf8');
+/* ---------- 扫全部 app-*.js 的可见中文 ---------- */
 const HAN = /[\u4e00-\u9fa5]/;
 
-const seen = new Map(); // 文本 -> 首次出现的行号
+const seen = new Map(); // 文本 -> "文件:行"
 
-function addText(t, line) {
+function addText(t, where) {
   const v = t.replace(/\s+/g, ' ').trim();
   if (!v || v.length < 2 || v.length > 80) return;
   if (!HAN.test(v)) return;
@@ -71,34 +77,38 @@ function addText(t, line) {
   // （跨行模板被行首正则截断的那种），不是用户会看到的整句
   if (/[`{}'"]/.test(v)) return;
   if (/^[\s\d.,:;%+\-—/()（）]*$/.test(v)) return;
-  if (!seen.has(v)) seen.set(v, line);
+  if (!seen.has(v)) seen.set(v, where);
 }
 
+for (const file of APP_FILES) {
+const app = fs.readFileSync(path.join(UI_DIR, file), 'utf8');
 const lines = app.split('\n');
 let pendingTemplate = null; // 跨行模板：记起始行
 for (let n = 0; n < lines.length; n++) {
+  const where = file + ':' + (n + 1);
   const line = lines[n];
 
   // 模板里的文本节点：>中文<
   const textRe = />([^<>]*[\u4e00-\u9fa5][^<>]*)</g;
   let m;
-  while ((m = textRe.exec(line)) !== null) addText(m[1], n + 1);
+  while ((m = textRe.exec(line)) !== null) addText(m[1], where);
 
   // 属性：title / placeholder / aria-label
   const attrRe = /\b(?:title|placeholder|aria-label)="([^"]*[\u4e00-\u9fa5][^"]*)"/g;
-  while ((m = attrRe.exec(line)) !== null) addText(m[1], n + 1);
+  while ((m = attrRe.exec(line)) !== null) addText(m[1], where);
 
   // 单引号/反引号包住的整句（toast/confirm 之类），仅当整行就是这一句时收
   const soloRe = /^\s*(?:toast|confirm)\(\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/;
-  if ((m = soloRe.exec(line)) !== null) addText(m[1], n + 1);
+  if ((m = soloRe.exec(line)) !== null) addText(m[1], where);
 
   // 直接写进节点的文案：`btn.textContent = '正在删除…'` 这类以前完全扫不到，
   // 于是英文界面残留中文、脚本照样报 100%。
   const tcRe = /\.(?:textContent|innerText|title|placeholder|ariaLabel)\s*=\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/g;
-  while ((m = tcRe.exec(line)) !== null) addText(m[1], n + 1);
+  while ((m = tcRe.exec(line)) !== null) addText(m[1], where);
   // setHint('…') / say('…') / notify('…') 这类自定义提示函数
   const callRe = /\b(?:setHint|say|notify|toast|confirm)\(\s*['`]([^'`]*[\u4e00-\u9fa5][^'`]*)['`]/g;
-  while ((m = callRe.exec(line)) !== null) addText(m[1], n + 1);
+  while ((m = callRe.exec(line)) !== null) addText(m[1], where);
+}
 }
 
 // 用真实的 I18N 判断覆盖：词典 + 正则规则都算
@@ -127,7 +137,7 @@ if (process.argv.includes('--json')) {
   }
   if (missing.length) {
     console.log(`\n未翻译 ${missing.length} 条（文件:行）：`);
-    for (const x of missing) console.log(`  app.js:${x.line}  ${JSON.stringify(x.text)}`);
+    for (const x of missing) console.log(`  ${x.line}  ${JSON.stringify(x.text)}`);
   }
 }
 

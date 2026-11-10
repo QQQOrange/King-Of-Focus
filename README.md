@@ -2,7 +2,7 @@
 
 > 一个 Windows 上的专注 / 自律守护工具：按周计划拦住分心的软件和网页，用一个可调透明度的黑幕把屏幕盖上，并把你每天的时间花在哪记得清清楚楚。
 
-- **版本**：0.1.114（桌面）· 0.7.0（Android）· 1.2.3（浏览器插件）
+- **版本**：0.1.115（桌面）· 0.7.0（Android）· 1.2.3（浏览器插件）
 - **开发者**：QQQOrange
 - **项目地址**：<https://github.com/QQQOrange/King-Of-Focus>
 - **本版本更新时间**：2026-11-02
@@ -803,8 +803,17 @@ king-of-focus/
 ├── ui/                             # 前端（原生 HTML/CSS/JS，无构建步骤）
 │   ├── index.html
 │   ├── i18n.js                     # 多语言词典（中文原文作 key）+ DOM 翻译引擎
-│   ├── app.css                     # 深/浅双主题令牌，大圆角视觉
-│   ├── app.js                      # 八个视图 + 规则编辑器 + 饼图
+│   ├── tokens.css                  # 设计令牌唯一来源（颜色/圆角/动效），五个窗口共用
+│   ├── app.css                     # 组件与页面样式
+│   ├── app-core.js                 # 工具 / 主题 / 状态拉取
+│   ├── app-views.js                # 总览、规则与编辑器、时段、遮罩
+│   ├── app-stats.js                # 统计、日历、报告、同步、关于、帮助
+│   ├── app-settings.js             # 设置（含浏览器插件段）
+│   ├── app-charts.js               # 饼图绘制
+│   ├── app-render.js               # 渲染调度
+│   ├── app-actions.js              # 全部动作（Act）
+│   ├── app-ui.js                   # 弹层与事件绑定
+│   ├── app-boot.js                 # 启动初始化（**必须最后加载**）
 │   ├── hud.html / hud.css / hud.js # 桌面悬浮 HUD（独立窗口）
 │   ├── sleep.html / sleep.js       # 睡眠锁屏窗口（全屏置顶，带积分解锁按钮）
 │   └── logo.png
