@@ -142,8 +142,8 @@ fun StatsScreen(cfg: Config) {
 
     val labels = remember { loadLaunchableApps(ctx).associate { it.pkg to it.label } }
     fun labelOf(key: String): String = when (key) {
-        "__rest" -> "其他"
-        else -> labels[key] ?: key.ifBlank { "未知应用" }
+        "__rest" -> Loc.t("其他")
+        else -> labels[key] ?: key.ifBlank { Loc.t("未知应用") }
     }
 
     // 三项指标（时长 / 次数 / 时段）：当前档位一份，两档各一份用于对比
@@ -174,7 +174,7 @@ fun StatsScreen(cfg: Config) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        PageHeader("使用统计", "只算你在用的时间：熄屏、锁屏、停在桌面都不计")
+        PageHeader(Loc.t("使用统计"), Loc.t("只算你在用的时间：熄屏、锁屏、停在桌面都不计"))
 
         // —— 另一台设备 ——
         // 云同步会带过来对方的统计摘要（每天总时长 / 自律时长）。**不并入本机统计**：
@@ -200,10 +200,10 @@ fun StatsScreen(cfg: Config) {
             ) {
                 Text(
                     when (access.state) {
-                        UsageAccess.State.REVOKED -> "「使用情况访问」被收回了"
-                        UsageAccess.State.DENIED -> "还没有「使用情况访问」"
-                        UsageAccess.State.NOT_ASKED -> "需要「使用情况访问」才能统计"
-                        UsageAccess.State.GRANTED -> "统计精度可以更高"
+                        UsageAccess.State.REVOKED -> Loc.t("「使用情况访问」被收回了")
+                        UsageAccess.State.DENIED -> Loc.t("还没有「使用情况访问」")
+                        UsageAccess.State.NOT_ASKED -> Loc.t("需要「使用情况访问」才能统计")
+                        UsageAccess.State.GRANTED -> Loc.t("统计精度可以更高")
                     },
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -225,7 +225,7 @@ fun StatsScreen(cfg: Config) {
                                 UsageAccess.markAsked(cfg.stats)
                                 runCatching { ctx.startActivity(UsageAccess.settingsIntent()) }
                             },
-                        ) { Text("去授予使用情况访问", fontSize = 11.5.sp) }
+                        ) { Text(Loc.t("去授予使用情况访问"), fontSize = 11.5.sp) }
                     }
                     if (!access.accAlive) {
                         TextButton(
@@ -233,7 +233,7 @@ fun StatsScreen(cfg: Config) {
                             onClick = {
                                 runCatching { ctx.startActivity(UsageAccess.accessibilityIntent()) }
                             },
-                        ) { Text("开启无障碍（更准）", fontSize = 11.5.sp) }
+                        ) { Text(Loc.t("开启无障碍（更准）"), fontSize = 11.5.sp) }
                     }
                 }
             }
@@ -241,7 +241,7 @@ fun StatsScreen(cfg: Config) {
 
         // —— 双轨 ——
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            val names = listOf("自律时段内", "时段外", "汇总")
+            val names = listOf(Loc.t("自律时段内"), Loc.t("时段外"), Loc.t("汇总"))
             listOf<Boolean?>(true, false, null).forEachIndexed { i, t ->
                 Pill(names[i], on = tab == t, modifier = Modifier.weight(1f)) {
                     tab = t
@@ -263,29 +263,29 @@ fun StatsScreen(cfg: Config) {
         if (help) {
             AlertDialog(
                 onDismissRequest = { help = false },
-                confirmButton = { TextButton(onClick = { help = false }) { Text("明白了") } },
-                title = { Text("这些数字是怎么来的") },
+                confirmButton = { TextButton(onClick = { help = false }) { Text(Loc.t("明白了")) } },
+                title = { Text(Loc.t("这些数字是怎么来的")) },
                 text = {
                     Column(
                         Modifier.verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         HelpBlock(
-                            "为什么分成两条轨",
-                            "只有一秒里满足下面任一条件，才记到「自律时段内」：" +
-                                "① 有自律规则正在生效；② 正在自律时段里（番茄休息也算）；③ 正处于锁机中。" +
-                                "其余全部记到「时段外」。两条轨完全隔离、绝不相加——" +
-                                "「自律 2 小时」的意思是“有 2 小时是在自律状态下的使用时间”，不是“学了 2 小时”。",
+                            Loc.t("为什么分成两条轨"),
+                            Loc.t("只有一秒里满足下面任一条件，才记到「自律时段内」：") +
+                                Loc.t("① 有自律规则正在生效；② 正在自律时段里（番茄休息也算）；③ 正处于锁机中。") +
+                                Loc.t("其余全部记到「时段外」。两条轨完全隔离、绝不相加——") +
+                                Loc.t("「自律 2 小时」的意思是“有 2 小时是在自律状态下的使用时间”，不是“学了 2 小时”。"),
                         )
                         HelpBlock(
-                            "这些秒数是怎么来的",
-                            "每 15 秒采样一次前台应用，累计成秒数。它统计的是“应用在前台的时间”，" +
-                                "不是“你有多专注”。想看专注质量，去看「分心事件」和被打断次数。",
+                            Loc.t("这些秒数是怎么来的"),
+                            Loc.t("每 15 秒采样一次前台应用，累计成秒数。它统计的是“应用在前台的时间”，") +
+                                Loc.t("不是“你有多专注”。想看专注质量，去看「分心事件」和被打断次数。"),
                         )
                         HelpBlock(
-                            "离开的时间去哪了",
-                            "熄屏、锁屏、停在桌面、停在本软件自己身上，都不计时。" +
-                                "所以“看了两小时视频”可能只记几分钟——这是这套统计最容易被误读的地方。",
+                            Loc.t("离开的时间去哪了"),
+                            Loc.t("熄屏、锁屏、停在桌面、停在本软件自己身上，都不计时。") +
+                                Loc.t("所以“看了两小时视频”可能只记几分钟——这是这套统计最容易被误读的地方。"),
                         )
                     }
                 },
@@ -321,7 +321,7 @@ fun StatsScreen(cfg: Config) {
             ) { Text("›", fontSize = 18.sp) }
             if (anchor != today) {
                 TextButton(onClick = { anchor = today; picked = null }, contentPadding = PAD0) {
-                    Text("今天", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    Text(Loc.t("今天"), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -333,30 +333,30 @@ fun StatsScreen(cfg: Config) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MetricCard(
                 Modifier.weight(1f),
-                "时长",
+                Loc.t("时长"),
                 fmtDuration(metrics.secs),
-                "日均 " + fmtDuration(metrics.secs / (metrics.days.coerceAtLeast(1))),
+                Loc.t("日均 ") + fmtDuration(metrics.secs / (metrics.days.coerceAtLeast(1))),
                 MaterialTheme.colorScheme.primary,
             )
             MetricCard(
                 Modifier.weight(1f),
-                "次数",
+                Loc.t("次数"),
                 if (metrics.sessions > 0) "${metrics.sessions} 次" else "—",
                 if (metrics.sessions > 0) {
-                    "平均 " + fmtDuration(metrics.avgSec) + " · 最长 " + fmtDuration(metrics.longestSec)
+                    Loc.t("平均 ") + fmtDuration(metrics.avgSec) + Loc.t(" · 最长 ") + fmtDuration(metrics.longestSec)
                 } else {
-                    "没有分段数据"
+                    Loc.t("没有分段数据")
                 },
                 MaterialTheme.colorScheme.secondary,
             )
             MetricCard(
                 Modifier.weight(1f),
-                "时段",
+                Loc.t("时段"),
                 if (metrics.peakHour >= 0) "${metrics.peakHour} 点" else "—",
                 if (metrics.firstMin >= 0) {
                     StatsMath.hhmm(metrics.firstMin) + "–" + StatsMath.hhmm(metrics.lastMin)
                 } else {
-                    "没有记录"
+                    Loc.t("没有记录")
                 },
                 MaterialTheme.colorScheme.tertiary,
             )
@@ -367,11 +367,11 @@ fun StatsScreen(cfg: Config) {
         // 双轨的意义就在这里：同一个范围里，"自律时段内"和"时段外"各占多少。
         // 单档视图下这一块仍然显示两档——那正是判断"自律有没有起作用"的依据。
         if (onScope.secs > 0 || offScope.secs > 0) {
-            SectionTitle("自律时段内 vs 时段外")
+            SectionTitle(Loc.t("自律时段内 vs 时段外"))
             Panel {
                 val sum = (onScope.secs + offScope.secs).coerceAtLeast(1)
                 CompareRow(
-                    label = "自律时段内",
+                    label = Loc.t("自律时段内"),
                     color = MaterialTheme.colorScheme.primary,
                     secs = onScope.secs,
                     sessions = onScope.sessions,
@@ -380,7 +380,7 @@ fun StatsScreen(cfg: Config) {
                 )
                 Spacer(Modifier.height(8.dp))
                 CompareRow(
-                    label = "时段外",
+                    label = Loc.t("时段外"),
                     color = MaterialTheme.colorScheme.outline,
                     secs = offScope.secs,
                     sessions = offScope.sessions,
@@ -389,8 +389,8 @@ fun StatsScreen(cfg: Config) {
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "两者合计 " + fmtDuration(onScope.secs + offScope.secs) +
-                        "，其中自律时段内占 " + (onScope.secs * 100 / sum) + "%",
+                    Loc.t("两者合计 ") + fmtDuration(onScope.secs + offScope.secs) +
+                        Loc.t("，其中自律时段内占 ") + (onScope.secs * 100 / sum) + "%",
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -401,8 +401,8 @@ fun StatsScreen(cfg: Config) {
         Panel {
             if (total <= 0) {
                 EmptyHint(
-                    if (!cfg.stats.enabled) "统计已关闭，去「设置 → 使用统计」打开"
-                    else "这段时间还没有这一档的数据。换一个状态看看，或者正常用一会儿手机。",
+                    if (!cfg.stats.enabled) Loc.t("统计已关闭，去「设置 → 使用统计」打开")
+                    else Loc.t("这段时间还没有这一档的数据。换一个状态看看，或者正常用一会儿手机。"),
                 )
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -418,14 +418,14 @@ fun StatsScreen(cfg: Config) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(fmtDuration(total), fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "日均 " + fmtDuration(total / avgBase),
+                            Loc.t("日均 ") + fmtDuration(total / avgBase),
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         // 只有「汇总」才谈得上占比：分档看的时候这一行没有意义
                         if (tab == null && onSecs + offSecs > 0) {
                             Text(
-                                "自律时段内 " + (onSecs * 100 / (onSecs + offSecs)) + "%",
+                                Loc.t("自律时段内 ") + (onSecs * 100 / (onSecs + offSecs)) + "%",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -457,9 +457,9 @@ fun StatsScreen(cfg: Config) {
         // —— 日历（随视图切换） ——
         SectionTitle(
             when (view) {
-                StatsView.DAY -> "这一天"
-                StatsView.WEEK -> "这一周"
-                StatsView.MONTH -> "这个月"
+                StatsView.DAY -> Loc.t("这一天")
+                StatsView.WEEK -> Loc.t("这一周")
+                StatsView.MONTH -> Loc.t("这个月")
             } + " · " + trackName(tab),
         )
         Panel {
@@ -507,10 +507,10 @@ fun StatsScreen(cfg: Config) {
         //
         // 桌面端统计页的第三张卡。手机上的差别：两档叠在同一根柱子里
         // （深色 = 自律时段内，浅色 = 时段外），一眼能看出"晚上这段是自由时间还是自律时间"。
-        SectionTitle("24 小时分布 · " + trackName(tab))
+        SectionTitle(Loc.t("24 小时分布 · ") + trackName(tab))
         Panel {
             if (metrics.secs <= 0) {
-                EmptyHint("这段时间没有记录")
+                EmptyHint(Loc.t("这段时间没有记录"))
             } else {
                 HourBars(
                     hourly = metrics.hourly,
@@ -523,9 +523,9 @@ fun StatsScreen(cfg: Config) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     if (tab == null) {
-                        "按小时累加。深色 = 自律时段内，浅色 = 时段外；点一根柱子看那个小时的明细。"
+                        Loc.t("按小时累加。深色 = 自律时段内，浅色 = 时段外；点一根柱子看那个小时的明细。")
                     } else {
-                        "按小时累加。点一根柱子看那个小时的明细。"
+                        Loc.t("按小时累加。点一根柱子看那个小时的明细。")
                     },
                     fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -542,7 +542,7 @@ fun StatsScreen(cfg: Config) {
                         fontWeight = FontWeight.SemiBold,
                     )
                     if (atHour.isEmpty()) {
-                        Text("这一小时没有记录", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(Loc.t("这一小时没有记录"), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         atHour.take(6).forEach { it ->
                             Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -573,7 +573,7 @@ fun StatsScreen(cfg: Config) {
         SectionTitle("耗时明细 · ${metrics.items.size} 项")
         Panel {
             if (metrics.items.isEmpty()) {
-                EmptyHint("这段时间没有记录")
+                EmptyHint(Loc.t("这段时间没有记录"))
             } else {
                 metrics.items.forEach { it ->
                     DetailRow(
@@ -593,18 +593,18 @@ fun StatsScreen(cfg: Config) {
         }
 
         // —— 汇总 ——
-        SectionTitle("汇总")
+        SectionTitle(Loc.t("汇总"))
         Panel {
             Row(Modifier.fillMaxWidth()) {
-                KV("时长", fmtDuration(onScope.secs + offScope.secs))
-                KV("次数", if (onScope.sessions + offScope.sessions > 0) "${onScope.sessions + offScope.sessions} 次" else "—")
-                KV("活跃整点", "${metrics.activeHours} 个")
+                KV(Loc.t("时长"), fmtDuration(onScope.secs + offScope.secs))
+                KV(Loc.t("次数"), if (onScope.sessions + offScope.sessions > 0) "${onScope.sessions + offScope.sessions} 次" else "—")
+                KV(Loc.t("活跃整点"), "${metrics.activeHours} 个")
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "日均 " + fmtDuration((onScope.secs + offScope.secs) / avgBase) +
-                    " · 峰值 " + (if (metrics.peakHour >= 0) "${metrics.peakHour} 点（${fmtDuration(metrics.peakSecs)}）" else "—") +
-                    " · 平均一次 " + (
+                Loc.t("日均 ") + fmtDuration((onScope.secs + offScope.secs) / avgBase) +
+                    Loc.t(" · 峰值 ") + (if (metrics.peakHour >= 0) "${metrics.peakHour} 点（${fmtDuration(metrics.peakSecs)}）" else "—") +
+                    Loc.t(" · 平均一次 ") + (
                         if (onScope.sessions + offScope.sessions > 0)
                             fmtDuration((onScope.secs + offScope.secs) / (onScope.sessions + offScope.sessions))
                         else "—"
@@ -615,7 +615,7 @@ fun StatsScreen(cfg: Config) {
         }
 
         // —— 报告 ——
-        SectionTitle("报告")
+        SectionTitle(Loc.t("报告"))
         Panel {
             // 键里必须带 window：只按 days.size 记会串期（10-30 与 10-31 都是 1 天），
             // 翻页后报告还写着前一天
@@ -635,9 +635,9 @@ fun StatsScreen(cfg: Config) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
                     val cm = ctx.getSystemService(ClipboardManager::class.java)
-                    cm?.setPrimaryClip(ClipData.newPlainText("King Of Focus 使用报告", text))
-                    toast(ctx, "报告已复制")
-                }) { Text("复制", fontSize = 12.sp) }
+                    cm?.setPrimaryClip(ClipData.newPlainText(Loc.t("King Of Focus 使用报告"), text))
+                    toast(ctx, Loc.t("报告已复制"))
+                }) { Text(Loc.t("复制"), fontSize = 12.sp) }
                 OutlinedButton(onClick = {
                     runCatching {
                         ctx.startActivity(
@@ -646,12 +646,12 @@ fun StatsScreen(cfg: Config) {
                                     type = "text/plain"
                                     putExtra(Intent.EXTRA_TEXT, text)
                                 },
-                                "分享报告",
+                                Loc.t("分享报告"),
                             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
-                }) { Text("分享", fontSize = 12.sp) }
-                OutlinedButton(onClick = { bump += 1 }) { Text("刷新", fontSize = 12.sp) }
+                }) { Text(Loc.t("分享"), fontSize = 12.sp) }
+                OutlinedButton(onClick = { bump += 1 }) { Text(Loc.t("刷新"), fontSize = 12.sp) }
             }
             Spacer(Modifier.height(10.dp))
             // 桌面端生成过的报告能翻出来重看；手机端以前关掉页面就没了。
@@ -661,11 +661,11 @@ fun StatsScreen(cfg: Config) {
                     val name = ReportStore.save(now.toLocalDate().toString() + "-" + period.name.lowercase(), text)
                     if (name.isNotBlank()) {
                         bump += 1
-                        toast(ctx, "报告已保存")
+                        toast(ctx, Loc.t("报告已保存"))
                     } else {
-                        toast(ctx, "保存失败")
+                        toast(ctx, Loc.t("保存失败"))
                     }
-                }) { Text("保存报告", fontSize = 12.sp) }
+                }) { Text(Loc.t("保存报告"), fontSize = 12.sp) }
                 var showArchive by remember { mutableStateOf(false) }
                 OutlinedButton(onClick = { showArchive = true }) {
                     Text("已保存（${ReportStore.list().size}）", fontSize = 12.sp)
@@ -691,31 +691,31 @@ private fun ReportArchiveDialog(ctx: android.content.Context, onClose: () -> Uni
     var items by remember { mutableStateOf(ReportStore.list()) }
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("已保存的报告") },
+        title = { Text(Loc.t("已保存的报告")) },
         text = {
             Column(Modifier.fillMaxWidth().heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
                 if (items.isEmpty()) {
-                    Text("还没有保存过。上面点「保存报告」就会存到本机。", fontSize = 12.5.sp)
+                    Text(Loc.t("还没有保存过。上面点「保存报告」就会存到本机。"), fontSize = 12.5.sp)
                 }
                 items.forEach { it ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                         Text(it.title.ifBlank { it.name }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            ReportStore.whenText(it.at) + " · " + it.size + " 字",
+                            ReportStore.whenText(it.at) + " · " + it.size + Loc.t(" 字"),
                             fontSize = 10.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             TextButton(onClick = {
                                 val t = ReportStore.read(it.name)
-                                if (t.isBlank()) { toast(ctx, "读取失败"); return@TextButton }
+                                if (t.isBlank()) { toast(ctx, Loc.t("读取失败")); return@TextButton }
                                 val cm = ctx.getSystemService(ClipboardManager::class.java)
-                                cm?.setPrimaryClip(ClipData.newPlainText("King Of Focus 使用报告", t))
-                                toast(ctx, "已复制")
-                            }) { Text("复制", fontSize = 11.5.sp) }
+                                cm?.setPrimaryClip(ClipData.newPlainText(Loc.t("King Of Focus 使用报告"), t))
+                                toast(ctx, Loc.t("已复制"))
+                            }) { Text(Loc.t("复制"), fontSize = 11.5.sp) }
                             TextButton(onClick = {
                                 val t = ReportStore.read(it.name)
-                                if (t.isBlank()) { toast(ctx, "读取失败"); return@TextButton }
+                                if (t.isBlank()) { toast(ctx, Loc.t("读取失败")); return@TextButton }
                                 runCatching {
                                     ctx.startActivity(
                                         Intent.createChooser(
@@ -723,32 +723,32 @@ private fun ReportArchiveDialog(ctx: android.content.Context, onClose: () -> Uni
                                                 type = "text/plain"
                                                 putExtra(Intent.EXTRA_TEXT, t)
                                             },
-                                            "分享报告",
+                                            Loc.t("分享报告"),
                                         ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                     )
                                 }
-                            }) { Text("分享", fontSize = 11.5.sp) }
+                            }) { Text(Loc.t("分享"), fontSize = 11.5.sp) }
                             TextButton(onClick = {
                                 ReportStore.delete(it.name)
                                 items = ReportStore.list()
                             }) {
-                                Text("删除", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.error)
+                                Text(Loc.t("删除"), fontSize = 11.5.sp, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("关闭") } },
+        confirmButton = { TextButton(onClick = onClose) { Text(Loc.t("关闭")) } },
     )
 }
 
 // ------------------------------------------------------------------ 视图模型
 
 private enum class StatsView(val title: String) {
-    DAY("按日"),
-    WEEK("按周"),
-    MONTH("按月"),
+    DAY(Loc.t("按日")),
+    WEEK(Loc.t("按周")),
+    MONTH(Loc.t("按月")),
 }
 
 private val PAD0 = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
@@ -760,7 +760,7 @@ private val PALETTE = listOf(
     Color(0xFFFAAD14), Color(0xFFFF5C5C), Color(0xFF40A9FF), Color(0xFF9254DE),
 )
 
-private val WEEKDAYS = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+private val WEEKDAYS = listOf(Loc.t("周一"), Loc.t("周二"), Loc.t("周三"), Loc.t("周四"), Loc.t("周五"), Loc.t("周六"), Loc.t("周日"))
 
 private fun shift(anchor: LocalDate, view: StatsView, dir: Long): LocalDate = when (view) {
     StatsView.DAY -> anchor.plusDays(dir)
@@ -774,13 +774,13 @@ private fun periodLabel(view: StatsView, w: Pair<LocalDate, LocalDate>, anchor: 
             " " + WEEKDAYS[anchor.dayOfWeek.value - 1]
         StatsView.WEEK -> w.first.format(DateTimeFormatter.ofPattern("MM-dd")) + " ~ " +
             w.second.format(DateTimeFormatter.ofPattern("MM-dd"))
-        StatsView.MONTH -> anchor.year.toString() + " 年 " + anchor.monthValue + " 月"
+        StatsView.MONTH -> anchor.year.toString() + Loc.t(" 年 ") + anchor.monthValue + Loc.t(" 月")
     }
 
 private fun trackName(tab: Boolean?): String = when (tab) {
-    true -> "自律时段内"
-    false -> "时段外"
-    null -> "汇总"
+    true -> Loc.t("自律时段内")
+    false -> Loc.t("时段外")
+    null -> Loc.t("汇总")
 }
 
 private fun pct(sec: Int, total: Int): Int = if (total <= 0) 0 else (sec * 100 / total)
@@ -957,7 +957,7 @@ private fun DayTimeline(
             }
             if (day.secs <= 0) {
                 Text(
-                    "这一天没有记录",
+                    Loc.t("这一天没有记录"),
                     fontSize = 11.sp,
                     color = cs.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Center),
@@ -967,7 +967,7 @@ private fun DayTimeline(
     }
     Spacer(Modifier.height(6.dp))
     Text(
-        "共 " + fmtDuration(day.secs) + "，点色块看是哪一项",
+        Loc.t("共 ") + fmtDuration(day.secs) + Loc.t("，点色块看是哪一项"),
         fontSize = 10.sp,
         color = cs.onSurfaceVariant,
     )
@@ -998,7 +998,7 @@ private fun WeekCalendar(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    WEEKDAYS[d.dayOfWeek.value - 1].removePrefix("周"),
+                    WEEKDAYS[d.dayOfWeek.value - 1].removePrefix(Loc.t("周")),
                     fontSize = 9.sp,
                     color = if (isToday) cs.primary else cs.onSurfaceVariant,
                     fontWeight = if (isToday) FontWeight.SemiBold else FontWeight.Normal,
@@ -1036,7 +1036,7 @@ private fun WeekCalendar(
         }
     }
     Spacer(Modifier.height(6.dp))
-    Text("点某一列看那一天", fontSize = 10.sp, color = cs.onSurfaceVariant)
+    Text(Loc.t("点某一列看那一天"), fontSize = 10.sp, color = cs.onSurfaceVariant)
 }
 
 /** 月视图：7 列网格，每格一条横的 24 小时条（与桌面 `calMonthHtml` 同构） */
@@ -1056,7 +1056,7 @@ private fun MonthCalendar(
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         WEEKDAYS.forEach {
             Text(
-                it.removePrefix("周"),
+                it.removePrefix(Loc.t("周")),
                 fontSize = 9.sp,
                 color = cs.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
@@ -1131,7 +1131,7 @@ private fun MonthCalendar(
         }
     }
     Spacer(Modifier.height(6.dp))
-    Text("点某一天看当日时间轴", fontSize = 10.sp, color = cs.onSurfaceVariant)
+    Text(Loc.t("点某一天看当日时间轴"), fontSize = 10.sp, color = cs.onSurfaceVariant)
 }
 
 /** 三项指标的小卡：大数字 + 一行说明 */
@@ -1357,7 +1357,7 @@ private fun DetailRow(
                 if (item.sessions > 0) {
                     append("${item.sessions} 次 · 平均 ")
                     append(fmtDuration(item.avgSec))
-                    append(" · 最长 ")
+                    append(Loc.t(" · 最长 "))
                     append(fmtDuration(item.longestSec))
                     if (item.firstMin >= 0) {
                         append(" · ")
@@ -1366,7 +1366,7 @@ private fun DetailRow(
                         append(StatsMath.hhmm(item.lastMin))
                     }
                 } else {
-                    append("没有分段数据（只有小时桶）")
+                    append(Loc.t("没有分段数据（只有小时桶）"))
                 }
             },
             fontSize = 10.sp,
@@ -1390,7 +1390,7 @@ private fun DetailRow(
         if (expanded) {
             if (spans.isEmpty()) {
                 Text(
-                    "没有分段明细（这一段数据是分轨之前记的，只有小时桶）",
+                    Loc.t("没有分段明细（这一段数据是分轨之前记的，只有小时桶）"),
                     fontSize = 10.5.sp,
                     color = cs.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
@@ -1434,7 +1434,7 @@ private fun fmtShort(sec: Int): String {
     val m = sec / 60
     if (m < 60) return "${m}分"
     val h = m / 60f
-    return if (h >= 10) "${h.toInt()}时" else String.format("%.1f时", h)
+    return if (h >= 10) "${h.toInt()}时" else String.format(Loc.t("%.1f时"), h)
 }
 
 /**
@@ -1449,7 +1449,7 @@ private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
     val last7 = peer.days.sortedByDescending { it.day }.take(7)
     val total = last7.sumOf { it.total }.toInt()
     val on = last7.sumOf { it.on }.toInt()
-    val who = if (peer.source == "android") "手机" else "桌面"
+    val who = if (peer.source == "android") Loc.t("手机") else Loc.t("桌面")
     val pct = if (total > 0) on * 100 / total else 0
     Column(
         Modifier
@@ -1458,7 +1458,7 @@ private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("另一台设备", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            Text(Loc.t("另一台设备"), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.width(6.dp))
             Text(
                 who + if (peer.device.isNotBlank()) "（${peer.device}）" else "",
@@ -1475,9 +1475,9 @@ private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
         val whenAt = peer.at
         Text(
             (if (whenAt > 0) {
-                "数据同步于 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
+                Loc.t("数据同步于 ") + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US)
                     .format(java.util.Date(whenAt * 1000)) + "；"
-            } else "") + "不计入上面的本机统计",
+            } else "") + Loc.t("不计入上面的本机统计"),
             fontSize = 10.sp,
             lineHeight = 14.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
