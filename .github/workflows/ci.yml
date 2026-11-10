@@ -1,0 +1,52 @@
+name: CI
+
+# 只跑"快且确定"的门禁（一分钟内），浏览器 harness（约 140 秒、依赖 Runner 上的 Edge）
+# 留在本地：发布前跑 `python tools/check_all.py`。
+#
+# 为什么要有这套：这个项目 2026 年一整轮的 bug，有一半是"改了一处、另一处没跟上"
+# （命令没注册、文案没翻译、分区清单两边不一致）。这些人都能看，但不会每次都看。
+# 机器每次看一遍最省事。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fast-gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust 单测
+        working-directory: src-tauri
+        run: cargo test --quiet
+
+      - name: 国际化覆盖
+        run: node tools/check_i18n.js
+
+      - name: 前后端接线（含分区清单漂移）
+        run: node tools/check_wiring.js
+
+      - name: 规则匹配
+        run: node tools/test_matcher.js
+
+      - name: 更新清单
+        run: node tools/test_update.js
+
+      - name: 跨设备备份格式
+        run: node tools/check_portable.js
+
+      - name: WebDAV 地址归一化
+        run: node tools/check_dav_url.js

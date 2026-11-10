@@ -2,7 +2,7 @@
 
 > 一个 Windows 上的专注 / 自律守护工具：按周计划拦住分心的软件和网页，用一个可调透明度的黑幕把屏幕盖上，并把你每天的时间花在哪记得清清楚楚。
 
-- **版本**：0.1.112（桌面）· 0.7.0（Android）· 1.2.3（浏览器插件）
+- **版本**：0.1.113（桌面）· 0.7.0（Android）· 1.2.3（浏览器插件）
 - **开发者**：QQQOrange
 - **项目地址**：<https://github.com/QQQOrange/King-Of-Focus>
 - **本版本更新时间**：2026-11-02
@@ -819,7 +819,11 @@ king-of-focus/
 │   ├── release.py                  # 上传资产到 GitHub Release，逐个核 sha256
 │   ├── api_push.py                 # git 端口被封时用 API 推提交（按本地字节建 blob）
 │   ├── check_sync.py               # 发版后自检：线上/线下/源码三边是否同一份
+│   ├── check_all.py                # 一条命令跑完全部门禁（发布前必跑）
 │   ├── check_portable.py           # 跨端备份字段签名与样例核对
+│   ├── check_wiring.js             # 前后端接线（命令/参数/data-act/分区清单）
+│   ├── test_matcher.js             # 域名与进程名匹配语义
+│   ├── test_update.js              # 版本比较与更新清单解析
 │   ├── check_i18n.js               # 英文界面中文残留断言
 │   ├── run_itest.js                # 桌面界面断言（DOM 级）
 │   └── make_icon.py                # 纯标准库生成 PNG/ICO 图标
@@ -1015,8 +1019,10 @@ D:\software\myself\
    顺手改 `src-tauri/src/version.rs` 的 `BUILD_DATE` 和**本文件头部那行「版本」**；
    Android 改 `android/app/build.gradle.kts` 的 `versionCode + 1` 与 `versionName`
    （`release_meta.py check` 会核对 README 的版本号，忘了改会直接报错）
-2. 跑测试：`cargo test`（桌面）、`gradle testDebugUnitTest`（Android）、
-   `node tools/run_itest.js`（界面断言）、`node tools/check_i18n.js`、`node tools/check_portable.js`
+2. 跑测试：**`python tools/check_all.py`**（一条命令跑完桌面端 8 道门禁：
+   Rust 单测、界面 harness、i18n 覆盖、前后端接线、规则匹配、更新清单、
+   跨设备格式、WebDAV 地址；加 `--android` 连 Android 单测一起跑）。
+   也可以按需单跑：`cargo test`、`node tools/run_itest.js`、`node tools/check_i18n.js`
 3. `cargo build --release`，再 `gradle assembleDebug`，然后
    `python tools/release_meta.py build --notes docs/release-notes-x.y.z.md`
    （这一步**只打包 dist，不编译**；同时把产物部署到 `D:/software/myself/`）

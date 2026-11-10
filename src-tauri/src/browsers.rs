@@ -64,7 +64,12 @@ enum Base {
     Roaming,
 }
 
-struct Def {
+/// 一种浏览器的静态定义（进程名、注册表位置、插件目录等）。
+///
+/// `pub(crate)` 而不是私有：`def_by_exe` 的返回类型里有它，函数既然是
+/// `pub(crate)`，类型就不能比它更私——不然 crate 内别的地方拿到返回值也读不了字段
+/// （clippy 的 `private_interfaces` 就是在说这件事）。
+pub(crate) struct Def {
     key: &'static str,
     name: &'static str,
     /// 主进程名（小写，不带 .exe）
@@ -951,7 +956,7 @@ fn full_scan() -> Vec<BrowserInfo> {
 }
 
 /// 进程名 → 浏览器定义
-pub fn def_by_exe(name: &str) -> Option<&'static Def> {
+pub(crate) fn def_by_exe(name: &str) -> Option<&'static Def> {
     DEFS.iter().find(|d| d.exe == name)
 }
 

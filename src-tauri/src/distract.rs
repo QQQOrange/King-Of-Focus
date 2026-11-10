@@ -190,7 +190,10 @@ pub fn segment_bounds(cfg: &Config, now: NaiveDateTime) -> Option<(i64, i64, Str
     }
 
     let label = format!("{}–{}", start.format("%H:%M"), end.format("%H:%M"));
-    Some((start.timestamp(), end.timestamp(), label))
+    // chrono 弃用了 `NaiveDateTime::timestamp()`（它把 naive 值当 UTC，语义容易误读）。
+    // `and_utc()` 把这件事写明：我们确实要"把这个 naive 时间当成 UTC 取绝对时刻"，
+    // 与原来的行为逐位一致。
+    Some((start.and_utc().timestamp(), end.and_utc().timestamp(), label))
 }
 
 // ---------------------------------------------------------------- 增删改查

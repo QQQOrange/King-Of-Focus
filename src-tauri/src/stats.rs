@@ -402,8 +402,10 @@ fn span_close(shared: &Shared) {
 
 /// 把这一分钟并进当前段；换人/换档就封口再开新段。
 fn span_touch(shared: &Shared, date: &str, key: &str, on: bool, min: u16) {
-    let mut old: Option<CurSpan> = None;
-    {
+    // 用"块的返回值"而不是 `let mut old = None` 再在各分支里赋值：
+    // 那样写初始值永远读不到（clippy 也会指出来），而且"这个 old 到底有没有被
+    // 赋值"要读完整段才能确认。现在 old 就是在锁里算出来的那一份，一眼可读。
+    let old = {
         let Ok(mut g) = CUR_SPAN.lock() else {
             return;
         };
@@ -420,14 +422,15 @@ fn span_touch(shared: &Shared, date: &str, key: &str, on: bool, min: u16) {
             }
             return;
         }
-        old = g.take();
+        let prev = g.take();
         *g = Some(CurSpan {
             date: date.to_string(),
             key: key.to_string(),
             on,
             span: Span { f: min, t: min + 1 },
         });
-    }
+        prev
+    };
     if let Some(c) = old {
         push_span(shared, &c);
     }

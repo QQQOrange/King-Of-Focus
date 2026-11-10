@@ -245,6 +245,40 @@ for (const act of actsHandled) {
   if (!actsUsed.has(act)) notes.push(`分发器里的分支 "${act}" 没有任何元素触发（死代码）`);
 }
 
+/* ------------------------------------------------ 分区重置清单不能各写一份 */
+
+/*
+ * `reset.rs` 的 `SECTIONS` 与 `app.js` 的 `RESET_SECTIONS` 是同一份清单的两个副本。
+ * 它们分叉时不会报错：
+ *   · 后端多一个 → 界面上看不到，等于没做；
+ *   · 前端多一个 → 用户点了弹「未知分区」，看着像坏了。
+ * 两边都是字符串数组，正确性只能靠断言守住，所以放进这道闸里比。
+ */
+const resetSrc = src['reset.rs'] || '';
+const sectionsBlock = resetSrc.match(/pub const SECTIONS:\s*&\[&str\]\s*=\s*&\[([\s\S]*?)\];/);
+const rustSections = sectionsBlock
+  ? [...sectionsBlock[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
+  : [];
+const appSrc = fs.readFileSync(path.join(uiDir, 'app.js'), 'utf8');
+const jsBlock = appSrc.match(/const RESET_SECTIONS = \[([\s\S]*?)\n\];/);
+const jsSections = jsBlock
+  ? [...jsBlock[1].matchAll(/^\s*\['([a-z]+)'/gm)].map((m) => m[1])
+  : [];
+if (!rustSections.length) {
+  problems.push('reset.rs 里找不到 SECTIONS（分区重置清单）');
+} else if (!jsSections.length) {
+  problems.push('app.js 里找不到 RESET_SECTIONS（分区重置清单）');
+} else {
+  const onlyRust = rustSections.filter((k) => !jsSections.includes(k));
+  const onlyJs = jsSections.filter((k) => !rustSections.includes(k));
+  for (const k of onlyRust) problems.push(`分区重置："${k}" 后端能重置，但界面上没有这一项`);
+  for (const k of onlyJs) problems.push(`分区重置：界面上有 "${k}"，后端不认（点了会报未知分区）`);
+  if (rustSections.join() !== jsSections.join()) {
+    // 顺序不影响功能，但会导致界面顺序和注释里的"顺序就是界面顺序"对不上
+    notes.push(`分区重置顺序与后端不一致：后端 [${rustSections.join(',')}]`);
+  }
+}
+
 /* ---------------------------------------------------------------- 输出 */
 
 console.log(`命令注册 ${registered.size} 条 · invoke 调用点 ${calls.length} 处 · data-act ${actsUsed.size} 个`);
