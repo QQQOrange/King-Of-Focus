@@ -156,7 +156,7 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
                 }) { Text(Loc.t("保存复盘")) }
                 if ((s.distractTotal - s.distractDone) > 0) {
                     OutlinedButton(onClick = onOpenDistract) {
-                        Text("去处理这 ${s.distractTotal - s.distractDone} 条", fontSize = 12.sp)
+                        Text(Loc.p("Process ${s.distractTotal - s.distractDone} of them", "去处理这 ${s.distractTotal - s.distractDone} 条"), fontSize = 12.sp)
                     }
                 }
             }
@@ -169,14 +169,26 @@ private data class Question(val data: String, val ask: String, val hint: String)
 
 private fun questions(s: WeekSnapshot): List<Question> = listOf(
     Question(
-        data = "本周自律 ${fmtHm(s.onSecs)}，上周 ${fmtHm(s.prevOnSecs)}。最投入的是 ${s.bestDayLabel.ifBlank { "—" }}（${fmtHm(s.bestOn)}）。",
+        data = run {
+            val dash = "—"
+            Loc.p(
+                "This week ${fmtHm(s.onSecs)}, last week ${fmtHm(s.prevOnSecs)}. Strongest day: ${s.bestDayLabel.ifBlank { dash }} (${fmtHm(s.bestOn)}).",
+                "本周自律 ${fmtHm(s.onSecs)}，上周 ${fmtHm(s.prevOnSecs)}。最投入的是 ${s.bestDayLabel.ifBlank { dash }}（${fmtHm(s.bestOn)}）。",
+            )
+        },
         ask = Loc.t("这周最好的一天是哪天？那天你做对了什么？"),
         hint = Loc.t("例如：周二，手机放到了另一个房间"),
     ),
     Question(
         data = if (s.diverTotal > 0) {
             val top = s.diversions.firstOrNull()
-            "被打断 ${s.diverTotal} 次，最多来自 ${top?.label ?: "—"}（${top?.n ?: 0} 次）。"
+            run {
+                val dash = "—"
+                Loc.p(
+                    "Interrupted ${s.diverTotal}×, mostly by ${top?.label ?: dash} (${top?.n ?: 0}×).",
+                    "被打断 ${s.diverTotal} 次，最多来自 ${top?.label ?: dash}（${top?.n ?: 0} 次）。",
+                )
+            }
         } else {
             Loc.t("这周一次都没被拦过。要么很自律，要么规则没生效。")
         },
@@ -186,8 +198,10 @@ private fun questions(s: WeekSnapshot): List<Question> = listOf(
     ),
     Question(
         data = if (s.goal.total > 0) {
-            "写了 ${s.goal.total} 个段目标：做完 ${s.goal.done}、一半 ${s.goal.partial}、" +
-                "没做成 ${s.goal.missed}、还没答 ${s.goal.none}。"
+            Loc.p(
+                "${s.goal.total} block goals written: ${s.goal.done} done, ${s.goal.partial} half, ${s.goal.missed} missed, ${s.goal.none} unanswered.",
+                "写了 ${s.goal.total} 个段目标：做完 ${s.goal.done}、一半 ${s.goal.partial}、没做成 ${s.goal.missed}、还没答 ${s.goal.none}。",
+            )
         } else {
             Loc.t("这周一个段目标都没写——你量到的只有“坐了多久”。")
         },
@@ -196,16 +210,22 @@ private fun questions(s: WeekSnapshot): List<Question> = listOf(
         hint = Loc.t("例如：「写完登录页」两小时能做完，「学完前端」不能"),
     ),
     Question(
-        data = "记下 ${s.distractTotal} 条分心事件，处理了 ${s.distractDone} 条。",
+        data = Loc.p(
+            "${s.distractTotal} distractions captured, ${s.distractDone} processed.",
+            "记下 ${s.distractTotal} 条分心事件，处理了 ${s.distractDone} 条。",
+        ),
         ask = if (s.distractTotal - s.distractDone > 0) {
-            "还剩 ${s.distractTotal - s.distractDone} 条，哪一条值得现在就处理？"
+            Loc.p("${s.distractTotal - s.distractDone} left — which one is worth handling now?", Loc.p("${s.distractTotal - s.distractDone} left — which one is worth handling now?", "还剩 ${s.distractTotal - s.distractDone} 条，哪一条值得现在就处理？"))
         } else {
             Loc.t("都处理完了。这些念头里有什么规律？")
         },
         hint = Loc.t("例如：那条“晚点去查文档”"),
     ),
     Question(
-        data = "质押结算 ${s.staked} 笔，干净跑完 ${s.stakeClean} 笔，被没收 ${s.stakeVoid} 笔。",
+        data = Loc.p(
+            "${s.staked} stakes settled: ${s.stakeClean} clean runs, ${s.stakeVoid} forfeited.",
+            "质押结算 ${s.staked} 笔，干净跑完 ${s.stakeClean} 笔，被没收 ${s.stakeVoid} 笔。",
+        ),
         ask = Loc.t("下周只改一件事——改哪件？"),
         hint = Loc.t("只写一件。写两件等于没写。"),
     ),

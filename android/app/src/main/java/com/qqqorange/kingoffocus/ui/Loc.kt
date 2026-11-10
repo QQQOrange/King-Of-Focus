@@ -779,6 +779,14 @@ object Loc {
         "套用到已选时段？" to "Apply to the selected blocks?",
         "套用" to "Apply",
         "锁机提醒" to "Lock reminders",
+        // ── 权限面板 ──
+        "不需要" to "Not needed",
+        "用途" to "Purpose",
+        "申请时机" to "When to ask",
+        "申请方式" to "How to ask",
+        "缺失影响" to "Impact if missing",
+        "降级方案" to "Fallback",
+        "重新授权" to "Re-grant",
         "锁机开始前的提前提醒与结束提醒" to "Heads-up before a lock starts, and a notice when it ends",
     )
 }

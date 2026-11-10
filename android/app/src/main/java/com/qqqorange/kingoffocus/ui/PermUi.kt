@@ -141,7 +141,7 @@ fun PermList(
                     }
                     if (item.ok) {
                         Text(
-                            if (item.state == PermState.NOT_NEEDED) "不需要" else "已授予",
+                            if (item.state == PermState.NOT_NEEDED) Loc.t("不需要") else Loc.t("已授予"),
                             fontSize = 11.sp,
                             color = if (item.state == PermState.NOT_NEEDED) {
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -155,12 +155,12 @@ fun PermList(
                 }
                 if (expanded) {
                     Spacer(Modifier.height(6.dp))
-                    DocLine("用途", item.spec.why)
-                    DocLine("申请时机", item.spec.whenAsk)
-                    DocLine("申请方式", item.spec.howAsk)
-                    DocLine("缺失影响", item.spec.impact, warn = true)
-                    DocLine("降级方案", item.spec.fallback)
-                    if (item.spec.regrant != "—") DocLine("重新授权", item.spec.regrant)
+                    DocLine(Loc.t("用途"), item.spec.why)
+                    DocLine(Loc.t("申请时机"), item.spec.whenAsk)
+                    DocLine(Loc.t("申请方式"), item.spec.howAsk)
+                    DocLine(Loc.t("缺失影响"), item.spec.impact, warn = true)
+                    DocLine(Loc.t("降级方案"), item.spec.fallback)
+                    if (item.spec.regrant != "—") DocLine(Loc.t("重新授权"), item.spec.regrant)
                 }
             }
         }

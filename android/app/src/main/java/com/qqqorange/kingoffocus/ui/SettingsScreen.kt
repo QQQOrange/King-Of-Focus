@@ -924,7 +924,7 @@ private fun CloudSection(cfg: Config) {
                     val up = doUpload()
                     if (up.startsWith(Loc.t("已上传"))) {
                         val pruned = pruneRemote()
-                        up + if (pruned > 0) "（清理旧备份 $pruned 份）" else ""
+                        up + if (pruned > 0) Loc.p(" (removed $pruned old backups)", "（清理旧备份 $pruned 份）") else ""
                     } else {
                         up
                     }
