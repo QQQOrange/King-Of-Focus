@@ -7,6 +7,7 @@ import android.provider.Settings
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.StatsCfg
 import com.qqqorange.kingoffocus.service.KofAccessibility
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 「使用情况访问」权限的状态机 —— 申请、拒绝、被回收，以及**每种情况怎么降级**。
@@ -75,24 +76,24 @@ object UsageAccess {
         val needsAttention: Boolean get() = state != State.GRANTED
 
         fun sourceName(): String = when (source) {
-            Source.FULL -> "使用情况访问 + 无障碍"
-            Source.USAGE_ONLY -> "仅使用情况访问"
-            Source.ACCESSIBILITY_ONLY -> "仅无障碍（降级）"
-            Source.NONE -> "无（已暂停）"
+            Source.FULL -> Loc.p("Usage access + Accessibility", "使用情况访问 + 无障碍")
+            Source.USAGE_ONLY -> Loc.p("Usage access only", "仅使用情况访问")
+            Source.ACCESSIBILITY_ONLY -> Loc.p("Accessibility only (degraded)", "仅无障碍（降级）")
+            Source.NONE -> Loc.p("None (paused)", "无（已暂停）")
         }
 
         /** 一句话说明现在是什么情况、会有什么影响 */
         fun summary(): String = when {
             state == State.REVOKED && source == Source.ACCESSIBILITY_ONLY ->
-                "「使用情况访问」被收回了，现在只靠无障碍识别前台：前台还能记，切到后台可能漏记。"
+                Loc.p("Usage access was revoked, so foreground detection now relies on Accessibility: foreground is still recorded, background may be missed.", "「使用情况访问」被收回了，现在只靠无障碍识别前台：前台还能记，切到后台可能漏记。")
             state == State.REVOKED && source == Source.NONE ->
-                "「使用情况访问」被收回，且无障碍没开——统计已暂停，这段时间不会被记录。"
+                Loc.p("Usage access was revoked and Accessibility is off — tracking is paused and this period is not recorded.", "「使用情况访问」被收回，且无障碍没开——统计已暂停，这段时间不会被记录。")
             state == State.GRANTED && source == Source.USAGE_ONLY ->
-                "已授予使用情况访问。开启无障碍后切应用能即时识别，统计更准。"
-            state == State.GRANTED -> "使用情况访问已授予，统计正常。"
+                Loc.p("Usage access granted. With Accessibility on, app switches are detected instantly and tracking is more precise.", "已授予使用情况访问。开启无障碍后切应用能即时识别，统计更准。")
+            state == State.GRANTED -> Loc.p("Usage access granted; tracking is normal.", "使用情况访问已授予，统计正常。")
             source == Source.ACCESSIBILITY_ONLY ->
-                "还没有「使用情况访问」，现在靠无障碍识别前台：前台能记，后台可能漏。"
-            else -> "还没有「使用情况访问」，系统不允许任何应用跨进程读取前台应用——统计无法开始。"
+                Loc.p("No usage access yet — foreground detection relies on Accessibility: foreground is recorded, background may be missed.", "还没有「使用情况访问」，现在靠无障碍识别前台：前台能记，后台可能漏。")
+            else -> Loc.p("No usage access yet, and the system does not allow any app to read the foreground app across processes — tracking cannot start.", "还没有「使用情况访问」，系统不允许任何应用跨进程读取前台应用——统计无法开始。")
         }
     }
 

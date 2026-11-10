@@ -1,5 +1,7 @@
 package com.qqqorange.kingoffocus.core
 
+import com.qqqorange.kingoffocus.ui.Loc
+
 /**
  * 开启「强制模式」的三步确认流程（纯函数，可单测）。
  *
@@ -46,32 +48,32 @@ object StrictFlow {
 
     /** 对话框标题（带"第几步"，让用户知道这不是同一个框弹了三次） */
     fun title(step: Int): String = when (step) {
-        1 -> "开启强制模式？（1/3）"
-        2 -> "强制模式会限制什么（2/3）"
-        else -> "最后确认（3/3）"
+        1 -> Loc.p("Turn on strict mode? (1/3)", "开启强制模式？（1/3）")
+        2 -> Loc.p("What strict mode restricts (2/3)", "强制模式会限制什么（2/3）")
+        else -> Loc.p("Final confirmation (3/3)", "最后确认（3/3）")
     }
 
     /** 每一步的主体文案 */
     fun body(step: Int, workMinutes: Int = 0): String = when (step) {
-        1 -> "接下来的一段自律时间里，手机会被完全锁住。" +
-            "这不是普通锁机：开了之后不能暂停，也不能提前结束。"
+        1 -> Loc.p("For the next discipline block the phone will be fully locked.", "接下来的一段自律时间里，手机会被完全锁住。") +
+            Loc.p("This is not an ordinary lock: once on, it cannot be paused or ended early.", "这不是普通锁机：开了之后不能暂停，也不能提前结束。")
 
         2 -> buildString {
-            append("强制模式生效期间：\n")
-            append("· 不能暂停、不能跳过、不能用积分换时间；\n")
-            append("· 除了白名单里的应用，其它应用都打不开；\n")
-            append("· 想改设置、改规则也改不了（这段时间是只读的）；\n")
-            append("· 只能等这一段自然走完。")
-            if (workMinutes > 0) append("\n\n按当前设置，一段最长约 $workMinutes 分钟。")
+            append(Loc.p("While strict mode is active:\\n", "强制模式生效期间：\n"))
+            append(Loc.p("· no pausing, no skipping, no points for time;\\n", "· 不能暂停、不能跳过、不能用积分换时间；\n"))
+            append(Loc.p("· apart from whitelisted apps, nothing opens;\\n", "· 除了白名单里的应用，其它应用都打不开；\n"))
+            append(Loc.p("· settings and rules are read-only for the duration;\\n", "· 想改设置、改规则也改不了（这段时间是只读的）；\n"))
+            append(Loc.p("· the only way out is to let the block finish.", "· 只能等这一段自然走完。"))
+            if (workMinutes > 0) append(Loc.p("\\n\\nWith your settings a block lasts about $workMinutes minutes.", "\n\n按当前设置，一段最长约 $workMinutes 分钟。"))
         }
 
-        else -> "确定现在就把自己锁进去吗？确认之后就没有回头路了，" +
-            "直到这一段结束。"
+        else -> Loc.p("Lock yourself in now? There is no way back after confirming,", "确定现在就把自己锁进去吗？确认之后就没有回头路了，") +
+            Loc.p("until the block ends.", "直到这一段结束。")
     }
 
     /** 按钮文案：前两步是"继续"，最后一步必须让人看清楚是"现在开始" */
     fun confirmLabel(step: Int): String =
-        if (step >= STEPS) "是，现在开启" else "是，继续"
+        if (step >= STEPS) Loc.p("Yes, turn it on", "是，现在开启") else Loc.p("Yes, continue", "是，继续")
 
-    fun cancelLabel(step: Int): String = if (step >= STEPS) "否，取消" else "否，不要开启"
+    fun cancelLabel(step: Int): String = if (step >= STEPS) Loc.p("No, cancel", "否，取消") else Loc.p("No, do not turn it on", "否，不要开启")
 }

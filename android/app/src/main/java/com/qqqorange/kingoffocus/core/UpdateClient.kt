@@ -9,6 +9,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 更新检测的"跑腿"部分：发 HTTP、读清单、下包、算哈希。
@@ -69,14 +70,14 @@ object UpdateClient {
      * 用户看不出是**令牌错了**还是**被别人把配额用完了**。
      */
     fun httpMessage(code: Int, hasToken: Boolean): String? = when (code) {
-        401 -> "GitHub 令牌无效或已过期，请到「版本与更新」重新填一个"
+        401 -> Loc.p("The GitHub token is invalid or expired — enter a new one under Version & updates", "GitHub 令牌无效或已过期，请到「版本与更新」重新填一个")
         403 -> if (hasToken) {
-            "GitHub API 次数用尽（带令牌是每小时 5000 次），过一会儿再试"
+            Loc.p("GitHub API quota exhausted (5000/hour with a token) — try again later", "GitHub API 次数用尽（带令牌是每小时 5000 次），过一会儿再试")
         } else {
-            "GitHub API 次数用尽（匿名每小时只有 60 次，共用网络时很容易被用光）。" +
-                "填一个个人访问令牌可以提到 5000 次"
+            Loc.p("GitHub API quota exhausted (anonymous calls are 60/hour and shared networks burn through them).", "GitHub API 次数用尽（匿名每小时只有 60 次，共用网络时很容易被用光）。") +
+                Loc.p("A personal access token raises it to 5000/hour", "填一个个人访问令牌可以提到 5000 次")
         }
-        429 -> "请求太频繁，被 GitHub 临时限流，过一分钟再试"
+        429 -> Loc.p("Too many requests — GitHub is rate limiting; try again in a minute", "请求太频繁，被 GitHub 临时限流，过一分钟再试")
         else -> null
     }
 
@@ -101,20 +102,20 @@ object UpdateClient {
             val http = httpCodeOf(e.message)
             return when {
                 http == 404 -> fail(
-                    current, "E_NO_RELEASE", "仓库还没有发布 Release（只有标签），无法自动更新",
+                    current, "E_NO_RELEASE", Loc.p("The repository has no published Release (only tags), so auto-update is unavailable", "仓库还没有发布 Release（只有标签），无法自动更新"),
                 )
                 http == 401 || http == 403 || http == 429 -> fail(
                     current,
                     if (http == 401) "E_AUTH" else "E_RATE",
-                    httpMessage(http, token.isNotBlank()) ?: "GitHub 拒绝了请求（HTTP $http）",
+                    httpMessage(http, token.isNotBlank()) ?: Loc.p("GitHub rejected the request (HTTP $http)", "GitHub 拒绝了请求（HTTP $http）"),
                 )
-                else -> fail(current, "E_NETWORK", "连不上 GitHub：${e.message ?: "未知错误"}")
+                else -> fail(current, "E_NETWORK", Loc.p("Cannot reach GitHub: ${e.message ?: "unknown error"}", "连不上 GitHub：${e.message ?: "未知错误"}"))
             }
         }
         val rel = try {
             json.parseToJsonElement(relText).jsonObject
         } catch (e: Exception) {
-            return fail(current, "E_BAD_RELEASE", "GitHub 返回的 Release 格式读不懂：${e.message}")
+            return fail(current, "E_BAD_RELEASE", Loc.p("Cannot parse the Release returned by GitHub: ${e.message}", "GitHub 返回的 Release 格式读不懂：${e.message}"))
         }
 
         val tag = rel["tag_name"]?.jsonPrimitive?.content.orEmpty()
@@ -134,11 +135,11 @@ object UpdateClient {
         if (manUrl.isNullOrBlank()) {
             // 老发布兜底：只认 apk，且排除别的平台的包
             val pick = Updater.legacyPick(names, Updater.PLATFORM)
-                ?: return fail(current, "E_PLATFORM_MISSING", "这次发布里没有 Android 安装包（也没有更新清单）")
+                ?: return fail(current, "E_PLATFORM_MISSING", Loc.p("This release has no Android package (and no manifest)", "这次发布里没有 Android 安装包（也没有更新清单）"))
             if (Updater.compareVer(tag, current) <= 0) {
                 return Result(
                     true, false, current, tag, notes, null, pick, 0, "", "",
-                    "已经是最新版本。", "asset-scan",
+                    Loc.p("Already up to date.", "已经是最新版本。"), "asset-scan",
                 )
             }
             val url = assets?.mapNotNull { it as? JsonObject }
@@ -146,7 +147,7 @@ object UpdateClient {
                 ?.get("browser_download_url")?.jsonPrimitive?.content
             return Result(
                 true, true, current, tag, notes, url, pick, 0, "", "",
-                "这次发布没带更新清单，已按文件名兜底校验（其他平台的包一律排除）。", "asset-scan",
+                Loc.p("This release has no manifest, so verification fell back to the file name (other platforms excluded).", "这次发布没带更新清单，已按文件名兜底校验（其他平台的包一律排除）。"), "asset-scan",
             )
         }
 
@@ -156,12 +157,12 @@ object UpdateClient {
             // 这个地址是公开的、也不计入 API 配额，带过去只会多一次泄露面。
             getText(manUrl, "")
         } catch (e: Exception) {
-            return fail(current, "E_MANIFEST_FETCH", "读不到更新清单：${e.message}")
+            return fail(current, "E_MANIFEST_FETCH", Loc.p("Cannot read the manifest: ${e.message}", "读不到更新清单：${e.message}"))
         }
         val manifest = try {
             json.parseToJsonElement(manText).jsonObject
         } catch (e: Exception) {
-            return fail(current, "E_BAD_MANIFEST", "更新清单格式坏了：${e.message}")
+            return fail(current, "E_BAD_MANIFEST", Loc.p("The manifest is malformed: ${e.message}", "更新清单格式坏了：${e.message}"))
         }
 
         return when (val out = Updater.select(manifest, Updater.PLATFORM, current, names)) {
@@ -196,7 +197,7 @@ object UpdateClient {
         onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): File {
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
-            throw IllegalStateException("下载地址不合法")
+            throw IllegalStateException(Loc.p("Invalid download URL", "下载地址不合法"))
         }
         dest.parentFile?.mkdirs()
         if (dest.exists()) dest.delete()
@@ -209,7 +210,7 @@ object UpdateClient {
         }
         try {
             val code = conn.responseCode
-            if (code !in 200..299) throw IllegalStateException("下载失败（HTTP $code）")
+            if (code !in 200..299) throw IllegalStateException(Loc.p("Download failed (HTTP $code)", "下载失败（HTTP $code）"))
             val total = conn.contentLengthLong.takeIf { it > 0 } ?: expectedSize
             var done = 0L
             var lastReport = 0L
@@ -234,26 +235,26 @@ object UpdateClient {
             if (expectedSize > 0 && done != expectedSize) {
                 dest.delete()
                 throw IllegalStateException(
-                    "下载的文件大小不符（${done / 1024} / ${expectedSize / 1024} KB），已丢弃",
+                    Loc.p("Downloaded size mismatch (${done / 1024} / ${expectedSize / 1024} KB) — discarded", "下载的文件大小不符（${done / 1024} / ${expectedSize / 1024} KB），已丢弃"),
                 )
             }
             if (done < 100 * 1024) {
                 dest.delete()
-                throw IllegalStateException("下载到的文件太小，可能是错误页面，请稍后重试")
+                throw IllegalStateException(Loc.p("The downloaded file is too small — probably an error page; try again later", "下载到的文件太小，可能是错误页面，请稍后重试"))
             }
             // APK 的 zip 头：PK\x03\x04。下到 HTML 错误页时这一步会拦住
             val head = ByteArray(4)
             dest.inputStream().use { it.read(head) }
             if (!(head[0] == 0x50.toByte() && head[1] == 0x4B.toByte())) {
                 dest.delete()
-                throw IllegalStateException("下载的文件不是 APK（zip 头校验失败）")
+                throw IllegalStateException(Loc.p("The downloaded file is not an APK (zip header check failed)", "下载的文件不是 APK（zip 头校验失败）"))
             }
             if (sha256.isNotBlank()) {
                 val got = sha256Of(dest)
                 if (!got.equals(sha256, ignoreCase = true)) {
                     dest.delete()
                     throw IllegalStateException(
-                        "安装包校验和对不上（清单 ${sha256.take(8)}… / 实际 ${got.take(8)}…），已删除",
+                        Loc.p("Checksum mismatch (manifest ${sha256.take(8)}… / actual ${got.take(8)}…) — deleted", "安装包校验和对不上（清单 ${sha256.take(8)}… / 实际 ${got.take(8)}…），已删除"),
                     )
                 }
             }

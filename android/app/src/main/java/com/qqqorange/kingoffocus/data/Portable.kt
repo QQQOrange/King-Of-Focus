@@ -15,6 +15,7 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 跨设备备份（和桌面端同一份格式）。
@@ -53,7 +54,7 @@ object Portable {
     fun overwriteBlocked(cfg: Config): String? {
         val now = java.time.LocalDateTime.now()
         if (com.qqqorange.kingoffocus.core.ScheduleEngine.frozen(cfg, now)) {
-            return "自律时段正在生效，不能整份覆盖配置。请先用积分解锁，或者改用「合并」。"
+            return Loc.p("A discipline block is active, so the whole config cannot be overwritten. Unlock with points first, or use Merge instead.", "自律时段正在生效，不能整份覆盖配置。请先用积分解锁，或者改用「合并」。")
         }
         return null
     }
@@ -145,7 +146,7 @@ object Portable {
                     listOf(
                         SchedulePlan(
                             id = PHONE_PROFILE_ID,
-                            name = "手机时段",
+                            name = Loc.p("Phone schedule", "手机时段"),
                             days = cfg.days,
                             defWork = cfg.defWork,
                             defBrk = cfg.defBrk,
@@ -268,7 +269,7 @@ object Portable {
      */
     fun parse(text: String): Parsed {
         val v = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject
-            ?: throw IllegalArgumentException("这不是备份文件：内容不是合法的 JSON")
+            ?: throw IllegalArgumentException(Loc.p("Not a backup file: the content is not valid JSON", "这不是备份文件：内容不是合法的 JSON"))
         if (v.str("kof") == KOF) {
             // 和桌面 `portable::parse` 同一套判据。
             //
@@ -277,19 +278,19 @@ object Portable {
             // 界面还显示"已恢复"。桌面端会拒绝同一份文件 —— 两端行为必须一致。
             val fmt = v.str("format")
             if (fmt.isNotEmpty() && fmt != FORMAT) {
-                throw IllegalArgumentException("备份格式不认识：$fmt")
+                throw IllegalArgumentException(Loc.p("Unrecognised backup format: $fmt", "备份格式不认识：$fmt"))
             }
             val schema = v.int("schema", 0)
             if (schema < 1) {
-                throw IllegalArgumentException("备份文件缺少 schema，可能是别的东西改了扩展名")
+                throw IllegalArgumentException(Loc.p("The backup has no schema field — something else may have been renamed to .kofbak", "备份文件缺少 schema，可能是别的东西改了扩展名"))
             }
             if (schema > SCHEMA) {
-                throw IllegalArgumentException("这份备份来自更新的版本（schema $schema），请先升级本应用")
+                throw IllegalArgumentException(Loc.p("This backup comes from a newer version (schema $schema); update the app first", "这份备份来自更新的版本（schema $schema），请先升级本应用"))
             }
             val hasSection = listOf("rules", "clock", "points", "settings", "stats")
                 .any { v[it] != null }
             if (!hasSection) {
-                throw IllegalArgumentException("备份文件里没有任何可恢复的内容（规则/时段/积分/设置/统计都为空）")
+                throw IllegalArgumentException(Loc.p("Nothing restorable in this backup (rules, schedule, points, settings and stats are all empty)", "备份文件里没有任何可恢复的内容（规则/时段/积分/设置/统计都为空）"))
             }
             return Parsed(v, false)
         }
@@ -297,7 +298,7 @@ object Portable {
         if (v["settings"] is JsonObject && hasRules) {
             return Parsed(legacyToDoc(v), true)
         }
-        throw IllegalArgumentException("这不是 King Of Focus 的备份文件")
+        throw IllegalArgumentException(Loc.p("This is not a King Of Focus backup", "这不是 King Of Focus 的备份文件"))
     }
 
     /** 老格式（桌面端整份 Config）抬成文档 */
@@ -350,7 +351,7 @@ object Portable {
                 listOf(
                     SchedulePlan(
                         id = base.activePlan.ifBlank { "plan-default" },
-                        name = "默认方案",
+                        name = Loc.p("Default plan", "默认方案"),
                         days = days,
                         defWork = prof?.int("defWork", base.defWork)?.coerceIn(1, 59) ?: base.defWork,
                         defBrk = prof?.int("defBrk", base.defBrk)?.coerceIn(0, 59) ?: base.defBrk,
@@ -513,18 +514,18 @@ object Portable {
         if (kind == 0) return text
         if (kind != 3) {
             throw IllegalArgumentException(
-                "这份备份是桌面端旧方式加密的（kofEnc: $kind），手机解不开。" +
-                    "请在桌面端设置备份密码后重新「立即备份」或「导出跨设备备份」。",
+                Loc.p("This backup uses the desktop's legacy encryption (kofEnc: $kind) and cannot be opened here.", "这份备份是桌面端旧方式加密的（kofEnc: $kind），手机解不开。") +
+                    Loc.p("Set a backup password on desktop, then run “Back up now” or “Export cross-device backup” again.", "请在桌面端设置备份密码后重新「立即备份」或「导出跨设备备份」。"),
             )
         }
-        if (pass.isBlank()) throw IllegalArgumentException("这份备份用密码加密了，请先填写备份密码")
+        if (pass.isBlank()) throw IllegalArgumentException(Loc.p("This backup is password-protected — enter the backup password first", "这份备份用密码加密了，请先填写备份密码"))
         val iter = v.int("iter", 0)
         if (iter < ITER_MIN || iter > ITER_MAX) {
-            throw IllegalArgumentException("备份文件的加密参数不在合理范围内（可能被改动过）")
+            throw IllegalArgumentException(Loc.p("The backup's encryption parameters are out of range (the file may have been modified)", "备份文件的加密参数不在合理范围内（可能被改动过）"))
         }
         val salt = b64d(v.str("salt"))
         val nonce = b64d(v.str("nonce"))
-        if (salt.size != 16 || nonce.size != 12) throw IllegalArgumentException("备份文件已损坏")
+        if (salt.size != 16 || nonce.size != 12) throw IllegalArgumentException(Loc.p("The backup file is corrupted", "备份文件已损坏"))
         val key = pbkdf2(pass, salt, iter)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
@@ -532,7 +533,7 @@ object Portable {
         val plain = try {
             cipher.doFinal(b64d(v.str("data")))
         } catch (e: Exception) {
-            throw IllegalArgumentException("密码不对，或者备份文件被改动过")
+            throw IllegalArgumentException(Loc.p("Wrong password, or the backup was modified", "密码不对，或者备份文件被改动过"))
         }
         return String(plain, Charsets.UTF_8)
     }
@@ -545,7 +546,7 @@ object Portable {
     private fun b64(b: ByteArray): String = Base64.getEncoder().encodeToString(b)
     private fun b64d(s: String): ByteArray =
         runCatching { Base64.getDecoder().decode(s) }
-            .getOrElse { throw IllegalArgumentException("备份文件已损坏（base64 解不开）") }
+            .getOrElse { throw IllegalArgumentException(Loc.p("The backup file is corrupted (base64 cannot be decoded)", "备份文件已损坏（base64 解不开）")) }
 
     // ---------------------------------------------------------------- 规则映射
 
@@ -573,7 +574,7 @@ object Portable {
         }
         return Rule(
             id = rj.str("id").trim(),
-            name = rj.str("name").trim().ifBlank { "未命名" },
+            name = rj.str("name").trim().ifBlank { Loc.p("Untitled", "未命名") },
             enabled = rj.bool("enabled", true),
             mode = mode,
             packages = if (mode == "both") emptyList() else pkgs,
@@ -736,11 +737,11 @@ object Portable {
     }
 
     private fun uniqueName(taken: List<Rule>, base: String): String {
-        val b = base.trim().ifBlank { "未命名" }
-        var cand = "$b（来自备份）"
+        val b = base.trim().ifBlank { Loc.p("Untitled", "未命名") }
+        var cand = Loc.p("$b (from backup)", "$b（来自备份）")
         var n = 2
         while (taken.any { it.name.trim() == cand }) {
-            cand = "$b（来自备份 $n）"
+            cand = Loc.p("$b (from backup $n)", "$b（来自备份 $n）")
             n++
         }
         return cand
@@ -842,7 +843,7 @@ object Portable {
             val days = profileDays(o) ?: return@mapIndexedNotNull null
             SchedulePlan(
                 id = o.str("id").ifBlank { "plan-" + (i + 1) },
-                name = o.str("name").ifBlank { "方案 " + (i + 1) },
+                name = o.str("name").ifBlank { Loc.p("Plan ", "方案 ") + (i + 1) },
                 days = days,
                 defWork = o.int("defWork", 50).coerceIn(1, 59),
                 defBrk = o.int("defBrk", 10).let { b ->

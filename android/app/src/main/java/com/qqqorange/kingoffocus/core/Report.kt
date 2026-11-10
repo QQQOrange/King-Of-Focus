@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 使用报告：**与桌面端 `report_out::blocks` 同一套结构、同一套算法**。
@@ -36,10 +37,10 @@ object Report {
 
     /** 报告周期。与桌面端 `period_name` 的取值一一对应。 */
     enum class Period(val title: String) {
-        DAILY("日报"),
-        WEEKLY("周报"),
-        MONTHLY("月报"),
-        CUSTOM("自定义报告"),
+        DAILY(Loc.p("Daily", "日报")),
+        WEEKLY(Loc.p("Weekly", "周报")),
+        MONTHLY(Loc.p("Monthly", "月报")),
+        CUSTOM(Loc.p("Custom report", "自定义报告")),
     }
 
     /**
@@ -57,48 +58,48 @@ object Report {
         period: Period = Period.WEEKLY,
         labelOf: (String) -> String,
     ): String {
-        if (days.isEmpty()) return "还没有统计数据。开启自律后在手机上正常使用，数据会自己攒起来。"
+        if (days.isEmpty()) return Loc.p("No data yet. Turn on discipline and use the phone normally — it accumulates by itself.", "还没有统计数据。开启自律后在手机上正常使用，数据会自己攒起来。")
 
         val total = StatsMath.total(days, onTrack)
         val on = StatsMath.total(days, true)
         val off = StatsMath.total(days, false)
         val lines = ArrayList<String>()
 
-        lines.add("King Of Focus 使用报告")
+        lines.add(Loc.p("King Of Focus usage report", "King Of Focus 使用报告"))
         lines.add(
-            period.title + "　|　统计区间 " + days.first().first.format(md) +
-                " ~ " + days.last().first.format(md) + "　|　生成于 " + now.format(ymdHm),
+            period.title + Loc.p(" | range ", "　|　统计区间 ") + days.first().first.format(md) +
+                " ~ " + days.last().first.format(md) + Loc.p(" | generated ", "　|　生成于 ") + now.format(ymdHm),
         )
         lines.add("")
 
         // ---------------- 时长总览 ----------------
-        lines.add("时长总览")
-        lines.add("· 自律模式已开启：" + hhmm(on))
-        lines.add("· 自律模式未开启：" + hhmm(off))
-        lines.add("· 合计：" + hhmm(total))
-        lines.add("· 开启占比：" + pct(on, total))
+        lines.add(Loc.p("Duration overview", "时长总览"))
+        lines.add(Loc.p("· discipline on: ", "· 自律模式已开启：") + hhmm(on))
+        lines.add(Loc.p("· discipline off: ", "· 自律模式未开启：") + hhmm(off))
+        lines.add(Loc.p("· total: ", "· 合计：") + hhmm(total))
+        lines.add(Loc.p("· on share: ", "· 开启占比：") + pct(on, total))
         lines.add("")
 
         // ---------------- 两侧分布 ----------------
-        pushSide(lines, "开启时段的分布", side(days, true), on, labelOf)
+        pushSide(lines, Loc.p("Distribution while on", "开启时段的分布"), side(days, true), on, labelOf)
         lines.add("")
-        pushSide(lines, "未开启时段的分布", side(days, false), off, labelOf)
+        pushSide(lines, Loc.p("Distribution while off", "未开启时段的分布"), side(days, false), off, labelOf)
         lines.add("")
 
         // ---------------- 说明 ----------------
-        lines.add("说明")
+        lines.add(Loc.p("Notes", "说明"))
         lines.add(
-            "本报告由 King Of Focus 在本地按小时采样生成，不包含任何窗口标题或网页内容，" +
-                "只统计应用包名与显示名。",
+            Loc.p("This report is generated locally from hourly samples; it contains no window titles or page content,", "本报告由 King Of Focus 在本地按小时采样生成，不包含任何窗口标题或网页内容，") +
+                Loc.p("only package names and display names.", "只统计应用包名与显示名。"),
         )
         lines.add(
-            "「已开启」指自律模式生效（自律时段专注中 / 锁机中，任一成立）。" +
-                "番茄休息段算「未开启」——那本来就是给你的自由时间。",
+            Loc.p("“On” means discipline was active (inside a focus block or locked — either counts).", "「已开启」指自律模式生效（自律时段专注中 / 锁机中，任一成立）。") +
+                Loc.p("Pomodoro breaks count as “off” — that time was always yours.", "番茄休息段算「未开启」——那本来就是给你的自由时间。"),
         )
         if (ruleCount > 0 || points > 0) {
-            lines.add("自律规则 $ruleCount 条 · 当前积分 $points")
+            lines.add(Loc.p("$ruleCount rules · $points points", "自律规则 $ruleCount 条 · 当前积分 $points"))
         }
-        lines.add("导出时间：" + LocalDateTime.now().format(ymdHm))
+        lines.add(Loc.p("Exported: ", "导出时间：") + LocalDateTime.now().format(ymdHm))
         return lines.joinToString("\n")
     }
 
@@ -118,7 +119,7 @@ object Report {
         lines.add(name)
         val rows = itemsOf(days)
         if (rows.isEmpty()) {
-            lines.add("这一段时间里没有记录到任何活动。")
+            lines.add(Loc.p("No activity was recorded in this period.", "这一段时间里没有记录到任何活动。"))
             return
         }
         // 分类（保持首次出现顺序），再按占用时间从多到少
@@ -132,7 +133,7 @@ object Report {
                     "  - " + labelOf(r.key) + " — " + hhmm(r.secs) + "（" + pct(r.secs, total) + "）",
                 )
             }
-            if (mine.size > 8) lines.add("  - …… 另有 ${mine.size - 8} 项未列出")
+            if (mine.size > 8) lines.add(Loc.p("  - … ${mine.size - 8} more not listed", "  - …… 另有 ${mine.size - 8} 项未列出"))
         }
     }
 
@@ -179,9 +180,9 @@ object Report {
         val h = m / 60
         val mm = m % 60
         return when {
-            h > 0 && mm > 0 -> "$h 小时 $mm 分"
-            h > 0 -> "$h 小时"
-            else -> "$mm 分钟"
+            h > 0 && mm > 0 -> Loc.p("${h}h ${mm}m", "$h 小时 $mm 分")
+            h > 0 -> Loc.p("${h}h", "$h 小时")
+            else -> Loc.p("${mm}m", "$mm 分钟")
         }
     }
 
@@ -193,8 +194,8 @@ object Report {
 
     /** 与桌面端 `cat_name` 同一张表：site → 网站、app → 程序、其余 → 其他 */
     fun catName(c: String): String = when (c) {
-        "site" -> "网站"
-        "app" -> "程序"
-        else -> "其他"
+        "site" -> Loc.p("Sites", "网站")
+        "app" -> Loc.p("Apps", "程序")
+        else -> Loc.p("Other", "其他")
     }
 }

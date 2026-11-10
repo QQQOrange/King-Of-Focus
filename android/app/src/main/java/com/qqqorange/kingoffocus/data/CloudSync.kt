@@ -8,6 +8,7 @@ import java.text.SimpleDateFormat
 import java.util.Base64
 import java.util.Date
 import java.util.Locale
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * WebDAV 云同步 —— **跨端互通走的就是这一条**。
@@ -60,9 +61,9 @@ object CloudSync {
     ) {
         val fromAndroid: Boolean get() = name.contains("-$TAG_ANDROID")
         val auto: Boolean get() = name.startsWith("kof-auto-")
-        val sourceLabel: String get() = if (fromAndroid) "手机" else "桌面"
+        val sourceLabel: String get() = if (fromAndroid) Loc.p("Phone", "手机") else Loc.p("Desktop", "桌面")
         val timeLabel: String get() = when {
-            auto -> if (at > 0) showFmt.format(Date(at * 1000)) else "自动备份"
+            auto -> if (at > 0) showFmt.format(Date(at * 1000)) else Loc.p("Auto backup", "自动备份")
             at > 0 -> showFmt.format(Date(at * 1000))
             modified.isNotBlank() -> modified
             else -> name
@@ -155,7 +156,7 @@ object CloudSync {
         // 空 = 默认地址（不再抛"还没填地址"：那句报错以前在默认值缺失时必现）
         val url = urlOf(cfg)
         if (!url.startsWith("https://") && !url.startsWith("http://")) {
-            throw IllegalArgumentException("地址要以 http:// 或 https:// 开头：$url")
+            throw IllegalArgumentException(Loc.p("The address must start with http:// or https:// : $url", "地址要以 http:// 或 https:// 开头：$url"))
         }
         return if (url.endsWith("/")) url else "$url/"
     }
@@ -211,11 +212,11 @@ object CloudSync {
     private fun wrap(what: String, block: () -> Outcome): Outcome = try {
         block()
     } catch (e: IllegalArgumentException) {
-        Outcome.Err(e.message ?: "地址不合法")
+        Outcome.Err(e.message ?: Loc.p("Invalid address", "地址不合法"))
     } catch (e: IOException) {
-        Outcome.Err("连不上服务器：${e.message ?: e.javaClass.simpleName}")
+        Outcome.Err(Loc.p("Cannot reach the server: ${e.message ?: e.javaClass.simpleName}", "连不上服务器：${e.message ?: e.javaClass.simpleName}"))
     } catch (e: Exception) {
-        Outcome.Err("$what 失败：${e.message ?: e.javaClass.simpleName}")
+        Outcome.Err(Loc.p("$what failed: ${e.message ?: e.javaClass.simpleName}", "$what 失败：${e.message ?: e.javaClass.simpleName}"))
     }
 
     /**
@@ -225,7 +226,7 @@ object CloudSync {
      * 都支持；返回 207 Multi-Status。请求走 [HttpRaw]——`HttpURLConnection`
      * 不接受 PROPFIND 这个方法名。
      */
-    fun list(cfg: CloudCfg): Outcome = wrap("列目录") {
+    fun list(cfg: CloudCfg): Outcome = wrap(Loc.p("List", "列目录")) {
         // 先确保目录存在。首次使用默认地址时目录还没建，PROPFIND 会直接 404 ——
         // 那会让"第一次点同步"永远失败，用户只能自己去网盘里手动建文件夹。
         ensureDir(cfg)
@@ -246,14 +247,14 @@ object CloudSync {
             body.toByteArray(Charsets.UTF_8),
         )
         if (r.code !in 200..299) {
-            Outcome.Err(describe(r.code, "列目录"))
+            Outcome.Err(describe(r.code, Loc.p("List", "列目录")))
         } else {
             Outcome.Ok(entries = sortDesc(parseMultiStatus(r.body)))
         }
     }
 
-    fun put(cfg: CloudCfg, name: String, body: String): Outcome = wrap("上传") {
-        if (!isBackup(name)) throw IllegalArgumentException("文件名不合法")
+    fun put(cfg: CloudCfg, name: String, body: String): Outcome = wrap(Loc.p("Upload", "上传")) {
+        if (!isBackup(name)) throw IllegalArgumentException(Loc.p("Invalid file name", "文件名不合法"))
         ensureDir(cfg)
         val r = HttpRaw.request(
             urlFor(cfg, name),
@@ -261,26 +262,26 @@ object CloudSync {
             headers(cfg, mapOf("Content-Type" to "application/octet-stream")),
             body.toByteArray(Charsets.UTF_8),
         )
-        if (r.code in 200..299) Outcome.Ok() else Outcome.Err(describe(r.code, "上传"))
+        if (r.code in 200..299) Outcome.Ok() else Outcome.Err(describe(r.code, Loc.p("Upload", "上传")))
     }
 
-    fun get(cfg: CloudCfg, name: String): Outcome = wrap("下载") {
-        if (!isBackup(name)) throw IllegalArgumentException("文件名不合法")
+    fun get(cfg: CloudCfg, name: String): Outcome = wrap(Loc.p("Download", "下载")) {
+        if (!isBackup(name)) throw IllegalArgumentException(Loc.p("Invalid file name", "文件名不合法"))
         val r = HttpRaw.request(urlFor(cfg, name), "GET", headers(cfg), null)
-        if (r.code in 200..299) Outcome.Ok(r.body) else Outcome.Err(describe(r.code, "下载"))
+        if (r.code in 200..299) Outcome.Ok(r.body) else Outcome.Err(describe(r.code, Loc.p("Download", "下载")))
     }
 
-    fun delete(cfg: CloudCfg, name: String): Outcome = wrap("删除") {
-        if (!isBackup(name)) throw IllegalArgumentException("文件名不合法")
+    fun delete(cfg: CloudCfg, name: String): Outcome = wrap(Loc.p("Delete", "删除")) {
+        if (!isBackup(name)) throw IllegalArgumentException(Loc.p("Invalid file name", "文件名不合法"))
         val r = HttpRaw.request(urlFor(cfg, name), "DELETE", headers(cfg), null)
-        if (r.code in 200..299) Outcome.Ok() else Outcome.Err(describe(r.code, "删除"))
+        if (r.code in 200..299) Outcome.Ok() else Outcome.Err(describe(r.code, Loc.p("Delete", "删除")))
     }
 
     /**
      * 目录能不能读写：PUT 一个探针再删掉。
      *
      * 只做 GET/PROPFIND 不够——有些网盘挂了只读账号，列表能看、上传全 403，
-     * 用户会在"上传"那一刻才发现。
+     * 用户会在Loc.p("Upload", "上传")那一刻才发现。
      */
     fun testConnection(cfg: CloudCfg): Outcome {
         val probe = """{"probe":true}"""
@@ -340,11 +341,11 @@ object CloudSync {
     }.getOrDefault(s)
 
     private fun describe(code: Int, what: String): String = when (code) {
-        401, 403 -> "$what 失败：账号或密码不对（HTTP $code）"
-        404 -> "$what 失败：路径不存在（HTTP 404）"
-        405 -> "$what 失败：服务器不允许这种操作（HTTP 405）"
-        409 -> "$what 失败：上级目录不存在（HTTP 409）"
-        507 -> "$what 失败：云端空间不足（HTTP 507）"
-        else -> "$what 失败：HTTP $code"
+        401, 403 -> Loc.p("$what failed: wrong account or password (HTTP $code)", "$what 失败：账号或密码不对（HTTP $code）")
+        404 -> Loc.p("$what failed: path not found (HTTP 404)", "$what 失败：路径不存在（HTTP 404）")
+        405 -> Loc.p("$what failed: the server does not allow this (HTTP 405)", "$what 失败：服务器不允许这种操作（HTTP 405）")
+        409 -> Loc.p("$what failed: parent folder missing (HTTP 409)", "$what 失败：上级目录不存在（HTTP 409）")
+        507 -> Loc.p("$what failed: no space left in the cloud (HTTP 507)", "$what 失败：云端空间不足（HTTP 507）")
+        else -> Loc.p("$what failed: HTTP $code", "$what 失败：HTTP $code")
     }
 }

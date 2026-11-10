@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 更新包选择：**平台标识 + 包类型 + 版本号**三重校验。
@@ -37,9 +38,9 @@ object Updater {
 
     fun platformLabel(platform: String): String = when (platform) {
         "android" -> "Android"
-        "chrome-extension" -> "浏览器插件"
-        "windows-x64" -> "Windows 64 位"
-        else -> "未知平台"
+        "chrome-extension" -> Loc.p("Browser extension", "浏览器插件")
+        "windows-x64" -> Loc.p("Windows 64-bit", "Windows 64 位")
+        else -> Loc.p("Unknown platform", "未知平台")
     }
 
     /** 校验结果。`NoUpdate` 不是错误，只是"本来就最新"。 */
@@ -131,14 +132,14 @@ object Updater {
         if (manifest.str("app") != APP_ID) {
             return Outcome.Rejected(
                 "E_BAD_APP",
-                "这不是 King Of Focus 的更新清单（app = \"${manifest.str("app")}\"）",
+                Loc.p("This is not a King Of Focus manifest (app = \"${manifest.str("app")}\")", "这不是 King Of Focus 的更新清单（app = \"${manifest.str("app")}\"）"),
             )
         }
         val schema = manifest.long("schema")
         if (schema < 1 || schema > SCHEMA_MAX) {
             return Outcome.Rejected(
                 "E_BAD_SCHEMA",
-                "更新清单版本 $schema 本机读不懂，请手动下载新版",
+                Loc.p("This manifest schema ($schema) is not supported here — download the new version manually", "更新清单版本 $schema 本机读不懂，请手动下载新版"),
             )
         }
 
@@ -146,32 +147,32 @@ object Updater {
         val entry = platforms?.get(platform) as? JsonObject
             ?: return Outcome.Rejected(
                 "E_PLATFORM_MISSING",
-                "这次发布没有 ${platformLabel(platform)}（$platform）的安装包，本机不会去装别的平台的包",
+                Loc.p("This release has no ${platformLabel(platform)} ($platform) package; this device will not install another platform's build", "这次发布没有 ${platformLabel(platform)}（$platform）的安装包，本机不会去装别的平台的包"),
             )
 
         val version = entry.str("version").trim()
         if (!validVersion(version)) {
             return Outcome.Rejected(
                 "E_BAD_VERSION",
-                "清单里的版本号不是 x.y.z 形式：\"$version\" 不能拿来比大小",
+                Loc.p("The manifest version is not x.y.z: \"$version\" cannot be compared", "清单里的版本号不是 x.y.z 形式：\"$version\" 不能拿来比大小"),
             )
         }
         val file = entry.str("file").trim()
         if (file.isEmpty()) {
-            return Outcome.Rejected("E_BAD_MANIFEST", "清单里没有写包名")
+            return Outcome.Rejected("E_BAD_MANIFEST", Loc.p("The manifest does not name the package", "清单里没有写包名"))
         }
 
         if (!nameMatches(file, version, platform)) {
             return Outcome.Rejected(
                 "E_NAME_MISMATCH",
-                "包名和清单对不上：$file 应该叫 $NAME_PREFIX$version-$platform.<" +
+                Loc.p("Package name mismatch: $file should be $NAME_PREFIX$version-$platform.<", "包名和清单对不上：$file 应该叫 $NAME_PREFIX$version-$platform.<") +
                     allowedExts(platform).joinToString("/") + ">",
             )
         }
         foreignType(file, platform)?.let { bad ->
             return Outcome.Rejected(
                 "E_TYPE_MISMATCH",
-                "这是 ${platformLabel(bad)} 的安装包，不能装在 ${platformLabel(platform)} 上",
+                Loc.p("This is a ${platformLabel(bad)} package and cannot be installed on ${platformLabel(platform)}", "这是 ${platformLabel(bad)} 的安装包，不能装在 ${platformLabel(platform)} 上"),
             )
         }
         if (compareVer(version, current) <= 0) {
@@ -180,16 +181,16 @@ object Updater {
 
         val size = entry.long("size")
         if (size <= 0) {
-            return Outcome.Rejected("E_BAD_SIZE", "清单里没写文件大小，无法校验下载完整性")
+            return Outcome.Rejected("E_BAD_SIZE", Loc.p("The manifest has no file size, so integrity cannot be verified", "清单里没写文件大小，无法校验下载完整性"))
         }
         val sha = entry.str("sha256").trim().lowercase()
         if (sha.length != 64 || !sha.all { it.isDigit() || it in 'a'..'f' }) {
-            return Outcome.Rejected("E_BAD_HASH", "清单里的 sha256 不合法，拒绝下载")
+            return Outcome.Rejected("E_BAD_HASH", Loc.p("The manifest sha256 is invalid — download refused", "清单里的 sha256 不合法，拒绝下载"))
         }
         if (assets.none { it.equals(file, ignoreCase = true) }) {
             return Outcome.Rejected(
                 "E_ASSET_MISSING",
-                "Release 里找不到 $file，清单和发布资产不一致",
+                Loc.p("The release has no $file — manifest and assets disagree", "Release 里找不到 $file，清单和发布资产不一致"),
             )
         }
         return Outcome.Ok(version, file, size, sha)
