@@ -36,6 +36,18 @@ object Loc {
 
     val isEn: Boolean get() = lang == "en"
 
+    /**
+     * 带插值的句子：直接给两份成品。
+     *
+     * 为什么不做格式串（`Loc.f("%d minutes left", n)`）：
+     *   · Kotlin 模板里能放任意表达式（`${ScheduleEngine.fmtLeft(x)}`），
+     *     改成 %s 要把参数一个个提出来，改动面大、容易错；
+     *   · 英文和中文的语序不一样，格式串会逼着两句话共用同一套占位符顺序，
+     *     一旦语序不同就得重排参数——那是最容易出错的地方。
+     * 两份成品最直白：读代码的人一眼看到两种语言并排，翻译对不对当场能看出来。
+     */
+    fun p(en: String, zh: String): String = if (lang == "en") en else zh
+
     /** 查词典；没翻译就回中文（宁可中文，也不显示一个 key） */
     fun t(zh: String): String = if (lang == "en") EN[zh] ?: zh else zh
 

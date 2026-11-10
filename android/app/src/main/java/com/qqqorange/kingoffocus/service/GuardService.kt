@@ -573,7 +573,7 @@ class GuardService : Service() {
         if (threshold <= 0 || notifiedPhase || left > threshold) return
         notifiedPhase = true
         val mins = ((left + 59) / 60).coerceAtLeast(1)
-        val text = if (st.inBreak) "休息还剩 $mins 分钟，准备回到专注" else "本轮专注还剩 $mins 分钟，坚持一下"
+        val text = if (st.inBreak) Loc.p("$mins min of break left — get ready to focus", "休息还剩 $mins 分钟，准备回到专注") else Loc.p("$mins min of focus left — keep going", "本轮专注还剩 $mins 分钟，坚持一下")
         alert(Loc.t("阶段提醒"), text)
     }
 
@@ -595,13 +595,13 @@ class GuardService : Service() {
         if (!cfg.notify.enabled || !cfg.notify.done) return
         val now = LocalDateTime.now()
         val head = if (st.inBreak) {
-            "这一段做完了，休息 ${st.brk.coerceAtLeast(0)} 分钟"
+            Loc.p("Block done — take ${st.brk.coerceAtLeast(0)} min", "这一段做完了，休息 ${st.brk.coerceAtLeast(0)} 分钟")
         } else {
             Loc.t("开始下一轮专注，先做最重要的那件")
         }
         val plan = Slots.dayMinutes(cfg.days.getOrNull(now.dayOfWeek.value - 1).orEmpty())
         val doneMin = StatsStore.today(now).total(true) / 60
-        val tail = if (plan > 0) " · 今日已自律 $doneMin/$plan 分" else ""
+        val tail = if (plan > 0) Loc.p(" · $doneMin/$plan min today", " · 今日已自律 $doneMin/$plan 分") else ""
         notifyOnce(CH_DONE, DONE_ID, title, head + tail)
     }
 
@@ -684,7 +684,7 @@ class GuardService : Service() {
                 CH_ALERT,
                 ID_STAKE,
                 Loc.t("这一段的押金退回来了"),
-                "退回 $back 分（含干净跑完的奖励）",
+                Loc.p("$back points returned (includes the clean-run bonus)", "退回 $back 分（含干净跑完的奖励）"),
                 true,
             )
         }
@@ -716,12 +716,12 @@ class GuardService : Service() {
             val goal = if (prev != null) com.qqqorange.kingoffocus.data.GoalStore.of(prev.start) else ""
             val items = DistractMath.endedSegment(DistractStore.items.value, nowSec)
             val parts = ArrayList<String>()
-            if (goal.isNotBlank()) parts += "目标：$goal"
+            if (goal.isNotBlank()) parts += Loc.p("Goal: $goal", "目标：$goal")
             if (items.isNotEmpty()) {
                 parts += if (items.size == 1) {
                     Loc.t("记下 1 条：") + items[0].text.take(18)
                 } else {
-                    "记下 ${items.size} 条想法，去「分心事件」逐条处理"
+                    Loc.p("${items.size} thoughts captured — process them under Distractions", "记下 ${items.size} 条想法，去「分心事件」逐条处理")
                 }
             }
             if (parts.isNotEmpty()) {
@@ -736,9 +736,9 @@ class GuardService : Service() {
         if (due.isNotEmpty()) {
             val first = due[0].text.take(18)
             val body = if (due.size == 1) {
-                "「$first」还没处理"
+                Loc.p("“$first” is still pending", "「$first」还没处理")
             } else {
-                "还有 ${due.size} 条没处理，最早一条：$first"
+                Loc.p("${due.size} still pending, oldest: $first", "还有 ${due.size} 条没处理，最早一条：$first")
             }
             notifyOnce(CH_ALERT, ID_DISTRACT_DUE, Loc.t("分心事件待处理"), body, true)
             DistractStore.markNudged(due.map { it.id }, nowSec)
@@ -800,9 +800,9 @@ class GuardService : Service() {
             bg.execute {
                 Log.i(TAG, "白名单外的应用，强制退出 $pkg -> " + ShizukuBridge.forceStop(pkg))
             }
-            alert("「$label」现在不能用", Loc.t("它不在白名单里，已经把它关掉并回到桌面。"))
+            alert(Loc.p("“$label” is not available now", "「$label」现在不能用"), Loc.t("它不在白名单里，已经把它关掉并回到桌面。"))
         } else {
-            alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
+            alert("「$label」现在不能用", Loc.p("Matched rule “${rule.name}”. Back to home — do something else.", "命中规则「${rule.name}」。已回到桌面，做点别的。"))
         }
         // 账本：只记**真的动手拦了**的这一处；"扫到但放过"不记，否则次数虚高
         LedgerStore.record("app", pkg, label, rule.name)
@@ -1103,7 +1103,7 @@ class GuardService : Service() {
             sleeping -> Loc.t("睡眠时段 · 还有 ") +
                 ScheduleEngine.fmtLeft(SleepEngine.active(Store.current, now)?.leftSeconds ?: 0)
             locked -> if (Store.current.lock.showPage) {
-                "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
+                Loc.p("Locked · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}", "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}")
             } else {
                 // 轻档如实说：整机没锁，只是黑名单应用会被弹回去
                 Loc.t("锁机中 · 仅拦黑名单应用")
@@ -1111,8 +1111,8 @@ class GuardService : Service() {
             // 自律关着、只在记录时长：如实说，别让常驻通知看起来像"自律在跑"
             st == null && !Store.current.enabled -> Loc.t("自律已关闭 · 正在记录使用时长")
             st == null -> Loc.t("当前不在自律时段")
-            st.inBreak -> "休息中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
-            else -> "专注中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
+            st.inBreak -> Loc.p("Break · ${ScheduleEngine.fmtLeft(st.leftSeconds)}", "休息中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}")
+            else -> Loc.p("Focusing · ${ScheduleEngine.fmtLeft(st.leftSeconds)}", "专注中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}")
         }
         val title = when {
             sleeping -> Loc.t("King Of Focus · 睡眠中")
@@ -1122,7 +1122,7 @@ class GuardService : Service() {
         }
         // 今日进度：只在"有计划"时显示，否则 0/0 比不显示更让人困惑
         val p = progress?.takeIf { it.second > 0 }
-        val body = if (p != null) "$text · 今日 ${p.first}/${p.second} 分" else text
+        val body = if (p != null) Loc.p("$text · today ${p.first}/${p.second} min", "$text · 今日 ${p.first}/${p.second} 分") else text
         val b = NotificationCompat.Builder(this, CH_ONGOING)
             .setSmallIcon(R.drawable.ic_stat_focus)
             .setContentTitle(title)
@@ -1133,7 +1133,7 @@ class GuardService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
         if (p != null) {
             b.setProgress(100, NotifyPlan.progressPct(p.first, p.second), false)
-            b.setSubText("今日自律 ${p.first}/${p.second} 分")
+            b.setSubText(Loc.p("Today ${p.first}/${p.second} min", "今日自律 ${p.first}/${p.second} 分"))
         }
         return b.build()
     }

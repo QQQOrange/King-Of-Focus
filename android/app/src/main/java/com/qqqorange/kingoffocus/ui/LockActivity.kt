@@ -526,7 +526,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             if (sn.amount > 0) {
                 Text(
-                    "已押 ${sn.amount} 分 · 跑完退 ${sn.amount + sn.bonus}",
+                    Loc.p("Staked ${sn.amount} pts · returns ${sn.amount + sn.bonus}", "已押 ${sn.amount} 分 · 跑完退 ${sn.amount + sn.bonus}"),
                     fontSize = 11.5.sp,
                     color = Color(0xFFF7C948),
                 )
@@ -539,13 +539,13 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                             toast(ctx, r.exceptionOrNull()?.message ?: Loc.t("押注失败"))
                         } else {
                             Store.update { it.copy(points = (it.points - ok.amount).coerceAtLeast(0)) }
-                            toast(ctx, "已押 ${ok.amount} 分：跑完退 ${ok.amount + sn.bonus}")
+                            toast(ctx, Loc.p("Staked ${ok.amount} pts: returns ${ok.amount + sn.bonus}", "已押 ${ok.amount} 分：跑完退 ${ok.amount + sn.bonus}"))
                         }
                     },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
                 ) {
                     Text(
-                        "押 ${sn.unit} 分 · 跑完退 ${sn.unit + sn.bonus}",
+                        Loc.p("Stake ${sn.unit} pts · returns ${sn.unit + sn.bonus}", "押 ${sn.unit} 分 · 跑完退 ${sn.unit + sn.bonus}"),
                         fontSize = 11.5.sp,
                     )
                 }
@@ -554,7 +554,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         if (LockEngine.isPaused(cfg, now)) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "已暂停（还剩 ${LockEngine.pauseLeftSeconds(cfg, now) / 60} 分钟），到点会自动重新锁机",
+                Loc.p("Paused (${LockEngine.pauseLeftSeconds(cfg, now) / 60} min left); it locks again automatically", "已暂停（还剩 ${LockEngine.pauseLeftSeconds(cfg, now) / 60} 分钟），到点会自动重新锁机"),
                 fontSize = 11.sp,
                 color = Color(0xFF7FB4FF),
             )
@@ -575,7 +575,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                         return@Button
                     }
                     if (cfg.points < price) {
-                        toast(ctx, "积分不足：解锁需要 $price 分，当前 ${cfg.points} 分")
+                        toast(ctx, Loc.p("Not enough points: unlock costs $price, you have ${cfg.points}", "积分不足：解锁需要 $price 分，当前 ${cfg.points} 分"))
                         return@Button
                     }
                     val until = SleepEngine.unlockUntil(Store.current, LocalDateTime.now())
@@ -585,7 +585,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                             sleepUnlockUntil = until,
                         )
                     }
-                    toast(ctx, "已解锁 ${cfg.sleep.unlockMin} 分钟，扣 $price 分")
+                    toast(ctx, Loc.p("Unlocked for ${cfg.sleep.unlockMin} min, $price points deducted", "已解锁 ${cfg.sleep.unlockMin} 分钟，扣 $price 分"))
                     if (!done) { done = true; onDone() }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -595,7 +595,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                 ),
             ) {
                 Text(
-                    if (price > 0) "解锁 ${cfg.sleep.unlockMin} 分钟 · $price 分"
+                    if (price > 0) Loc.p("Unlock ${cfg.sleep.unlockMin} min · $price pts", "解锁 ${cfg.sleep.unlockMin} 分钟 · $price 分")
                     else Loc.t("睡眠时段不开放解锁"),
                 )
             }
@@ -605,7 +605,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         OutlinedButton(
             onClick = {
                 if (!LockEngine.canAfford(cfg, price.cost)) {
-                    toast(ctx, "积分不足：暂停需要 ${price.cost} 分，当前 ${cfg.points} 分")
+                    toast(ctx, Loc.p("Not enough points: pausing costs ${price.cost}, you have ${cfg.points}", "积分不足：暂停需要 ${price.cost} 分，当前 ${cfg.points} 分"))
                     return@OutlinedButton
                 }
                 val until = System.currentTimeMillis() / 1000 + price.minutes * 60L
@@ -617,18 +617,18 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                 }
                 // 花积分暂停 = 提前退出这一段：押的分没收（质押唯一的惩罚出口）
                 StakeStore.forfeit(Store.current)
-                toast(ctx, "已暂停 ${price.minutes} 分钟，扣 ${price.cost} 分")
+                toast(ctx, Loc.p("Paused ${price.minutes} min, ${price.cost} points deducted", "已暂停 ${price.minutes} 分钟，扣 ${price.cost} 分"))
                 if (!done) { done = true; onDone() }
             },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
-        ) { Text("暂停锁机 · ${price.cost} 分 / ${price.minutes} 分钟") }
+        ) { Text(Loc.p("Pause lock · ${price.cost} pts / ${price.minutes} min", "暂停锁机 · ${price.cost} 分 / ${price.minutes} 分钟")) }
 
         Spacer(Modifier.height(10.dp))
         Button(
             onClick = {
                 if (!LockEngine.canAfford(cfg, stopCost)) {
-                    toast(ctx, "积分不足：停止需要 $stopCost 分，当前 ${cfg.points} 分")
+                    toast(ctx, Loc.p("Not enough points: stopping costs $stopCost, you have ${cfg.points}", "积分不足：停止需要 $stopCost 分，当前 ${cfg.points} 分"))
                     return@Button
                 }
                 val seg = LockEngine.segmentKey(cfg, LocalDateTime.now())
@@ -639,7 +639,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                     )
                 }
                 StakeStore.forfeit(Store.current)
-                toast(ctx, "已停止本次锁机，扣 $stopCost 分；下一段专注会重新锁机")
+                toast(ctx, Loc.p("This lock stopped, $stopCost points deducted; the next focus block locks again", "已停止本次锁机，扣 $stopCost 分；下一段专注会重新锁机"))
                 if (!done) { done = true; onDone() }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -647,7 +647,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                 containerColor = Color(0xFF2A3240),
                 contentColor = Color(0xFFF2F4F8),
             ),
-        ) { Text("停止锁机 · $stopCost 分") }
+        ) { Text(Loc.p("Stop lock · $stopCost pts", "停止锁机 · $stopCost 分")) }
         }
 
         // —— 白名单应用入口 ——
@@ -666,7 +666,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                 onPick = { item ->
                     showAllow = false
                     if (!item.canLaunch) {
-                        toast(ctx, "「${item.label}」没有可打开的界面")
+                        toast(ctx, Loc.p("“${item.label}” has no screen to open", "「${item.label}」没有可打开的界面"))
                     } else {
                         // 先把列表收掉再跳：否则从应用返回时它还开着，像"没关上"
                         val launch = ctx.packageManager.getLaunchIntentForPackage(item.pkg)
@@ -772,7 +772,7 @@ private fun WhitelistEntry(count: Int, onClick: () -> Unit) {
             }
         }
         Spacer(Modifier.width(10.dp))
-        Text(Loc.t("白名单应用"), fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+        Text(Loc.t(Loc.p("Whitelisted apps", "白名单应用")), fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f))
         Text(
             if (enabled) "$count 个 ›" else Loc.t("暂无"),
@@ -817,7 +817,7 @@ private fun WhitelistDialog(
                     Spacer(Modifier.height(3.dp))
                     Text(
                         if (items.isEmpty()) Loc.t("还没有任何应用在白名单里")
-                        else "共 ${items.size} 个 · 点一个直接打开",
+                        else Loc.p("${items.size} in total · tap one to open", "共 ${items.size} 个 · 点一个直接打开"),
                         fontSize = 11.sp,
                         color = Color(0xFF9AA4B2),
                     )
@@ -972,13 +972,13 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
         )
         if (rule.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
-            Text("命中规则「$rule」", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+            Text(Loc.p("Matched rule “$rule”", "命中规则「$rule」"), fontSize = 12.sp, color = Color(0xFF9AA4B2))
         }
         // 被打断的次数就摆在被拦下的这一页：数字本身比"请专注"更有说服力，
         // 而且它和时段结束时的汇总、周复盘的账本是同一个来源，不会被质疑"哪来的数"。
         if (blocks > 0) {
             Spacer(Modifier.height(8.dp))
-            Text("这一节第 $blocks 次被打断", fontSize = 12.sp, color = Color(0xFFE8A9A0))
+            Text(Loc.p("Interrupted $blocks× this block", "这一节第 $blocks 次被打断"), fontSize = 12.sp, color = Color(0xFFE8A9A0))
         }
         // 替代动作：把"那我该做什么"直接写在页面上
         Spacer(Modifier.height(16.dp))

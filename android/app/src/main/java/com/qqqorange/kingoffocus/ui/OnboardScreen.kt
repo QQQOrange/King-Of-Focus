@@ -49,7 +49,7 @@ import com.qqqorange.kingoffocus.service.GuardService
 /**
  * 首用向导（三步）。
  *
- * 为什么手机端更需要它：装完是空的，而手机上"从哪开始"比电脑更难猜——
+ * 为什么手机端更需要它：装完是空的，而手机上Loc.p("From", "从哪开始")比电脑更难猜——
  * 底部五个 tab、设置里十几项，用户不知道该先点哪个。
  *
  * 三步都落到**既有结构**里，不新造数据：
@@ -73,10 +73,10 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
 
     val nameOf = { i: Int -> listOf("一", "二", "三", "四", "五", "六", "日")[i] }
     val daysText = when (days.sorted().joinToString(",")) {
-        "0,1,2,3,4" -> "工作日"
-        "0,1,2,3,4,5,6" -> "每天"
-        "5,6" -> "周末"
-        "" -> "还没选"
+        "0,1,2,3,4" -> Loc.p("Weekdays", "工作日")
+        "0,1,2,3,4,5,6" -> Loc.p("Every day", "每天")
+        "5,6" -> Loc.p("Weekend", "周末")
+        "" -> Loc.p("Not chosen yet", "还没选")
         else -> days.sorted().joinToString(" ") { nameOf(it) }
     }
 
@@ -93,7 +93,7 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                 onboarded = true,
             )
         }
-        // 打开自律后服务要真的跑起来，否则"到点拦住"只是嘴上说说
+        // 打开自律后服务要真的跑起来，否则Loc.p("To", "到点拦住")只是嘴上说说
         GuardService.sync(ctx)
     }
 
@@ -125,15 +125,15 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                 TextButton(onClick = {
                     Store.update { it.copy(onboarded = true) }
                     onExit()
-                }) { Text("跳过", fontSize = 12.sp) }
+                }) { Text(Loc.p("Skip", "跳过"), fontSize = 12.sp) }
             }
 
             Spacer(Modifier.height(18.dp))
 
             when (step) {
                 0 -> {
-                    OnboardTitle("你打算什么时候学？")
-                    OnboardSub("这段时间里，「不该开的东西」会被挡住；需要的话，锁机遮罩也会盖上来。先选一个你真能做到的时间——小一点没关系。")
+                    OnboardTitle(Loc.p("When do you plan to study?", "你打算什么时候学？"))
+                    OnboardSub(Loc.p("During these hours the things you should not open get blocked, and the lock cover comes up if you want it. Pick a window you can actually keep — smaller is fine.", "这段时间里，「不该开的东西」会被挡住；需要的话，锁机遮罩也会盖上来。先选一个你真能做到的时间——小一点没关系。"))
                     Spacer(Modifier.height(18.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         (0..6).forEach { i ->
@@ -183,19 +183,19 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                     val mins = OnboardMath.minutesOf(OnboardMath.buildDays(days, from, to))
                     Text(
                         "$daysText ${fmtHour(from)}–${fmtHour(to)} · " +
-                            "每天 ${to - from} 小时，每周约 ${mins / 60} 小时",
+                            Loc.p("${to - from} h a day, about ${mins / 60} h a week", "每天 ${to - from} 小时，每周约 ${mins / 60} 小时"),
                         fontSize = 12.5.sp,
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
 
                 1 -> {
-                    OnboardTitle("这些时候，哪些不该打开？")
-                    OnboardSub("只在你刚选的时间段里挡住它们，别的时间照常使用。")
+                    OnboardTitle(Loc.p("What should not open during those hours?", "这些时候，哪些不该打开？"))
+                    OnboardSub(Loc.p("They are blocked only in the window you just picked; otherwise everything works as usual.", "只在你刚选的时间段里挡住它们，别的时间照常使用。"))
                     Spacer(Modifier.height(14.dp))
                     if (apps.isEmpty()) {
                         Text(
-                            "没读到应用列表（有时需要权限）。这一步可以跳过，以后在「自律规则」里随时能加。",
+                            Loc.p("Could not read the app list (sometimes needs a permission). You can skip this step and add apps later under Rules.", "没读到应用列表（有时需要权限）。这一步可以跳过，以后在「自律规则」里随时能加。"),
                             fontSize = 11.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -236,20 +236,20 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
                 }
 
                 else -> {
-                    OnboardTitle("就这样，可以开始了")
-                    OnboardSub("到点会自动开始：被选的软件会被挡住，锁机遮罩也会盖上来。想改随时去「时段」「规则」页。")
+                    OnboardTitle(Loc.p("That is it — you are ready", "就这样，可以开始了"))
+                    OnboardSub(Loc.p("It starts on time: the apps you picked get blocked and the lock cover comes up. Change it any time under Schedule or Rules.", "到点会自动开始：被选的软件会被挡住，锁机遮罩也会盖上来。想改随时去「时段」「规则」页。"))
                     Spacer(Modifier.height(16.dp))
                     Panel {
-                        PlanLine("$daysText ${fmtHour(from)}–${fmtHour(to)}", "每周约 ${(to - from) * days.size} 小时")
+                        PlanLine("$daysText ${fmtHour(from)}–${fmtHour(to)}", Loc.p("about ${(to - from) * days.size} h a week", "每周约 ${(to - from) * days.size} 小时"))
                         PlanLine(
-                            if (picked.isEmpty()) "这一步先跳过（以后可以加）" else "挡住 ${picked.size} 个应用",
+                            if (picked.isEmpty()) Loc.p("Skipping this step (can add later)", "这一步先跳过（以后可以加）") else Loc.p("Blocking ${picked.size} apps", "挡住 ${picked.size} 个应用"),
                             "",
                         )
-                        PlanLine("自律总开关：完成后打开", "")
+                        PlanLine(Loc.p("Master switch: turned on at the end", Loc.p("Done", "自律总开关：完成后打开")), "")
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "提示：真正拦住应用还需要「使用情况访问」或「无障碍」权限。完成后回到首页，守护状态带会告诉你缺哪个。",
+                        Loc.p("Note: actually blocking apps also needs Usage access or Accessibility. The status strip on the home screen tells you which is missing.", "提示：真正拦住应用还需要「使用情况访问」或「无障碍」权限。完成后回到首页，守护状态带会告诉你缺哪个。"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -259,14 +259,14 @@ fun OnboardScreen(cfg: Config, onExit: () -> Unit) {
             Spacer(Modifier.height(26.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (step > 0) {
-                    OutlinedButton(onClick = { step-- }) { Text("上一步") }
+                    OutlinedButton(onClick = { step-- }) { Text(Loc.p("Back", "上一步")) }
                 }
                 Spacer(Modifier.weight(1f))
                 if (step < 2) {
                     Button(
                         onClick = { step++ },
                         enabled = step != 0 || days.isNotEmpty(),
-                    ) { Text("下一步") }
+                    ) { Text(Loc.p("Next", "下一步")) }
                 } else {
                     Button(onClick = {
                         apply()
