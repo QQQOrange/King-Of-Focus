@@ -59,7 +59,7 @@ fun RulesScreen(cfg: Config) {
 
     fun newRule(): Rule = Rule(
         id = UUID.randomUUID().toString().take(8),
-        name = "新规则 ${cfg.rules.size + 1}",
+        name = Loc.p("New rule ${cfg.rules.size + 1}", "新规则 ${cfg.rules.size + 1}"),
         mode = "blacklist",
         packages = emptyList(),
         hard = true,
@@ -189,9 +189,9 @@ fun RulesScreen(cfg: Config) {
                         Spacer(Modifier.height(3.dp))
                         Text(
                             when (r.mode) {
-                                "whitelist" -> "白名单 · 只允许名单内 ${r.packages.size} 个"
-                                "both" -> "白名单 + 黑名单 · 允许 ${r.packages.size} / 禁止 ${r.deny.size}"
-                                else -> "黑名单 · 名单内禁止 ${r.packages.size} 个"
+                                "whitelist" -> Loc.p("Whitelist · only ${r.packages.size} listed", "白名单 · 只允许名单内 ${r.packages.size} 个")
+                                "both" -> Loc.p("Whitelist + blacklist · allow ${r.packages.size} / deny ${r.deny.size}", "白名单 + 黑名单 · 允许 ${r.packages.size} / 禁止 ${r.deny.size}")
+                                else -> Loc.p("Blacklist · ${r.packages.size} blocked", "黑名单 · 名单内禁止 ${r.packages.size} 个")
                             } + if (r.hard) Loc.t(" · 固化") else "",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -215,7 +215,7 @@ fun RulesScreen(cfg: Config) {
                 if (r.foreign.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "另有 ${r.foreign.size} 个桌面条目（网站 / exe 路径），手机端不拦，备份回桌面时原样带回",
+                        Loc.p("Plus ${r.foreign.size} desktop entries (sites / exe paths): not blocked here, carried back unchanged in a backup", "另有 ${r.foreign.size} 个桌面条目（网站 / exe 路径），手机端不拦，备份回桌面时原样带回"),
                         fontSize = 10.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -357,8 +357,8 @@ private fun RuleDialog(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        if (mode == "whitelist") "选择允许的应用（${rule.packages.size} 个）"
-                        else "选择名单（${rule.packages.size} 个）",
+                        if (mode == "whitelist") Loc.p("Choose allowed apps (${rule.packages.size})", "选择允许的应用（${rule.packages.size} 个）")
+                        else Loc.p("Choose the list (${rule.packages.size})", "选择名单（${rule.packages.size} 个）"),
                         fontSize = 12.sp,
                     )
                 }
@@ -370,7 +370,7 @@ private fun RuleDialog(
                             contentColor = MaterialTheme.colorScheme.error,
                         ),
                     ) {
-                        Text("选择禁止的应用（${rule.deny.size} 个）", fontSize = 12.sp)
+                        Text(Loc.p("Choose denied apps (${rule.deny.size})", "选择禁止的应用（${rule.deny.size} 个）"), fontSize = 12.sp)
                     }
                 }
             }

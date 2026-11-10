@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qqqorange.kingoffocus.data.AppInfo
+import com.qqqorange.kingoffocus.ui.Loc
 
 @Composable
 internal fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
@@ -80,7 +81,7 @@ internal fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onCo
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(picked.value.toList()) }) { Text("确定（${picked.value.size}）") }
+            TextButton(onClick = { onConfirm(picked.value.toList()) }) { Text(Loc.p("OK (${picked.value.size})", "确定（${picked.value.size}）")) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

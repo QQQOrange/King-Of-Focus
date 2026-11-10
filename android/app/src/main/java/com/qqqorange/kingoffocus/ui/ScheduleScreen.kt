@@ -422,7 +422,7 @@ fun ScheduleScreen(cfg: Config) {
                     // 复制一份旧排班再让人一格一格擦掉，比重新拖要费事得多。
                     val p = SchedulePlan(
                         id = "plan-$id",
-                        name = "方案 ${plans.size + 1}",
+                        name = Loc.p("Plan ${plans.size + 1}", "方案 ${plans.size + 1}"),
                         days = defaultDays(),
                         defWork = cfg.defWork,
                         defBrk = cfg.defBrk,
@@ -493,7 +493,7 @@ fun ScheduleScreen(cfg: Config) {
             Text(Loc.t("这套时段生效的自律规则"), fontSize = 14.sp)
             Text(
                 if (active.bound.isEmpty()) Loc.t("没绑任何分组 = 全部生效（默认）")
-                else "已绑 ${active.bound.size} 组，其余分组这套时段不管",
+                else Loc.p("${active.bound.size} groups bound; this plan ignores the rest", "已绑 ${active.bound.size} 组，其余分组这套时段不管"),
                 fontSize = 11.sp,
                 color = cs.onSurfaceVariant,
             )
@@ -556,7 +556,7 @@ fun ScheduleScreen(cfg: Config) {
                                 .padding(horizontal = 12.dp, vertical = 6.dp),
                         ) {
                             Text(
-                                "$v 分钟",
+                                Loc.p("$v min", "$v 分钟"),
                                 fontSize = 12.sp,
                                 color = if (on) MaterialTheme.colorScheme.onPrimary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -924,7 +924,7 @@ fun ScheduleScreen(cfg: Config) {
 
             Spacer(Modifier.height(8.dp))
             Text(
-                "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) + "；" +
+                Loc.p("One cell = $step min. Selected today: ", "一格 = $step 分钟。今天已选 ") + Slots.fmtMinutes(selectedToday) + "；" +
                     "长按色块中间可以整块平移，按在块的头/尾那一格拉上下边界（吸附到 $step 分钟，" +
                     Loc.t("撞到相邻块就停在它的边界上，不会吞掉它）。直接上下滑只滚动，不改数据；") +
                     Loc.t("灰色的星期已经过去。"),
@@ -976,10 +976,10 @@ fun ScheduleScreen(cfg: Config) {
                 cfg.defCap <= 0 ->
                     Loc.t("0 = 不限。一轮专注 + 一轮休息每小时能跑几轮，就休几次。")
                 cfg.defCap < cfg.defBrk ->
-                    "上限比单次休息还短：每次休息都会被截到 ${cfg.defCap} 分钟，" +
+                    Loc.p("The cap is shorter than one break: every break is clipped to ${cfg.defCap} min,", "上限比单次休息还短：每次休息都会被截到 ${cfg.defCap} 分钟，") +
                         Loc.t("其余时间继续专注（锁机不解除）。")
                 else ->
-                    "一小时里累计休息到 ${cfg.defCap} 分钟就不再休息：" +
+                    Loc.p("Once breaks reach ${cfg.defCap} min within an hour, no more breaks:", "一小时里累计休息到 ${cfg.defCap} 分钟就不再休息：") +
                         Loc.t("比如 25/5 这种一小时两轮的节奏，第二轮休息会被截短、") +
                         Loc.t("之后的休息整段跳过，继续专注并保持锁机。")
             }
@@ -1099,7 +1099,7 @@ fun ScheduleScreen(cfg: Config) {
         val mins = Slots.dayMinutes(draft.getOrNull(ask).orEmpty())
         AlertDialog(
             onDismissRequest = { clearAsk = null },
-            title = { Text("清空$name？") },
+            title = { Text(Loc.p("Clear $name?", "清空$name？")) },
             text = {
                 Text(
                     "$name 现在的 " + Slots.fmtMinutes(mins) + Loc.t(" 计划会全部移除，这一步不能撤销。"),
@@ -1135,7 +1135,7 @@ fun ScheduleScreen(cfg: Config) {
             text = {
                 Text(
                     "这套方案里已选中的 $onHours 个小时会全部改成 专注 ${cfg.defWork} 分 / " +
-                        "休息 ${cfg.defBrk} 分，各自原来手调过的时长会被覆盖。",
+                        Loc.p("break ${cfg.defBrk} min; any hand-tuned durations are overwritten.", "休息 ${cfg.defBrk} 分，各自原来手调过的时长会被覆盖。"),
                     fontSize = 13.sp,
                 )
             },

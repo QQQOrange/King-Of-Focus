@@ -285,11 +285,11 @@ object Permissions {
         val n = installedCount(ctx)
         // 包名可见性被限制时，连自己的应用都数不到几个；正常机器至少几十个
         return if (n > 5) {
-            Triple(PermState.OK, "已就绪（可见 $n 个应用）", null)
+            Triple(PermState.OK, Loc.p("Ready (${n} apps visible)", "已就绪（可见 $n 个应用）"), null)
         } else {
             Triple(
                 PermState.MISSING,
-                "只看到 $n 个应用，可能被系统限制了可见性",
+                Loc.p("Only ${n} apps visible — the system may be limiting visibility", "只看到 $n 个应用，可能被系统限制了可见性"),
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
                     .setData(Uri.parse("package:" + ctx.packageName)),
             )
@@ -325,7 +325,7 @@ object Permissions {
             )
             p.notifAsked > 0 -> Triple(
                 PermState.DENIED,
-                "已拒绝 ${p.notifAsked} 次：提醒和常驻状态都不会出现，可以去设置里打开",
+                Loc.p("Denied ${p.notifAsked}×: reminders and the ongoing status will not appear — enable it in Settings", "已拒绝 ${p.notifAsked} 次：提醒和常驻状态都不会出现，可以去设置里打开"),
                 action,
             )
             else -> Triple(
@@ -366,7 +366,7 @@ object Permissions {
         val granted = available && ShizukuBridge.granted()
         val ready = granted && ShizukuBridge.ready()
         return when {
-            ready -> Triple(PermState.OK, "已连接（v${ShizukuBridge.version()}）", null)
+            ready -> Triple(PermState.OK, Loc.p("Connected (v${ShizukuBridge.version()})", "已连接（v${ShizukuBridge.version()}）"), null)
             !available -> Triple(
                 PermState.MISSING,
                 Loc.t("没装 Shizuku：装好并用无线调试启动后再回来连接"),

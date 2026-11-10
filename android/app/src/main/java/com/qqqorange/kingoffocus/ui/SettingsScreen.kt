@@ -266,9 +266,9 @@ fun SettingsScreen(
                             Loc.t("整机锁：除系统界面与输入法，其余一律挡住。要让某个应用能用，") +
                                 Loc.t("去「规则」页建一条白名单规则（名单内的应用锁机时照样能开）。")
                         cfg.lock.scope != "rules" ->
-                            "整机锁：白名单里的 ${allowList.size} 个应用照样能用，其余一概挡住。"
+                            Loc.p("Whole phone: the ${allowList.size} whitelisted apps still work, everything else is blocked.", "整机锁：白名单里的 ${allowList.size} 个应用照样能用，其余一概挡住。")
                         hasWhite ->
-                            "只按规则：只允许白名单里的 ${allowList.size} 个应用，其它一律挡住。"
+                            Loc.p("Rules only: only the ${allowList.size} whitelisted apps are allowed, everything else is blocked.", "只按规则：只允许白名单里的 ${allowList.size} 个应用，其它一律挡住。")
                         hasBlack ->
                             Loc.t("只按规则：没有白名单，所以按黑名单来——只有名单内的应用会被挡住，其余照常使用。")
                         else ->
@@ -290,7 +290,7 @@ fun SettingsScreen(
                 }
                 Text(
                     if (cfg.lock.beforeMin == 0) Loc.t("0 = 不提前提醒，到点直接锁。")
-                    else "锁机开始前 ${cfg.lock.beforeMin} 分钟提醒一次（每次锁机只提醒一次）。"
+                    else Loc.p("One reminder ${cfg.lock.beforeMin} min before a lock starts (once per lock).", "锁机开始前 ${cfg.lock.beforeMin} 分钟提醒一次（每次锁机只提醒一次）。")
                         + Loc.t("整机锁会打断导航、付款码这类事，留点收尾时间。"),
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
@@ -443,7 +443,7 @@ fun SettingsScreen(
                 }
                 Text(
                     if (cfg.sleep.unlockPrice == 0) Loc.t("价格 0 = 睡眠时段不开放积分解锁。")
-                    else "解锁一次要 ${SleepEngine.unlockPrice(cfg)} 分。",
+                    else Loc.p("One unlock costs ${SleepEngine.unlockPrice(cfg)} points.", "解锁一次要 ${SleepEngine.unlockPrice(cfg)} 分。"),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -473,7 +473,7 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text(Loc.t("打开分心事件"), fontSize = 14.sp)
                     Text(
-                        if (pending > 0) "日历 + 清单 · 还有 $pending 条没处理"
+                        if (pending > 0) Loc.p("Calendar + list · $pending still pending", "日历 + 清单 · 还有 $pending 条没处理")
                         else Loc.t("日历 + 清单 · 暂时没有欠账"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -656,7 +656,7 @@ fun SettingsScreen(
     if (pick != null) {
         AlertDialog(
             onDismissRequest = { resetPick = null },
-            title = { Text("恢复默认：${pick.title}") },
+            title = { Text(Loc.p("Restore defaults: ${pick.title}", "恢复默认：${pick.title}")) },
             text = {
                 Column {
                     Text(pick.desc, fontSize = 13.sp)
@@ -674,7 +674,7 @@ fun SettingsScreen(
                     Store.update { applyReset(it, pick) }
                     GuardService.sync(ctx)
                     resetPick = null
-                    toast(ctx, "已恢复：${pick.title}")
+                    toast(ctx, Loc.p("Restored: ${pick.title}", "已恢复：${pick.title}"))
                 }) { Text(Loc.t("恢复默认"), color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { resetPick = null }) { Text(Loc.t("取消")) } },
@@ -705,7 +705,7 @@ private fun SleepSegRow(
 ) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("第 ${index + 1} 段", Modifier.weight(1f), fontSize = 13.sp)
+            Text(Loc.p("Window ${index + 1}", "第 ${index + 1} 段"), Modifier.weight(1f), fontSize = 13.sp)
             Text(SleepEngine.fmtSegment(seg), fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
             if (canRemove) {
                 TextButton(onClick = onRemove) { Text(Loc.t("删除"), fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
@@ -801,7 +801,7 @@ private fun CloudSection(cfg: Config) {
                     } else {
                         ""
                     }
-                    "已上传 $name$hint"
+                    Loc.p("Uploaded $name$hint", "已上传 $name$hint")
                 }
             }
         }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
@@ -831,7 +831,7 @@ private fun CloudSection(cfg: Config) {
             var msg = doUpload()
             if (msg.startsWith(Loc.t("已上传"))) {
                 val pruned = pruneRemote()
-                if (pruned > 0) msg += "（清理旧备份 $pruned 份）"
+                if (pruned > 0) msg += Loc.p(" (removed $pruned old backups)", "（清理旧备份 $pruned 份）")
             }
             note(msg)
             busy = false
@@ -856,7 +856,7 @@ private fun CloudSection(cfg: Config) {
                         Loc.t("这份备份的内容本机都有了")
                     } else {
                         Store.update { out.config }
-                        "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
+                        Loc.p("Merged: ${out.stats.added} new rules, ${out.stats.slots} hourly slots added", "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段")
                     }
                 } else {
                     // 和桌面 config_replace_blocked 同一条纪律：自律时段里不能整份替换配置，
@@ -864,7 +864,7 @@ private fun CloudSection(cfg: Config) {
                     Portable.overwriteBlocked(base)?.let { return@withContext it }
                     val next = Portable.overwrite(parsed.doc, base)
                     Store.update { next }
-                    "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）"
+                    Loc.p("Overwritten from the ${entry.sourceLabel} backup (${next.rules.size} rules)", "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）")
                 }
             }.getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
         }
@@ -963,7 +963,7 @@ private fun CloudSection(cfg: Config) {
                         note(Loc.t("云端还没有备份。先点「上传本机」传一份，或者去桌面端「备份 → 云端」上传。"))
                     } else {
                         picked = e
-                        status = "云端最新：${e.sourceLabel} · ${e.timeLabel}"
+                        status = Loc.p("Latest in cloud: ${e.sourceLabel} · ${e.timeLabel}", "云端最新：${e.sourceLabel} · ${e.timeLabel}")
                     }
                 }
             }
@@ -1142,7 +1142,7 @@ private fun CloudSection(cfg: Config) {
             Spacer(Modifier.height(4.dp))
             ToggleRow(
                 Loc.t("回到应用时自动备份"),
-                "只在配置有改动时上传，覆盖 $AUTO_HINT 这一份，不会堆积",
+                Loc.p("Uploads only when config changed, overwriting the $AUTO_HINT copy instead of piling up", "只在配置有改动时上传，覆盖 $AUTO_HINT 这一份，不会堆积"),
                 cfg.cloud.auto,
                 divider = true,
             ) { v -> Store.update { it.copy(cloud = it.cloud.copy(auto = v)) } }
@@ -1211,7 +1211,7 @@ private fun CloudSection(cfg: Config) {
             title = { Text(Loc.t("删除云端这份备份？")) },
             text = {
                 Text(
-                    "${e.name} 会从网盘上删掉，本机配置不受影响。删了就找不回来了。",
+                    Loc.p("${e.name} will be deleted from the cloud; local config is untouched. Deletion cannot be undone.", "${e.name} 会从网盘上删掉，本机配置不受影响。删了就找不回来了。"),
                     fontSize = 12.sp,
                 )
             },
@@ -1223,7 +1223,7 @@ private fun CloudSection(cfg: Config) {
                         val msg = withContext(Dispatchers.IO) {
                             when (val r = CloudSync.delete(Store.current.cloud, e.name)) {
                                 is CloudSync.Outcome.Err -> r.message
-                                is CloudSync.Outcome.Ok -> "已删除 ${e.name}"
+                                is CloudSync.Outcome.Ok -> Loc.p("Deleted ${e.name}", "已删除 ${e.name}")
                             }
                         }
                         note(msg)

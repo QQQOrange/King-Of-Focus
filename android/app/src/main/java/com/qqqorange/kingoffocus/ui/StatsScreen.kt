@@ -341,7 +341,7 @@ fun StatsScreen(cfg: Config) {
             MetricCard(
                 Modifier.weight(1f),
                 Loc.t("次数"),
-                if (metrics.sessions > 0) "${metrics.sessions} 次" else "—",
+                if (metrics.sessions > 0) Loc.p("${metrics.sessions}×", "${metrics.sessions} 次") else "—",
                 if (metrics.sessions > 0) {
                     Loc.t("平均 ") + fmtDuration(metrics.avgSec) + Loc.t(" · 最长 ") + fmtDuration(metrics.longestSec)
                 } else {
@@ -352,7 +352,7 @@ fun StatsScreen(cfg: Config) {
             MetricCard(
                 Modifier.weight(1f),
                 Loc.t("时段"),
-                if (metrics.peakHour >= 0) "${metrics.peakHour} 点" else "—",
+                if (metrics.peakHour >= 0) Loc.p("${metrics.peakHour}:00", "${metrics.peakHour} 点") else "—",
                 if (metrics.firstMin >= 0) {
                     StatsMath.hhmm(metrics.firstMin) + "–" + StatsMath.hhmm(metrics.lastMin)
                 } else {
@@ -558,7 +558,7 @@ fun StatsScreen(cfg: Config) {
                             }
                         }
                         if (atHour.size > 6) {
-                            Text("…… 还有 ${atHour.size - 6} 项", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(Loc.p("… ${atHour.size - 6} more", "…… 还有 ${atHour.size - 6} 项"), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -570,7 +570,7 @@ fun StatsScreen(cfg: Config) {
         // 列**全部**条目（不只饼图那 8 项）：饼图超过 8 项会合成「其他」，
         // 而明细的职责恰恰是"把每一行都列清楚"。每行带三项指标里的时长与次数，
         // 点开再看这一项的连续使用段。
-        SectionTitle("耗时明细 · ${metrics.items.size} 项")
+        SectionTitle(Loc.p("Breakdown · ${metrics.items.size} items", "耗时明细 · ${metrics.items.size} 项"))
         Panel {
             if (metrics.items.isEmpty()) {
                 EmptyHint(Loc.t("这段时间没有记录"))
@@ -668,7 +668,7 @@ fun StatsScreen(cfg: Config) {
                 }) { Text(Loc.t("保存报告"), fontSize = 12.sp) }
                 var showArchive by remember { mutableStateOf(false) }
                 OutlinedButton(onClick = { showArchive = true }) {
-                    Text("已保存（${ReportStore.list().size}）", fontSize = 12.sp)
+                    Text(Loc.p("Saved (${ReportStore.list().size})", "已保存（${ReportStore.list().size}）"), fontSize = 12.sp)
                 }
                 if (showArchive) {
                     ReportArchiveDialog(ctx, onClose = { showArchive = false })
@@ -1397,7 +1397,7 @@ private fun DetailRow(
                 )
             } else {
                 Text(
-                    "共 ${spans.size} 段，合计约 " + fmtDuration(spans.sumOf { it.second.mins } * 60),
+                    Loc.p("${spans.size} blocks, about ", "共 ${spans.size} 段，合计约 ") + fmtDuration(spans.sumOf { it.second.mins } * 60),
                     fontSize = 10.5.sp,
                     color = cs.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
@@ -1412,12 +1412,12 @@ private fun DetailRow(
                         )
                         Text(StatsMath.fmtSpan(s), fontSize = 10.5.sp, color = cs.onSurface)
                         Spacer(Modifier.weight(1f))
-                        Text("${s.mins} 分", fontSize = 10.5.sp, color = cs.onSurfaceVariant)
+                        Text(Loc.p("${s.mins} min", "${s.mins} 分"), fontSize = 10.5.sp, color = cs.onSurfaceVariant)
                     }
                 }
                 if (spans.size > 40) {
                     Text(
-                        "…… 其余 ${spans.size - 40} 段未列出",
+                        Loc.p("… ${spans.size - 40} more blocks not listed", "…… 其余 ${spans.size - 40} 段未列出"),
                         fontSize = 10.sp,
                         color = cs.onSurfaceVariant,
                     )
@@ -1430,9 +1430,9 @@ private fun DetailRow(
 /** 小格子里的时长：80 秒 → `1分`，5400 秒 → `1.5时` */
 private fun fmtShort(sec: Int): String {
     if (sec <= 0) return ""
-    if (sec < 60) return "${sec}秒"
+    if (sec < 60) return Loc.p("${sec}s", "${sec}秒")
     val m = sec / 60
-    if (m < 60) return "${m}分"
+    if (m < 60) return Loc.p("${m} min", "${m}分")
     val h = m / 60f
     return if (h >= 10) "${h.toInt()}时" else String.format(Loc.t("%.1f时"), h)
 }
@@ -1468,8 +1468,8 @@ private fun PeerCard(peer: com.qqqorange.kingoffocus.data.PeerStats) {
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "最近 ${last7.size} 天：总 ${com.qqqorange.kingoffocus.core.fmtDuration(total)} · " +
-                "其中自律时段 ${com.qqqorange.kingoffocus.core.fmtDuration(on)}（$pct%）",
+            Loc.p("Last ${last7.size} days: total ", "最近 ${last7.size} 天：总 ${com.qqqorange.kingoffocus.core.fmtDuration(total)} · ") +
+                Loc.p("of which in-hours ", "其中自律时段 ${com.qqqorange.kingoffocus.core.fmtDuration(on)}（$pct%）"),
             fontSize = 11.5.sp,
         )
         val whenAt = peer.at

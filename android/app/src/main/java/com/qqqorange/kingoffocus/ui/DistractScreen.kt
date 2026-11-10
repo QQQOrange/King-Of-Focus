@@ -73,7 +73,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             Spacer(Modifier.width(2.dp))
             Text(Loc.t("分心事件"), fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            if (pending > 0) Pill("待处理 $pending", MaterialTheme.colorScheme.secondary)
+            if (pending > 0) Pill(Loc.p("$pending pending", "待处理 $pending"), MaterialTheme.colorScheme.secondary)
         }
         Text(
             Loc.t("专注时冒出的零散想法，先记下来就好。记下这个动作本身就算把它从脑子里搬出来了。"),
@@ -108,7 +108,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                     }
                 }) { Text("‹", fontSize = 16.sp) }
                 Text(
-                    if (view == "month") "${month.take(4)} 年 ${month.substring(5).toInt()} 月" else "${day} 那周",
+                    if (view == "month") Loc.p("${month.take(4)}-${month.substring(5)}", "${month.take(4)} 年 ${month.substring(5).toInt()} 月") else "${day} 那周",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f),
@@ -152,10 +152,10 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
         }
 
         // —— 当天清单 ——
-        SectionTitle("$day · 当天清单（${dayItems.size} 条）")
+        SectionTitle(Loc.p("$day · today's list (${dayItems.size})", "$day · 当天清单（${dayItems.size} 条）"))
         Panel {
             if (groups.isEmpty()) {
-                EmptyHint("这天还没有记录。\n专注时想到什么，在遮罩上点「记一笔」就行。")
+                EmptyHint(Loc.p("Nothing recorded this day.\\nWhen a thought pops up while focusing, tap “capture” on the cover.", "这天还没有记录。\n专注时想到什么，在遮罩上点「记一笔」就行。"))
             } else {
                 groups.forEachIndexed { gi, g ->
                     if (gi > 0) Spacer(Modifier.height(10.dp))
@@ -164,7 +164,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                     if (gGoal.isNotBlank()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "目标：$gGoal",
+                                Loc.p("Goal: $gGoal", "目标：$gGoal"),
                                 fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -199,7 +199,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                                 .background(MaterialTheme.colorScheme.surfaceVariant),
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("${g.items.size} 条", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(Loc.p("${g.items.size} items", "${g.items.size} 条"), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     g.items.forEach { row -> ItemRow(row) }
                 }
@@ -207,7 +207,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                 if (doneCount > 0) {
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = { DistractStore.clearDone(day) }) {
-                        Text("清掉这天的已完成（$doneCount 条）", fontSize = 12.sp)
+                        Text(Loc.p("Clear ${doneCount} done items for this day", "清掉这天的已完成（$doneCount 条）"), fontSize = 12.sp)
                     }
                 }
             }
@@ -270,7 +270,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             )
             Text(
                 if (cfg.distract.remindMinutes == 0) Loc.t("0 = 只在时段结束时提醒一次")
-                else "时段结束后每 ${cfg.distract.remindMinutes} 分钟提醒一次未完成项",
+                else Loc.p("Remind about pending items every ${cfg.distract.remindMinutes} min after a block ends", "时段结束后每 ${cfg.distract.remindMinutes} 分钟提醒一次未完成项"),
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -306,7 +306,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                 )
             } else {
                 Text(
-                    "共 $total 次。次数最多的那一个，就是最值得关掉的那一个。",
+                    Loc.p("$total times in all. The one at the top is the one most worth turning off.", "共 $total 次。次数最多的那一个，就是最值得关掉的那一个。"),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -334,7 +334,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                             Spacer(Modifier.width(8.dp))
                         }
                         Text(
-                            "${h.n} 次",
+                            Loc.p("${h.n}×", "${h.n} 次"),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -515,7 +515,7 @@ private fun WeekRow(
                     .padding(vertical = 7.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("周$w", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(Loc.p("W$w", "周$w"), fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     "${d.dayOfMonth}",
                     fontSize = 14.sp,
