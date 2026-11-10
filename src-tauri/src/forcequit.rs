@@ -45,8 +45,6 @@ const HC_ACTION: i32 = 0;
 const WM_KEYDOWN: u32 = 0x0100;
 const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_HOTKEY: u32 = 0x0312;
-const WM_QUIT: u32 = 0x0012;
-const PM_REMOVE: u32 = 0x0001;
 const PM_NOREMOVE: u32 = 0x0000;
 /// 自定义消息：钩子命中后用它唤醒主循环（WM_APP 起点，避免和系统消息撞车）
 const WM_APP_FORCE: u32 = 0x8000 + 0x4F;

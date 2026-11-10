@@ -35,15 +35,6 @@ pub fn test_dir() -> PathBuf {
     d
 }
 
-/// 当前生效的数据目录
-pub fn current_dir() -> PathBuf {
-    if on() {
-        test_dir()
-    } else {
-        prod_dir()
-    }
-}
-
 /// 进入测试模式：用当前配置做一份"测试配置"的起点
 pub fn enter() -> Result<(), String> {
     let td = test_dir();

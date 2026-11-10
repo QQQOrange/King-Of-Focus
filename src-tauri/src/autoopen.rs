@@ -86,7 +86,6 @@ extern "system" {
     fn GetWindowLongW(h: Hwnd, idx: i32) -> i32;
 }
 
-const SW_SHOWNORMAL: i32 = 1;
 const SW_MINIMIZE: i32 = 6;
 const SW_RESTORE: i32 = 9;
 const SW_MAXIMIZE: i32 = 3;

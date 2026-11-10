@@ -378,20 +378,6 @@ fn ext_info_json() -> Value {
     })
 }
 
-fn mask_secret(s: &str) -> String {
-    let t = s.trim();
-    if t.is_empty() {
-        return String::new();
-    }
-    let n = t.chars().count();
-    if n <= 8 {
-        return "••••••••".into();
-    }
-    let head: String = t.chars().take(4).collect();
-    let tail: String = t.chars().skip(n - 4).collect();
-    format!("{head}••••••••{tail}")
-}
-
 /// 当前所有有可见窗口的程序（给"选择目标窗口 / 添加应用"用）
 /// 和 browsers_scan 同理：枚举窗口 + 读进程名是阻塞操作，不能放在 UI 线程上
 #[tauri::command]
@@ -2395,11 +2381,17 @@ pub fn focus_goal_set(shared: State<'_, Arc<Shared>>, text: String) -> Result<Va
 }
 
 /// 给某一段的目标打勾（done / partial / missed；空串 = 撤销）
+///
+/// 标成 done 会立刻发奖励分，返回里带 `bonus`，界面据此提示「目标完成 +5 分」。
 #[tauri::command]
-pub fn focus_goal_state(seg: i64, state: String) -> Result<Value, String> {
-    let g = crate::focus::set_state(seg, &state)?;
+pub fn focus_goal_state(
+    shared: State<'_, Arc<Shared>>,
+    seg: i64,
+    state: String,
+) -> Result<Value, String> {
+    let (g, bonus) = crate::focus::set_state(&shared, seg, &state)?;
     crate::rhythm::invalidate();
-    Ok(json!(g))
+    Ok(json!({ "goal": g, "bonus": bonus }))
 }
 
 // ---------------- 分心事件 ----------------

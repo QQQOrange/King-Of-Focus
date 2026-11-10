@@ -166,7 +166,36 @@ pub fn valid_state(s: &str) -> bool {
 ///
 /// 只允许改**有目标**的段：没写目标的段没有"做没做完"可言，
 /// 给它记一个状态只会让完成率变成假的。
-pub fn set_state(seg: i64, state: &str) -> Result<Goal, String> {
+/// 目标做完的奖励分（固定值，不进配置）。
+///
+/// 为什么固定而不是可配置：可配置就得改 `Settings`/`Points` 的序列化结构，
+/// 而那是跨端备份格式的一部分——为一个整数改动 wire format，两边都要跟着改，
+/// 收益远小于风险。真要放开，等下次动格式时一起做。
+pub const GOAL_BONUS: i64 = 5;
+
+/// 状态变化该发多少分（正数=奖励，负数=撤销奖励，0=不变）。
+///
+/// 只按"进入/离开 done"这一条边算：
+///   · ""/partial/missed → done：+5
+///   · done → 其它：-5（撤销，防止"done→改回→done"反复刷分）
+///   · done → done：0
+///
+/// 抽成纯函数是为了能直接断言——积分是钱，不能靠"读一遍逻辑觉得对"。
+pub fn bonus_for(prev: &str, next: &str) -> i64 {
+    let was = prev == "done";
+    let now = next == "done";
+    match (was, now) {
+        (false, true) => GOAL_BONUS,
+        (true, false) => -GOAL_BONUS,
+        _ => 0,
+    }
+}
+
+/// 给某一段的目标打勾。
+///
+/// 标记"做完"会立刻发奖励分（`GOAL_BONUS`），并返回这次发了多少，
+/// 界面据此提示。撤销（done → 其它）会把奖励扣回去。
+pub fn set_state(shared: &Shared, seg: i64, state: &str) -> Result<(Goal, i64), String> {
     if seg <= 0 {
         return Err("这一段的编号不对".into());
     }
@@ -177,12 +206,23 @@ pub fn set_state(seg: i64, state: &str) -> Result<Goal, String> {
     let Some(g) = st.goals.iter_mut().find(|x| x.seg == seg) else {
         return Err("这一段没有写目标，先写一句再标记".into());
     };
+    let bonus = bonus_for(&g.state, state);
     g.state = state.to_string();
     let out = g.clone();
     save(&st)?;
     goal_cache_clear();
     brief_invalidate();
-    Ok(out)
+    if bonus > 0 {
+        shared.add_points(bonus);
+    } else if bonus < 0 {
+        // 只扣余额，不回退 total_earned：
+        // 累计获得是"曾经赚到过"的记录，而撤销只是把这次奖励还回去。
+        let _ = shared.update_config(|c| {
+            c.points.balance = (c.points.balance + bonus).max(0);
+            Ok(())
+        });
+    }
+    Ok((out, bonus))
 }
 
 /// 某一段的判定（没写目标 / 没答 → 空串）
@@ -798,5 +838,19 @@ mod tests {
             .unwrap();
         let (_, _, label) = distract::segment_bounds(&c, at).expect("9:10 在时段里");
         assert_eq!(label, "09:00–10:00");
+    }
+    #[test]
+    fn 目标完成只奖励一次() {
+        // 从"没答"到 done：+5
+        assert_eq!(super::bonus_for("", "done"), super::GOAL_BONUS);
+        // 已经是 done 再点一次：不再发
+        assert_eq!(super::bonus_for("done", "done"), 0);
+        // 撤销：扣回
+        assert_eq!(super::bonus_for("done", "missed"), -super::GOAL_BONUS);
+        assert_eq!(super::bonus_for("done", "partial"), -super::GOAL_BONUS);
+        // 没做成 / 一半 → done：照发（用户后来补上了）
+        assert_eq!(super::bonus_for("missed", "done"), super::GOAL_BONUS);
+        // 与 done 无关的迁移：0
+        assert_eq!(super::bonus_for("partial", "missed"), 0);
     }
 }

@@ -10379,13 +10379,17 @@ document.addEventListener('click', async (e) => {
     // 再点一次同一个 = 撤销（填错、或者想重新判断一次）
     const state = (Number(el.dataset.on) === 1) ? '' : now;
     try {
-      await invoke('focus_goal_state', { seg, state });
+      // 后端在"变成 done"时会发奖励分，返回 { goal, bonus }
+      const r = await invoke('focus_goal_state', { seg, state });
+      const bonus = (r && Number(r.bonus)) || 0;
       await pull();
       render();
-      toast(state === 'done' ? '记下了：这一段做完了'
+      const base = state === 'done' ? '记下了：这一段做完了'
         : state === 'partial' ? '记下了：做了一半'
-        : state === 'missed' ? '记下了：这一段没做成。下次把目标切小一点。'
-        : '已撤销判定', 'ok');
+          : state === 'missed' ? '记下了：这一段没做成。下次把目标切小一点。'
+            : '已撤销判定';
+      const tail = bonus > 0 ? ` · +${bonus} 分` : bonus < 0 ? ` · ${bonus} 分` : '';
+      toast(base + tail, 'ok');
     } catch (e) { toast(String(e).replace(/^Error:\s*/, ''), 'err'); }
     return;
   }

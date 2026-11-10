@@ -385,12 +385,6 @@ pub fn warm_start() {
     });
 }
 
-pub fn clear_cache() {
-    if let Ok(mut g) = CACHE.lock() {
-        *g = None;
-    }
-}
-
 /* ---------------- 路径与探测 ---------------- */
 
 fn env_path(k: &str) -> Option<PathBuf> {
@@ -487,18 +481,6 @@ fn user_data(d: &Def) -> Option<PathBuf> {
 }
 
 /* ---------------- 扩展判定 ---------------- */
-
-/// "加载已解压的扩展程序"装进来的扩展，Chromium 只在 `extensions.settings` 里写
-/// `path` / `location` / `state`，**不写 `manifest` 字段**。
-/// 实测（Edge 129，location=4）整个条目长这样：
-/// `{"location":4,"path":"D:\\software\\myself\\extension","state":1}`
-/// 于是只按 `manifest.name` / 路径关键词匹配的老逻辑会把它判成"未安装"——
-/// 这正是"明明装了插件，软件还说插件未安装"的根因。
-///
-/// 修法：`path` 指向的目录里就有真正的 `manifest.json`，直接读它。
-fn manifest_name_at(dir: &Path) -> String {
-    meta_at(dir).name
-}
 
 /// 从目录里的 manifest.json 读「展示名 + 版本」。
 ///
@@ -968,11 +950,6 @@ pub(crate) fn def_by_exe(name: &str) -> Option<&'static Def> {
 /// 每隔一轮强杀一次。这里把它排除掉。
 pub fn is_unpatchable_browser(name: &str) -> bool {
     matches!(def_by_exe(name).map(|d| d.family), Some(Family::Firefox))
-}
-
-pub fn info_for_exe(name: &str) -> Option<BrowserInfo> {
-    let d = def_by_exe(name)?;
-    scan(false).into_iter().find(|b| b.key == d.key)
 }
 
 /* ---------------- 安装引导 ---------------- */

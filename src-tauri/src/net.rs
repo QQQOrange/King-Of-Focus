@@ -82,11 +82,6 @@ pub fn get_text(url: &str, auth: Option<&str>, accept: Option<&str>) -> Result<S
     }
 }
 
-pub fn get_json(url: &str, auth: Option<&str>) -> Result<Value, String> {
-    let body = get_text(url, auth, Some("application/vnd.github+json"))?;
-    serde_json::from_str::<Value>(&body).map_err(|e| format!("响应不是合法 JSON：{e}"))
-}
-
 /// 带自定义超时的 GET 文本（更新检测用：连不上就快速失败，别让用户干等）
 pub fn get_text_t(
     url: &str,

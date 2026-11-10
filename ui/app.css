@@ -333,6 +333,17 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 .badge.green { background: rgba(53, 208, 127, .14); color: var(--green); }
 .badge.blue { background: rgba(91, 140, 255, .14); color: var(--blue); }
 
+/* ── 色盲友好：状态不能只靠颜色 ──────────────────────────────
+ * 红/绿在红绿色盲眼里几乎一样，而这两个颜色恰好承载"成功 / 失败"。
+ * 给绿加 ✓、红加 ✕、警告加 !，形状本身就能读出来；颜色仍在，视觉不变。
+ * 用 ::before 而不改 HTML：几十处调用点一个都不用动。
+ * 间距用 em，跟着字号缩放，不会在不同大小的徽标里错位。 */
+.badge.green::before { content: '✓'; margin-right: .35em; font-weight: 700; }
+.badge.red::before { content: '✕'; margin-right: .35em; font-weight: 700; }
+.badge.gold::before { content: '!'; margin-right: .35em; font-weight: 700; }
+.dx-st.done::before { content: '✓ '; }
+.dx-st.missed::before { content: '✕ '; }
+
 .empty {
   text-align: center; color: var(--text-3); font-size: 12.5px;
   padding: 38px 12px; line-height: 2;

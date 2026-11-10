@@ -300,19 +300,6 @@ pub fn minimize(hwnd: isize) -> bool {
     }
 }
 
-/// 这个窗口现在是不是最小化状态（判断"我们收起来的那一块"有没有被用户点开）。
-///
-/// 句柄失效 / 窗口已销毁 → false：调用方会把它当成"已经不是停放状态"，
-/// 于是按常规拦截处理，不会留一个永久豁免的口子。
-pub fn is_minimized(hwnd: isize) -> bool {
-    unsafe {
-        if hwnd == 0 || IsWindow(hwnd as Hwnd) == 0 {
-            return false;
-        }
-        IsIconic(hwnd as Hwnd) != 0
-    }
-}
-
 unsafe extern "system" fn by_pid_cb(hwnd: Hwnd, lparam: isize) -> i32 {
     let (pid_target, out) = &mut *(lparam as *mut (u32, Vec<Hwnd>));
     if IsWindowVisible(hwnd) == 0 {
