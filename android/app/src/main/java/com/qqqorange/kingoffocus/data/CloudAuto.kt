@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.data
 import android.content.Context
 import android.os.Build
 import com.qqqorange.kingoffocus.appVersion
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 自动备份 —— 「同步」里省事的那一半。
@@ -50,10 +51,10 @@ object CloudAuto {
                     val body = Portable.seal(Portable.render(doc), cur.backup.password)
                     when (val r = CloudSync.put(cur.cloud, CloudSync.AUTO_NAME, body)) {
                         is CloudSync.Outcome.Err -> r.message
-                        is CloudSync.Outcome.Ok -> "已自动备份（" + stamp() + "）"
+                        is CloudSync.Outcome.Ok -> Loc.p("Auto-backed up (", Loc.p("Auto-backed up (", Loc.p("Auto-backed up (", "已自动备份（"))) + stamp() + "）"
                     }
                 }
-            }.getOrElse { "自动备份失败：${it.message ?: "未知错误"}" }
+            }.getOrElse { Loc.p("Auto backup failed: ${it.message ?: "unknown error"}", Loc.p("Auto backup failed: ${it.message ?: "unknown error"}", Loc.p("Auto backup failed: ${it.message ?: "unknown error"}", "自动备份失败：${it.message ?: "未知错误"}"))) }
 
             if (msg != null) {
                 Store.update { c ->

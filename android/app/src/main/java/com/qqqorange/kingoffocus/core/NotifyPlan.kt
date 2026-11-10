@@ -1,5 +1,7 @@
 package com.qqqorange.kingoffocus.core
 
+import com.qqqorange.kingoffocus.ui.Loc
+
 /**
  * 通知的判定规则（纯函数，可单测）。
  *
@@ -12,14 +14,14 @@ object NotifyPlan {
      * 阶段切换 → 该不该发「完成」通知，发的话标题是什么。
      *
      * `prev == null` = 刚启动或刚进入时段，**不算完成**：
-     * 用户打开应用时看到一条"专注完成"只会莫名其妙。
+     * 用户打开应用时看到一条Loc.t("专注完成")只会莫名其妙。
      * `prev == cur` = 同一阶段内的时间流逝，也不是完成。
      */
     fun completeTitle(prevInBreak: Boolean?, inBreak: Boolean): String? = when {
         prevInBreak == null -> null
         prevInBreak == inBreak -> null
-        inBreak -> "专注完成"
-        else -> "休息结束"
+        inBreak -> Loc.t("专注完成")
+        else -> Loc.t("休息结束")
     }
 
     /**
@@ -67,9 +69,9 @@ object NotifyPlan {
     fun preAlertText(secondsToStart: Long, sleep: Boolean = false): String {
         val mins = ((secondsToStart.coerceAtLeast(0) + 59) / 60).coerceAtLeast(1)
         return if (sleep) {
-            "还有 $mins 分钟进入睡眠时段，整台手机会先锁上。"
+            Loc.p("Sleep hours start in $mins min; the whole phone will be locked first.", Loc.p("Sleep hours start in $mins min; the whole phone will be locked first.", Loc.p("Sleep hours start in $mins min; the whole phone will be locked first.", "还有 $mins 分钟进入睡眠时段，整台手机会先锁上。")))
         } else {
-            "还有 $mins 分钟进入锁机时段，先把手上的事收个尾。"
+            Loc.p("The lock starts in $mins min — wrap up what you are doing.", Loc.p("The lock starts in $mins min — wrap up what you are doing.", Loc.p("The lock starts in $mins min — wrap up what you are doing.", "还有 $mins 分钟进入锁机时段，先把手上的事收个尾。")))
         }
     }
 

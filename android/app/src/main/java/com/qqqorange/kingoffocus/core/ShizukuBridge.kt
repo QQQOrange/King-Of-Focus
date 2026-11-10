@@ -8,6 +8,7 @@ import android.util.Log
 import com.qqqorange.kingoffocus.shell.IShell
 import com.qqqorange.kingoffocus.shell.ShellService
 import rikka.shizuku.Shizuku
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * Shizuku 通道：借 shell 权限做**无障碍做不到**的事。
@@ -60,7 +61,7 @@ object ShizukuBridge {
     fun request(ctx: Context) {
         bindListeners()
         if (!available()) {
-            toastHint(ctx, "Shizuku 没在运行：请先打开 Shizuku 应用并启动服务")
+            toastHint(ctx, Loc.p("Shizuku is not running: open the Shizuku app and start the service first", Loc.p("Shizuku is not running: open the Shizuku app and start the service first", Loc.p("Shizuku is not running: open the Shizuku app and start the service first", "Shizuku 没在运行：请先打开 Shizuku 应用并启动服务"))))
             return
         }
         if (granted()) {

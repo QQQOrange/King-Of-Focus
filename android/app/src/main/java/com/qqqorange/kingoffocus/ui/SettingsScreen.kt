@@ -766,7 +766,7 @@ private fun CloudSection(cfg: Config) {
         status = Loc.t("读取云端…")
         val r = withContext(Dispatchers.IO) {
             runCatching { CloudSync.list(Store.current.cloud) }
-                .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
+                .getOrElse { CloudSync.Outcome.Err(Loc.p("Error: ${it.message ?: "unknown error"}", Loc.p("Error: ${it.message ?: "unknown error"}", Loc.p("Error: ${it.message ?: "unknown error"}", "出错：${it.message ?: "未知错误"}")))) }
         }
         when (r) {
             is CloudSync.Outcome.Err -> note(r.message)
@@ -804,7 +804,7 @@ private fun CloudSection(cfg: Config) {
                     Loc.p("Uploaded $name$hint", "已上传 $name$hint")
                 }
             }
-        }.getOrElse { "上传失败：${it.message ?: "未知错误"}" }
+        }.getOrElse { Loc.p("Upload failed: ${it.message ?: "unknown error"}", Loc.p("Upload failed: ${it.message ?: "unknown error"}", Loc.p("Upload failed: ${it.message ?: "unknown error"}", "上传失败：${it.message ?: "未知错误"}"))) }
     }
 
     /**
@@ -866,7 +866,7 @@ private fun CloudSection(cfg: Config) {
                     Store.update { next }
                     Loc.p("Overwritten from the ${entry.sourceLabel} backup (${next.rules.size} rules)", "已用${entry.sourceLabel}的备份覆盖本机（${next.rules.size} 条规则）")
                 }
-            }.getOrElse { "恢复失败：${it.message ?: "未知错误"}" }
+            }.getOrElse { Loc.p("Restore failed: ${it.message ?: "unknown error"}", Loc.p("Restore failed: ${it.message ?: "unknown error"}", Loc.p("Restore failed: ${it.message ?: "unknown error"}", "恢复失败：${it.message ?: "未知错误"}"))) }
         }
 
     fun restore(entry: CloudSync.Entry, mode: String) {
@@ -898,7 +898,7 @@ private fun CloudSection(cfg: Config) {
                 runCatching {
                     val c = Store.current
                     when (val r = CloudSync.list(c.cloud)) {
-                        is CloudSync.Outcome.Err -> Triple("err", null, "同步失败：${r.message}")
+                        is CloudSync.Outcome.Err -> Triple("err", null, Loc.p("Sync failed: ${r.message}", Loc.p("Sync failed: ${r.message}", Loc.p("Sync failed: ${r.message}", "同步失败：${r.message}"))))
                         is CloudSync.Outcome.Ok -> {
                             val latest = CloudSync.latest(r.entries)
                             when {
@@ -910,7 +910,7 @@ private fun CloudSection(cfg: Config) {
                         }
                     }
                 }.getOrElse {
-                    Triple("err", null, "同步失败：${it.message ?: "未知错误"}")
+                    Triple("err", null, Loc.p("Sync failed: ${it.message ?: "unknown error"}", Loc.p("Sync failed: ${it.message ?: "unknown error"}", Loc.p("Sync failed: ${it.message ?: "unknown error"}", "同步失败：${it.message ?: "未知错误"}"))))
                 }
             }
             val msg = when (probe.first) {
@@ -950,7 +950,7 @@ private fun CloudSection(cfg: Config) {
             status = Loc.t("读取云端…")
             val r = withContext(Dispatchers.IO) {
                 runCatching { CloudSync.list(Store.current.cloud) }
-                    .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
+                    .getOrElse { CloudSync.Outcome.Err(Loc.p("Error: ${it.message ?: "unknown error"}", Loc.p("Error: ${it.message ?: "unknown error"}", Loc.p("Error: ${it.message ?: "unknown error"}", "出错：${it.message ?: "未知错误"}")))) }
             }
             busy = false
             when (r) {

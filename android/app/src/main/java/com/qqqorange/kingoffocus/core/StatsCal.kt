@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
+import com.qqqorange.kingoffocus.ui.Loc
 
 /** 日历里的一天里的一项（周/月网格用，与桌面 `CalItem` 同义） */
 data class CalItem(
@@ -114,7 +115,7 @@ object StatsCal {
             out.add(
                 Slice(
                     key = "__rest",
-                    label = "其他 ${rest.size} 项",
+                    label = Loc.p("${rest.size} others", Loc.p("${rest.size} others", Loc.p("${rest.size} others", "其他 ${rest.size} 项"))),
                     secs = rest.sumOf { it.second },
                     colorSlot = limit,
                 ),

@@ -8,6 +8,7 @@ import java.net.Socket
 import java.net.URL
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 极简 HTTP/1.1 客户端 —— 存在的唯一理由是：**要发 `PROPFIND`**。
@@ -100,9 +101,9 @@ internal object HttpRaw {
 
             val input = BufferedInputStream(s.getInputStream())
             val status = readLine(input)
-                ?: throw IllegalStateException("服务器没有返回任何内容")
+                ?: throw IllegalStateException(Loc.p("The server returned nothing", Loc.p("The server returned nothing", "服务器没有返回任何内容")))
             val code = status.split(' ').getOrNull(1)?.toIntOrNull()
-                ?: throw IllegalStateException("看不懂服务器返回的状态行：$status")
+                ?: throw IllegalStateException(Loc.p("Unreadable status line from the server: $status", Loc.p("Unreadable status line from the server: $status", "看不懂服务器返回的状态行：$status")))
 
             val hs = LinkedHashMap<String, String>()
             while (true) {
@@ -147,7 +148,7 @@ internal object HttpRaw {
         val len = headers["content-length"]?.toLongOrNull()
         if (len != null) {
             if (len <= 0) return ""
-            if (len > 16L * 1024 * 1024) throw IllegalStateException("响应太大（$len 字节）")
+            if (len > 16L * 1024 * 1024) throw IllegalStateException(Loc.p("Response too large ($len bytes)", Loc.p("Response too large ($len bytes)", "响应太大（$len 字节）")))
             return String(readN(input, len.toInt()), Charsets.UTF_8)
         }
         // 没有长度也没有 chunked：读到断开为止（我们发的就是 Connection: close）

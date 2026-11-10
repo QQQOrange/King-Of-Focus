@@ -1,6 +1,7 @@
 package com.qqqorange.kingoffocus.data
 
 import kotlinx.serialization.Serializable
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 一小时里的一个窗口：`[from, to)` 分钟。
@@ -174,7 +175,7 @@ data class NotifyCfg(
 @Serializable
 data class OverlayCfg(
     val blockEnabled: Boolean = true,
-    val message: String = "这段时间在自律中，这个应用不在允许范围内。",
+    val message: String = Loc.t("这段时间在自律中，这个应用不在允许范围内。"),
     /** 允许在拦截页上直接结束这一段（Android 端无法真正阻止，做成显式按钮更诚实） */
     val allowStop: Boolean = false,
 )
@@ -565,7 +566,7 @@ private fun migrateLockAllow(rules: List<Rule>, allow: List<String>): List<Rule>
     if (i < 0) {
         return rules + Rule(
             id = LOCK_ALLOW_RULE_ID,
-            name = "允许的应用",
+            name = Loc.t("允许的应用"),
             enabled = true,
             mode = "whitelist",
             packages = want,
@@ -622,7 +623,7 @@ fun normalize(cfg: Config): Config {
         listOf(
             SchedulePlan(
                 id = "plan-default",
-                name = "默认方案",
+                name = Loc.t("默认方案"),
                 days = days,
                 defWork = cfg.defWork.coerceIn(1, 59),
                 defBrk = cfg.defBrk.coerceIn(0, 59),

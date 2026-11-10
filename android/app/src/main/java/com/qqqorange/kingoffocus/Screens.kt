@@ -41,13 +41,13 @@ internal fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onCo
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择应用") },
+        title = { Text(Loc.t("选择应用")) },
         text = {
             Column {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    label = { Text("搜索") },
+                    label = { Text(Loc.t("搜索")) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -83,7 +83,7 @@ internal fun AppPickerDialog(selected: List<String>, onDismiss: () -> Unit, onCo
         confirmButton = {
             TextButton(onClick = { onConfirm(picked.value.toList()) }) { Text(Loc.p("OK (${picked.value.size})", "确定（${picked.value.size}）")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(Loc.t("取消")) } },
     )
 }
 

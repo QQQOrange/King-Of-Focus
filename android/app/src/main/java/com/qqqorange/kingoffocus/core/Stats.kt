@@ -16,6 +16,7 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 一段**连续使用**：当天的分钟数（`0..1440`，`t` 不含）。
@@ -530,12 +531,12 @@ object StatsMath {
 /** `1 小时 23 分` */
 fun fmtDuration(sec: Int): String {
     val s = sec.coerceAtLeast(0)
-    if (s < 60) return "${s} 秒"
+    if (s < 60) return Loc.p("${s}s", Loc.p("${s}s", Loc.p("${s}s", "${s} 秒")))
     val m = s / 60
-    if (m < 60) return "${m} 分钟"
+    if (m < 60) return Loc.p("${m} min", Loc.p("${m} min", Loc.p("${m} min", "${m} 分钟")))
     val h = m / 60
     val mm = m % 60
-    return if (mm == 0) "${h} 小时" else "${h} 小时 ${mm} 分"
+    return if (mm == 0) Loc.p("${h}h", Loc.p("${h}h", Loc.p("${h}h", "${h} 小时"))) else Loc.p("${h}h ${mm}m", Loc.p("${h}h ${mm}m", Loc.p("${h}h ${mm}m", "${h} 小时 ${mm} 分")))
 }
 
 /**

@@ -201,12 +201,12 @@ internal fun BackupSection(cfg: Config) {
             }
             val n = Store.current.rules.size
             status = if (pass.isBlank()) {
-                "已导出 $n 条规则（明文文件，请妥善保管）"
+                Loc.p("Exported $n rules (plain text file — keep it safe)", Loc.p("Exported $n rules (plain text file — keep it safe)", Loc.p("Exported $n rules (plain text file — keep it safe)", "已导出 $n 条规则（明文文件，请妥善保管）")))
             } else {
-                "已导出 $n 条规则（密码加密）"
+                Loc.p("Exported $n rules (password-encrypted)", Loc.p("Exported $n rules (password-encrypted)", Loc.p("Exported $n rules (password-encrypted)", "已导出 $n 条规则（密码加密）")))
             }
         } catch (e: Exception) {
-            status = "导出失败：${e.message ?: "未知错误"}"
+            status = Loc.p("Export failed: ${e.message ?: "unknown error"}", Loc.p("Export failed: ${e.message ?: "unknown error"}", Loc.p("Export failed: ${e.message ?: "unknown error"}", "导出失败：${e.message ?: "未知错误"}")))
         } finally {
             busy = false
         }
@@ -229,15 +229,15 @@ internal fun BackupSection(cfg: Config) {
                     } else {
                         val st = out.stats
                         Store.update { out.config }
-                        "合并完成：新增 ${st.added} 条规则，跳过 ${st.skipped} 条，" +
-                            "冲突 ${st.conflict} 条，补上 ${st.slots} 个小时段"
+                        Loc.p("Merged: ${st.added} rules added, ${st.skipped} skipped,", Loc.p("Merged: ${st.added} rules added, ${st.skipped} skipped,", Loc.p("Merged: ${st.added} rules added, ${st.skipped} skipped,", "合并完成：新增 ${st.added} 条规则，跳过 ${st.skipped} 条，"))) +
+                            Loc.p(" ${st.conflict} conflicts, ${st.slots} hourly slots filled in", Loc.p(" ${st.conflict} conflicts, ${st.slots} hourly slots filled in", Loc.p(" ${st.conflict} conflicts, ${st.slots} hourly slots filled in", "冲突 ${st.conflict} 条，补上 ${st.slots} 个小时段")))
                     }
                 } else {
                     // 自律时段里不许整份替换配置（与桌面同一道闸）
                     Portable.overwriteBlocked(base)?.let { return@withContext it }
                     val next = Portable.overwrite(parsed.doc, base)
                     Store.update { next }
-                    "已覆盖：现在有 ${next.rules.size} 条规则" +
+                    Loc.p("Overwritten: ${next.rules.size} rules now", Loc.p("Overwritten: ${next.rules.size} rules now", Loc.p("Overwritten: ${next.rules.size} rules now", "已覆盖：现在有 ${next.rules.size} 条规则"))) +
                         if (parsed.legacy) Loc.t("（旧版备份，整份恢复）") else ""
                 }
             }
@@ -245,7 +245,7 @@ internal fun BackupSection(cfg: Config) {
             // 规则和时段可能整批换了，守护服务要按新配置重来一遍
             if (GuardService.shouldRun(Store.current)) runCatching { GuardService.start(ctx) }
         } catch (e: Exception) {
-            status = "恢复失败：${e.message ?: "未知错误"}"
+            status = Loc.p("Restore failed: ${e.message ?: "unknown error"}", Loc.p("Restore failed: ${e.message ?: "unknown error"}", Loc.p("Restore failed: ${e.message ?: "unknown error"}", "恢复失败：${e.message ?: "未知错误"}")))
         } finally {
             busy = false
         }
@@ -380,7 +380,7 @@ internal fun UpdateSection(cfg: Config) {
             // 兜底：检查里任何没被接住的异常都不能让 busy 永远卡住
             android.util.Log.e("KofUpdate", Loc.t("检查更新时出错"), e)
             UpdateHub.busy.value = false
-            setStatus("更新失败：${e.message}", true)
+            setStatus(Loc.p("Update failed: ${e.message}", Loc.p("Update failed: ${e.message}", Loc.p("Update failed: ${e.message}", "更新失败：${e.message}"))), true)
             return@launch
         }
         val q = withContext(Dispatchers.IO) { UpdateClient.quota(token) }
@@ -407,7 +407,7 @@ internal fun UpdateSection(cfg: Config) {
         }
         UpdateHub.busy.value = true
         progress = 0
-        setStatus("正在下载 ${r.file}…")
+        setStatus(Loc.p("Downloading ${r.file}…", Loc.p("Downloading ${r.file}…", Loc.p("Downloading ${r.file}…", "正在下载 ${r.file}…"))))
         try {
             val dest = File(ctx.cacheDir, "updates/${r.file}")
             withContext(Dispatchers.IO) {
@@ -421,7 +421,7 @@ internal fun UpdateSection(cfg: Config) {
             setStatus(Loc.t("下载完成，正在打开系统安装器…"))
             installApk(ctx, dest)
         } catch (e: Exception) {
-            setStatus("更新失败：${e.message}", true)
+            setStatus(Loc.p("Update failed: ${e.message}", Loc.p("Update failed: ${e.message}", Loc.p("Update failed: ${e.message}", "更新失败：${e.message}"))), true)
         } finally {
             UpdateHub.busy.value = false
             progress = 0
@@ -540,7 +540,7 @@ internal fun UpdateSection(cfg: Config) {
     }
     Text(
         if (cfg.update.quotaLimit > 0) {
-            "API 配额：剩余 ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} 次（每小时）"
+            Loc.p("API quota: ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} left (per hour)", Loc.p("API quota: ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} left (per hour)", Loc.p("API quota: ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} left (per hour)", "API 配额：剩余 ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} 次（每小时）")))
         } else {
             Loc.t("API 配额：还没查过（检查一次更新就会一并查询）")
         },
@@ -581,9 +581,9 @@ internal fun UpdateSection(cfg: Config) {
         // ---- 已是最新 ----
         !r.hasUpdate -> Text(
             if (r.latest.isNotEmpty() && r.latest == skipped) {
-                "已跳过 v${r.latest}（有新版本时还会提醒）"
+                Loc.p("v${r.latest} skipped (you will still be told about newer versions)", Loc.p("v${r.latest} skipped (you will still be told about newer versions)", Loc.p("v${r.latest} skipped (you will still be told about newer versions)", "已跳过 v${r.latest}（有新版本时还会提醒）")))
             } else {
-                "已经是最新版本 v$current"
+                Loc.p("Already on the latest version v$current", Loc.p("Already on the latest version v$current", Loc.p("Already on the latest version v$current", "已经是最新版本 v$current")))
             },
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -592,7 +592,7 @@ internal fun UpdateSection(cfg: Config) {
         // ---- 有新版本 ----
         else -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("发现新版本 v${r.latest}", fontWeight = FontWeight.SemiBold)
+                Text(Loc.p("New version available: v${r.latest}", Loc.p("New version available: v${r.latest}", Loc.p("New version available: v${r.latest}", "发现新版本 v${r.latest}"))), fontWeight = FontWeight.SemiBold)
                 Text(
                     r.file + " · " + if (r.size > 0) "${r.size / 1024 / 1024} MB" else Loc.t("大小未知") +
                         Loc.t(" · 平台 ") + Updater.PLATFORM,
@@ -674,7 +674,7 @@ private fun installApk(ctx: Context, apk: File) {
         .setDataAndType(uri, "application/vnd.android.package-archive")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { ctx.startActivity(i) }
-        .onFailure { toast(ctx, "打不开安装器：${it.message}") }
+        .onFailure { toast(ctx, Loc.p("Cannot open the installer: ${it.message}", Loc.p("Cannot open the installer: ${it.message}", Loc.p("Cannot open the installer: ${it.message}", "打不开安装器：${it.message}")))) }
 }
 
 internal fun appVersion(ctx: Context): String = runCatching {

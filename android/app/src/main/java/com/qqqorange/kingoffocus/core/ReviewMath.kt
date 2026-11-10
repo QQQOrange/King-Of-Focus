@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 周复盘的纯逻辑：一周的起止、以及"这周比上周怎样"。
@@ -48,13 +49,13 @@ object ReviewMath {
 
     /** "周一 / 周二"这种短名（复盘里说"最投入的是周四"比日期好读） */
     fun weekdayShort(d: DayOfWeek): String = when (d) {
-        DayOfWeek.MONDAY -> "周一"
-        DayOfWeek.TUESDAY -> "周二"
-        DayOfWeek.WEDNESDAY -> "周三"
-        DayOfWeek.THURSDAY -> "周四"
-        DayOfWeek.FRIDAY -> "周五"
-        DayOfWeek.SATURDAY -> "周六"
-        else -> "周日"
+        DayOfWeek.MONDAY -> Loc.t("周一")
+        DayOfWeek.TUESDAY -> Loc.t("周二")
+        DayOfWeek.WEDNESDAY -> Loc.t("周三")
+        DayOfWeek.THURSDAY -> Loc.t("周四")
+        DayOfWeek.FRIDAY -> Loc.t("周五")
+        DayOfWeek.SATURDAY -> Loc.t("周六")
+        else -> Loc.t("周日")
     }
 
     /** 便宜起见：给定日期直接落到它那周的周一 */

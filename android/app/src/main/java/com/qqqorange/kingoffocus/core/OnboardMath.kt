@@ -3,6 +3,7 @@ package com.qqqorange.kingoffocus.core
 import com.qqqorange.kingoffocus.data.HourPlan
 import com.qqqorange.kingoffocus.data.Rule
 import com.qqqorange.kingoffocus.data.defaultDays
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 首用向导的纯逻辑：把「周几 + 几点到几点」变成一张 7×24 的时段表。
@@ -64,7 +65,7 @@ object OnboardMath {
  */
 fun buildRule(packages: List<String>, id: String = RULE_ID): Rule = Rule(
     id = id,
-    name = "开始时选的",
+    name = Loc.t("开始时选的"),
     enabled = true,
     mode = "blacklist",
     packages = packages,

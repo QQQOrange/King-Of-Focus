@@ -4,6 +4,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Slots
 import java.time.LocalDateTime
 import java.time.temporal.ChronoUnit
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 总览页那两个"现在/接下来"的小问题（纯函数，可单测）。
@@ -59,7 +60,7 @@ object BriefMath {
      */
     fun fmtLeft(secs: Long): String {
         val s = secs.coerceAtLeast(0)
-        if (s < 60) return "不到 1 分钟"
+        if (s < 60) return Loc.t("不到 1 分钟")
         return Slots.fmtMinutes((s / 60).toInt())
     }
 

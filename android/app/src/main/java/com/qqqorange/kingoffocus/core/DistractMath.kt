@@ -8,6 +8,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 分心事件的纯逻辑（不碰磁盘、不碰 Context，方便单测）。
@@ -156,7 +157,7 @@ object DistractMath {
             val key = it.segStart
             val g = groups[key]
             groups[key] = if (g == null) {
-                Group(key, it.segLabel.ifBlank { "不在自律时段内" }, listOf(it))
+                Group(key, it.segLabel.ifBlank { Loc.t("不在自律时段内") }, listOf(it))
             } else {
                 g.copy(items = g.items + it)
             }

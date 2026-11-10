@@ -5,6 +5,7 @@ import com.qqqorange.kingoffocus.data.Slots
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 锁机判定（纯函数，可单测）。
@@ -180,10 +181,10 @@ object LockEngine {
         //   3. 整机锁 / 睡眠 → 挡
         //   4. 只按规则且存在允许名单 → 名单外挡
         //   5. 其余 → 放（只有黑名单时，它只管名单内那几个）
-        if (pkg in deny) return Decision(true, "在禁止名单里")
+        if (pkg in deny) return Decision(true, Loc.t("在禁止名单里"))
         if (pkg in allow) return Decision(false, "")
-        if (sleep || cfg.lock.scope != "rules") return Decision(true, "整机锁")
-        if (allow.isNotEmpty()) return Decision(true, "不在允许名单里")
+        if (sleep || cfg.lock.scope != "rules") return Decision(true, Loc.t("整机锁"))
+        if (allow.isNotEmpty()) return Decision(true, Loc.t("不在允许名单里"))
         return Decision(false, "")
     }
 

@@ -268,7 +268,7 @@ object KeepAlive {
             !GuardService.shouldRun(cfg) -> Loc.t("没有被要求常驻（自律与统计都关着）")
             !running -> Loc.t("服务没在跑——点「重启守护」立刻拉起来")
             missing == 0 -> Loc.t("守护在跑，需要的权限都齐了")
-            else -> "守护在跑，但有 $missing 项权限缺失（缺了会在后台被系统清掉）"
+            else -> Loc.p("The guard is running but $missing permissions are missing (the system may kill it in the background)", Loc.p("The guard is running but $missing permissions are missing (the system may kill it in the background)", Loc.p("The guard is running but $missing permissions are missing (the system may kill it in the background)", "守护在跑，但有 $missing 项权限缺失（缺了会在后台被系统清掉）")))
         }
     }
 
