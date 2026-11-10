@@ -75,12 +75,12 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("‹ 返回", fontSize = 14.sp) }
+            TextButton(onClick = onBack) { Text(Loc.t("‹ 返回"), fontSize = 14.sp) }
             Spacer(Modifier.width(2.dp))
-            Text("周复盘", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(Loc.t("周复盘"), fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
         Text(
-            "五个问题，数字已经填好。每题用一两句回答就行——那一两句才是复盘的全部产出。",
+            Loc.t("五个问题，数字已经填好。每题用一两句回答就行——那一两句才是复盘的全部产出。"),
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 2.dp, top = 2.dp, bottom = 8.dp),
@@ -88,7 +88,7 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
 
         Panel {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0L to "本周", 1L to "上周").forEach { (v, label) ->
+                listOf(0L to Loc.t("本周"), 1L to Loc.t("上周")).forEach { (v, label) ->
                     val on = offset == v
                     Box(
                         Modifier
@@ -115,7 +115,7 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             val s = snap
             if (loading || s == null) {
-                Text("正在汇总这一周…", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(Loc.t("正在汇总这一周…"), fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(
                     "${s.weekStart} ~ ${s.weekEnd}",
@@ -151,9 +151,9 @@ fun ReviewScreen(onBack: () -> Unit, onOpenDistract: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     ReviewStore.saveAnswers(s.weekStart.toString(), t)
-                    Toast.makeText(ctx, "复盘已保存：下次打开还能看到这几句", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, Loc.t("复盘已保存：下次打开还能看到这几句"), Toast.LENGTH_SHORT).show()
                     reload++
-                }) { Text("保存复盘") }
+                }) { Text(Loc.t("保存复盘")) }
                 if ((s.distractTotal - s.distractDone) > 0) {
                     OutlinedButton(onClick = onOpenDistract) {
                         Text("去处理这 ${s.distractTotal - s.distractDone} 条", fontSize = 12.sp)
@@ -170,44 +170,44 @@ private data class Question(val data: String, val ask: String, val hint: String)
 private fun questions(s: WeekSnapshot): List<Question> = listOf(
     Question(
         data = "本周自律 ${fmtHm(s.onSecs)}，上周 ${fmtHm(s.prevOnSecs)}。最投入的是 ${s.bestDayLabel.ifBlank { "—" }}（${fmtHm(s.bestOn)}）。",
-        ask = "这周最好的一天是哪天？那天你做对了什么？",
-        hint = "例如：周二，手机放到了另一个房间",
+        ask = Loc.t("这周最好的一天是哪天？那天你做对了什么？"),
+        hint = Loc.t("例如：周二，手机放到了另一个房间"),
     ),
     Question(
         data = if (s.diverTotal > 0) {
             val top = s.diversions.firstOrNull()
             "被打断 ${s.diverTotal} 次，最多来自 ${top?.label ?: "—"}（${top?.n ?: 0} 次）。"
         } else {
-            "这周一次都没被拦过。要么很自律，要么规则没生效。"
+            Loc.t("这周一次都没被拦过。要么很自律，要么规则没生效。")
         },
-        ask = if (s.diverTotal > 0) "下周要不要把它关掉？关不掉的话，替代办法是什么？"
-        else "要不要去首页看一眼守护状态，确认规则真的在生效？",
-        hint = "例如：卸载掉 / 只在 21 点后允许",
+        ask = if (s.diverTotal > 0) Loc.t("下周要不要把它关掉？关不掉的话，替代办法是什么？")
+        else Loc.t("要不要去首页看一眼守护状态，确认规则真的在生效？"),
+        hint = Loc.t("例如：卸载掉 / 只在 21 点后允许"),
     ),
     Question(
         data = if (s.goal.total > 0) {
             "写了 ${s.goal.total} 个段目标：做完 ${s.goal.done}、一半 ${s.goal.partial}、" +
                 "没做成 ${s.goal.missed}、还没答 ${s.goal.none}。"
         } else {
-            "这周一个段目标都没写——你量到的只有“坐了多久”。"
+            Loc.t("这周一个段目标都没写——你量到的只有“坐了多久”。")
         },
-        ask = if (s.goal.missed + s.goal.none > 0) "没做成 / 还没答的那几个，是目标定太大了，还是时间选得不对？"
-        else "做完的那几个，凭什么做得完？",
-        hint = "例如：「写完登录页」两小时能做完，「学完前端」不能",
+        ask = if (s.goal.missed + s.goal.none > 0) Loc.t("没做成 / 还没答的那几个，是目标定太大了，还是时间选得不对？")
+        else Loc.t("做完的那几个，凭什么做得完？"),
+        hint = Loc.t("例如：「写完登录页」两小时能做完，「学完前端」不能"),
     ),
     Question(
         data = "记下 ${s.distractTotal} 条分心事件，处理了 ${s.distractDone} 条。",
         ask = if (s.distractTotal - s.distractDone > 0) {
             "还剩 ${s.distractTotal - s.distractDone} 条，哪一条值得现在就处理？"
         } else {
-            "都处理完了。这些念头里有什么规律？"
+            Loc.t("都处理完了。这些念头里有什么规律？")
         },
-        hint = "例如：那条“晚点去查文档”",
+        hint = Loc.t("例如：那条“晚点去查文档”"),
     ),
     Question(
         data = "质押结算 ${s.staked} 笔，干净跑完 ${s.stakeClean} 笔，被没收 ${s.stakeVoid} 笔。",
-        ask = "下周只改一件事——改哪件？",
-        hint = "只写一件。写两件等于没写。",
+        ask = Loc.t("下周只改一件事——改哪件？"),
+        hint = Loc.t("只写一件。写两件等于没写。"),
     ),
 )
 

@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.PermCfg
 import com.qqqorange.kingoffocus.service.KofAccessibility
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 权限清单：**唯一数据源**。
@@ -129,105 +130,105 @@ object Permissions {
     val specs: List<PermSpec> = listOf(
         PermSpec(
             id = PermId.APP_LIST,
-            title = "应用列表",
-            why = "应用选择器要能列出手机上所有应用，才能把它们加进自律规则；" +
-                "否则只能看到「已经打开过的」那几个。",
-            whenAsk = "安装即得，不需要申请。第一次打开「自律规则 → 添加应用」时使用。",
-            howAsk = "清单里声明 QUERY_ALL_PACKAGES，系统安装时自动授予。",
-            impact = "极少数 ROM（或商店分发的裁剪版）会限制可见性，" +
-                "选择器里只剩部分应用，规则没法覆盖全部。",
-            fallback = "仍然可以按包名手动添加；已配置的规则照常生效（判定不需要这个权限）。",
-            regrant = "无法在系统设置里单独开关；如果列表明显不全，" +
-                "去应用信息里看是否被「应用权限管理」限制。",
+            title = Loc.t("应用列表"),
+            why = Loc.t("应用选择器要能列出手机上所有应用，才能把它们加进自律规则；") +
+                Loc.t("否则只能看到「已经打开过的」那几个。"),
+            whenAsk = Loc.t("安装即得，不需要申请。第一次打开「自律规则 → 添加应用」时使用。"),
+            howAsk = Loc.t("清单里声明 QUERY_ALL_PACKAGES，系统安装时自动授予。"),
+            impact = Loc.t("极少数 ROM（或商店分发的裁剪版）会限制可见性，") +
+                Loc.t("选择器里只剩部分应用，规则没法覆盖全部。"),
+            fallback = Loc.t("仍然可以按包名手动添加；已配置的规则照常生效（判定不需要这个权限）。"),
+            regrant = Loc.t("无法在系统设置里单独开关；如果列表明显不全，") +
+                Loc.t("去应用信息里看是否被「应用权限管理」限制。"),
             kind = AskKind.INSTALL,
         ),
         PermSpec(
             id = PermId.NOTIFICATION,
-            title = "通知",
-            why = "四类通知全靠它：常驻状态（含今日进度）、阶段结束前提醒、任务完成、当日使用汇总。",
-            whenAsk = "第一次开启「自律总开关」时申请——此时通知才有内容可发；" +
-                "也可以在设置页点「开启通知」手动申请。不在启动时就弹，" +
-                "避免用户还不知道这应用做什么。",
-            howAsk = "Android 13+ 走系统运行时弹窗；更早的版本安装即得。",
-            impact = "守护仍在跑，但四类通知都不出现：你看不到剩余时间，" +
-                "也收不到完成与汇总提醒。前台服务还会被系统在通知栏折叠成「应用在后台运行」。",
-            fallback = "应用内照常显示状态与进度；统计、拦截、锁机都不依赖通知。" +
-                "总览页会出现一条提示，说明「通知被关，提醒不会出现」。",
-            regrant = "设置页 →「通知」→「去开启」跳到本应用的通知设置；" +
-                "若系统已不再弹窗（永久拒绝），只能在这里手动打开。",
+            title = Loc.t("通知"),
+            why = Loc.t("四类通知全靠它：常驻状态（含今日进度）、阶段结束前提醒、任务完成、当日使用汇总。"),
+            whenAsk = Loc.t("第一次开启「自律总开关」时申请——此时通知才有内容可发；") +
+                Loc.t("也可以在设置页点「开启通知」手动申请。不在启动时就弹，") +
+                Loc.t("避免用户还不知道这应用做什么。"),
+            howAsk = Loc.t("Android 13+ 走系统运行时弹窗；更早的版本安装即得。"),
+            impact = Loc.t("守护仍在跑，但四类通知都不出现：你看不到剩余时间，") +
+                Loc.t("也收不到完成与汇总提醒。前台服务还会被系统在通知栏折叠成「应用在后台运行」。"),
+            fallback = Loc.t("应用内照常显示状态与进度；统计、拦截、锁机都不依赖通知。") +
+                Loc.t("总览页会出现一条提示，说明「通知被关，提醒不会出现」。"),
+            regrant = Loc.t("设置页 →「通知」→「去开启」跳到本应用的通知设置；") +
+                Loc.t("若系统已不再弹窗（永久拒绝），只能在这里手动打开。"),
             kind = AskKind.RUNTIME,
         ),
         PermSpec(
             id = PermId.MEDIA,
-            title = "照片和视频",
-            why = "**本应用不需要**：备份文件走系统文件选择器（SAF），报表是文本，" +
-                "锁机背景是纯色，没有任何读取相册的场景。",
-            whenAsk = "不申请。将来如果做「锁机背景用自己选的照片」或" +
-                "「统计图存到相册」，才在用到的那一刻申请（READ_MEDIA_IMAGES / READ_MEDIA_VIDEO）。",
-            howAsk = "不申请。真要加时按运行时权限弹窗，且只在用户点「选择照片」时弹。",
-            impact = "无（没有功能依赖它）。",
+            title = Loc.t("照片和视频"),
+            why = Loc.t("**本应用不需要**：备份文件走系统文件选择器（SAF），报表是文本，") +
+                Loc.t("锁机背景是纯色，没有任何读取相册的场景。"),
+            whenAsk = Loc.t("不申请。将来如果做「锁机背景用自己选的照片」或") +
+                Loc.t("「统计图存到相册」，才在用到的那一刻申请（READ_MEDIA_IMAGES / READ_MEDIA_VIDEO）。"),
+            howAsk = Loc.t("不申请。真要加时按运行时权限弹窗，且只在用户点「选择照片」时弹。"),
+            impact = Loc.t("无（没有功能依赖它）。"),
             fallback = "—",
             regrant = "—",
             kind = AskKind.NONE,
         ),
         PermSpec(
             id = PermId.OVERLAY,
-            title = "在其他应用上层显示",
-            why = "锁机时要把整屏遮罩盖到别的应用上面。" +
-                "Android 10+ 还要求它才能在后台拉起界面。",
-            whenAsk = "第一次开启「锁机」时；以及锁机生效但遮罩没出来时（会弹一条可点开的提醒）。",
-            howAsk = "跳系统设置页「显示在其他应用上层」，由用户手动打开。",
-            impact = "锁机不生效：到点只会回桌面 + 一条通知，盖不住屏幕。" +
-                "「强制模式」也会因此不可用。",
-            fallback = "拦截规则仍靠「回桌面 + 通知」生效；锁机降级为提醒你该休息了。",
-            regrant = "设置页 →「在其他应用上层显示」→「去开启」；" +
-                "或系统设置 → 应用 → 特殊权限 → 显示在其他应用上层。",
+            title = Loc.t("在其他应用上层显示"),
+            why = Loc.t("锁机时要把整屏遮罩盖到别的应用上面。") +
+                Loc.t("Android 10+ 还要求它才能在后台拉起界面。"),
+            whenAsk = Loc.t("第一次开启「锁机」时；以及锁机生效但遮罩没出来时（会弹一条可点开的提醒）。"),
+            howAsk = Loc.t("跳系统设置页「显示在其他应用上层」，由用户手动打开。"),
+            impact = Loc.t("锁机不生效：到点只会回桌面 + 一条通知，盖不住屏幕。") +
+                Loc.t("「强制模式」也会因此不可用。"),
+            fallback = Loc.t("拦截规则仍靠「回桌面 + 通知」生效；锁机降级为提醒你该休息了。"),
+            regrant = Loc.t("设置页 →「在其他应用上层显示」→「去开启」；") +
+                Loc.t("或系统设置 → 应用 → 特殊权限 → 显示在其他应用上层。"),
             kind = AskKind.SETTINGS,
         ),
         PermSpec(
             id = PermId.USAGE,
-            title = "使用情况访问",
-            why = "读取「当前前台是哪个应用」（拦截的判定依据），以及按应用统计使用时长。" +
-                "这是 Android 上唯一不需要 root 的公开通道。",
-            whenAsk = "第一次开启「记录使用时长」或「自律总开关」时；统计页顶部也会提示。",
-            howAsk = "跳系统设置页「使用情况访问」→ 找到本应用 → 允许。没有运行时弹窗。",
-            impact = "统计完全停止（不采样、不写盘）；拦截只能靠无障碍，" +
-                "没有无障碍时等于什么都拦不住。",
-            fallback = "只有无障碍时仍能识别前台并拦截，但统计不到时长；" +
-                "页面会明确写「统计已暂停」，不会显示一片 0 让你以为今天没用手机。",
-            regrant = "统计页顶部横幅或设置页 →「使用情况访问」→「去授予」；" +
-                "被清理软件关掉时，通知栏会收到一条「被收回了」。",
+            title = Loc.t("使用情况访问"),
+            why = Loc.t("读取「当前前台是哪个应用」（拦截的判定依据），以及按应用统计使用时长。") +
+                Loc.t("这是 Android 上唯一不需要 root 的公开通道。"),
+            whenAsk = Loc.t("第一次开启「记录使用时长」或「自律总开关」时；统计页顶部也会提示。"),
+            howAsk = Loc.t("跳系统设置页「使用情况访问」→ 找到本应用 → 允许。没有运行时弹窗。"),
+            impact = Loc.t("统计完全停止（不采样、不写盘）；拦截只能靠无障碍，") +
+                Loc.t("没有无障碍时等于什么都拦不住。"),
+            fallback = Loc.t("只有无障碍时仍能识别前台并拦截，但统计不到时长；") +
+                Loc.t("页面会明确写「统计已暂停」，不会显示一片 0 让你以为今天没用手机。"),
+            regrant = Loc.t("统计页顶部横幅或设置页 →「使用情况访问」→「去授予」；") +
+                Loc.t("被清理软件关掉时，通知栏会收到一条「被收回了」。"),
             kind = AskKind.SETTINGS,
         ),
         PermSpec(
             id = PermId.SHIZUKU,
             title = "Shizuku",
-            why = "借 ADB 级 shell 权限做无障碍做不到的事：更准地读前台，" +
-                "真正结束违规应用（am force-stop），把被关掉的无障碍重新打开，" +
-                "阻止在设置里强制停止本应用。",
-            whenAsk = "用户主动在设置页点「连接 Shizuku」时；不会自动申请。",
-            howAsk = "需要先安装 Shizuku 并用无线调试启动它，" +
-                "再在本应用里授权（Shizuku 自己的弹窗）。",
-            impact = "降级到无障碍 / 使用情况：拦截只能「回桌面 + 通知」，" +
-                "锁机需要悬浮窗，「强制模式」无法启用。",
-            fallback = "完整应用不依赖 Shizuku：没有它也能用，只是拦得没那么硬。" +
-                "能力等级会显示为「增强」而不是「完整」。",
-            regrant = "设置页 →「Shizuku」→「连接」；首次会拉起 Shizuku 的授权弹窗，" +
-                "之后每次开机需要 Shizuku 自己在运行。",
+            why = Loc.t("借 ADB 级 shell 权限做无障碍做不到的事：更准地读前台，") +
+                Loc.t("真正结束违规应用（am force-stop），把被关掉的无障碍重新打开，") +
+                Loc.t("阻止在设置里强制停止本应用。"),
+            whenAsk = Loc.t("用户主动在设置页点「连接 Shizuku」时；不会自动申请。"),
+            howAsk = Loc.t("需要先安装 Shizuku 并用无线调试启动它，") +
+                Loc.t("再在本应用里授权（Shizuku 自己的弹窗）。"),
+            impact = Loc.t("降级到无障碍 / 使用情况：拦截只能「回桌面 + 通知」，") +
+                Loc.t("锁机需要悬浮窗，「强制模式」无法启用。"),
+            fallback = Loc.t("完整应用不依赖 Shizuku：没有它也能用，只是拦得没那么硬。") +
+                Loc.t("能力等级会显示为「增强」而不是「完整」。"),
+            regrant = Loc.t("设置页 →「Shizuku」→「连接」；首次会拉起 Shizuku 的授权弹窗，") +
+                Loc.t("之后每次开机需要 Shizuku 自己在运行。"),
             kind = AskKind.THIRD_PARTY,
         ),
         PermSpec(
             id = PermId.ACCESSIBILITY,
-            title = "无障碍服务",
-            why = "切换应用的那一刻就知道前台是谁（比 1 秒轮询准），" +
-                "并且不受后台限制地回桌面。",
-            whenAsk = "第一次开启「应用拦截」或「锁机」时；能力不足时总览页会提示。",
-            howAsk = "跳系统设置页「无障碍」→ 找到 King Of Focus → 打开。",
-            impact = "前台识别退化为 1 秒轮询（需要「使用情况访问」），" +
-                "回桌面需要悬浮窗或 Shizuku。",
-            fallback = "有「使用情况访问」时仍能拦截，只是慢一拍；锁机靠悬浮窗。",
-            regrant = "设置页 →「无障碍服务」→「去开启」；被系统关掉时" +
-                "（部分 ROM 会在重启后关），Shizuku 在的话会自动帮你打开。",
+            title = Loc.t("无障碍服务"),
+            why = Loc.t("切换应用的那一刻就知道前台是谁（比 1 秒轮询准），") +
+                Loc.t("并且不受后台限制地回桌面。"),
+            whenAsk = Loc.t("第一次开启「应用拦截」或「锁机」时；能力不足时总览页会提示。"),
+            howAsk = Loc.t("跳系统设置页「无障碍」→ 找到 King Of Focus → 打开。"),
+            impact = Loc.t("前台识别退化为 1 秒轮询（需要「使用情况访问」），") +
+                Loc.t("回桌面需要悬浮窗或 Shizuku。"),
+            fallback = Loc.t("有「使用情况访问」时仍能拦截，只是慢一拍；锁机靠悬浮窗。"),
+            regrant = Loc.t("设置页 →「无障碍服务」→「去开启」；被系统关掉时") +
+                Loc.t("（部分 ROM 会在重启后关），Shizuku 在的话会自动帮你打开。"),
             kind = AskKind.SETTINGS,
         ),
     )
@@ -244,7 +245,7 @@ object Permissions {
         val r = when (s.id) {
             PermId.APP_LIST -> appList(ctx)
             PermId.NOTIFICATION -> notification(ctx, cfg.perm)
-            PermId.MEDIA -> Triple(PermState.NOT_NEEDED, "本应用不需要，已如实不申请", null)
+            PermId.MEDIA -> Triple(PermState.NOT_NEEDED, Loc.t("本应用不需要，已如实不申请"), null)
             PermId.OVERLAY -> overlay(ctx)
             PermId.USAGE -> usage(ctx)
             PermId.SHIZUKU -> shizuku(ctx)
@@ -313,13 +314,13 @@ object Permissions {
         val action = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
         if (notificationAllowed(ctx)) {
-            return Triple(PermState.OK, "已就绪", null)
+            return Triple(PermState.OK, Loc.t("已就绪"), null)
         }
         // 三种「没有」要三句话：从没问过 / 拒过一次 / 系统不再弹
         return when {
             p.notifBlocked -> Triple(
                 PermState.BLOCKED,
-                "已被永久拒绝：系统不再弹窗，只能去设置里打开",
+                Loc.t("已被永久拒绝：系统不再弹窗，只能去设置里打开"),
                 action,
             )
             p.notifAsked > 0 -> Triple(
@@ -329,7 +330,7 @@ object Permissions {
             )
             else -> Triple(
                 PermState.MISSING,
-                "还没开启：四类通知都不会出现（守护仍在跑）",
+                Loc.t("还没开启：四类通知都不会出现（守护仍在跑）"),
                 action,
             )
         }
@@ -338,11 +339,11 @@ object Permissions {
     private fun overlay(ctx: Context): Triple<PermState, String, Intent?> {
         val ok = runCatching { Settings.canDrawOverlays(ctx) }.getOrDefault(false)
         return if (ok) {
-            Triple(PermState.OK, "已就绪", null)
+            Triple(PermState.OK, Loc.t("已就绪"), null)
         } else {
             Triple(
                 PermState.MISSING,
-                "没开启：锁机只能回桌面 + 通知，盖不住屏幕",
+                Loc.t("没开启：锁机只能回桌面 + 通知，盖不住屏幕"),
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
                     .setData(Uri.parse("package:" + ctx.packageName)),
             )
@@ -351,11 +352,11 @@ object Permissions {
 
     private fun usage(ctx: Context): Triple<PermState, String, Intent?> = when {
         GuardEngine.hasUsageAccess(ctx) ->
-            Triple(PermState.OK, "已就绪", null)
+            Triple(PermState.OK, Loc.t("已就绪"), null)
 
         else -> Triple(
             PermState.MISSING,
-            "没开启：统计完全停止，拦截只能靠无障碍",
+            Loc.t("没开启：统计完全停止，拦截只能靠无障碍"),
             Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS),
         )
     }
@@ -368,17 +369,17 @@ object Permissions {
             ready -> Triple(PermState.OK, "已连接（v${ShizukuBridge.version()}）", null)
             !available -> Triple(
                 PermState.MISSING,
-                "没装 Shizuku：装好并用无线调试启动后再回来连接",
+                Loc.t("没装 Shizuku：装好并用无线调试启动后再回来连接"),
                 null,
             )
             !granted -> Triple(
                 PermState.MISSING,
-                "已装但还没授权：点「连接」会弹 Shizuku 的授权框",
+                Loc.t("已装但还没授权：点「连接」会弹 Shizuku 的授权框"),
                 null,
             )
             else -> Triple(
                 PermState.MISSING,
-                "已授权但没连上：Shizuku 可能被系统停掉了，重新打开它",
+                Loc.t("已授权但没连上：Shizuku 可能被系统停掉了，重新打开它"),
                 null,
             )
         }
@@ -386,11 +387,11 @@ object Permissions {
 
     private fun accessibility(ctx: Context): Triple<PermState, String, Intent?> =
         if (KofAccessibility.alive()) {
-            Triple(PermState.OK, "已就绪", null)
+            Triple(PermState.OK, Loc.t("已就绪"), null)
         } else {
             Triple(
                 PermState.MISSING,
-                "没开启：前台识别退化为 1 秒轮询（需要「使用情况访问」）",
+                Loc.t("没开启：前台识别退化为 1 秒轮询（需要「使用情况访问」）"),
                 Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
             )
         }

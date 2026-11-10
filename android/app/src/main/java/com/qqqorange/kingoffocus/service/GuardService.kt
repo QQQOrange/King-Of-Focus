@@ -38,6 +38,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Slots
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.ui.LockActivity
+import com.qqqorange.kingoffocus.ui.Loc
 import java.time.LocalDateTime
 
 /**
@@ -138,7 +139,7 @@ class GuardService : Service() {
             try {
                 tick()
             } catch (t: Throwable) {
-                Log.w(TAG, "tick 失败", t)
+                Log.w(TAG, Loc.t("tick 失败"), t)
             }
             handler.postDelayed(this, 1000)
         }
@@ -197,7 +198,7 @@ class GuardService : Service() {
         maybeStake(cfg, now)
         // 试用到点把原排班还回去（并说一句，否则用户以为它自己坏了）
         if (com.qqqorange.kingoffocus.data.TrialRunner.restoreIfDue(now)) {
-            notifyOnce(CH_ALERT, ID_TRIAL, "试用结束", "已经还原你原来的时段", true)
+            notifyOnce(CH_ALERT, ID_TRIAL, Loc.t("试用结束"), Loc.t("已经还原你原来的时段"), true)
         }
 
         // 常驻通知里的今日进度：不必每秒重算（读日文件 + 数分钟），30 秒一次就够
@@ -332,8 +333,8 @@ class GuardService : Service() {
                 // 只有"从有到无"才提醒：首次没给过由界面卡片引导，不打扰
                 if (prev == UsageAccess.State.GRANTED && st.state == UsageAccess.State.REVOKED) {
                     alert(
-                        "「使用情况访问」被收回了",
-                        "统计已暂停。可能是清理软件或系统更新把它关掉了，点通知回到应用重新授予即可。",
+                        Loc.t("「使用情况访问」被收回了"),
+                        Loc.t("统计已暂停。可能是清理软件或系统更新把它关掉了，点通知回到应用重新授予即可。"),
                     )
                 }
             }
@@ -499,7 +500,7 @@ class GuardService : Service() {
         notifyOnce(
             CH_LOCK,
             LOCK_PRE_ID,
-            if (bestSleep) "睡眠时段即将开始" else "锁机即将开始",
+            if (bestSleep) Loc.t("睡眠时段即将开始") else Loc.t("锁机即将开始"),
             NotifyPlan.preAlertText(bestSecs, sleep = bestSleep),
         )
     }
@@ -516,17 +517,17 @@ class GuardService : Service() {
         val canDialog = caps().canShowMask()
         val wantDialog = NotifyPlan.endDialog(mode) && canDialog
         val wantNotify = NotifyPlan.endNotify(mode) || (NotifyPlan.endDialog(mode) && !canDialog)
-        val title = if (sleep) "睡眠时段结束" else "锁机结束"
+        val title = if (sleep) Loc.t("睡眠时段结束") else Loc.t("锁机结束")
         val body = if (sleep) {
-            "早上好。睡眠时段已经走完，手机恢复正常使用。"
+            Loc.t("早上好。睡眠时段已经走完，手机恢复正常使用。")
         } else {
-            "这一段锁机走完了，休息一下眼睛。"
+            Loc.t("这一段锁机走完了，休息一下眼睛。")
         }
         if (wantNotify) {
             notifyOnce(
                 CH_LOCK, LOCK_END_ID, title,
                 body + if (NotifyPlan.endDialog(mode) && !canDialog) {
-                    "（没拿到悬浮窗权限，弹窗提醒改成了通知）"
+                    Loc.t("（没拿到悬浮窗权限，弹窗提醒改成了通知）")
                 } else "",
             )
         }
@@ -573,7 +574,7 @@ class GuardService : Service() {
         notifiedPhase = true
         val mins = ((left + 59) / 60).coerceAtLeast(1)
         val text = if (st.inBreak) "休息还剩 $mins 分钟，准备回到专注" else "本轮专注还剩 $mins 分钟，坚持一下"
-        alert("阶段提醒", text)
+        alert(Loc.t("阶段提醒"), text)
     }
 
     /**
@@ -596,7 +597,7 @@ class GuardService : Service() {
         val head = if (st.inBreak) {
             "这一段做完了，休息 ${st.brk.coerceAtLeast(0)} 分钟"
         } else {
-            "开始下一轮专注，先做最重要的那件"
+            Loc.t("开始下一轮专注，先做最重要的那件")
         }
         val plan = Slots.dayMinutes(cfg.days.getOrNull(now.dayOfWeek.value - 1).orEmpty())
         val doneMin = StatsStore.today(now).total(true) / 60
@@ -636,17 +637,17 @@ class GuardService : Service() {
         val on = StatsMath.total(day, true)
         val top = StatsMath.top(listOf(now.toLocalDate() to day), null, 3)
         val body = buildString {
-            append("自律时段内 ")
+            append(Loc.t("自律时段内 "))
             append(StatsMath.fmtDuration(on))
             append("（")
             append(if (total > 0) on * 100 / total else 0)
             append("%）")
             if (top.isNotEmpty()) {
-                append(" · 用得最多：")
+                append(Loc.t(" · 用得最多："))
                 append(top.take(2).joinToString("、") { labelOf(it.first) })
             }
         }
-        notifyOnce(CH_DAILY, DAILY_ID, "今日使用 " + StatsMath.fmtDuration(total), body, big = true)
+        notifyOnce(CH_DAILY, DAILY_ID, Loc.t("今日使用 ") + StatsMath.fmtDuration(total), body, big = true)
     }
 
     /**
@@ -682,7 +683,7 @@ class GuardService : Service() {
             notifyOnce(
                 CH_ALERT,
                 ID_STAKE,
-                "这一段的押金退回来了",
+                Loc.t("这一段的押金退回来了"),
                 "退回 $back 分（含干净跑完的奖励）",
                 true,
             )
@@ -718,13 +719,13 @@ class GuardService : Service() {
             if (goal.isNotBlank()) parts += "目标：$goal"
             if (items.isNotEmpty()) {
                 parts += if (items.size == 1) {
-                    "记下 1 条：" + items[0].text.take(18)
+                    Loc.t("记下 1 条：") + items[0].text.take(18)
                 } else {
                     "记下 ${items.size} 条想法，去「分心事件」逐条处理"
                 }
             }
             if (parts.isNotEmpty()) {
-                notifyOnce(CH_ALERT, ID_DISTRACT_END, "这一段结束了", parts.joinToString(" · "), true)
+                notifyOnce(CH_ALERT, ID_DISTRACT_END, Loc.t("这一段结束了"), parts.joinToString(" · "), true)
             }
             if (items.isNotEmpty()) DistractStore.markNudged(items.map { it.id }, nowSec)
         }
@@ -739,7 +740,7 @@ class GuardService : Service() {
             } else {
                 "还有 ${due.size} 条没处理，最早一条：$first"
             }
-            notifyOnce(CH_ALERT, ID_DISTRACT_DUE, "分心事件待处理", body, true)
+            notifyOnce(CH_ALERT, ID_DISTRACT_DUE, Loc.t("分心事件待处理"), body, true)
             DistractStore.markNudged(due.map { it.id }, nowSec)
         }
     }
@@ -799,7 +800,7 @@ class GuardService : Service() {
             bg.execute {
                 Log.i(TAG, "白名单外的应用，强制退出 $pkg -> " + ShizukuBridge.forceStop(pkg))
             }
-            alert("「$label」现在不能用", "它不在白名单里，已经把它关掉并回到桌面。")
+            alert("「$label」现在不能用", Loc.t("它不在白名单里，已经把它关掉并回到桌面。"))
         } else {
             alert("「$label」现在不能用", "命中规则「${rule.name}」。已回到桌面，做点别的。")
         }
@@ -846,8 +847,8 @@ class GuardService : Service() {
             if (warnedSeg != seg) {
                 warnedSeg = seg
                 alert(
-                    "锁机没生效：缺「悬浮窗」或 Shizuku",
-                    "系统不允许后台拉起遮罩页，已改成回桌面 + 通知。请授予「悬浮窗」，或安装 Shizuku 并授权。",
+                    Loc.t("锁机没生效：缺「悬浮窗」或 Shizuku"),
+                    Loc.t("系统不允许后台拉起遮罩页，已改成回桌面 + 通知。请授予「悬浮窗」，或安装 Shizuku 并授权。"),
                     openOverlaySettings = true,
                 )
             }
@@ -913,8 +914,8 @@ class GuardService : Service() {
             if (warnedSeg != "page|$seg") {
                 warnedSeg = "page|$seg"
                 alert(
-                    "锁机页弹不出来：缺「悬浮窗」或 Shizuku",
-                    "系统不允许后台拉起界面，已改成回桌面 + 通知。请在总览页授予悬浮窗，或装 Shizuku 并授权。",
+                    Loc.t("锁机页弹不出来：缺「悬浮窗」或 Shizuku"),
+                    Loc.t("系统不允许后台拉起界面，已改成回桌面 + 通知。请在总览页授予悬浮窗，或装 Shizuku 并授权。"),
                     openOverlaySettings = true,
                 )
             }
@@ -1010,7 +1011,7 @@ class GuardService : Service() {
         lastHardenAt = nowMs
         bg.execute {
             val comp = "$packageName/${KofAccessibility::class.java.name}"
-            Log.i(TAG, "重新启用无障碍 -> " + ShizukuBridge.reenableAccessibility(comp))
+            Log.i(TAG, Loc.t("重新启用无障碍 -> ") + ShizukuBridge.reenableAccessibility(comp))
         }
     }
 
@@ -1041,33 +1042,33 @@ class GuardService : Service() {
     private fun createChannels() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CH_ONGOING, "自律守护", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "显示当前自律状态，关闭它会停止守护"
+            NotificationChannel(CH_ONGOING, Loc.t("自律守护"), NotificationManager.IMPORTANCE_LOW).apply {
+                description = Loc.t("显示当前自律状态，关闭它会停止守护")
                 setShowBadge(false)
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CH_ALERT, "阶段提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "专注 / 休息结束前的提醒"
+            NotificationChannel(CH_ALERT, Loc.t("阶段提醒"), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = Loc.t("专注 / 休息结束前的提醒")
             },
         )
         // 完成与汇总单独开渠道：用户可以只关掉"完成"，保留"汇总"（系统设置里按渠道关）
         nm.createNotificationChannel(
-            NotificationChannel(CH_DONE, "任务完成", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "专注段做完 / 休息结束时提醒一条"
+            NotificationChannel(CH_DONE, Loc.t("任务完成"), NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = Loc.t("专注段做完 / 休息结束时提醒一条")
                 setShowBadge(false)
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CH_DAILY, "每日使用汇总", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "每天固定时间汇总当天的使用时长与自律时长"
+            NotificationChannel(CH_DAILY, Loc.t("每日使用汇总"), NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = Loc.t("每天固定时间汇总当天的使用时长与自律时长")
                 setShowBadge(false)
             },
         )
         // 锁机开始前 / 结束的提醒单独一个渠道：想只留"结束"、关掉"即将开始"的人有得选
         nm.createNotificationChannel(
-            NotificationChannel(CH_LOCK, "锁机提醒", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "锁机开始前的提前提醒与结束提醒"
+            NotificationChannel(CH_LOCK, Loc.t("锁机提醒"), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = Loc.t("锁机开始前的提前提醒与结束提醒")
             },
         )
     }
@@ -1099,24 +1100,24 @@ class GuardService : Service() {
         )
         val now = LocalDateTime.now()
         val text = when {
-            sleeping -> "睡眠时段 · 还有 " +
+            sleeping -> Loc.t("睡眠时段 · 还有 ") +
                 ScheduleEngine.fmtLeft(SleepEngine.active(Store.current, now)?.leftSeconds ?: 0)
             locked -> if (Store.current.lock.showPage) {
                 "锁机中 · ${ScheduleEngine.fmtLeft(LockEngine.segmentLeftSeconds(Store.current, now))}"
             } else {
                 // 轻档如实说：整机没锁，只是黑名单应用会被弹回去
-                "锁机中 · 仅拦黑名单应用"
+                Loc.t("锁机中 · 仅拦黑名单应用")
             }
             // 自律关着、只在记录时长：如实说，别让常驻通知看起来像"自律在跑"
-            st == null && !Store.current.enabled -> "自律已关闭 · 正在记录使用时长"
-            st == null -> "当前不在自律时段"
+            st == null && !Store.current.enabled -> Loc.t("自律已关闭 · 正在记录使用时长")
+            st == null -> Loc.t("当前不在自律时段")
             st.inBreak -> "休息中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
             else -> "专注中 · ${ScheduleEngine.fmtLeft(st.leftSeconds)}"
         }
         val title = when {
-            sleeping -> "King Of Focus · 睡眠中"
-            locked -> "King Of Focus · 锁机中"
-            active -> "King Of Focus · 自律中"
+            sleeping -> Loc.t("King Of Focus · 睡眠中")
+            locked -> Loc.t("King Of Focus · 锁机中")
+            active -> Loc.t("King Of Focus · 自律中")
             else -> "King Of Focus"
         }
         // 今日进度：只在"有计划"时显示，否则 0/0 比不显示更让人困惑

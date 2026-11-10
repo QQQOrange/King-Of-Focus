@@ -72,7 +72,7 @@ fun RulesScreen(cfg: Config) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        PageHeader("自律规则", "名单里的应用在专注段不可用；白名单模式只允许名单内")
+        PageHeader(Loc.t("自律规则"), Loc.t("名单里的应用在专注段不可用；白名单模式只允许名单内"))
 
         // 自律时段内**规则与时段都只读**（含番茄休息）。
         // 理由：能改名单就能把想玩的应用加进白名单，锁机立刻形同虚设。
@@ -82,25 +82,25 @@ fun RulesScreen(cfg: Config) {
         val frozen = ScheduleEngine.frozen(cfg, now)
 
         fun refuse() {
-            toast(ctx, "自律时段内不能改规则：等这一段结束，或用积分解锁 / 暂停 / 停止本段")
+            toast(ctx, Loc.t("自律时段内不能改规则：等这一段结束，或用积分解锁 / 暂停 / 停止本段"))
         }
 
         // 为什么"规则配了却不拦"：绝大多数时候是这三件事没同时成立。
         // 与其让人猜，不如把当前状态摆出来。
         val status = when {
-            !cfg.enabled -> "自律总开关是关的 —— 规则一条都不会生效"
-            ScheduleEngine.stateAt(cfg, now) == null -> "现在不在自律时段内 —— 规则只在时段里生效"
-            ScheduleEngine.stateAt(cfg, now)?.inBreak == true -> "现在是番茄的休息段 —— 休息时规则暂停"
+            !cfg.enabled -> Loc.t("自律总开关是关的 —— 规则一条都不会生效")
+            ScheduleEngine.stateAt(cfg, now) == null -> Loc.t("现在不在自律时段内 —— 规则只在时段里生效")
+            ScheduleEngine.stateAt(cfg, now)?.inBreak == true -> Loc.t("现在是番茄的休息段 —— 休息时规则暂停")
             now.atZone(java.time.ZoneId.systemDefault()).toEpochSecond() < cfg.unlockUntil ->
-                "你正在用积分解锁的这段时间 —— 所有拦截暂停"
-            else -> "生效中：规则正在按「时段」执行"
+                Loc.t("你正在用积分解锁的这段时间 —— 所有拦截暂停")
+            else -> Loc.t("生效中：规则正在按「时段」执行")
         }
         Panel {
             Text(status, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (frozen) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "自律时段生效中（含番茄休息）：规则与本页开关暂时只读。",
+                    Loc.t("自律时段生效中（含番茄休息）：规则与本页开关暂时只读。"),
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.error,
@@ -117,12 +117,12 @@ fun RulesScreen(cfg: Config) {
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("展示锁机页面", fontSize = 14.sp)
+                    Text(Loc.t("展示锁机页面"), fontSize = 14.sp)
                     Text(
                         if (cfg.lock.showPage) {
-                            "开启：专注段里整台手机锁住（回桌面 + 全屏遮罩），按现有锁机逻辑拦。"
+                            Loc.t("开启：专注段里整台手机锁住（回桌面 + 全屏遮罩），按现有锁机逻辑拦。")
                         } else {
-                            "关闭：不锁整机。桌面随便用，点开黑名单应用才弹 5 秒提示页并自动回桌面。"
+                            Loc.t("关闭：不锁整机。桌面随便用，点开黑名单应用才弹 5 秒提示页并自动回桌面。")
                         },
                         fontSize = 10.5.sp,
                         lineHeight = 15.sp,
@@ -139,7 +139,7 @@ fun RulesScreen(cfg: Config) {
                             Store.update { it.copy(lock = it.lock.copy(showPage = v)) }
                             toast(
                                 ctx,
-                                if (v) "已开启：专注段内整机锁机" else "已关闭：只拦黑名单应用，点开时弹 5 秒提示",
+                                if (v) Loc.t("已开启：专注段内整机锁机") else Loc.t("已关闭：只拦黑名单应用，点开时弹 5 秒提示"),
                             )
                         }
                     },
@@ -148,9 +148,9 @@ fun RulesScreen(cfg: Config) {
             Spacer(Modifier.height(4.dp))
             Text(
                 if (cfg.lock.showPage) {
-                    "白名单应用在锁机页仍可打开；黑名单与「只按规则」的范围照旧生效。"
+                    Loc.t("白名单应用在锁机页仍可打开；黑名单与「只按规则」的范围照旧生效。")
                 } else {
-                    "这一档只看黑名单：白名单规则不参与判定（因为没有整机锁）。"
+                    Loc.t("这一档只看黑名单：白名单规则不参与判定（因为没有整机锁）。")
                 },
                 fontSize = 10.5.sp,
                 lineHeight = 15.sp,
@@ -163,11 +163,11 @@ fun RulesScreen(cfg: Config) {
             enabled = !frozen,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("新建一条规则")
+            Text(Loc.t("新建一条规则"))
         }
 
         if (cfg.rules.isEmpty()) {
-            Panel { EmptyHint("还没有规则。新建一条，把想拦的应用加进去。") }
+            Panel { EmptyHint(Loc.t("还没有规则。新建一条，把想拦的应用加进去。")) }
         }
 
         cfg.rules.forEach { r ->
@@ -192,7 +192,7 @@ fun RulesScreen(cfg: Config) {
                                 "whitelist" -> "白名单 · 只允许名单内 ${r.packages.size} 个"
                                 "both" -> "白名单 + 黑名单 · 允许 ${r.packages.size} / 禁止 ${r.deny.size}"
                                 else -> "黑名单 · 名单内禁止 ${r.packages.size} 个"
-                            } + if (r.hard) " · 固化" else "",
+                            } + if (r.hard) Loc.t(" · 固化") else "",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -226,18 +226,18 @@ fun RulesScreen(cfg: Config) {
                     OutlinedButton(
                         onClick = { if (frozen) refuse() else editing = r },
                         enabled = !frozen,
-                    ) { Text("编辑", fontSize = 12.sp) }
+                    ) { Text(Loc.t("编辑"), fontSize = 12.sp) }
                     OutlinedButton(
                         onClick = {
                             if (frozen) {
                                 refuse()
                             } else {
-                                val copy = r.copy(id = UUID.randomUUID().toString().take(8), name = r.name + " 副本")
+                                val copy = r.copy(id = UUID.randomUUID().toString().take(8), name = r.name + Loc.t(" 副本"))
                                 Store.update { c -> c.copy(rules = c.rules + copy) }
                             }
                         },
                         enabled = !frozen,
-                    ) { Text("复制", fontSize = 12.sp) }
+                    ) { Text(Loc.t("复制"), fontSize = 12.sp) }
                     OutlinedButton(
                         onClick = {
                             if (frozen) {
@@ -247,7 +247,7 @@ fun RulesScreen(cfg: Config) {
                             }
                         },
                         enabled = !frozen,
-                    ) { Text("删除", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
+                    ) { Text(Loc.t("删除"), fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -298,26 +298,26 @@ private fun RuleDialog(
     var hard by remember { mutableStateOf(rule.hard) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑规则") },
+        title = { Text(Loc.t("编辑规则")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("名称") },
+                    label = { Text(Loc.t("名称")) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
                 // 模式：三选一。用三个横排按钮而不是"点一下循环"——
                 // 循环切到第三态时，用户不知道自己按了几次。
                 Column {
-                    Text("模式", fontSize = 13.sp)
+                    Text(Loc.t("模式"), fontSize = 13.sp)
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(
-                            "blacklist" to "黑名单",
-                            "whitelist" to "白名单",
-                            "both" to "两者",
+                            "blacklist" to Loc.t("黑名单"),
+                            "whitelist" to Loc.t("白名单"),
+                            "both" to Loc.t("两者"),
                         ).forEach { (k, label) ->
                             OutlinedButton(
                                 onClick = { mode = k },
@@ -332,9 +332,9 @@ private fun RuleDialog(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         when (mode) {
-                            "whitelist" -> "只允许名单内的应用，其余一律拦。"
-                            "both" -> "允许名单放行、禁止名单拦截；两边都写了同一个应用时**以禁止为准**。"
-                            else -> "只拦名单内的应用，其余照常使用。"
+                            "whitelist" -> Loc.t("只允许名单内的应用，其余一律拦。")
+                            "both" -> Loc.t("允许名单放行、禁止名单拦截；两边都写了同一个应用时**以禁止为准**。")
+                            else -> Loc.t("只拦名单内的应用，其余照常使用。")
                         },
                         fontSize = 10.5.sp,
                         lineHeight = 15.sp,
@@ -343,9 +343,9 @@ private fun RuleDialog(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("固化", fontSize = 13.sp)
+                        Text(Loc.t("固化"), fontSize = 13.sp)
                         Text(
-                            "生效期间不允许关闭自律、不允许改设置",
+                            Loc.t("生效期间不允许关闭自律、不允许改设置"),
                             fontSize = 10.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -377,10 +377,10 @@ private fun RuleDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onSave(rule.copy(name = name.ifBlank { "未命名" }, mode = mode, hard = hard))
-            }) { Text("保存") }
+                onSave(rule.copy(name = name.ifBlank { Loc.t("未命名") }, mode = mode, hard = hard))
+            }) { Text(Loc.t("保存")) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(Loc.t("取消")) } },
     )
 }
 

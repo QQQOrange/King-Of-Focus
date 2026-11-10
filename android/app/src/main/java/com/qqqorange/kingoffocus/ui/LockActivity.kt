@@ -130,8 +130,8 @@ class LockActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF12151B)) {
                     when {
                         kind == KIND_END -> LockEndScreen(
-                            title = title.ifBlank { "锁机结束" },
-                            body = body.ifBlank { "这一段时间走完了。" },
+                            title = title.ifBlank { Loc.t("锁机结束") },
+                            body = body.ifBlank { Loc.t("这一段时间走完了。") },
                             onDone = { finish() },
                         )
                         kind == KIND_PAGE -> PageScreen(
@@ -252,7 +252,7 @@ private fun LockEndScreen(title: String, body: String, onDone: () -> Unit) {
             )
             Spacer(Modifier.height(22.dp))
             Button(onClick = onDone, colors = ButtonDefaults.buttonColors()) {
-                Text("知道了")
+                Text(Loc.t("知道了"))
             }
         }
     }
@@ -311,7 +311,7 @@ private fun DistractOverlay(kind: String) {
                 color = Color.White.copy(alpha = if (goal.isBlank()) 0.06f else 0.10f),
             ) {
                 Text(
-                    if (goal.isBlank()) "＋ 写这一段的目标" else "目标：$goal",
+                    if (goal.isBlank()) Loc.t("＋ 写这一段的目标") else "目标：$goal",
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
                     fontSize = 12.sp,
                     color = if (goal.isBlank()) Color(0xFFB9C0CC) else Color(0xFFEDEFF5),
@@ -324,7 +324,7 @@ private fun DistractOverlay(kind: String) {
             color = Color.White.copy(alpha = 0.10f),
         ) {
             Text(
-                "＋ 记一笔",
+                Loc.t("＋ 记一笔"),
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                 fontSize = 13.sp,
                 color = Color(0xFFEDEFF5),
@@ -335,11 +335,11 @@ private fun DistractOverlay(kind: String) {
     if (open) {
         AlertDialog(
             onDismissRequest = { open = false },
-            title = { Text("记一笔") },
+            title = { Text(Loc.t("记一笔")) },
             text = {
                 Column {
                     Text(
-                        "想到什么先放这儿，记完就回到刚才那件事上。",
+                        Loc.t("想到什么先放这儿，记完就回到刚才那件事上。"),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -347,7 +347,7 @@ private fun DistractOverlay(kind: String) {
                     OutlinedTextField(
                         value = text,
                         onValueChange = { if (it.length <= 500) text = it },
-                        placeholder = { Text("例如：查一下那个报错") },
+                        placeholder = { Text(Loc.t("例如：查一下那个报错")) },
                         maxLines = 3,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -360,20 +360,20 @@ private fun DistractOverlay(kind: String) {
                         text = ""
                         open = false
                     }
-                }) { Text("记下") }
+                }) { Text(Loc.t("记下")) }
             },
-            dismissButton = { TextButton(onClick = { open = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { open = false }) { Text(Loc.t("取消")) } },
         )
     }
 
     if (goalOpen && seg != null) {
         AlertDialog(
             onDismissRequest = { goalOpen = false },
-            title = { Text("这一段要做什么") },
+            title = { Text(Loc.t("这一段要做什么")) },
             text = {
                 Column {
                     Text(
-                        "写一句就够。时段结束时会把目标和被打断次数一起汇总给你。",
+                        Loc.t("写一句就够。时段结束时会把目标和被打断次数一起汇总给你。"),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -381,7 +381,7 @@ private fun DistractOverlay(kind: String) {
                     OutlinedTextField(
                         value = goalText,
                         onValueChange = { if (it.length <= 200) goalText = it },
-                        placeholder = { Text("例如：把登录页写完") },
+                        placeholder = { Text(Loc.t("例如：把登录页写完")) },
                         maxLines = 2,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -395,14 +395,14 @@ private fun DistractOverlay(kind: String) {
                         day = now.toLocalDate().toString(),
                     )
                     goalOpen = false
-                }) { Text("保存") }
+                }) { Text(Loc.t("保存")) }
             },
             dismissButton = {
                 TextButton(onClick = {
                     // 清空 = 这一段不写目标，不是"删错了"
                     com.qqqorange.kingoffocus.data.GoalStore.set(seg.start, "")
                     goalOpen = false
-                }) { Text("清空") }
+                }) { Text(Loc.t("清空")) }
             },
         )
     }
@@ -469,7 +469,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         Text(if (sleep) "🌙" else "🔒", fontSize = 34.sp)
         Spacer(Modifier.height(6.dp))
         Text(
-            if (sleep) "睡眠中" else "锁机中",
+            if (sleep) Loc.t("睡眠中") else Loc.t("锁机中"),
             fontSize = 30.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFFF2F4F8),
@@ -477,9 +477,9 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         Spacer(Modifier.height(6.dp))
         Text(
             when {
-                sleep -> "现在是睡眠时段 · 手机放一边"
-                strict -> "强制模式 · 不可暂停 / 不可跳过"
-                else -> "温和模式 · 可用积分暂停或提前结束"
+                sleep -> Loc.t("现在是睡眠时段 · 手机放一边")
+                strict -> Loc.t("强制模式 · 不可暂停 / 不可跳过")
+                else -> Loc.t("温和模式 · 可用积分暂停或提前结束")
             },
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
@@ -492,9 +492,9 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(
             when {
-                sleep -> "这个时段是留给你睡觉的。真要看时间或处理急事，可以用积分解锁一小段。"
-                strict -> "这一段必须完整走完。没有暂停、没有跳过，也没有积分可以买时间。"
-                else -> "现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。"
+                sleep -> Loc.t("这个时段是留给你睡觉的。真要看时间或处理急事，可以用积分解锁一小段。")
+                strict -> Loc.t("这一段必须完整走完。没有暂停、没有跳过，也没有积分可以买时间。")
+                else -> Loc.t("现在是专注时段，手机先放一边。应用都还在，只是被挡在这层遮罩后面。")
             },
             fontSize = 13.sp,
             textAlign = TextAlign.Center,
@@ -511,12 +511,12 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             color = Color(0xFFF7C948),
         )
-        Text(if (sleep) "距离起床" else "本段剩余", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+        Text(if (sleep) Loc.t("距离起床") else Loc.t("本段剩余"), fontSize = 12.sp, color = Color(0xFF9AA4B2))
         Spacer(Modifier.height(22.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("积分 ", fontSize = 13.sp, color = Color(0xFF9AA4B2))
+            Text(Loc.t("积分 "), fontSize = 13.sp, color = Color(0xFF9AA4B2))
             Text("${cfg.points}", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFF2F4F8))
-            Text(" 分", fontSize = 13.sp, color = Color(0xFF9AA4B2))
+            Text(Loc.t(" 分"), fontSize = 13.sp, color = Color(0xFF9AA4B2))
         }
         // 质押：押一笔，跑完退回来（一次没被打断还加一点）。
         // 放在积分下面而不是藏进设置，是因为"押了没押"必须在锁机这一屏就能看见——
@@ -536,7 +536,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                         val r = StakeStore.place(cfg, sn.unit)
                         val ok = r.getOrNull()
                         if (ok == null) {
-                            toast(ctx, r.exceptionOrNull()?.message ?: "押注失败")
+                            toast(ctx, r.exceptionOrNull()?.message ?: Loc.t("押注失败"))
                         } else {
                             Store.update { it.copy(points = (it.points - ok.amount).coerceAtLeast(0)) }
                             toast(ctx, "已押 ${ok.amount} 分：跑完退 ${ok.amount + sn.bonus}")
@@ -571,7 +571,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             Button(
                 onClick = {
                     if (price <= 0) {
-                        toast(ctx, "睡眠时段没有开放积分解锁")
+                        toast(ctx, Loc.t("睡眠时段没有开放积分解锁"))
                         return@Button
                     }
                     if (cfg.points < price) {
@@ -596,7 +596,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             ) {
                 Text(
                     if (price > 0) "解锁 ${cfg.sleep.unlockMin} 分钟 · $price 分"
-                    else "睡眠时段不开放解锁",
+                    else Loc.t("睡眠时段不开放解锁"),
                 )
             }
         }
@@ -671,12 +671,12 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                         // 先把列表收掉再跳：否则从应用返回时它还开着，像"没关上"
                         val launch = ctx.packageManager.getLaunchIntentForPackage(item.pkg)
                         if (launch == null) {
-                            toast(ctx, "这个应用打不开")
+                            toast(ctx, Loc.t("这个应用打不开"))
                         } else {
                             // 不加 NEW_TASK：让它落在本任务里，返回时直接回到遮罩
                             launch.removeFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             runCatching { ctx.startActivity(launch) }
-                                .onFailure { toast(ctx, "这个应用打不开") }
+                                .onFailure { toast(ctx, Loc.t("这个应用打不开")) }
                         }
                     }
                 },
@@ -688,9 +688,9 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
         if (!sleep && strict) {
             Text(
                 if (shizukuReady) {
-                    "有 Shizuku：你一进设置就会被弹出来；但卸载本应用仍然拦不住（那需要设备管理员）"
+                    Loc.t("有 Shizuku：你一进设置就会被弹出来；但卸载本应用仍然拦不住（那需要设备管理员）")
                 } else {
-                    "缺 Shizuku：只能靠无障碍把设置页按回去；这一页之外没有别的锁"
+                    Loc.t("缺 Shizuku：只能靠无障碍把设置页按回去；这一页之外没有别的锁")
                 },
                 fontSize = 11.sp,
                 color = Color(0xFF5A6472),
@@ -698,7 +698,7 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
             )
         } else {
             Text(
-                if (sleep) "长按这行可紧急解除（不计分，仅限急事）" else "长按这行可强制解除（不计分，仅限紧急）",
+                if (sleep) Loc.t("长按这行可紧急解除（不计分，仅限急事）") else Loc.t("长按这行可强制解除（不计分，仅限紧急）"),
                 fontSize = 11.sp,
                 color = Color(0xFF5A6472),
                 modifier = Modifier
@@ -710,11 +710,11 @@ private fun LockScreen(kind: String, onDone: () -> Unit) {
                                     ?.let { it.end.atZone(java.time.ZoneId.systemDefault()).toEpochSecond() }
                                     ?: 0L
                                 Store.update { it.copy(sleepUnlockUntil = until) }
-                                toast(ctx, "已紧急解除本次睡眠锁定")
+                                toast(ctx, Loc.t("已紧急解除本次睡眠锁定"))
                             } else {
                                 val seg = LockEngine.segmentKey(Store.current, LocalDateTime.now())
                                 Store.update { it.copy(lockStoppedSeg = seg) }
-                                toast(ctx, "已强制解除本次锁机")
+                                toast(ctx, Loc.t("已强制解除本次锁机"))
                             }
                             if (!done) { done = true; onDone() }
                         })
@@ -772,10 +772,10 @@ private fun WhitelistEntry(count: Int, onClick: () -> Unit) {
             }
         }
         Spacer(Modifier.width(10.dp))
-        Text("白名单应用", fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+        Text(Loc.t("白名单应用"), fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f))
         Text(
-            if (enabled) "$count 个 ›" else "暂无",
+            if (enabled) "$count 个 ›" else Loc.t("暂无"),
             fontSize = 12.sp,
             color = if (enabled) Color(0xFF7FB4FF) else Color(0xFF5A6472),
         )
@@ -809,14 +809,14 @@ private fun WhitelistDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "白名单应用",
+                        Loc.t("白名单应用"),
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xFFF2F4F8),
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        if (items.isEmpty()) "还没有任何应用在白名单里"
+                        if (items.isEmpty()) Loc.t("还没有任何应用在白名单里")
                         else "共 ${items.size} 个 · 点一个直接打开",
                         fontSize = 11.sp,
                         color = Color(0xFF9AA4B2),
@@ -825,7 +825,7 @@ private fun WhitelistDialog(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "只读：要增删白名单应用，请到「自律规则」里改；自律时段内那边也是只读的。",
+                Loc.t("只读：要增删白名单应用，请到「自律规则」里改；自律时段内那边也是只读的。"),
                 fontSize = 10.5.sp,
                 lineHeight = 15.sp,
                 color = Color(0xFF7C8798),
@@ -839,10 +839,10 @@ private fun WhitelistDialog(
                     Modifier.fillMaxWidth().padding(vertical = 22.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("白名单是空的", fontSize = 13.sp, color = Color(0xFFE6EAF2))
+                    Text(Loc.t("白名单是空的"), fontSize = 13.sp, color = Color(0xFFE6EAF2))
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "去「自律规则」建一条白名单规则，把锁机时允许用的应用加进去。",
+                        Loc.t("去「自律规则」建一条白名单规则，把锁机时允许用的应用加进去。"),
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
                         textAlign = TextAlign.Center,
@@ -891,7 +891,7 @@ private fun WhitelistDialog(
                                 )
                                 if (!a.canLaunch) {
                                     Text(
-                                        "不可启动",
+                                        Loc.t("不可启动"),
                                         fontSize = 9.sp,
                                         color = Color(0xFF7C8798),
                                     )
@@ -906,7 +906,7 @@ private fun WhitelistDialog(
                 onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
-            ) { Text("关闭") }
+            ) { Text(Loc.t("关闭")) }
         }
     }
 }
@@ -964,7 +964,7 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
         Text("🔒", fontSize = 34.sp)
         Spacer(Modifier.height(10.dp))
         Text(
-            "这个应用现在不能用",
+            Loc.t("这个应用现在不能用"),
             fontSize = 22.sp,
             fontWeight = FontWeight.Bold,
             color = Color(0xFFF2F4F8),
@@ -984,7 +984,7 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         if (goal.isNotBlank()) {
             Text(
-                "这一段要做的是",
+                Loc.t("这一段要做的是"),
                 fontSize = 11.sp,
                 color = Color(0xFF7C8798),
             )
@@ -1011,7 +1011,7 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
                     }
                 },
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF9AA4B2)),
-            ) { Text("这一段还没写目标", fontSize = 11.sp) }
+            ) { Text(Loc.t("这一段还没写目标"), fontSize = 11.sp) }
         }
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.Bottom) {
@@ -1021,11 +1021,11 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
                 fontWeight = FontWeight.SemiBold,
                 color = Color(0xFFF7C948),
             )
-            Text(" 秒后返回桌面", fontSize = 12.sp, color = Color(0xFF9AA4B2))
+            Text(Loc.t(" 秒后返回桌面"), fontSize = 12.sp, color = Color(0xFF9AA4B2))
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "整机没有被锁：桌面和其它应用都能正常用。",
+            Loc.t("整机没有被锁：桌面和其它应用都能正常用。"),
             fontSize = 11.sp,
             color = Color(0xFF7C8798),
             textAlign = TextAlign.Center,
@@ -1035,7 +1035,7 @@ private fun PageScreen(left: Int, rule: String, onHome: () -> Unit) {
             onClick = onHome,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCFE3FF)),
-        ) { Text("立即返回桌面") }
+        ) { Text(Loc.t("立即返回桌面")) }
     }
 }
 

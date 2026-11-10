@@ -85,6 +85,7 @@ import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.data.Store
 import com.qqqorange.kingoffocus.service.GuardService
 import com.qqqorange.kingoffocus.ui.KofTheme
+import com.qqqorange.kingoffocus.ui.Loc
 import com.qqqorange.kingoffocus.ui.LockActivity
 import kotlinx.coroutines.delay
 import java.time.LocalDateTime
@@ -183,7 +184,7 @@ internal fun BackupSection(cfg: Config) {
 
     fun runExport(uri: Uri) = scope.launch {
         busy = true
-        status = "正在导出…"
+        status = Loc.t("正在导出…")
         try {
             val pass = Store.current.backup.password
             val text = withContext(Dispatchers.IO) {
@@ -196,7 +197,7 @@ internal fun BackupSection(cfg: Config) {
             }
             withContext(Dispatchers.IO) {
                 (ctx.contentResolver.openOutputStream(uri)
-                    ?: error("这个位置写不进去")).use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                    ?: error(Loc.t("这个位置写不进去"))).use { it.write(text.toByteArray(Charsets.UTF_8)) }
             }
             val n = Store.current.rules.size
             status = if (pass.isBlank()) {
@@ -213,18 +214,18 @@ internal fun BackupSection(cfg: Config) {
 
     fun runImport(mode: String, uri: Uri) = scope.launch {
         busy = true
-        status = if (mode == "merge") "正在合并…" else "正在覆盖…"
+        status = if (mode == "merge") Loc.t("正在合并…") else Loc.t("正在覆盖…")
         try {
             val msg = withContext(Dispatchers.IO) {
                 val text = (ctx.contentResolver.openInputStream(uri)
-                    ?: error("读不到这个文件")).use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: error(Loc.t("读不到这个文件"))).use { it.readBytes().toString(Charsets.UTF_8) }
                 val plain = Portable.unlock(text, Store.current.backup.password)
                 val parsed = Portable.parse(plain)
                 val base = Store.current
                 if (mode == "merge") {
                     val out = Portable.merge(parsed.doc, base)
                     if (out.stats.noop) {
-                        "没有需要合并的内容：这些规则本机已经有了"
+                        Loc.t("没有需要合并的内容：这些规则本机已经有了")
                     } else {
                         val st = out.stats
                         Store.update { out.config }
@@ -237,7 +238,7 @@ internal fun BackupSection(cfg: Config) {
                     val next = Portable.overwrite(parsed.doc, base)
                     Store.update { next }
                     "已覆盖：现在有 ${next.rules.size} 条规则" +
-                        if (parsed.legacy) "（旧版备份，整份恢复）" else ""
+                        if (parsed.legacy) Loc.t("（旧版备份，整份恢复）") else ""
                 }
             }
             status = msg
@@ -267,13 +268,13 @@ internal fun BackupSection(cfg: Config) {
         OutlinedTextField(
             value = cfg.backup.password,
             onValueChange = { v -> Store.update { it.copy(backup = it.backup.copy(password = v)) } },
-            label = { Text("备份密码") },
+            label = { Text(Loc.t("备份密码")) },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
         )
         Text(
-            "两端填同一个密码，导出的备份就能互相恢复。留空 = 明文文件（任何人都能打开）。",
+            Loc.t("两端填同一个密码，导出的备份就能互相恢复。留空 = 明文文件（任何人都能打开）。"),
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -281,14 +282,14 @@ internal fun BackupSection(cfg: Config) {
             OutlinedButton(
                 onClick = { exportLauncher.launch(defaultBackupName()) },
                 enabled = !busy,
-            ) { Text("导出备份…") }
+            ) { Text(Loc.t("导出备份…")) }
             OutlinedButton(
                 onClick = { importLauncher.launch(arrayOf("*/*")) },
                 enabled = !busy,
-            ) { Text("从文件恢复…") }
+            ) { Text(Loc.t("从文件恢复…")) }
         }
         Text(
-            "导出的 .kofbak 桌面端可直接恢复；桌面端导出的文件也能在这里选。",
+            Loc.t("导出的 .kofbak 桌面端可直接恢复；桌面端导出的文件也能在这里选。"),
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -301,17 +302,17 @@ internal fun BackupSection(cfg: Config) {
         val uri = pending
         AlertDialog(
             onDismissRequest = { askMode = false; pending = null },
-            title = { Text("怎么应用这份备份？") },
+            title = { Text(Loc.t("怎么应用这份备份？")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "覆盖：用备份里的规则、时段、积分、提醒替换本机，本机多出来的规则会消失。" +
-                            "拦截页文案这类手机专属设置不受影响。",
+                        Loc.t("覆盖：用备份里的规则、时段、积分、提醒替换本机，本机多出来的规则会消失。") +
+                            Loc.t("拦截页文案这类手机专属设置不受影响。"),
                         fontSize = 12.sp,
                     )
                     Text(
-                        "合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列，" +
-                            "积分取两边较大值。",
+                        Loc.t("合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列，") +
+                            Loc.t("积分取两边较大值。"),
                         fontSize = 12.sp,
                     )
                 }
@@ -321,15 +322,15 @@ internal fun BackupSection(cfg: Config) {
                     TextButton(onClick = {
                         askMode = false; pending = null
                         if (uri != null) runImport("merge", uri)
-                    }) { Text("合并") }
+                    }) { Text(Loc.t("合并")) }
                     TextButton(onClick = {
                         askMode = false; pending = null
                         if (uri != null) runImport("overwrite", uri)
-                    }) { Text("覆盖") }
+                    }) { Text(Loc.t("覆盖")) }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { askMode = false; pending = null }) { Text("取消") }
+                TextButton(onClick = { askMode = false; pending = null }) { Text(Loc.t("取消")) }
             },
         )
     }
@@ -371,13 +372,13 @@ internal fun UpdateSection(cfg: Config) {
 
     fun checkNow() = scope.launch {
         UpdateHub.busy.value = true
-        setStatus("正在检查…")
+        setStatus(Loc.t("正在检查…"))
         val token = Store.current.update.token
         val r = try {
             withContext(Dispatchers.IO) { UpdateClient.check(UpdateHub.REPO, current, token) }
         } catch (e: Exception) {
             // 兜底：检查里任何没被接住的异常都不能让 busy 永远卡住
-            android.util.Log.e("KofUpdate", "检查更新时出错", e)
+            android.util.Log.e("KofUpdate", Loc.t("检查更新时出错"), e)
             UpdateHub.busy.value = false
             setStatus("更新失败：${e.message}", true)
             return@launch
@@ -401,7 +402,7 @@ internal fun UpdateSection(cfg: Config) {
     fun download(r: UpdateClient.Result) = scope.launch {
         val url = r.url
         if (url.isNullOrBlank()) {
-            setStatus("这个版本没有可下载的安装包，请到 GitHub 手动下载", true)
+            setStatus(Loc.t("这个版本没有可下载的安装包，请到 GitHub 手动下载"), true)
             return@launch
         }
         UpdateHub.busy.value = true
@@ -417,7 +418,7 @@ internal fun UpdateSection(cfg: Config) {
                     }
                 }
             }
-            setStatus("下载完成，正在打开系统安装器…")
+            setStatus(Loc.t("下载完成，正在打开系统安装器…"))
             installApk(ctx, dest)
         } catch (e: Exception) {
             setStatus("更新失败：${e.message}", true)
@@ -430,10 +431,10 @@ internal fun UpdateSection(cfg: Config) {
     // 自动检查开关
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text("自动检查更新")
+            Text(Loc.t("自动检查更新"))
             Text(
-                "打开应用时检查一次（最多每 " + cfg.update.intervalHours +
-                    " 小时一次）。只检查，不会自己装。",
+                Loc.t("打开应用时检查一次（最多每 ") + cfg.update.intervalHours +
+                    Loc.t(" 小时一次）。只检查，不会自己装。"),
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -445,23 +446,23 @@ internal fun UpdateSection(cfg: Config) {
             },
         )
     }
-    com.qqqorange.kingoffocus.ui.Stepper("检查间隔", cfg.update.intervalHours, 1, 168, " 小时") { v ->
+    com.qqqorange.kingoffocus.ui.Stepper(Loc.t("检查间隔"), cfg.update.intervalHours, 1, 168, Loc.t(" 小时")) { v ->
         Store.update { it.copy(update = it.update.copy(intervalHours = v)) }
     }
 
     // 当前通道：平台标识 + 版本，一眼能看出"我只收哪个平台的包"
     Text(
-        "更新通道：" + Updater.platformLabel(Updater.PLATFORM) + "（" + Updater.PLATFORM + "）" +
-            " · 当前 v" + current,
+        Loc.t("更新通道：") + Updater.platformLabel(Updater.PLATFORM) + "（" + Updater.PLATFORM + "）" +
+            Loc.t(" · 当前 v") + current,
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     Text(
         if (cfg.update.lastCheck > 0) {
-            "上次检查：" + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+            Loc.t("上次检查：") + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
                 .format(java.util.Date(cfg.update.lastCheck * 1000))
         } else {
-            "还没检查过"
+            Loc.t("还没检查过")
         },
         fontSize = 11.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -474,12 +475,12 @@ internal fun UpdateSection(cfg: Config) {
     // 令牌只存本机：不进备份、不进云同步，界面也永远不回显（暗文 + 只显示"已设置"）。
     var tokenDraft by remember { mutableStateOf("") }
     val hasToken = cfg.update.token.isNotBlank()
-    Text("GitHub 个人访问令牌", fontSize = 13.sp)
+    Text(Loc.t("GitHub 个人访问令牌"), fontSize = 13.sp)
     Text(
         if (hasToken) {
-            "已设置（只在本机，界面不回显）。留空表示不修改；点「清除」可以删掉。"
+            Loc.t("已设置（只在本机，界面不回显）。留空表示不修改；点「清除」可以删掉。")
         } else {
-            "选填。匿名调用每小时只有 60 次，共用网络时很容易被用光；填了是每小时 5000 次。"
+            Loc.t("选填。匿名调用每小时只有 60 次，共用网络时很容易被用光；填了是每小时 5000 次。")
         },
         fontSize = 10.5.sp,
         lineHeight = 15.sp,
@@ -494,7 +495,7 @@ internal fun UpdateSection(cfg: Config) {
         visualTransformation = PasswordVisualTransformation(),
         placeholder = {
             Text(
-                if (hasToken) "已设置（留空则不修改）" else "粘贴 ghp_… 或 github_pat_… 令牌",
+                if (hasToken) Loc.t("已设置（留空则不修改）") else Loc.t("粘贴 ghp_… 或 github_pat_… 令牌"),
                 fontSize = 12.sp,
             )
         },
@@ -504,24 +505,24 @@ internal fun UpdateSection(cfg: Config) {
             onClick = {
                 val t = tokenDraft.trim()
                 if (t.isEmpty()) {
-                    toast(ctx, "先粘贴令牌")
+                    toast(ctx, Loc.t("先粘贴令牌"))
                     return@Button
                 }
                 // 保存后清空输入框：不把令牌留在界面上（截屏 / 录屏都不该带出去）
                 Store.update { it.copy(update = it.update.copy(token = t)) }
                 tokenDraft = ""
-                toast(ctx, "令牌已保存（只在本机）")
+                toast(ctx, Loc.t("令牌已保存（只在本机）"))
             },
             enabled = tokenDraft.isNotBlank(),
-        ) { Text("保存令牌", fontSize = 12.5.sp) }
+        ) { Text(Loc.t("保存令牌"), fontSize = 12.5.sp) }
         OutlinedButton(
             onClick = {
                 Store.update { it.copy(update = it.update.copy(token = "")) }
                 tokenDraft = ""
-                toast(ctx, "令牌已清除，回到匿名调用（每小时 60 次）")
+                toast(ctx, Loc.t("令牌已清除，回到匿名调用（每小时 60 次）"))
             },
             enabled = hasToken,
-        ) { Text("清除", fontSize = 12.5.sp) }
+        ) { Text(Loc.t("清除"), fontSize = 12.5.sp) }
         TextButton(onClick = {
             runCatching {
                 ctx.startActivity(
@@ -535,13 +536,13 @@ internal fun UpdateSection(cfg: Config) {
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             }
-        }) { Text("怎么获取？", fontSize = 12.5.sp) }
+        }) { Text(Loc.t("怎么获取？"), fontSize = 12.5.sp) }
     }
     Text(
         if (cfg.update.quotaLimit > 0) {
             "API 配额：剩余 ${cfg.update.quotaLeft} / ${cfg.update.quotaLimit} 次（每小时）"
         } else {
-            "API 配额：还没查过（检查一次更新就会一并查询）"
+            Loc.t("API 配额：还没查过（检查一次更新就会一并查询）")
         },
         fontSize = 10.5.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -549,13 +550,13 @@ internal fun UpdateSection(cfg: Config) {
 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { checkNow() }, enabled = !busy, modifier = Modifier.weight(1f)) {
-            Text(if (busy) "处理中…" else "立即检查")
+            Text(if (busy) Loc.t("处理中…") else Loc.t("立即检查"))
         }
         if (skipped.isNotEmpty()) {
             OutlinedButton(
                 onClick = { Store.update { it.copy(update = it.update.copy(skippedVersion = "")) } },
                 modifier = Modifier.weight(1f),
-            ) { Text("取消跳过") }
+            ) { Text(Loc.t("取消跳过")) }
         }
     }
 
@@ -593,13 +594,13 @@ internal fun UpdateSection(cfg: Config) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("发现新版本 v${r.latest}", fontWeight = FontWeight.SemiBold)
                 Text(
-                    r.file + " · " + if (r.size > 0) "${r.size / 1024 / 1024} MB" else "大小未知" +
-                        " · 平台 " + Updater.PLATFORM,
+                    r.file + " · " + if (r.size > 0) "${r.size / 1024 / 1024} MB" else Loc.t("大小未知") +
+                        Loc.t(" · 平台 ") + Updater.PLATFORM,
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    "包名、类型、版本、sha256 四项都和更新清单核对过；对不上就不会下载。",
+                    Loc.t("包名、类型、版本、sha256 四项都和更新清单核对过；对不上就不会下载。"),
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -612,13 +613,13 @@ internal fun UpdateSection(cfg: Config) {
                 }
                 if (r.source == "asset-scan") {
                     Text(
-                        "注意：这次发布没带更新清单，是按文件名兜底校验的。",
+                        Loc.t("注意：这次发布没带更新清单，是按文件名兜底校验的。"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { download(r) }, enabled = !busy) { Text("下载并安装") }
+                    Button(onClick = { download(r) }, enabled = !busy) { Text(Loc.t("下载并安装")) }
                     // 应用内下载走的是同一个 GitHub 域名，某些网络下会被掐断；
                     // 留一个"交给浏览器"的出口，总比只能干看错误强
                     if (!r.url.isNullOrBlank()) {
@@ -631,7 +632,7 @@ internal fun UpdateSection(cfg: Config) {
                                     )
                                 }
                             },
-                        ) { Text("用浏览器打开") }
+                        ) { Text(Loc.t("用浏览器打开")) }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -640,7 +641,7 @@ internal fun UpdateSection(cfg: Config) {
                             Store.update { it.copy(update = it.update.copy(skippedVersion = r.latest)) }
                         },
                         enabled = !busy,
-                    ) { Text("跳过这个版本") }
+                    ) { Text(Loc.t("跳过这个版本")) }
                 }
             }
         }
@@ -653,13 +654,13 @@ internal fun UpdateSection(cfg: Config) {
  */
 private fun installApk(ctx: Context, apk: File) {
     if (!apk.exists()) {
-        toast(ctx, "安装包已不存在，请重新下载")
+        toast(ctx, Loc.t("安装包已不存在，请重新下载"))
         return
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
         !ctx.packageManager.canRequestPackageInstalls()
     ) {
-        toast(ctx, "请先允许「安装未知应用」，再点一次下载并安装")
+        toast(ctx, Loc.t("请先允许「安装未知应用」，再点一次下载并安装"))
         runCatching {
             ctx.startActivity(
                 Intent(SysSettings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}"))
@@ -718,9 +719,9 @@ private fun PermRow(title: String, sub: String, ok: Boolean, onFix: () -> Unit) 
             Text(sub, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (ok) {
-            Text("已授予", fontSize = 12.sp, color = Color(0xFF3FBF7F))
+            Text(Loc.t("已授予"), fontSize = 12.sp, color = Color(0xFF3FBF7F))
         } else {
-            TextButton(onClick = onFix) { Text("去授予") }
+            TextButton(onClick = onFix) { Text(Loc.t("去授予")) }
         }
     }
 }

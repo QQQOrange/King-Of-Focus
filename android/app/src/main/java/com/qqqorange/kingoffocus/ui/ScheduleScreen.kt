@@ -65,7 +65,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** 星期表头（横轴）；索引 = 周一 .. 周日 */
-private val DAY_NAMES = listOf("一", "二", "三", "四", "五", "六", "日")
+private val DAY_NAMES = listOf(Loc.t("一"), Loc.t("二"), Loc.t("三"), Loc.t("四"), Loc.t("五"), Loc.t("六"), Loc.t("日"))
 
 /** 左侧时间轴宽度：刚好放得下 "23:00" */
 private val AXIS_W = 42.dp
@@ -115,7 +115,7 @@ fun ScheduleScreen(cfg: Config) {
     val hourH = rowH * (60 / step)
 
     val plans = cfg.plans.ifEmpty {
-        listOf(SchedulePlan(id = "plan-default", name = "默认方案", days = cfg.days))
+        listOf(SchedulePlan(id = "plan-default", name = Loc.t("默认方案"), days = cfg.days))
     }
     val active = plans.firstOrNull { it.id == cfg.activePlan } ?: plans.first()
 
@@ -358,17 +358,17 @@ fun ScheduleScreen(cfg: Config) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         PageHeader(
-            "自律时段",
-            "纵向是时间、横向是星期。点一格 = 选中/取消；长按空白处拖动 = 框选；" +
-                "长按色块中间 = 拖动整块（拖过相邻块一半就会换顺序），" +
-                "按在块的头/尾那一格 = 拉起点 / 终点",
+            Loc.t("自律时段"),
+            Loc.t("纵向是时间、横向是星期。点一格 = 选中/取消；长按空白处拖动 = 框选；") +
+                Loc.t("长按色块中间 = 拖动整块（拖过相邻块一半就会换顺序），") +
+                Loc.t("按在块的头/尾那一格 = 拉起点 / 终点"),
         )
 
         // 专注段生效中：整页只读。这与桌面端一致——自律期间能改表，锁机就只是建议
         if (frozen) {
             Text(
-                "专注段生效中：这一页暂时只读。等这一段结束再改；"
-                    + "或者用积分解锁 / 暂停锁机 / 停止本段，之后就能改。",
+                Loc.t("专注段生效中：这一页暂时只读。等这一段结束再改；")
+                    + Loc.t("或者用积分解锁 / 暂停锁机 / 停止本段，之后就能改。"),
                 fontSize = 11.5.sp,
                 color = cs.error,
             )
@@ -433,21 +433,21 @@ fun ScheduleScreen(cfg: Config) {
                     }
                 },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-            ) { Text(if (plans.size >= MAX_PLANS) "最多 $MAX_PLANS 套" else "+ 新建", fontSize = 12.sp) }
+            ) { Text(if (plans.size >= MAX_PLANS) "最多 $MAX_PLANS 套" else Loc.t("+ 新建"), fontSize = 12.sp) }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(enabled = !frozen, onClick = {
                 renameText = active.name
                 renameTarget = active
-            }) { Text("重命名", fontSize = 12.sp) }
+            }) { Text(Loc.t("重命名"), fontSize = 12.sp) }
             // 复制这套：连排班带番茄时长一起复制（桌面端 clockProfDup 同义）
             TextButton(
                 enabled = !frozen,
                 onClick = {
                     if (plans.size >= MAX_PLANS) return@TextButton
                     val id = "plan-" + UUID.randomUUID().toString().take(8)
-                    val copy = active.copy(id = id, name = (active.name + " 副本").take(30))
+                    val copy = active.copy(id = id, name = (active.name + Loc.t(" 副本")).take(30))
                     Store.update {
                         it.copy(
                             plans = plans + copy,
@@ -461,7 +461,7 @@ fun ScheduleScreen(cfg: Config) {
                 },
             ) {
                 Text(
-                    if (plans.size >= MAX_PLANS) "最多 $MAX_PLANS 套" else "复制这套",
+                    if (plans.size >= MAX_PLANS) "最多 $MAX_PLANS 套" else Loc.t("复制这套"),
                     fontSize = 12.sp,
                 )
             }
@@ -481,7 +481,7 @@ fun ScheduleScreen(cfg: Config) {
                         )
                     }
                 },
-            ) { Text("删除这套", fontSize = 12.sp, color = cs.error) }
+            ) { Text(Loc.t("删除这套"), fontSize = 12.sp, color = cs.error) }
         }
 
         // —— 这套时段管哪些自律规则（桌面端 ClockProfile.bound） ——
@@ -490,9 +490,9 @@ fun ScheduleScreen(cfg: Config) {
         // 「周末那套只该管娱乐，不该管工作软件」靠一个全局开关表达不出来，
         // 只能让每套时段各自挑分组。空 = 全部（老配置的语义）。
         Panel {
-            Text("这套时段生效的自律规则", fontSize = 14.sp)
+            Text(Loc.t("这套时段生效的自律规则"), fontSize = 14.sp)
             Text(
-                if (active.bound.isEmpty()) "没绑任何分组 = 全部生效（默认）"
+                if (active.bound.isEmpty()) Loc.t("没绑任何分组 = 全部生效（默认）")
                 else "已绑 ${active.bound.size} 组，其余分组这套时段不管",
                 fontSize = 11.sp,
                 color = cs.onSurfaceVariant,
@@ -503,9 +503,9 @@ fun ScheduleScreen(cfg: Config) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                PickChip("全部", active.bound.isEmpty(), enabled = !frozen) { setBound(emptyList()) }
+                PickChip(Loc.t("全部"), active.bound.isEmpty(), enabled = !frozen) { setBound(emptyList()) }
                 cfg.rules.forEach { r ->
-                    PickChip(r.name.ifBlank { "未命名" }, r.id in active.bound, enabled = !frozen) {
+                    PickChip(r.name.ifBlank { Loc.t("未命名") }, r.id in active.bound, enabled = !frozen) {
                         setBound(
                             if (r.id in active.bound) active.bound - r.id
                             else active.bound + r.id,
@@ -515,14 +515,14 @@ fun ScheduleScreen(cfg: Config) {
             }
             if (cfg.rules.isEmpty()) {
                 Text(
-                    "还没有自律规则分组，先去「自律规则」建一组。",
+                    Loc.t("还没有自律规则分组，先去「自律规则」建一组。"),
                     fontSize = 10.5.sp,
                     color = cs.onSurfaceVariant,
                 )
             } else {
                 Text(
-                    "换方案 = 换时间表 + 换管哪些分组。比如「工作日」那套只绑工作类，"
-                        + "「周末」那套只绑娱乐类，互不干扰。",
+                    Loc.t("换方案 = 换时间表 + 换管哪些分组。比如「工作日」那套只绑工作类，")
+                        + Loc.t("「周末」那套只绑娱乐类，互不干扰。"),
                     fontSize = 10.5.sp,
                     color = cs.onSurfaceVariant,
                 )
@@ -533,9 +533,9 @@ fun ScheduleScreen(cfg: Config) {
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("刻度", fontSize = 14.sp)
+                    Text(Loc.t("刻度"), fontSize = 14.sp)
                     Text(
-                        "一格代表多久。只是画得细，已经排好的时段不会因此失效。",
+                        Loc.t("一格代表多久。只是画得细，已经排好的时段不会因此失效。"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -590,7 +590,7 @@ fun ScheduleScreen(cfg: Config) {
                             )
                             if (!editable[d]) {
                                 Text(
-                                    "锁",
+                                    Loc.t("锁"),
                                     fontSize = 7.sp,
                                     color = cs.onSurfaceVariant.copy(alpha = 0.55f),
                                 )
@@ -607,7 +607,7 @@ fun ScheduleScreen(cfg: Config) {
             val moving = dragTarget
             if (dragging && moving != null && blockSeg.isNotEmpty()) {
                 Text(
-                    "正在移动 " + Slots.fmtBlock(moving) + " · 松手就放到这个位置",
+                    Loc.t("正在移动 ") + Slots.fmtBlock(moving) + Loc.t(" · 松手就放到这个位置"),
                     fontSize = 10.5.sp,
                     fontWeight = FontWeight.Medium,
                     color = cs.primary,
@@ -649,9 +649,9 @@ fun ScheduleScreen(cfg: Config) {
                             // 读屏用户拿不到画布里的内容：至少把"这是哪一天、选了多少"
                             // 说出来，别让这一整块变成沉默区域
                             .semantics {
-                                contentDescription = "自律时段网格，今天已选 " +
+                                contentDescription = Loc.t("自律时段网格，今天已选 ") +
                                     Slots.fmtMinutes(selectedToday) +
-                                    "；编辑请逐格点击，或用长按拖动"
+                                    Loc.t("；编辑请逐格点击，或用长按拖动")
                             }
                             .pointerInput(step, cfg.defWork, cfg.defBrk) {
                                 awaitEachGesture {
@@ -926,8 +926,8 @@ fun ScheduleScreen(cfg: Config) {
             Text(
                 "一格 = $step 分钟。今天已选 " + Slots.fmtMinutes(selectedToday) + "；" +
                     "长按色块中间可以整块平移，按在块的头/尾那一格拉上下边界（吸附到 $step 分钟，" +
-                    "撞到相邻块就停在它的边界上，不会吞掉它）。直接上下滑只滚动，不改数据；" +
-                    "灰色的星期已经过去。",
+                    Loc.t("撞到相邻块就停在它的边界上，不会吞掉它）。直接上下滑只滚动，不改数据；") +
+                    Loc.t("灰色的星期已经过去。"),
                 fontSize = 10.5.sp,
                 lineHeight = 15.sp,
                 color = cs.onSurfaceVariant,
@@ -940,9 +940,9 @@ fun ScheduleScreen(cfg: Config) {
                 rows2[todayIdx] = Slots.paintDay(rows2[todayIdx], true, cfg.defWork, cfg.defBrk)
                 draftState.value = rows2
                 commit()
-            }) { Text("今天全选", fontSize = 12.sp) }
+            }) { Text(Loc.t("今天全选"), fontSize = 12.sp) }
             OutlinedButton(enabled = !frozen, onClick = { clearAsk = todayIdx }) {
-                Text("今天清空", fontSize = 12.sp)
+                Text(Loc.t("今天清空"), fontSize = 12.sp)
             }
         }
 
@@ -952,36 +952,36 @@ fun ScheduleScreen(cfg: Config) {
         // 已经排好的时段各自保留自己的时长。
         // 以前改这里会把整份方案重排——用户只是想把默认值从 45/15 改成 50/10，
         // 结果所有手调过的小时被一起抹平，且没有任何提示。
-        SectionTitle("番茄节奏")
+        SectionTitle(Loc.t("番茄节奏"))
         Panel {
-            Stepper("专注", cfg.defWork, 1, 59, " 分钟", enabled = !frozen) { v ->
+            Stepper(Loc.t("专注"), cfg.defWork, 1, 59, Loc.t(" 分钟"), enabled = !frozen) { v ->
                 val brk = if (cfg.defBrk > 0) cfg.defBrk.coerceAtMost(60 - v) else cfg.defBrk
                 Store.update { c -> c.copy(defWork = v, defBrk = brk) }
             }
             // 休息的上限随时跟着专注走：一轮番茄不能超过一小时
-            Stepper("休息", cfg.defBrk, 0, 60 - cfg.defWork, " 分钟", enabled = !frozen) { v ->
+            Stepper(Loc.t("休息"), cfg.defBrk, 0, 60 - cfg.defWork, Loc.t(" 分钟"), enabled = !frozen) { v ->
                 Store.update { c -> c.copy(defBrk = v) }
             }
             // 一小时内累计能给多少休息。0 = 不限（默认，行为和以前完全一样）
             Stepper(
-                "每小时休息上限",
+                Loc.t("每小时休息上限"),
                 cfg.defCap,
                 0,
                 60,
-                " 分钟",
+                Loc.t(" 分钟"),
                 enabled = !frozen,
             ) { v -> Store.update { c -> c.copy(defCap = v) } }
             // 用 val 拼好再交给 Text：`when` 里跨行用 `+` 续写会被当成一元运算符
             val capHint = when {
                 cfg.defCap <= 0 ->
-                    "0 = 不限。一轮专注 + 一轮休息每小时能跑几轮，就休几次。"
+                    Loc.t("0 = 不限。一轮专注 + 一轮休息每小时能跑几轮，就休几次。")
                 cfg.defCap < cfg.defBrk ->
                     "上限比单次休息还短：每次休息都会被截到 ${cfg.defCap} 分钟，" +
-                        "其余时间继续专注（锁机不解除）。"
+                        Loc.t("其余时间继续专注（锁机不解除）。")
                 else ->
                     "一小时里累计休息到 ${cfg.defCap} 分钟就不再休息：" +
-                        "比如 25/5 这种一小时两轮的节奏，第二轮休息会被截短、" +
-                        "之后的休息整段跳过，继续专注并保持锁机。"
+                        Loc.t("比如 25/5 这种一小时两轮的节奏，第二轮休息会被截短、") +
+                        Loc.t("之后的休息整段跳过，继续专注并保持锁机。")
             }
             Text(
                 capHint,
@@ -990,8 +990,8 @@ fun ScheduleScreen(cfg: Config) {
                 color = cs.onSurfaceVariant,
             )
             Text(
-                "只作用于这套方案的默认值：之后新框选 / 新点选的时段沿用这套时长，"
-                    + "已经排好的时段保持原样（它们各自记着自己的节奏）。要统一改，用下面的按钮。",
+                Loc.t("只作用于这套方案的默认值：之后新框选 / 新点选的时段沿用这套时长，")
+                    + Loc.t("已经排好的时段保持原样（它们各自记着自己的节奏）。要统一改，用下面的按钮。"),
                 fontSize = 10.5.sp,
                 color = cs.onSurfaceVariant,
             )
@@ -1000,18 +1000,18 @@ fun ScheduleScreen(cfg: Config) {
                 OutlinedButton(enabled = !frozen, onClick = {
                     // 桌面端右键菜单的「顺带更新通用时长」：整段套用，所以二次确认
                     applyAsk = true
-                }) { Text("应用到已选时段", fontSize = 12.sp) }
+                }) { Text(Loc.t("应用到已选时段"), fontSize = 12.sp) }
             }
         }
 
         // 当前方案概况
         val totalMinutes = draft.sumOf { Slots.dayMinutes(it) }
         Text(
-            "这套方案一周共 " + Slots.fmtMinutes(totalMinutes) + "；当前状态：" +
+            Loc.t("这套方案一周共 ") + Slots.fmtMinutes(totalMinutes) + Loc.t("；当前状态：") +
                 (ScheduleEngine.stateAt(cfg, LocalDateTime.now())?.let {
-                    if (it.inBreak) "休息中" else "专注中"
-                } ?: "未在时段内") +
-                if (LockEngine.isLockActive(cfg, LocalDateTime.now())) "（锁机生效）" else "",
+                    if (it.inBreak) Loc.t("休息中") else Loc.t("专注中")
+                } ?: Loc.t("未在时段内")) +
+                if (LockEngine.isLockActive(cfg, LocalDateTime.now())) Loc.t("（锁机生效）") else "",
             fontSize = 10.5.sp,
             color = cs.onSurfaceVariant,
         )
@@ -1022,7 +1022,7 @@ fun ScheduleScreen(cfg: Config) {
     if (target != null) {
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text("方案名称") },
+            title = { Text(Loc.t("方案名称")) },
             text = {
                 OutlinedTextField(
                     value = renameText,
@@ -1033,31 +1033,31 @@ fun ScheduleScreen(cfg: Config) {
             },
             confirmButton = {
                 Button(onClick = {
-                    val name = renameText.trim().ifBlank { "未命名" }
+                    val name = renameText.trim().ifBlank { Loc.t("未命名") }
                     Store.update { c ->
                         c.copy(plans = c.plans.map { if (it.id == target.id) it.copy(name = name) else it })
                     }
                     renameTarget = null
-                }) { Text("保存") }
+                }) { Text(Loc.t("保存")) }
             },
-            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text(Loc.t("取消")) } },
         )
     }
 
     // —— 每天的操作：点表头打开（全选 / 清空 / 说明为什么锁着） ——
     val act = dayAction
     if (act != null) {
-        val name = "周" + DAY_NAMES[act]
+        val name = Loc.t("周") + DAY_NAMES[act]
         val mins = Slots.dayMinutes(draft.getOrNull(act).orEmpty())
         AlertDialog(
             onDismissRequest = { dayAction = null },
             title = { Text(name) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("已选 " + Slots.fmtMinutes(mins), fontSize = 13.sp)
+                    Text(Loc.t("已选 ") + Slots.fmtMinutes(mins), fontSize = 13.sp)
                     if (!editable[act]) {
                         Text(
-                            ScheduleRules.lockReason(name) + "。原有计划照常生效，只是不能再改。",
+                            ScheduleRules.lockReason(name) + Loc.t("。原有计划照常生效，只是不能再改。"),
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1074,7 +1074,7 @@ fun ScheduleScreen(cfg: Config) {
                                     commit()
                                     dayAction = null
                                 },
-                            ) { Text("全选", fontSize = 12.sp) }
+                            ) { Text(Loc.t("全选"), fontSize = 12.sp) }
                             OutlinedButton(
                                 enabled = !frozen,
                                 onClick = {
@@ -1082,27 +1082,27 @@ fun ScheduleScreen(cfg: Config) {
                                     clearAsk = act
                                 },
                             ) {
-                                Text("清空这一天", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                                Text(Loc.t("清空这一天"), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { dayAction = null }) { Text("关闭") } },
+            confirmButton = { TextButton(onClick = { dayAction = null }) { Text(Loc.t("关闭")) } },
         )
     }
 
     // —— 二次确认：清空一整天的计划不是能撤销的操作 ——
     val ask = clearAsk
     if (ask != null) {
-        val name = "周" + DAY_NAMES[ask]
+        val name = Loc.t("周") + DAY_NAMES[ask]
         val mins = Slots.dayMinutes(draft.getOrNull(ask).orEmpty())
         AlertDialog(
             onDismissRequest = { clearAsk = null },
             title = { Text("清空$name？") },
             text = {
                 Text(
-                    "$name 现在的 " + Slots.fmtMinutes(mins) + " 计划会全部移除，这一步不能撤销。",
+                    "$name 现在的 " + Slots.fmtMinutes(mins) + Loc.t(" 计划会全部移除，这一步不能撤销。"),
                     fontSize = 13.sp,
                 )
             },
@@ -1120,9 +1120,9 @@ fun ScheduleScreen(cfg: Config) {
                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
                     ),
-                ) { Text("清空") }
+                ) { Text(Loc.t("清空")) }
             },
-            dismissButton = { TextButton(onClick = { clearAsk = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { clearAsk = null }) { Text(Loc.t("取消")) } },
         )
     }
 
@@ -1131,7 +1131,7 @@ fun ScheduleScreen(cfg: Config) {
         val onHours = draft.flatten().count { it.on }
         AlertDialog(
             onDismissRequest = { applyAsk = false },
-            title = { Text("套用到已选时段？") },
+            title = { Text(Loc.t("套用到已选时段？")) },
             text = {
                 Text(
                     "这套方案里已选中的 $onHours 个小时会全部改成 专注 ${cfg.defWork} 分 / " +
@@ -1151,9 +1151,9 @@ fun ScheduleScreen(cfg: Config) {
                     draftState.value = rows
                     commit()
                     applyAsk = false
-                }) { Text("套用") }
+                }) { Text(Loc.t("套用")) }
             },
-            dismissButton = { TextButton(onClick = { applyAsk = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { applyAsk = false }) { Text(Loc.t("取消")) } },
         )
     }
 }

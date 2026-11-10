@@ -69,14 +69,14 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 14.dp, vertical = 8.dp)) {
         // —— 顶部：返回 + 标题 ——
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("‹ 返回", fontSize = 14.sp) }
+            TextButton(onClick = onBack) { Text(Loc.t("‹ 返回"), fontSize = 14.sp) }
             Spacer(Modifier.width(2.dp))
-            Text("分心事件", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(Loc.t("分心事件"), fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             if (pending > 0) Pill("待处理 $pending", MaterialTheme.colorScheme.secondary)
         }
         Text(
-            "专注时冒出的零散想法，先记下来就好。记下这个动作本身就算把它从脑子里搬出来了。",
+            Loc.t("专注时冒出的零散想法，先记下来就好。记下这个动作本身就算把它从脑子里搬出来了。"),
             fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 2.dp, top = 2.dp, bottom = 8.dp),
@@ -89,13 +89,13 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                     onClick = { view = "week" },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
-                ) { Text(if (view == "week") "● 周视图" else "周视图", fontSize = 12.sp) }
+                ) { Text(if (view == "week") Loc.t("● 周视图") else Loc.t("周视图"), fontSize = 12.sp) }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(
                     onClick = { view = "month" },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
-                ) { Text(if (view == "month") "● 月视图" else "月视图", fontSize = 12.sp) }
+                ) { Text(if (view == "month") Loc.t("● 月视图") else Loc.t("月视图"), fontSize = 12.sp) }
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -124,7 +124,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                 }) { Text("›", fontSize = 16.sp) }
                 TextButton(onClick = {
                     day = DistractMath.today(); month = day.take(7)
-                }) { Text("今天", fontSize = 12.sp) }
+                }) { Text(Loc.t("今天"), fontSize = 12.sp) }
             }
             Spacer(Modifier.height(6.dp))
             if (view == "month") {
@@ -145,7 +145,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "点任意一天查看那天的全部记录；绿点表示当天都处理完了。",
+                Loc.t("点任意一天查看那天的全部记录；绿点表示当天都处理完了。"),
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -176,9 +176,9 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                                 Spacer(Modifier.width(6.dp))
                                 Text(
                                     when (gState) {
-                                        "done" -> "做完了"
-                                        "partial" -> "一半"
-                                        else -> "没做成"
+                                        "done" -> Loc.t("做完了")
+                                        "partial" -> Loc.t("一半")
+                                        else -> Loc.t("没做成")
                                     },
                                     fontSize = 9.sp,
                                     color = when (gState) {
@@ -214,23 +214,23 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
         }
 
         // —— 设置 ——
-        SectionTitle("记录按钮与提醒")
+        SectionTitle(Loc.t("记录按钮与提醒"))
         Panel {
             ToggleRow(
-                title = "启用分心事件",
-                sub = "关掉后遮罩上不出现「记一笔」，也不再提醒（已记的都还在）",
+                title = Loc.t("启用分心事件"),
+                sub = Loc.t("关掉后遮罩上不出现「记一笔」，也不再提醒（已记的都还在）"),
                 checked = cfg.distract.enabled,
                 onChange = { v -> Store.update { it.copy(distract = it.distract.copy(enabled = v)) } },
             )
             HLine()
             Text(
-                "按钮位置（遮罩上的「记一笔」）",
+                Loc.t("按钮位置（遮罩上的「记一笔」）"),
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 10.dp),
             )
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("tl" to "左上", "tr" to "右上", "bl" to "左下", "br" to "右下").forEach { (v, label) ->
+                listOf("tl" to Loc.t("左上"), "tr" to Loc.t("右上"), "bl" to Loc.t("左下"), "br" to Loc.t("右下")).forEach { (v, label) ->
                     val on = cfg.distract.buttonCorner == v
                     Box(
                         Modifier
@@ -258,34 +258,34 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
             }
             HLine()
             Stepper(
-                title = "重复提醒间隔",
+                title = Loc.t("重复提醒间隔"),
                 value = cfg.distract.remindMinutes,
                 min = 0,
                 max = 720,
-                unit = " 分",
+                unit = Loc.t(" 分"),
                 step = 30,
                 onChange = { v ->
                     Store.update { it.copy(distract = it.distract.copy(remindMinutes = v)) }
                 },
             )
             Text(
-                if (cfg.distract.remindMinutes == 0) "0 = 只在时段结束时提醒一次"
+                if (cfg.distract.remindMinutes == 0) Loc.t("0 = 只在时段结束时提醒一次")
                 else "时段结束后每 ${cfg.distract.remindMinutes} 分钟提醒一次未完成项",
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Stepper(
-                title = "最多追",
+                title = Loc.t("最多追"),
                 value = cfg.distract.remindMaxDays,
                 min = 1,
                 max = 30,
-                unit = " 天",
+                unit = Loc.t(" 天"),
                 onChange = { v ->
                     Store.update { it.copy(distract = it.distract.copy(remindMaxDays = v)) }
                 },
             )
             Text(
-                "超过这么多天就不再提醒，避免陈年旧账天天弹",
+                Loc.t("超过这么多天就不再提醒，避免陈年旧账天天弹"),
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -293,14 +293,14 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
 
         // —— 账本：今天被什么打断 ——
         // 与桌面端同一个概念，只是手机端的"拦下"是回桌面 / 盖拦截页。
-        SectionTitle("今天被什么打断")
+        SectionTitle(Loc.t("今天被什么打断"))
         Panel {
             val today = DistractMath.today()
             val hits = remember(items) { LedgerStore.day(today, 6) }
             val total = hits.sumOf { it.n }
             if (hits.isEmpty()) {
                 Text(
-                    "今天还没被拦过。要么很自律，要么规则没生效——去总览看看守护状态。",
+                    Loc.t("今天还没被拦过。要么很自律，要么规则没生效——去总览看看守护状态。"),
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -316,7 +316,7 @@ fun DistractScreen(cfg: Config, onBack: () -> Unit) {
                         Modifier.fillMaxWidth().padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Pill(if (h.kind == "site") "网页" else "软件", MaterialTheme.colorScheme.secondary)
+                        Pill(if (h.kind == "site") Loc.t("网页") else Loc.t("软件"), MaterialTheme.colorScheme.secondary)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             h.label,
@@ -382,13 +382,13 @@ private fun ItemRow(it: DistractItem) {
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "${hhmm(it.at)} 写入" + (if (it.segLabel.isBlank()) " · 不在自律时段内" else " · 时段 ${it.segLabel}"),
+                "${hhmm(it.at)} 写入" + (if (it.segLabel.isBlank()) Loc.t(" · 不在自律时段内") else " · 时段 ${it.segLabel}"),
                 fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         TextButton(onClick = { DistractStore.delete(it.id) }) {
-            Text("删", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(Loc.t("删"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -416,7 +416,7 @@ private fun MonthGrid(
 
     Column {
         Row(Modifier.fillMaxWidth()) {
-            listOf("一", "二", "三", "四", "五", "六", "日").forEach {
+            listOf(Loc.t("一"), Loc.t("二"), Loc.t("三"), Loc.t("四"), Loc.t("五"), Loc.t("六"), Loc.t("日")).forEach {
                 Text(
                     it, fontSize = 10.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -497,7 +497,7 @@ private fun WeekRow(
     val base = LocalDate.parse(day)
     val monday = base.minusDays(((base.dayOfWeek.value + 6) % 7).toLong())
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        listOf("一", "二", "三", "四", "五", "六", "日").forEachIndexed { i, w ->
+        listOf(Loc.t("一"), Loc.t("二"), Loc.t("三"), Loc.t("四"), Loc.t("五"), Loc.t("六"), Loc.t("日")).forEachIndexed { i, w ->
             val d = monday.plusDays(i.toLong())
             val key = d.toString()
             val c = counts[key]

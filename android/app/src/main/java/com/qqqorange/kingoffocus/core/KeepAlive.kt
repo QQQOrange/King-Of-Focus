@@ -14,6 +14,7 @@ import android.provider.Settings
 import com.qqqorange.kingoffocus.data.Config
 import com.qqqorange.kingoffocus.service.GuardJobService
 import com.qqqorange.kingoffocus.service.GuardService
+import com.qqqorange.kingoffocus.ui.Loc
 
 /**
  * 保活体检 + 自愈。
@@ -67,29 +68,29 @@ object KeepAlive {
     /** 体检：逐项列出状态与"缺了会怎样" */
     fun audit(ctx: Context, cfg: Config): List<Item> = listOf(
         Item(
-            title = "使用情况访问",
-            purpose = "读取当前前台是哪个应用（统计的唯一来源）",
-            whenAsk = "首次开启统计、统计页提示里",
-            impact = "统计无法开始；拦截仍可用（靠无障碍）",
+            title = Loc.t("使用情况访问"),
+            purpose = Loc.t("读取当前前台是哪个应用（统计的唯一来源）"),
+            whenAsk = Loc.t("首次开启统计、统计页提示里"),
+            impact = Loc.t("统计无法开始；拦截仍可用（靠无障碍）"),
             ok = GuardEngine.hasUsageAccess(ctx),
             action = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         ),
         Item(
-            title = "无障碍服务",
-            purpose = "切应用即刻识别、全局回桌面、强制模式防绕过",
-            whenAsk = "首次进总览、缺能力时",
-            impact = "退回 1 秒轮询（切应用延迟数秒），强制模式挡不住去设置里关",
+            title = Loc.t("无障碍服务"),
+            purpose = Loc.t("切应用即刻识别、全局回桌面、强制模式防绕过"),
+            whenAsk = Loc.t("首次进总览、缺能力时"),
+            impact = Loc.t("退回 1 秒轮询（切应用延迟数秒），强制模式挡不住去设置里关"),
             ok = com.qqqorange.kingoffocus.service.KofAccessibility.alive() ||
                 isAccessibilityEnabled(ctx),
             action = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         ),
         Item(
-            title = "在其他应用上层显示",
-            purpose = "后台拉不起页面时，用悬浮窗把锁机遮罩盖上来",
-            whenAsk = "首次开启锁机",
-            impact = "锁机静默失效（系统会拦截后台启动 Activity）",
+            title = Loc.t("在其他应用上层显示"),
+            purpose = Loc.t("后台拉不起页面时，用悬浮窗把锁机遮罩盖上来"),
+            whenAsk = Loc.t("首次开启锁机"),
+            impact = Loc.t("锁机静默失效（系统会拦截后台启动 Activity）"),
             ok = Settings.canDrawOverlays(ctx),
             action = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -97,28 +98,28 @@ object KeepAlive {
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         ),
         Item(
-            title = "通知",
-            purpose = "前台服务常驻状态、阶段提醒、锁机提示",
-            whenAsk = "首次启动（Android 13+ 运行时权限）",
-            impact = "常驻通知不显示（部分 ROM 会因此限制前台服务）、提醒收不到",
+            title = Loc.t("通知"),
+            purpose = Loc.t("前台服务常驻状态、阶段提醒、锁机提示"),
+            whenAsk = Loc.t("首次启动（Android 13+ 运行时权限）"),
+            impact = Loc.t("常驻通知不显示（部分 ROM 会因此限制前台服务）、提醒收不到"),
             ok = notificationsAllowed(ctx),
             action = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         ),
         Item(
-            title = "忽略电池优化",
-            purpose = "别在 Doze 里把守护服务冻结",
-            whenAsk = "保活体检、服务被冻结之后",
-            impact = "息屏几分钟后采样与拦截停摆，直到下次点亮",
+            title = Loc.t("忽略电池优化"),
+            purpose = Loc.t("别在 Doze 里把守护服务冻结"),
+            whenAsk = Loc.t("保活体检、服务被冻结之后"),
+            impact = Loc.t("息屏几分钟后采样与拦截停摆，直到下次点亮"),
             ok = isIgnoringBattery(ctx),
             action = batteryIntent(ctx),
         ),
         Item(
-            title = "自启动 / 后台运行",
-            purpose = "开机或被清理之后能自己回来（厂商设置，没有标准 API）",
-            whenAsk = "保活体检（只能引导，不能自动申请）",
-            impact = "重启后不会自动运行，需要手动打开一次",
+            title = Loc.t("自启动 / 后台运行"),
+            purpose = Loc.t("开机或被清理之后能自己回来（厂商设置，没有标准 API）"),
+            whenAsk = Loc.t("保活体检（只能引导，不能自动申请）"),
+            impact = Loc.t("重启后不会自动运行，需要手动打开一次"),
             // 没有标准接口能读这个状态：如实标成"未确认"（false），
             // 而不是查不到就假装打了勾
             ok = false,
@@ -260,13 +261,13 @@ object KeepAlive {
 
     /** 给界面用：一句话概括"现在能不能活" */
     fun healthLine(ctx: Context, cfg: Config): String {
-        val items = audit(ctx, cfg).filter { it.title != "自启动 / 后台运行" }
+        val items = audit(ctx, cfg).filter { it.title != Loc.t("自启动 / 后台运行") }
         val missing = items.count { !it.ok }
         val running = isServiceRunning(ctx)
         return when {
-            !GuardService.shouldRun(cfg) -> "没有被要求常驻（自律与统计都关着）"
-            !running -> "服务没在跑——点「重启守护」立刻拉起来"
-            missing == 0 -> "守护在跑，需要的权限都齐了"
+            !GuardService.shouldRun(cfg) -> Loc.t("没有被要求常驻（自律与统计都关着）")
+            !running -> Loc.t("服务没在跑——点「重启守护」立刻拉起来")
+            missing == 0 -> Loc.t("守护在跑，需要的权限都齐了")
             else -> "守护在跑，但有 $missing 项权限缺失（缺了会在后台被系统清掉）"
         }
     }
@@ -274,5 +275,5 @@ object KeepAlive {
     /** 电池优化是否被关掉（部分 ROM 里 `isIgnoringBatteryOptimizations` 恒为 true，仅供参考） */
     @Suppress("unused")
     fun batteryHint(ctx: Context): String =
-        if (isIgnoringBattery(ctx)) "已加入白名单" else "未加入白名单（息屏后可能被冻结）"
+        if (isIgnoringBattery(ctx)) Loc.t("已加入白名单") else Loc.t("未加入白名单（息屏后可能被冻结）")
 }
