@@ -98,13 +98,13 @@ fun SettingsScreen(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        PageHeader("设置", "所有改动即时保存，不需要点确定")
+        PageHeader(Loc.t("设置"), Loc.t("所有改动即时保存，不需要点确定"))
 
         // ---------------- 通知 ----------------
         //
         // 四类通知各自独立可关：常驻状态 / 阶段结束前 / 任务完成 / 每日汇总。
         // 只有"总开关"会把它们一起关掉——单个用户不需要的就不该强迫接受。
-        SectionTitle("通知")
+        SectionTitle(Loc.t("通知"))
         Panel {
             val askNotify = rememberNotificationRequester()
             val notifPerm = Permissions.item(ctx, cfg, PermId.NOTIFICATION)
@@ -120,61 +120,61 @@ fun SettingsScreen(
                 TextButton(
                     onClick = { askNotify() },
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                ) { Text("去开启通知", fontSize = 12.sp) }
+                ) { Text(Loc.t("去开启通知"), fontSize = 12.sp) }
                 Spacer(Modifier.height(4.dp))
             }
 
             ToggleRow(
-                "启用通知",
-                "关掉后四类都不发；应用内状态与统计照常",
+                Loc.t("启用通知"),
+                Loc.t("关掉后四类都不发；应用内状态与统计照常"),
                 cfg.notify.enabled,
             ) { v -> Store.update { it.copy(notify = it.notify.copy(enabled = v)) } }
 
             if (cfg.notify.enabled) {
                 // —— 常驻 ——
                 ToggleRow(
-                    "常驻状态显示今日进度",
-                    "通知栏里带「今日已自律 X / 计划 Y 分」和进度条；关掉只留当前状态",
+                    Loc.t("常驻状态显示今日进度"),
+                    Loc.t("通知栏里带「今日已自律 X / 计划 Y 分」和进度条；关掉只留当前状态"),
                     cfg.notify.ongoingProgress,
                     divider = true,
                 ) { v -> Store.update { it.copy(notify = it.notify.copy(ongoingProgress = v)) } }
 
                 // —— 阶段结束前 ——
-                Stepper("专注结束前提醒", cfg.notify.workBefore, 0, 120, " 分钟", step = 1) { v ->
+                Stepper(Loc.t("专注结束前提醒"), cfg.notify.workBefore, 0, 120, Loc.t(" 分钟"), step = 1) { v ->
                     Store.update { it.copy(notify = it.notify.copy(workBefore = v)) }
                 }
-                Stepper("休息结束前提醒", cfg.notify.breakBefore, 0, 120, " 分钟", step = 1) { v ->
+                Stepper(Loc.t("休息结束前提醒"), cfg.notify.breakBefore, 0, 120, Loc.t(" 分钟"), step = 1) { v ->
                     Store.update { it.copy(notify = it.notify.copy(breakBefore = v)) }
                 }
-                ToggleRow("休息也提醒", null, cfg.notify.breakNotify, divider = true) { v ->
+                ToggleRow(Loc.t("休息也提醒"), null, cfg.notify.breakNotify, divider = true) { v ->
                     Store.update { it.copy(notify = it.notify.copy(breakNotify = v)) }
                 }
 
                 // —— 完成 ——
                 ToggleRow(
-                    "任务完成通知",
-                    "专注段做完 / 休息结束的那一刻发一条，带今日累计",
+                    Loc.t("任务完成通知"),
+                    Loc.t("专注段做完 / 休息结束的那一刻发一条，带今日累计"),
                     cfg.notify.done,
                     divider = true,
                 ) { v -> Store.update { it.copy(notify = it.notify.copy(done = v)) } }
 
                 // —— 每日汇总 ——
                 ToggleRow(
-                    "每日使用汇总",
-                    "每天固定时间汇总当天的使用时长与自律时长；当天没记录就不发",
+                    Loc.t("每日使用汇总"),
+                    Loc.t("每天固定时间汇总当天的使用时长与自律时长；当天没记录就不发"),
                     cfg.notify.dailySummary,
                     divider = true,
                 ) { v -> Store.update { it.copy(notify = it.notify.copy(dailySummary = v)) } }
                 if (cfg.notify.dailySummary) {
-                    Stepper("汇总时间", cfg.notify.dailyAt, 0, 23, " 点", step = 1) { v ->
+                    Stepper(Loc.t("汇总时间"), cfg.notify.dailyAt, 0, 23, Loc.t(" 点"), step = 1) { v ->
                         Store.update { it.copy(notify = it.notify.copy(dailyAt = v)) }
                     }
                 }
 
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "系统设置里还能按渠道单独关（自律守护 / 阶段提醒 / 任务完成 / 每日使用汇总），"
-                        + "那比这里的开关更彻底：关掉渠道后代码里发也不会出现。",
+                    Loc.t("系统设置里还能按渠道单独关（自律守护 / 阶段提醒 / 任务完成 / 每日使用汇总），")
+                        + Loc.t("那比这里的开关更彻底：关掉渠道后代码里发也不会出现。"),
                     fontSize = 10.sp,
                     lineHeight = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -183,26 +183,26 @@ fun SettingsScreen(
         }
 
         // ---------------- 拦截 ----------------
-        SectionTitle("拦截")
+        SectionTitle(Loc.t("拦截"))
         Panel {
             ToggleRow(
-                "开启应用拦截",
-                "打开被禁应用时：回到桌面 + 一条说明。不再盖全屏页面——那层遮罩在手机上盖不严，还容易让人以为卡死。",
+                Loc.t("开启应用拦截"),
+                Loc.t("打开被禁应用时：回到桌面 + 一条说明。不再盖全屏页面——那层遮罩在手机上盖不严，还容易让人以为卡死。"),
                 cfg.overlay.blockEnabled,
             ) { v -> Store.update { it.copy(overlay = it.overlay.copy(blockEnabled = v)) } }
         }
 
         // ---------------- 锁机 ----------------
-        SectionTitle("锁机")
+        SectionTitle(Loc.t("锁机"))
         Panel {
             ToggleRow(
-                "锁机（回桌面 + 全屏遮罩）",
-                "专注段里离开允许的应用：先回桌面，再盖上遮罩。不杀进程、不关机。",
+                Loc.t("锁机（回桌面 + 全屏遮罩）"),
+                Loc.t("专注段里离开允许的应用：先回桌面，再盖上遮罩。不杀进程、不关机。"),
                 cfg.lock.enabled,
             ) { v ->
                 Store.update { it.copy(lock = it.lock.copy(enabled = v)) }
                 if (v && !android.provider.Settings.canDrawOverlays(ctx)) {
-                    toast(ctx, "锁机需要「在其他应用上层显示」权限，去总览页授予")
+                    toast(ctx, Loc.t("锁机需要「在其他应用上层显示」权限，去总览页授予"))
                 }
             }
             if (cfg.lock.enabled) {
@@ -211,33 +211,33 @@ fun SettingsScreen(
                 // 所以任何一步取消都没有中间态可以残留（0 = 没在进行）。
                 var strictStep by remember { mutableStateOf(StrictFlow.IDLE) }
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("温和模式", !strict, Modifier.weight(1f)) {
+                    ModeButton(Loc.t("温和模式"), !strict, Modifier.weight(1f)) {
                         if (!LockEngine.canSwitchMode(cfg, java.time.LocalDateTime.now())) {
-                            toast(ctx, "强制锁机进行中，不能切回温和模式；等这一段结束再改")
+                            toast(ctx, Loc.t("强制锁机进行中，不能切回温和模式；等这一段结束再改"))
                         } else {
                             Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_GENTLE)) }
                         }
                     }
-                    ModeButton("强制模式", strict, Modifier.weight(1f)) {
+                    ModeButton(Loc.t("强制模式"), strict, Modifier.weight(1f)) {
                         if (strict) return@ModeButton
                         // 一点就开太轻了：先走三道确认，最后一步才写配置
                         strictStep = 1
                     }
                 }
                 Text(
-                    if (strict) "强制模式：暂停与提前结束一律不生效，必须完整走完这一段。"
-                    else "温和模式：可以花积分暂停（到点自动恢复）或提前结束这一段。",
+                    if (strict) Loc.t("强制模式：暂停与提前结束一律不生效，必须完整走完这一段。")
+                    else Loc.t("温和模式：可以花积分暂停（到点自动恢复）或提前结束这一段。"),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (!strict) {
-                    Stepper("暂停时长", cfg.lock.pauseMinutes, 1, 120, " 分钟", step = 5) { v ->
+                    Stepper(Loc.t("暂停时长"), cfg.lock.pauseMinutes, 1, 120, Loc.t(" 分钟"), step = 5) { v ->
                         Store.update { it.copy(lock = it.lock.copy(pauseMinutes = v)) }
                     }
-                    Stepper("暂停消耗", cfg.lock.pauseCost, 0, 500, " 分", step = 5) { v ->
+                    Stepper(Loc.t("暂停消耗"), cfg.lock.pauseCost, 0, 500, Loc.t(" 分"), step = 5) { v ->
                         Store.update { it.copy(lock = it.lock.copy(pauseCost = v)) }
                     }
-                    Stepper("停止消耗", cfg.lock.stopCost, 0, 500, " 分", step = 5) { v ->
+                    Stepper(Loc.t("停止消耗"), cfg.lock.stopCost, 0, 500, Loc.t(" 分"), step = 5) { v ->
                         Store.update { it.copy(lock = it.lock.copy(stopCost = v)) }
                     }
                 }
@@ -245,13 +245,13 @@ fun SettingsScreen(
                 //
                 // 两种模式互斥，不是叠加：整机锁 = 除白名单外全盖住；
                 // 只按规则 = 有白名单就"只允许名单内"，只有黑名单就"只禁黑名单"。
-                Text("锁机期间的限制范围", fontSize = 13.sp)
+                Text(Loc.t("锁机期间的限制范围"), fontSize = 13.sp)
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("整机锁", cfg.lock.scope != "rules", Modifier.weight(1f)) {
+                    ModeButton(Loc.t("整机锁"), cfg.lock.scope != "rules", Modifier.weight(1f)) {
                         Store.update { it.copy(lock = it.lock.copy(scope = "all")) }
                     }
-                    ModeButton("只按规则", cfg.lock.scope == "rules", Modifier.weight(1f)) {
+                    ModeButton(Loc.t("只按规则"), cfg.lock.scope == "rules", Modifier.weight(1f)) {
                         Store.update { it.copy(lock = it.lock.copy(scope = "rules")) }
                     }
                 }
@@ -263,17 +263,17 @@ fun SettingsScreen(
                 Text(
                     when {
                         cfg.lock.scope != "rules" && allowList.isEmpty() ->
-                            "整机锁：除系统界面与输入法，其余一律挡住。要让某个应用能用，" +
-                                "去「规则」页建一条白名单规则（名单内的应用锁机时照样能开）。"
+                            Loc.t("整机锁：除系统界面与输入法，其余一律挡住。要让某个应用能用，") +
+                                Loc.t("去「规则」页建一条白名单规则（名单内的应用锁机时照样能开）。")
                         cfg.lock.scope != "rules" ->
                             "整机锁：白名单里的 ${allowList.size} 个应用照样能用，其余一概挡住。"
                         hasWhite ->
                             "只按规则：只允许白名单里的 ${allowList.size} 个应用，其它一律挡住。"
                         hasBlack ->
-                            "只按规则：没有白名单，所以按黑名单来——只有名单内的应用会被挡住，其余照常使用。"
+                            Loc.t("只按规则：没有白名单，所以按黑名单来——只有名单内的应用会被挡住，其余照常使用。")
                         else ->
-                            "只按规则，但一条启用的规则都没有，等于锁机不拦任何应用。" +
-                                "先去「规则」页建一条。"
+                            Loc.t("只按规则，但一条启用的规则都没有，等于锁机不拦任何应用。") +
+                                Loc.t("先去「规则」页建一条。")
                     },
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
@@ -285,23 +285,23 @@ fun SettingsScreen(
                 )
 
                 // —— 提醒 ——
-                Stepper("开始前提醒", cfg.lock.beforeMin, 0, 60, " 分钟", step = 1) { v ->
+                Stepper(Loc.t("开始前提醒"), cfg.lock.beforeMin, 0, 60, Loc.t(" 分钟"), step = 1) { v ->
                     Store.update { it.copy(lock = it.lock.copy(beforeMin = v)) }
                 }
                 Text(
-                    if (cfg.lock.beforeMin == 0) "0 = 不提前提醒，到点直接锁。"
+                    if (cfg.lock.beforeMin == 0) Loc.t("0 = 不提前提醒，到点直接锁。")
                     else "锁机开始前 ${cfg.lock.beforeMin} 分钟提醒一次（每次锁机只提醒一次）。"
-                        + "整机锁会打断导航、付款码这类事，留点收尾时间。",
+                        + Loc.t("整机锁会打断导航、付款码这类事，留点收尾时间。"),
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
                 Spacer(Modifier.height(8.dp))
-                Text("结束时提醒", fontSize = 13.sp)
+                Text(Loc.t("结束时提醒"), fontSize = 13.sp)
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("none" to "不提醒", "notify" to "通知", "dialog" to "弹窗", "both" to "两者").forEach { (k, label) ->
+                    listOf("none" to Loc.t("不提醒"), "notify" to Loc.t("通知"), "dialog" to Loc.t("弹窗"), "both" to Loc.t("两者")).forEach { (k, label) ->
                         Box(Modifier.weight(1f)) {
                             ModeButton(label, cfg.lock.endNotice == k, Modifier.fillMaxWidth()) {
                                 Store.update { it.copy(lock = it.lock.copy(endNotice = k)) }
@@ -313,11 +313,11 @@ fun SettingsScreen(
                 val canDialog = canShowDialog(ctx)
                 Text(
                     when {
-                        cfg.lock.endNotice == "none" -> "到点结束时不提醒，遮罩自己消失。"
-                        cfg.lock.endNotice == "notify" -> "结束时发一条通知（最稳，任何机型都能到）。"
-                        !canDialog -> "选的是「${if (cfg.lock.endNotice == "both") "两者" else "弹窗"}」，" +
-                            "但现在拿不到「悬浮窗」或 Shizuku，弹不出来——已降级成通知。去总览页授予后才会真弹。"
-                        else -> "结束时盖一页「锁机结束」，10 秒后自己退场，点一下就关。"
+                        cfg.lock.endNotice == "none" -> Loc.t("到点结束时不提醒，遮罩自己消失。")
+                        cfg.lock.endNotice == "notify" -> Loc.t("结束时发一条通知（最稳，任何机型都能到）。")
+                        !canDialog -> "选的是「${if (cfg.lock.endNotice == "both") Loc.t("两者") else Loc.t("弹窗")}」，" +
+                            Loc.t("但现在拿不到「悬浮窗」或 Shizuku，弹不出来——已降级成通知。去总览页授予后才会真弹。")
+                        else -> Loc.t("结束时盖一页「锁机结束」，10 秒后自己退场，点一下就关。")
                     },
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
@@ -349,8 +349,8 @@ fun SettingsScreen(
                                     Spacer(Modifier.height(8.dp))
                                     Text(
                                         "注意：现在缺「${when (blocker) {
-                                            StrictBlocker.NO_FOREGROUND -> "使用情况访问 / 无障碍"
-                                            StrictBlocker.NO_MASK -> "悬浮窗或 Shizuku"
+                                            StrictBlocker.NO_FOREGROUND -> Loc.t("使用情况访问 / 无障碍")
+                                            StrictBlocker.NO_MASK -> Loc.t("悬浮窗或 Shizuku")
                                             StrictBlocker.NO_APP_CONTROL -> "Shizuku"
                                         }}」，强制模式会打折：这仍然拦得住你，但拦不干净。",
                                         fontSize = 11.sp,
@@ -365,7 +365,7 @@ fun SettingsScreen(
                                 if (StrictFlow.enables(step, yes = true)) {
                                     strictStep = StrictFlow.IDLE
                                     Store.update { it.copy(lock = it.lock.copy(mode = LockEngine.MODE_STRICT)) }
-                                    toast(ctx, "强制模式已开启：这一段结束前没有暂停与跳过")
+                                    toast(ctx, Loc.t("强制模式已开启：这一段结束前没有暂停与跳过"))
                                 } else {
                                     strictStep = StrictFlow.advance(step, yes = true)
                                 }
@@ -381,8 +381,8 @@ fun SettingsScreen(
                 }
 
                 ToggleRow(
-                    "进入时震动一下",
-                    "锁机 / 睡眠开始的那一刻短震（180ms）。关掉就完全静音进入。",
+                    Loc.t("进入时震动一下"),
+                    Loc.t("锁机 / 睡眠开始的那一刻短震（180ms）。关掉就完全静音进入。"),
                     cfg.lock.vibrate,
                     divider = true,
                 ) { v -> Store.update { it.copy(lock = it.lock.copy(vibrate = v)) } }
@@ -390,11 +390,11 @@ fun SettingsScreen(
         }
 
         // ---------------- 睡眠 ----------------
-        SectionTitle("睡眠")
+        SectionTitle(Loc.t("睡眠"))
         Panel {
             ToggleRow(
-                "睡眠时段",
-                "到了这段就整机锁住（回桌面 + 遮罩），可以用积分解锁一小段。Android 无法关机。",
+                Loc.t("睡眠时段"),
+                Loc.t("到了这段就整机锁住（回桌面 + 遮罩），可以用积分解锁一小段。Android 无法关机。"),
                 cfg.sleep.enabled,
             ) { v -> Store.update { it.copy(sleep = it.sleep.copy(enabled = v)) } }
             if (cfg.sleep.enabled) {
@@ -402,8 +402,8 @@ fun SettingsScreen(
                 // 关掉之后它就只剩一条统计记录，"睡眠时段"这个名字就名不副实了。
                 // 真要留一个口子，用下面的积分解锁（有代价、有上限、会自己结束）。
                 Text(
-                    "睡眠期间一定锁机（不给关）。可以用下面的积分解锁换一小段，"
-                        + "比如起夜看时间——那是有代价、有上限、到点自动收回的。",
+                    Loc.t("睡眠期间一定锁机（不给关）。可以用下面的积分解锁换一小段，")
+                        + Loc.t("比如起夜看时间——那是有代价、有上限、到点自动收回的。"),
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -433,16 +433,16 @@ fun SettingsScreen(
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("+ 再加一段", fontSize = 12.sp) }
+                ) { Text(Loc.t("+ 再加一段"), fontSize = 12.sp) }
 
-                Stepper("解锁时长", cfg.sleep.unlockMin, 1, 240, " 分钟", step = 5) { v ->
+                Stepper(Loc.t("解锁时长"), cfg.sleep.unlockMin, 1, 240, Loc.t(" 分钟"), step = 5) { v ->
                     Store.update { it.copy(sleep = it.sleep.copy(unlockMin = v)) }
                 }
-                Stepper("每分钟价格", cfg.sleep.unlockPrice, 0, 20, " 分") { v ->
+                Stepper(Loc.t("每分钟价格"), cfg.sleep.unlockPrice, 0, 20, Loc.t(" 分")) { v ->
                     Store.update { it.copy(sleep = it.sleep.copy(unlockPrice = v)) }
                 }
                 Text(
-                    if (cfg.sleep.unlockPrice == 0) "价格 0 = 睡眠时段不开放积分解锁。"
+                    if (cfg.sleep.unlockPrice == 0) Loc.t("价格 0 = 睡眠时段不开放积分解锁。")
                     else "解锁一次要 ${SleepEngine.unlockPrice(cfg)} 分。",
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -451,15 +451,15 @@ fun SettingsScreen(
         }
 
         // ---------------- 云同步 ----------------
-        SectionTitle("云同步")
+        SectionTitle(Loc.t("云同步"))
         CloudSection(cfg)
 
         // ---------------- 备份 / 更新 ----------------
-        SectionTitle("备份与恢复")
+        SectionTitle(Loc.t("备份与恢复"))
         BackupSection(cfg)
 
         // ---------------- 分心事件 ----------------
-        SectionTitle("分心事件")
+        SectionTitle(Loc.t("分心事件"))
         Panel {
             val items by com.qqqorange.kingoffocus.data.DistractStore.items.collectAsState()
             val pending = items.count { !it.done }
@@ -471,10 +471,10 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("打开分心事件", fontSize = 14.sp)
+                    Text(Loc.t("打开分心事件"), fontSize = 14.sp)
                     Text(
                         if (pending > 0) "日历 + 清单 · 还有 $pending 条没处理"
-                        else "日历 + 清单 · 暂时没有欠账",
+                        else Loc.t("日历 + 清单 · 暂时没有欠账"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -483,8 +483,8 @@ fun SettingsScreen(
             }
             HLine()
             ToggleRow(
-                "启用分心事件",
-                "专注时遮罩上显示「记一笔」；关掉后不再提醒（已记的不受影响）",
+                Loc.t("启用分心事件"),
+                Loc.t("专注时遮罩上显示「记一笔」；关掉后不再提醒（已记的不受影响）"),
                 cfg.distract.enabled,
             ) { v ->
                 Store.update { it.copy(distract = it.distract.copy(enabled = v)) }
@@ -492,16 +492,16 @@ fun SettingsScreen(
         }
 
         // ---------------- 每周复盘 ----------------
-        SectionTitle("每周复盘")
+        SectionTitle(Loc.t("每周复盘"))
         Panel {
             Row(
                 Modifier.fillMaxWidth().clickable { onOpenReview() }.padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("打开本周复盘", fontSize = 14.sp)
+                    Text(Loc.t("打开本周复盘"), fontSize = 14.sp)
                     Text(
-                        "五个问题 + 这一周的数字：自律时长 / 被打断 / 目标完成 / 分心事件 / 质押",
+                        Loc.t("五个问题 + 这一周的数字：自律时长 / 被打断 / 目标完成 / 分心事件 / 质押"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -511,7 +511,7 @@ fun SettingsScreen(
         }
 
         // ---------------- 新手引导 ----------------
-        SectionTitle("新手引导")
+        SectionTitle(Loc.t("新手引导"))
         Panel {
             Row(
                 Modifier.fillMaxWidth().clickable {
@@ -520,9 +520,9 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("重新走一遍引导", fontSize = 14.sp)
+                    Text(Loc.t("重新走一遍引导"), fontSize = 14.sp)
                     Text(
-                        "三步：什么时候学 / 哪些不该开 / 完成。会覆盖向导自己写的那套时段与规则，不动你手建的",
+                        Loc.t("三步：什么时候学 / 哪些不该开 / 完成。会覆盖向导自己写的那套时段与规则，不动你手建的"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -531,17 +531,17 @@ fun SettingsScreen(
             }
         }
 
-        SectionTitle("版本与更新")
+        SectionTitle(Loc.t("版本与更新"))
         UpdateSection(cfg)
 
         // ---------------- 保活体检 ----------------
-        SectionTitle("保活体检")
+        SectionTitle(Loc.t("保活体检"))
         KeepAliveSection(cfg)
 
         // ---------------- 数据 ----------------
-        SectionTitle("数据")
+        SectionTitle(Loc.t("数据"))
         Panel {
-            ToggleRow("记录使用时长", "关掉后不再采样，已有数据保留", cfg.stats.enabled) { v ->
+            ToggleRow(Loc.t("记录使用时长"), Loc.t("关掉后不再采样，已有数据保留"), cfg.stats.enabled) { v ->
                 Store.update { it.copy(stats = it.stats.copy(enabled = v)) }
                 // 统计和自律任意一个开着，服务就得跑（统计页的「时段外」全靠它）
                 GuardService.sync(ctx)
@@ -550,26 +550,26 @@ fun SettingsScreen(
                 // 与桌面端同名开关（stats.countIdle）。桌面用"最后一次键鼠输入"判断人还在不在，
                 // 手机上没有这个 API，所以默认按"亮屏即算"；关掉则要求 60 秒内有过交互。
                 ToggleRow(
-                    "只看屏幕亮着",
-                    "默认算到「亮屏且未锁屏」为止；关掉后还要求 60 秒内有过操作" +
-                        if (KofAccessibility.alive()) "" else "（未授无障碍权限，这项暂时不生效）",
+                    Loc.t("只看屏幕亮着"),
+                    Loc.t("默认算到「亮屏且未锁屏」为止；关掉后还要求 60 秒内有过操作") +
+                        if (KofAccessibility.alive()) "" else Loc.t("（未授无障碍权限，这项暂时不生效）"),
                     cfg.stats.countIdle,
                     divider = true,
                 ) { v ->
                     Store.update { it.copy(stats = it.stats.copy(countIdle = v)) }
                 }
                 Stepper(
-                    "保留天数",
+                    Loc.t("保留天数"),
                     cfg.stats.retentionDays,
                     7,
                     3650,
-                    " 天",
+                    Loc.t(" 天"),
                     step = 30,
                 ) { v ->
                     Store.update { it.copy(stats = it.stats.copy(retentionDays = v)) }
                 }
                 Text(
-                    "和桌面端同一个默认值 400 天：更久的数据才能回答「去年这个时候我在干什么」。",
+                    Loc.t("和桌面端同一个默认值 400 天：更久的数据才能回答「去年这个时候我在干什么」。"),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -586,7 +586,7 @@ fun SettingsScreen(
                 onClick = { resetPick = ResetSection.RULES },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("恢复某一块的默认值…", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                Text(Loc.t("恢复某一块的默认值…"), color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
             }
             if (ResetStore.has()) {
                 Spacer(Modifier.height(6.dp))
@@ -595,7 +595,7 @@ fun SettingsScreen(
                         val prev = ResetStore.load()
                         if (prev == null) {
                             ResetStore.clear()
-                            toast(ctx, "没有可撤销的恢复")
+                            toast(ctx, Loc.t("没有可撤销的恢复"))
                             return@OutlinedButton
                         }
                         val live = Store.current
@@ -608,24 +608,24 @@ fun SettingsScreen(
                         ResetStore.save(live)
                         Store.update { next }
                         GuardService.sync(ctx)
-                        toast(ctx, "已撤销上次恢复")
+                        toast(ctx, Loc.t("已撤销上次恢复"))
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("撤销上次恢复", fontSize = 12.sp)
+                    Text(Loc.t("撤销上次恢复"), fontSize = 12.sp)
                 }
             }
         }
 
-        SectionTitle("关于")
+        SectionTitle(Loc.t("关于"))
         Panel {
-            InfoRow("版本", "Android ${appVersion(ctx)}")
+            InfoRow(Loc.t("版本"), "Android ${appVersion(ctx)}")
             // 累计获得：桌面端一直有这一栏，手机端 0.7.0 起也记账了
-            InfoRow("累计获得", "${cfg.totalEarned} 分（余额 ${cfg.points}）")
-            InfoRow("平台标识", "android")
+            InfoRow(Loc.t("累计获得"), "${cfg.totalEarned} 分（余额 ${cfg.points}）")
+            InfoRow(Loc.t("平台标识"), "android")
             Text(
-                "桌面版的「结束进程 / 关机 / 全局热键 / 网页拦截」在 Android 上不可实现，"
-                    + "这里用「时段 + 番茄 + 前台检测 + 锁机」做等价的自律闭环。",
+                Loc.t("桌面版的「结束进程 / 关机 / 全局热键 / 网页拦截」在 Android 上不可实现，")
+                    + Loc.t("这里用「时段 + 番茄 + 前台检测 + 锁机」做等价的自律闭环。"),
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -636,18 +636,18 @@ fun SettingsScreen(
     if (confirmReset) {
         AlertDialog(
             onDismissRequest = { confirmReset = false },
-            title = { Text("重置全部配置？") },
-            text = { Text("规则、时段、睡眠、积分都会回到默认值。统计数据和备份文件不动。", fontSize = 13.sp) },
+            title = { Text(Loc.t("重置全部配置？")) },
+            text = { Text(Loc.t("规则、时段、睡眠、积分都会回到默认值。统计数据和备份文件不动。"), fontSize = 13.sp) },
             confirmButton = {
                 TextButton(onClick = {
                     Store.update { Config() }
                     // 重置后统计默认是开的，所以"服务是否该跑"要按新配置重算
                     GuardService.sync(ctx)
                     confirmReset = false
-                    toast(ctx, "已重置为默认配置")
-                }) { Text("重置", color = MaterialTheme.colorScheme.error) }
+                    toast(ctx, Loc.t("已重置为默认配置"))
+                }) { Text(Loc.t("重置"), color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text(Loc.t("取消")) } },
         )
     }
 
@@ -662,7 +662,7 @@ fun SettingsScreen(
                     Text(pick.desc, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "只动这一块，其它设置、规则和积分都不变。恢复前会自动存一份快照，「撤销上次恢复」能回来。",
+                        Loc.t("只动这一块，其它设置、规则和积分都不变。恢复前会自动存一份快照，「撤销上次恢复」能回来。"),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -675,9 +675,9 @@ fun SettingsScreen(
                     GuardService.sync(ctx)
                     resetPick = null
                     toast(ctx, "已恢复：${pick.title}")
-                }) { Text("恢复默认", color = MaterialTheme.colorScheme.error) }
+                }) { Text(Loc.t("恢复默认"), color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { resetPick = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { resetPick = null }) { Text(Loc.t("取消")) } },
         )
     }
 }
@@ -708,13 +708,13 @@ private fun SleepSegRow(
             Text("第 ${index + 1} 段", Modifier.weight(1f), fontSize = 13.sp)
             Text(SleepEngine.fmtSegment(seg), fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
             if (canRemove) {
-                TextButton(onClick = onRemove) { Text("删除", fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onRemove) { Text(Loc.t("删除"), fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
             }
         }
-        Stepper("起点", seg.from, 0, 1439, " 分", step = 30) { v -> onChange(seg.copy(from = v)) }
-        Stepper("终点", seg.to, 0, 1440, " 分", step = 30) { v -> onChange(seg.copy(to = v)) }
+        Stepper(Loc.t("起点"), seg.from, 0, 1439, Loc.t(" 分"), step = 30) { v -> onChange(seg.copy(from = v)) }
+        Stepper(Loc.t("终点"), seg.to, 0, 1440, Loc.t(" 分"), step = 30) { v -> onChange(seg.copy(to = v)) }
         Text(
-            "分钟数从 0 点算起：23:00 = 1380，07:00 = 420。终点小于起点就是跨夜。",
+            Loc.t("分钟数从 0 点算起：23:00 = 1380，07:00 = 420。终点小于起点就是跨夜。"),
             fontSize = 10.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -754,7 +754,7 @@ private fun CloudSection(cfg: Config) {
             c.copy(
                 cloud = c.cloud.copy(
                     lastStatus = msg,
-                    lastSync = if (msg.startsWith("已")) System.currentTimeMillis() / 1000
+                    lastSync = if (msg.startsWith(Loc.t("已"))) System.currentTimeMillis() / 1000
                     else c.cloud.lastSync,
                 ),
             )
@@ -763,7 +763,7 @@ private fun CloudSection(cfg: Config) {
 
     fun refresh() = scope.launch {
         busy = true
-        status = "读取云端…"
+        status = Loc.t("读取云端…")
         val r = withContext(Dispatchers.IO) {
             runCatching { CloudSync.list(Store.current.cloud) }
                 .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
@@ -773,7 +773,7 @@ private fun CloudSection(cfg: Config) {
             is CloudSync.Outcome.Ok -> {
                 entries = r.entries
                 loaded = true
-                status = if (r.entries.isEmpty()) "云端还没有备份" else "云端 ${r.entries.size} 份备份"
+                status = if (r.entries.isEmpty()) Loc.t("云端还没有备份") else "云端 ${r.entries.size} 份备份"
             }
         }
         busy = false
@@ -797,7 +797,7 @@ private fun CloudSection(cfg: Config) {
                 is CloudSync.Outcome.Err -> r.message
                 is CloudSync.Outcome.Ok -> {
                     val hint = if (c.backup.password.isBlank()) {
-                        "（明文，建议设置备份密码）"
+                        Loc.t("（明文，建议设置备份密码）")
                     } else {
                         ""
                     }
@@ -827,15 +827,15 @@ private fun CloudSection(cfg: Config) {
         persist()
         scope.launch {
             busy = true
-            status = "上传…"
+            status = Loc.t("上传…")
             var msg = doUpload()
-            if (msg.startsWith("已上传")) {
+            if (msg.startsWith(Loc.t("已上传"))) {
                 val pruned = pruneRemote()
                 if (pruned > 0) msg += "（清理旧备份 $pruned 份）"
             }
             note(msg)
             busy = false
-            if (msg.startsWith("已上传")) refresh()
+            if (msg.startsWith(Loc.t("已上传"))) refresh()
         }
     }
 
@@ -853,7 +853,7 @@ private fun CloudSection(cfg: Config) {
                 if (mode == "merge") {
                     val out = Portable.merge(parsed.doc, base)
                     if (out.stats.noop) {
-                        "这份备份的内容本机都有了"
+                        Loc.t("这份备份的内容本机都有了")
                     } else {
                         Store.update { out.config }
                         "合并完成：新增 ${out.stats.added} 条规则、补上 ${out.stats.slots} 个小时段"
@@ -873,7 +873,7 @@ private fun CloudSection(cfg: Config) {
         persist()
         scope.launch {
             busy = true
-            status = if (mode == "merge") "正在合并…" else "正在覆盖…"
+            status = if (mode == "merge") Loc.t("正在合并…") else Loc.t("正在覆盖…")
             val msg = doRestore(entry, mode)
             note(msg)
             busy = false
@@ -893,7 +893,7 @@ private fun CloudSection(cfg: Config) {
         persist()
         scope.launch {
             busy = true
-            status = "同步中…"
+            status = Loc.t("同步中…")
             val probe = withContext(Dispatchers.IO) {
                 runCatching {
                     val c = Store.current
@@ -915,14 +915,14 @@ private fun CloudSection(cfg: Config) {
             }
             val msg = when (probe.first) {
                 "err" -> probe.third
-                "same" -> "两端已经是同一版本，无需同步"
+                "same" -> Loc.t("两端已经是同一版本，无需同步")
                 "download" -> {
                     val e = probe.second
-                    if (e == null) "同步失败：云端那份读不出来" else doRestore(e, "overwrite")
+                    if (e == null) Loc.t("同步失败：云端那份读不出来") else doRestore(e, "overwrite")
                 }
                 else -> {
                     val up = doUpload()
-                    if (up.startsWith("已上传")) {
+                    if (up.startsWith(Loc.t("已上传"))) {
                         val pruned = pruneRemote()
                         up + if (pruned > 0) "（清理旧备份 $pruned 份）" else ""
                     } else {
@@ -947,7 +947,7 @@ private fun CloudSection(cfg: Config) {
         persist()
         scope.launch {
             busy = true
-            status = "读取云端…"
+            status = Loc.t("读取云端…")
             val r = withContext(Dispatchers.IO) {
                 runCatching { CloudSync.list(Store.current.cloud) }
                     .getOrElse { CloudSync.Outcome.Err("出错：${it.message ?: "未知错误"}") }
@@ -960,7 +960,7 @@ private fun CloudSection(cfg: Config) {
                     loaded = true
                     val e = CloudSync.latest(r.entries)
                     if (e == null) {
-                        note("云端还没有备份。先点「上传本机」传一份，或者去桌面端「备份 → 云端」上传。")
+                        note(Loc.t("云端还没有备份。先点「上传本机」传一份，或者去桌面端「备份 → 云端」上传。"))
                     } else {
                         picked = e
                         status = "云端最新：${e.sourceLabel} · ${e.timeLabel}"
@@ -972,8 +972,8 @@ private fun CloudSection(cfg: Config) {
 
     Panel {
         ToggleRow(
-            "启用云同步",
-            "与桌面端共用同一个 WebDAV 目录：手机传的备份桌面能恢复，桌面传的手机能恢复。",
+            Loc.t("启用云同步"),
+            Loc.t("与桌面端共用同一个 WebDAV 目录：手机传的备份桌面能恢复，桌面传的手机能恢复。"),
             cfg.cloud.enabled,
         ) { v ->
             Store.update { it.copy(cloud = it.cloud.copy(enabled = v)) }
@@ -990,14 +990,14 @@ private fun CloudSection(cfg: Config) {
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },
-                label = { Text("WebDAV 地址（目录）") },
-                placeholder = { Text("留空 = 用默认地址（坚果云）") },
+                label = { Text(Loc.t("WebDAV 地址（目录）")) },
+                placeholder = { Text(Loc.t("留空 = 用默认地址（坚果云）")) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             Text(
-                "默认地址与桌面端完全相同：坚果云 / KingOfFocus（目录不存在会自动建）。" +
-                    "用别的网盘就把地址改成你自己的，改完点「保存」。",
+                Loc.t("默认地址与桌面端完全相同：坚果云 / KingOfFocus（目录不存在会自动建）。") +
+                    Loc.t("用别的网盘就把地址改成你自己的，改完点「保存」。"),
                 fontSize = 10.sp,
                 lineHeight = 14.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1006,8 +1006,8 @@ private fun CloudSection(cfg: Config) {
             // 不说清楚的话，用户点了「立即同步」只会看到 401。
             if (cfg.cloud.user.trim().isEmpty()) {
                 Text(
-                    "还差账号 / 密码：默认地址用的是坚果云，账号填坚果云的登录邮箱，"
-                        + "密码填「应用密码」（坚果云 → 安全选项 → 添加应用）。",
+                    Loc.t("还差账号 / 密码：默认地址用的是坚果云，账号填坚果云的登录邮箱，")
+                        + Loc.t("密码填「应用密码」（坚果云 → 安全选项 → 添加应用）。"),
                     fontSize = 10.sp,
                     lineHeight = 14.sp,
                     color = MaterialTheme.colorScheme.error,
@@ -1015,7 +1015,7 @@ private fun CloudSection(cfg: Config) {
             }
             if (url.trim().startsWith("http://")) {
                 Text(
-                    "这个地址是明文 http：账号密码和备份内容在局域网里是可见的。能用 https 就用 https。",
+                    Loc.t("这个地址是明文 http：账号密码和备份内容在局域网里是可见的。能用 https 就用 https。"),
                     fontSize = 10.sp,
                     lineHeight = 14.sp,
                     color = MaterialTheme.colorScheme.error,
@@ -1026,14 +1026,14 @@ private fun CloudSection(cfg: Config) {
                 OutlinedTextField(
                     value = user,
                     onValueChange = { user = it },
-                    label = { Text("账号") },
+                    label = { Text(Loc.t("账号")) },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = pass,
                     onValueChange = { pass = it },
-                    label = { Text("密码 / 应用密码") },
+                    label = { Text(Loc.t("密码 / 应用密码")) },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
@@ -1041,18 +1041,18 @@ private fun CloudSection(cfg: Config) {
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { persist(); toast(ctx, "已保存") }, enabled = !busy) {
-                    Text("保存", fontSize = 12.sp)
+                OutlinedButton(onClick = { persist(); toast(ctx, Loc.t("已保存")) }, enabled = !busy) {
+                    Text(Loc.t("保存"), fontSize = 12.sp)
                 }
                 OutlinedButton(
                     onClick = {
                         persist()
                         scope.launch {
                             busy = true
-                            status = "测试连接…"
+                            status = Loc.t("测试连接…")
                             val msg = withContext(Dispatchers.IO) {
                                 when (val r = CloudSync.testConnection(Store.current.cloud)) {
-                                    is CloudSync.Outcome.Ok -> "连接正常（能读能写）"
+                                    is CloudSync.Outcome.Ok -> Loc.t("连接正常（能读能写）")
                                     is CloudSync.Outcome.Err -> r.message
                                 }
                             }
@@ -1061,29 +1061,29 @@ private fun CloudSection(cfg: Config) {
                         }
                     },
                     enabled = !busy,
-                ) { Text("测试", fontSize = 12.sp) }
+                ) { Text(Loc.t("测试"), fontSize = 12.sp) }
             }
 
             Spacer(Modifier.height(10.dp))
-            Text("云端备份", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            Text(Loc.t("云端备份"), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             // 主按钮是「立即同步」（谁新用谁，和桌面端一样），
             // 上传 / 恢复各留一个明确入口，不用先刷新列表再猜哪行是恢复。
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { smartSync() }, enabled = !busy) {
-                    Text(if (busy) "处理中…" else "立即同步", fontSize = 12.sp)
+                    Text(if (busy) Loc.t("处理中…") else Loc.t("立即同步"), fontSize = 12.sp)
                 }
                 OutlinedButton(onClick = { restoreLatest() }, enabled = !busy) {
-                    Text("恢复云端最新", fontSize = 12.sp)
+                    Text(Loc.t("恢复云端最新"), fontSize = 12.sp)
                 }
             }
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { upload() }, enabled = !busy) {
-                    Text("上传本机", fontSize = 12.sp)
+                    Text(Loc.t("上传本机"), fontSize = 12.sp)
                 }
                 OutlinedButton(onClick = { refresh() }, enabled = !busy) {
-                    Text("刷新列表", fontSize = 12.sp)
+                    Text(Loc.t("刷新列表"), fontSize = 12.sp)
                 }
             }
 
@@ -1091,7 +1091,7 @@ private fun CloudSection(cfg: Config) {
                 Spacer(Modifier.height(6.dp))
                 if (entries.isEmpty()) {
                     Text(
-                        "云端还没有备份。点「上传本机」传一份，桌面端在「备份 → 云端」里就能看到它。",
+                        Loc.t("云端还没有备份。点「上传本机」传一份，桌面端在「备份 → 云端」里就能看到它。"),
                         fontSize = 10.5.sp,
                         lineHeight = 15.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1118,7 +1118,7 @@ private fun CloudSection(cfg: Config) {
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     e.sourceLabel + " · " + e.timeLabel +
-                                        if (e.auto) "（自动）" else "",
+                                        if (e.auto) Loc.t("（自动）") else "",
                                     fontSize = 12.sp,
                                 )
                                 Text(
@@ -1133,7 +1133,7 @@ private fun CloudSection(cfg: Config) {
                                 onClick = { confirmDelete = e },
                                 enabled = !busy,
                                 contentPadding = PaddingValues(horizontal = 8.dp),
-                            ) { Text("删除", fontSize = 11.sp) }
+                            ) { Text(Loc.t("删除"), fontSize = 11.sp) }
                         }
                     }
                 }
@@ -1141,7 +1141,7 @@ private fun CloudSection(cfg: Config) {
 
             Spacer(Modifier.height(4.dp))
             ToggleRow(
-                "回到应用时自动备份",
+                Loc.t("回到应用时自动备份"),
                 "只在配置有改动时上传，覆盖 $AUTO_HINT 这一份，不会堆积",
                 cfg.cloud.auto,
                 divider = true,
@@ -1153,7 +1153,7 @@ private fun CloudSection(cfg: Config) {
             }
             if (cfg.cloud.lastSync > 0) {
                 Text(
-                    "上次成功：" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                    Loc.t("上次成功：") + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
                         .format(Date(cfg.cloud.lastSync * 1000)),
                     fontSize = 10.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1161,8 +1161,8 @@ private fun CloudSection(cfg: Config) {
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                "云端存的是 .kofbak 跨设备备份，两端格式与加密方式一致。"
-                    + "「备份密码」在下面「备份与恢复」里填，两端要一样，否则解不开。",
+                Loc.t("云端存的是 .kofbak 跨设备备份，两端格式与加密方式一致。")
+                    + Loc.t("「备份密码」在下面「备份与恢复」里填，两端要一样，否则解不开。"),
                 fontSize = 10.sp,
                 lineHeight = 14.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1174,32 +1174,32 @@ private fun CloudSection(cfg: Config) {
     picked?.let { e ->
         AlertDialog(
             onDismissRequest = { picked = null },
-            title = { Text("从云端恢复？") },
+            title = { Text(Loc.t("从云端恢复？")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "${e.sourceLabel} · ${e.timeLabel}" + if (e.auto) "（自动备份）" else "",
+                        "${e.sourceLabel} · ${e.timeLabel}" + if (e.auto) Loc.t("（自动备份）") else "",
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "覆盖：用这份备份的规则、时段、积分替换本机，本机多出来的规则会消失。",
+                        Loc.t("覆盖：用这份备份的规则、时段、积分替换本机，本机多出来的规则会消失。"),
                         fontSize = 12.sp,
                     )
                     Text(
-                        "合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列。",
+                        Loc.t("合并：只补本机没有的规则和时段，已有的一律不改；同名不同内容的规则会改名并列。"),
                         fontSize = 12.sp,
                     )
                 }
             },
             confirmButton = {
                 Row {
-                    TextButton(onClick = { picked = null; restore(e, "merge") }) { Text("合并") }
-                    TextButton(onClick = { picked = null; restore(e, "overwrite") }) { Text("覆盖") }
+                    TextButton(onClick = { picked = null; restore(e, "merge") }) { Text(Loc.t("合并")) }
+                    TextButton(onClick = { picked = null; restore(e, "overwrite") }) { Text(Loc.t("覆盖")) }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { picked = null }) { Text("取消") }
+                TextButton(onClick = { picked = null }) { Text(Loc.t("取消")) }
             },
         )
     }
@@ -1208,7 +1208,7 @@ private fun CloudSection(cfg: Config) {
     confirmDelete?.let { e ->
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
-            title = { Text("删除云端这份备份？") },
+            title = { Text(Loc.t("删除云端这份备份？")) },
             text = {
                 Text(
                     "${e.name} 会从网盘上删掉，本机配置不受影响。删了就找不回来了。",
@@ -1230,10 +1230,10 @@ private fun CloudSection(cfg: Config) {
                         busy = false
                         refresh()
                     }
-                }) { Text("删除") }
+                }) { Text(Loc.t("删除")) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDelete = null }) { Text("取消") }
+                TextButton(onClick = { confirmDelete = null }) { Text(Loc.t("取消")) }
             },
         )
     }
@@ -1268,8 +1268,8 @@ private fun KeepAliveSection(cfg: Config) {
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            "自律与统计都靠一个常驻前台服务。它被系统清掉时，时段不再判定、规则不再拦截、"
-                + "统计也不再记录——所以下面这些项缺一不可。",
+            Loc.t("自律与统计都靠一个常驻前台服务。它被系统清掉时，时段不再判定、规则不再拦截、")
+                + Loc.t("统计也不再记录——所以下面这些项缺一不可。"),
             fontSize = 10.5.sp,
             lineHeight = 15.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1301,7 +1301,7 @@ private fun KeepAliveSection(cfg: Config) {
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        if (item.ok) "已就绪" else "缺失",
+                        if (item.ok) Loc.t("已就绪") else Loc.t("缺失"),
                         fontSize = 10.5.sp,
                         color = if (item.ok) MaterialTheme.colorScheme.onSurfaceVariant
                         else MaterialTheme.colorScheme.error,
@@ -1309,15 +1309,15 @@ private fun KeepAliveSection(cfg: Config) {
                 }
                 if (expanded) {
                     Spacer(Modifier.height(5.dp))
-                    Text("用途：" + item.purpose, fontSize = 10.5.sp, lineHeight = 15.sp)
+                    Text(Loc.t("用途：") + item.purpose, fontSize = 10.5.sp, lineHeight = 15.sp)
                     Text(
-                        "申请时机：" + item.whenAsk,
+                        Loc.t("申请时机：") + item.whenAsk,
                         fontSize = 10.5.sp,
                         lineHeight = 15.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "缺失影响：" + item.impact,
+                        Loc.t("缺失影响：") + item.impact,
                         fontSize = 10.5.sp,
                         lineHeight = 15.sp,
                         color = MaterialTheme.colorScheme.error,
@@ -1330,9 +1330,9 @@ private fun KeepAliveSection(cfg: Config) {
                             ),
                             onClick = {
                                 item.action?.let { runCatching { ctx.startActivity(it) } }
-                                toast(ctx, "按提示开启后回到本页，状态会自动刷新")
+                                toast(ctx, Loc.t("按提示开启后回到本页，状态会自动刷新"))
                             },
-                        ) { Text("去开启", fontSize = 11.5.sp) }
+                        ) { Text(Loc.t("去开启"), fontSize = 11.5.sp) }
                     }
                 }
             }
@@ -1341,10 +1341,10 @@ private fun KeepAliveSection(cfg: Config) {
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { confirmRestart = true }) {
-                Text("重启守护", fontSize = 12.sp)
+                Text(Loc.t("重启守护"), fontSize = 12.sp)
             }
             OutlinedButton(onClick = { UiTick.bump() }) {
-                Text("重新体检", fontSize = 12.sp)
+                Text(Loc.t("重新体检"), fontSize = 12.sp)
             }
         }
     }
@@ -1352,11 +1352,11 @@ private fun KeepAliveSection(cfg: Config) {
     if (confirmRestart) {
         AlertDialog(
             onDismissRequest = { confirmRestart = false },
-            title = { Text("重启守护服务？") },
+            title = { Text(Loc.t("重启守护服务？")) },
             text = {
                 Text(
-                    "会把常驻服务重新拉起来，并重新排上心跳与周期任务。"
-                        + "正在进行的专注段不受影响（状态是从配置现算的）。",
+                    Loc.t("会把常驻服务重新拉起来，并重新排上心跳与周期任务。")
+                        + Loc.t("正在进行的专注段不受影响（状态是从配置现算的）。"),
                     fontSize = 13.sp,
                 )
             },
@@ -1367,10 +1367,10 @@ private fun KeepAliveSection(cfg: Config) {
                     runCatching { GuardService.sync(ctx) }
                     KeepAlive.ensureService(ctx, Store.current)
                     UiTick.bump()
-                    toast(ctx, "已请求重启守护")
-                }) { Text("重启") }
+                    toast(ctx, Loc.t("已请求重启守护"))
+                }) { Text(Loc.t("重启")) }
             },
-            dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { confirmRestart = false }) { Text(Loc.t("取消")) } },
         )
     }
 }
