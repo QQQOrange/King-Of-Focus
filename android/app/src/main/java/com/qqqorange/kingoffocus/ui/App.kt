@@ -81,11 +81,11 @@ object UiTick {
 }
 
 enum class Tab(val label: String) {
-    Home("总览"),
-    Schedule("时段"),
-    Rules("规则"),
-    Stats("统计"),
-    Settings("设置"),
+    Home(Loc.t("总览")),
+    Schedule(Loc.t("时段")),
+    Rules(Loc.t("规则")),
+    Stats(Loc.t("统计")),
+    Settings(Loc.t("设置")),
 }
 
 @Composable
@@ -179,7 +179,7 @@ private fun GoalReviewCard(
     onPick: (String) -> Unit,
 ) {
     Panel {
-        Text("上一段的目标", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(Loc.t("上一段的目标"), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(3.dp))
         Text(
             ended.goal,
@@ -190,7 +190,7 @@ private fun GoalReviewCard(
         )
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("done" to "做完了", "partial" to "做了一半", "missed" to "没做成").forEach { (v, label) ->
+            listOf("done" to Loc.t("做完了"), "partial" to Loc.t("做了一半"), "missed" to Loc.t("没做成")).forEach { (v, label) ->
                 val on = ended.state == v
                 val tint = when (v) {
                     "done" -> Color(0xFF3FBF7F)
@@ -242,14 +242,14 @@ private fun GuardStrip(missing: List<com.qqqorange.kingoffocus.core.PermItem>, r
     val bad = missing.isNotEmpty() || !running
     val accent = if (bad) Color(0xFFF5A524) else Color(0xFF3FBF7F)
     val head = when {
-        missing.isNotEmpty() -> "现在没有在守护"
-        !running -> "守护服务没有在运行"
-        else -> "守护中"
+        missing.isNotEmpty() -> Loc.t("现在没有在守护")
+        !running -> Loc.t("守护服务没有在运行")
+        else -> Loc.t("守护中")
     }
     val detail = when {
-        missing.isNotEmpty() -> missing.joinToString("、") { it.spec.title } + " 缺失"
-        !running -> "点一下立刻把它拉起来"
-        else -> "权限齐备 · 拦截与统计都在跑"
+        missing.isNotEmpty() -> missing.joinToString("、") { it.spec.title } + Loc.t(" 缺失")
+        !running -> Loc.t("点一下立刻把它拉起来")
+        else -> Loc.t("权限齐备 · 拦截与统计都在跑")
     }
     Surface(
         color = accent.copy(alpha = 0.12f),
@@ -279,7 +279,7 @@ private fun GuardStrip(missing: List<com.qqqorange.kingoffocus.core.PermItem>, r
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (bad) Text("去修复", fontSize = 11.5.sp, color = accent)
+            if (bad) Text(Loc.t("去修复"), fontSize = 11.5.sp, color = accent)
         }
     }
 }
@@ -384,7 +384,7 @@ private fun HomeScreen(cfg: Config) {
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        PageHeader("King Of Focus", "自律不是折磨自己，是把注意力还给你")
+        PageHeader("King Of Focus", Loc.t("自律不是折磨自己，是把注意力还给你"))
 
         // 守护状态带：一眼看清"现在到底有没有在守"。
         // 放在最顶上而不是塞进权限卡里，是因为 Android 上服务被 Doze/厂商清理后会
@@ -397,11 +397,11 @@ private fun HomeScreen(cfg: Config) {
                 Column(Modifier.weight(1f)) {
                     Text(
                         when {
-                            sleeping -> "睡眠时段"
-                            locked -> "锁机中"
-                            st == null -> "自由时间"
-                            st.inBreak -> "休息中"
-                            else -> "专注中"
+                            sleeping -> Loc.t("睡眠时段")
+                            locked -> Loc.t("锁机中")
+                            st == null -> Loc.t("自由时间")
+                            st.inBreak -> Loc.t("休息中")
+                            else -> Loc.t("专注中")
                         },
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
@@ -409,11 +409,11 @@ private fun HomeScreen(cfg: Config) {
                     Spacer(Modifier.height(3.dp))
                     Text(
                         when {
-                            sleeping -> "手机先放一边，早上见"
-                            locked -> "整台手机先别用，应用都还在"
-                            st == null -> "现在不在自律时段，规则不生效"
-                            st.inBreak -> "休息一下，喝水、走两步"
-                            else -> "规则生效中，坚持一下"
+                            sleeping -> Loc.t("手机先放一边，早上见")
+                            locked -> Loc.t("整台手机先别用，应用都还在")
+                            st == null -> Loc.t("现在不在自律时段，规则不生效")
+                            st.inBreak -> Loc.t("休息一下，喝水、走两步")
+                            else -> Loc.t("规则生效中，坚持一下")
                         },
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -432,7 +432,7 @@ private fun HomeScreen(cfg: Config) {
                         color = MaterialTheme.colorScheme.secondary,
                     )
                     Text(
-                        if (sleeping) "距离起床" else "本段剩余",
+                        if (sleeping) Loc.t("距离起床") else Loc.t("本段剩余"),
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -443,9 +443,9 @@ private fun HomeScreen(cfg: Config) {
             HLine()
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                KV("积分", "${cfg.points}", MaterialTheme.colorScheme.secondary)
-                KV("今日使用", StatsMath.fmtDuration(todaySecs))
-                KV("今日自律", Slots.fmtMinutes(todayPlanMin))
+                KV(Loc.t("积分"), "${cfg.points}", MaterialTheme.colorScheme.secondary)
+                KV(Loc.t("今日使用"), StatsMath.fmtDuration(todaySecs))
+                KV(Loc.t("今日自律"), Slots.fmtMinutes(todayPlanMin))
             }
 
             // —— 现在 / 接下来 ——
@@ -456,7 +456,8 @@ private fun HomeScreen(cfg: Config) {
                 com.qqqorange.kingoffocus.core.BriefMath.nextSegment(cfg, now)?.let { nx ->
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "下一段 ${nx.at} 开始（${com.qqqorange.kingoffocus.core.BriefMath.fmtLeft(nx.inSecs)}后）",
+                        if (Loc.isEn) "Next block at ${nx.at} (in ${com.qqqorange.kingoffocus.core.BriefMath.fmtLeft(nx.inSecs)})"
+                        else "下一段 ${nx.at} 开始（${com.qqqorange.kingoffocus.core.BriefMath.fmtLeft(nx.inSecs)}后）",
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -465,7 +466,7 @@ private fun HomeScreen(cfg: Config) {
             if (blocksNow > 0) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "这一节已被打断 $blocksNow 次",
+                    if (Loc.isEn) "Interrupted $blocksNow×(this block)" else "这一节已被打断 $blocksNow 次",
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
                 )
@@ -473,7 +474,7 @@ private fun HomeScreen(cfg: Config) {
             if (goalTotal > 0) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "今日目标 $goalTotal 个 · 做完 $goalDone 个",
+                    if (Loc.isEn) "Goals today: $goalDone of $goalTotal done" else "今日目标 $goalTotal 个 · 做完 $goalDone 个",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -483,7 +484,8 @@ private fun HomeScreen(cfg: Config) {
             if (trialLeft > 0) {
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "试用中 · 还剩 ${ScheduleEngine.fmtLeft(trialLeft)}，到点自动还原你原来的时段",
+                    if (Loc.isEn) "Trial · ${ScheduleEngine.fmtLeft(trialLeft)} left; your schedule is restored automatically"
+                        else "试用中 · 还剩 ${ScheduleEngine.fmtLeft(trialLeft)}，到点自动还原你原来的时段",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -495,9 +497,9 @@ private fun HomeScreen(cfg: Config) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("想现在试一下？", fontSize = 13.sp)
+                        Text(Loc.t("想现在试一下？"), fontSize = 13.sp)
                         Text(
-                            "立刻跑 25 分钟：规则照常生效、锁机遮罩也会盖上来，结束后自动还原",
+                            Loc.t("立刻跑 25 分钟：规则照常生效、锁机遮罩也会盖上来，结束后自动还原"),
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -507,15 +509,15 @@ private fun HomeScreen(cfg: Config) {
                             if (com.qqqorange.kingoffocus.data.TrialRunner.start(now)) {
                                 trialRev++
                                 GuardService.sync(ctx)
-                                toast(ctx, "已开始 25 分钟试用，到点自动还原")
+                                toast(ctx, Loc.t("已开始 25 分钟试用，到点自动还原"))
                             } else {
-                                toast(ctx, "现在正在专注段里，先跑完这一段")
+                                toast(ctx, Loc.t("现在正在专注段里，先跑完这一段"))
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.secondary,
                         ),
-                    ) { Text("试 25 分钟", fontSize = 12.sp) }
+                    ) { Text(Loc.t("试 25 分钟"), fontSize = 12.sp) }
                 }
             }
         }
@@ -535,12 +537,12 @@ private fun HomeScreen(cfg: Config) {
         }
 
         ToggleRow(
-            title = "自律总开关",
-            sub = if (cfg.enabled) "已开启：时段、规则、锁机全部生效" else "关闭时什么都不拦，适合刚开始设置的时候",
+            title = Loc.t("自律总开关"),
+            sub = if (cfg.enabled) Loc.t("已开启：时段、规则、锁机全部生效") else Loc.t("关闭时什么都不拦，适合刚开始设置的时候"),
             checked = cfg.enabled,
             onChange = { on ->
                 if (on && !usageOk && !accOk) {
-                    toast(ctx, "先授予「使用情况访问」或「无障碍」，否则不知道你在用哪个应用")
+                    toast(ctx, Loc.t("先授予「使用情况访问」或「无障碍」，否则不知道你在用哪个应用"))
                 }
                 // 开启自律后才会有"剩余多久""这段做完了"可发，此时申请通知才讲得通；
                 // 启动就弹的话用户还不知道这应用做什么，大概率直接拒绝。
@@ -553,7 +555,7 @@ private fun HomeScreen(cfg: Config) {
         )
 
         // —— 今天的时段概览 ——
-        SectionTitle("今天")
+        SectionTitle(Loc.t("今天"))
         Panel {
             val day = cfg.days.getOrNull(now.dayOfWeek.value - 1)
             Row(
@@ -595,7 +597,7 @@ private fun HomeScreen(cfg: Config) {
             // 主指标占一整行：它是这一块的主角，和下面两个次要指标抢宽会挤到换行，
             // 三列等宽在 320dp 的小屏上会把"1 小时 30 分"折成两行，看着像两张卡。
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("今日自律总时长", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(Loc.t("今日自律总时长"), fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
                 Text(
                     Slots.fmtMinutes(todayPlanMin),
@@ -607,10 +609,10 @@ private fun HomeScreen(cfg: Config) {
             Spacer(Modifier.height(3.dp))
             Text(
                 if (todayPlanMin > 0) {
-                    "共 $todaySegs 段" +
-                        (if (todayLongest > 0) " · 最长一段 " + Slots.fmtMinutes(todayLongest) else "")
+                    (if (Loc.isEn) "$todaySegs blocks" else "共 $todaySegs 段") +
+                        (if (todayLongest > 0) Loc.t(" · 最长一段 ") + Slots.fmtMinutes(todayLongest) else "")
                 } else {
-                    "今天还没有排班"
+                    Loc.t("今天还没有排班")
                 },
                 fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -618,7 +620,7 @@ private fun HomeScreen(cfg: Config) {
             if (todayPlanMin == 0) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "今天还没排自律时段。去「时段」点一格就选中；按住空白处拖动可以一次刷好几格。",
+                    Loc.t("今天还没排自律时段。去「时段」点一格就选中；按住空白处拖动可以一次刷好几格。"),
                     fontSize = 10.sp,
                     lineHeight = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -627,14 +629,14 @@ private fun HomeScreen(cfg: Config) {
         }
 
         // —— 权限 ——
-        SectionTitle("限制能力")
+        SectionTitle(Loc.t("限制能力"))
         Panel {
             Text(
                 when (level) {
-                    GuardLevel.FULL -> "完整 · 看得见、盖得住、也关不掉"
-                    GuardLevel.STRONG -> "增强 · 看得见盖得住，但设置里还能强制停止"
-                    GuardLevel.BASIC -> "基础 · 每秒轮询 + 悬浮窗遮罩"
-                    GuardLevel.NONE -> "未生效 · 还差下面几项"
+                    GuardLevel.FULL -> Loc.t("完整 · 看得见、盖得住、也关不掉")
+                    GuardLevel.STRONG -> Loc.t("增强 · 看得见盖得住，但设置里还能强制停止")
+                    GuardLevel.BASIC -> Loc.t("基础 · 每秒轮询 + 悬浮窗遮罩")
+                    GuardLevel.NONE -> Loc.t("未生效 · 还差下面几项")
                 },
                 fontSize = 11.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -652,7 +654,7 @@ private fun HomeScreen(cfg: Config) {
                         PermId.NOTIFICATION -> askNotify()
                         PermId.SHIZUKU -> {
                             ShizukuBridge.request(ctx)
-                            toast(ctx, "已请求 Shizuku 授权，允许后回到本页会自动连上")
+                            toast(ctx, Loc.t("已请求 Shizuku 授权，允许后回到本页会自动连上"))
                         }
                         else -> runCatching {
                             item.action?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)?.let { ctx.startActivity(it) }
@@ -666,8 +668,8 @@ private fun HomeScreen(cfg: Config) {
             if (!notifOk) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "通知被关：常驻状态、阶段提醒、完成通知、每日汇总都不会出现。"
-                        + "统计与拦截仍照常工作。",
+                    Loc.t("通知被关：常驻状态、阶段提醒、完成通知、每日汇总都不会出现。")
+                        + Loc.t("统计与拦截仍照常工作。"),
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp,
                     color = MaterialTheme.colorScheme.error,
@@ -680,12 +682,12 @@ private fun HomeScreen(cfg: Config) {
     if (askOverlay) {
         AlertDialog(
             onDismissRequest = { askOverlay = false },
-            title = { Text("需要「在其他应用上层显示」") },
+            title = { Text(Loc.t("需要「在其他应用上层显示」")) },
             text = {
                 Text(
-                    "锁机生效时，本应用要在回到桌面后立刻盖上一层遮罩；没有这个权限，"
-                        + "系统会拦住后台拉起页面，锁机会静默失效。\n\n"
-                        + "开启后回到本页，状态会自动变成「已授予」。",
+                    Loc.t("锁机生效时，本应用要在回到桌面后立刻盖上一层遮罩；没有这个权限，")
+                        + Loc.t("系统会拦住后台拉起页面，锁机会静默失效。\n\n")
+                        + Loc.t("开启后回到本页，状态会自动变成「已授予」。"),
                     fontSize = 13.sp,
                 )
             },
@@ -698,9 +700,9 @@ private fun HomeScreen(cfg: Config) {
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
-                }) { Text("去开启") }
+                }) { Text(Loc.t("去开启")) }
             },
-            dismissButton = { TextButton(onClick = { askOverlay = false }) { Text("暂不") } },
+            dismissButton = { TextButton(onClick = { askOverlay = false }) { Text(Loc.t("暂不")) } },
         )
     }
 }
