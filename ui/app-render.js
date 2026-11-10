@@ -369,6 +369,9 @@ function render() {
   // 用户进来第一件事就是改规则，不能让他先去找入口。
   if (S.data && S.data.safeMode) html = safeBanner() + html;
   $('#content').innerHTML = html;
+  // 记下这次画出来的"可见状态指纹"：pull() 靠它判断下一次要不要重绘。
+  // 只在总览用；其它页面是事件驱动重绘，不需要。
+  S.ovSig = S.view === 'overview' ? overviewSig() : '';
 
   // 连续时段要画成整块：格子是静态的，覆盖层得在 DOM 落地后再算
   if (S.view === 'clock') ccRenderRuns();

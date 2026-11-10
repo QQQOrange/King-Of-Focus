@@ -277,7 +277,15 @@ async function pull() {
     applyTheme();
     renderChrome();
     syncSleepLock();
-    if (S.view === 'overview' && !S.editing) render();
+    // 总览每 1.5 秒被拉一次，但绝大多数时候屏幕上**没有**任何可见变化。
+    // 先比一个"可见状态指纹"，没变就不重绘：省掉的不只是 innerHTML，
+    // 还有随之而来的饼图/日历/热力图重算与整页重排（以前每秒都在做）。
+    // 指纹里带的是"渲染时真正读过的字段"；漏掉一个的代价是那一项最多旧 10 秒，
+    // 所以宁可多放几个（心跳按 10 秒取整，避免每秒都变）。
+    if (S.view === 'overview' && !S.editing) {
+      const sig = overviewSig();
+      if (sig !== S.ovSig) render();
+    }
     // 浏览器插件页：状态一变就重画（插件装上/被停用/启动浏览器都能在 1.5s 内反映出来），
     // 状态没变就不重画，避免把用户正在输入的宽限毫秒清掉
     if (S.view === 'browsers' && !S.browserScanning) {

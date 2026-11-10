@@ -352,6 +352,64 @@ function slMini(r) {
   return `<div class="sl-mini">${cols}</div>`;
 }
 
+/**
+ * 总览"可见状态指纹"。
+ *
+ * 用途：`pull()` 每 1.5 秒拉一次状态，但屏幕上大多数时候什么都没变。
+ * 比一下这个指纹，没变就整页不重绘——省掉 innerHTML 替换、图表重算和重排。
+ *
+ * 写它的规矩：**viewOverview() 读过的字段，这里都要有**。
+ * 漏一个的代价是那一项最多旧 10 秒（不是错，只是不新），所以宁多勿少。
+ * 只有"秒级噪音"要取整：心跳和倒计时按 10 秒量化，否则每拍都变、等于没省。
+ */
+function overviewSig() {
+  const d = S.data;
+  if (!d) return '';
+  const rt = d.runtime || {};
+  const br = d.brief || {};
+  const ru = (v) => Math.round((Number(v) || 0) / 10);
+  return [
+    rt.disciplineOn ? 1 : 0,
+    rt.breakOn ? 1 : 0,
+    ru(rt.breakLeft),
+    ru(rt.nextChange),
+    rt.blockedApps || 0,
+    rt.blockedSites || 0,
+    rt.locked ? 1 : 0,
+    (rt.lockNames || []).join(','),
+    (rt.active || []).map((a) => a.name).join(','),
+    (rt.events || []).length,
+    (rt.events && rt.events[0] && rt.events[0].ts) || 0,
+    ru(Date.now() / 1000 - (rt.hb || 0)),
+    rt.hbBrowser || '',
+    d.mask ? (d.mask.on ? 1 : 0) : 0,
+    ((d.config && d.config.settings && d.config.settings.mask.targetTitle) || '').slice(0, 40),
+    (d.points && d.points.balance) || 0,
+    (d.points && d.points.price) || 0,
+    (d.points && d.points.count) || 0,
+    (d.points && d.points.unlockUntil) || 0,
+    d.stake ? d.stake.amount || 0 : 0,
+    br.inSegment ? 1 : 0,
+    br.segLabel || '',
+    ru(br.segLeft),
+    br.planMin || 0,
+    br.onMin || 0,
+    br.goal || '',
+    br.blocks || 0,
+    br.goalTotal || 0,
+    br.goalDone || 0,
+    br.nextAt || '',
+    ru(br.nextInSecs),
+    br.review ? [br.review.seg, br.review.state, br.review.goal].join('|') : '',
+    // 语录：换一条 / 搬运中 都要重绘
+    S.quoteBusy ? 1 : 0,
+    (S.data.quote && S.data.quote.text) || '',
+    (S.data.quote && S.data.quote.from) || '',
+    (S.data.quoteFrom || ''),
+    ((d.config && d.config.settings && (d.config.settings.customQuotes || []).length) || 0),
+  ].join('\u0001');
+}
+
 function viewRules() {
   const d = S.data;
   if (!d) return '';
